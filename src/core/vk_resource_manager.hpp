@@ -42,8 +42,6 @@ public:
 	// Per-frame Tracy plots for geometry / mesh / entity resource usage.
 	void tracyPlotResources() const;
 
-	[[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<char> &code) const;
-
     [[nodiscard]] vk::DeviceAddress instanceUboAddress(uint32_t frameSlot, EntityId entityId) const noexcept;
 
 

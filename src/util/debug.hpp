@@ -22,4 +22,3 @@ void setDebugName(const vk::raii::Device &device, const vk::raii::DescriptorPool
 void setDebugName(const vk::raii::Device &device, const vk::raii::DescriptorSet &set, std::string_view name);
 void setDebugName(const vk::raii::Device &device, const vk::raii::PipelineLayout &layout, std::string_view name);
 void setDebugName(const vk::raii::Device &device, const vk::raii::Pipeline &pipeline, std::string_view name);
-void setDebugName(const vk::raii::Device &device, const vk::raii::ShaderModule &shaderModule, std::string_view name);

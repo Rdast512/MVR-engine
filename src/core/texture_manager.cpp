@@ -102,6 +102,8 @@ bool containsImageLayout(const std::vector<vk::ImageLayout>& layouts, vk::ImageL
     return std::ranges::find(layouts, layout) != layouts.end();
 }
 
+// HOST_TRANSFER makes GENERAL as cheap as OPTIMAL for host copies / later sample.
+// other host-transition dests (TRANSFER_DST, SHADER_READ_ONLY) add no benefit.
 vk::ImageLayout stbHostCopyDstLayout(const vk::raii::PhysicalDevice& physicalDevice,
                                      const HardwareCapabilities& capabilities)
 {
@@ -112,14 +114,34 @@ vk::ImageLayout stbHostCopyDstLayout(const vk::raii::PhysicalDevice& physicalDev
         throw std::runtime_error("R8G8B8A8_SRGB lacks HOST_IMAGE_TRANSFER");
     }
 
-    const auto& dstLayouts = capabilities.hostImageCopyDstLayouts;
-    if (containsImageLayout(dstLayouts, vk::ImageLayout::eTransferDstOptimal)) {
-        return vk::ImageLayout::eTransferDstOptimal;
+    if (!containsImageLayout(capabilities.hostImageCopyDstLayouts, vk::ImageLayout::eGeneral)) {
+        throw std::runtime_error("host image copy dest layouts missing GENERAL");
     }
-    if (containsImageLayout(dstLayouts, vk::ImageLayout::eGeneral)) {
-        return vk::ImageLayout::eGeneral;
+
+    const vk::PhysicalDeviceImageFormatInfo2 formatInfo{
+        .format = vk::Format::eR8G8B8A8Srgb,
+        .type = vk::ImageType::e2D,
+        .tiling = vk::ImageTiling::eOptimal,
+        .usage = vk::ImageUsageFlagBits::eHostTransfer | vk::ImageUsageFlagBits::eTransferSrc |
+                 vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+    };
+    const auto perfChain =
+        physicalDevice.getImageFormatProperties2<vk::ImageFormatProperties2,
+                                                 vk::HostImageCopyDevicePerformanceQuery>(formatInfo);
+    const auto& perf = perfChain.get<vk::HostImageCopyDevicePerformanceQuery>();
+    static bool loggedPerf = false;
+    if (!loggedPerf) {
+        log_info(std::format("hostImageCopy perf: optimalDeviceAccess={} identicalMemoryLayout={}",
+                             static_cast<bool>(perf.optimalDeviceAccess),
+                             static_cast<bool>(perf.identicalMemoryLayout)),
+                 "TextureManager");
+        if (!perf.optimalDeviceAccess) {
+            log_info("HOST_TRANSFER may be slower to sample than a non-host-transfer image", "TextureManager");
+        }
+        loggedPerf = true;
     }
-    throw std::runtime_error("host image copy dest layouts missing GENERAL");
+
+    return vk::ImageLayout::eGeneral;
 }
 
 } // anonymous namespace
@@ -285,7 +307,7 @@ uint32_t TextureManager::loadTexture(std::string texturePath)
         }
         stbi_image_free(const_cast<stbi_uc*>(pixels));
 
-        if (hostDstLayout != vk::ImageLayout::eTransferDstOptimal) {
+        {
             auto cmdBuffer = beginSingleTimeCommands(graphicsQueue);
             transitionImageLayout(&cmdBuffer, *asset.textureImage, mipLevels, hostDstLayout,
                                   vk::ImageLayout::eTransferDstOptimal,

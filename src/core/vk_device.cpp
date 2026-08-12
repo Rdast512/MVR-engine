@@ -500,6 +500,19 @@ void Device::createLogicalDevice()
     capabilities.maintenance3 = propertiesChain.get<vk::PhysicalDeviceMaintenance3Properties>();
     capabilities.maintenance4 = propertiesChain.get<vk::PhysicalDeviceMaintenance4Properties>();
     capabilities.maintenance5 = propertiesChain.get<vk::PhysicalDeviceMaintenance5Properties>();
+    {
+        const auto& m5 = capabilities.maintenance5;
+        log_info(std::format("maintenance5: earlyCoverageAfterCount={} earlySampleMaskBeforeCount={} "
+                             "depthStencilSwizzleOne={} polygonModePointSize={} "
+                             "nonStrict1pxParallelogram={} nonStrictWideParallelogram={}",
+                             static_cast<bool>(m5.earlyFragmentMultisampleCoverageAfterSampleCounting),
+                             static_cast<bool>(m5.earlyFragmentSampleMaskTestBeforeSampleCounting),
+                             static_cast<bool>(m5.depthStencilSwizzleOneSupport),
+                             static_cast<bool>(m5.polygonModePointSize),
+                             static_cast<bool>(m5.nonStrictSinglePixelWideLinesUseParallelogram),
+                             static_cast<bool>(m5.nonStrictWideLinesUseParallelogram)),
+                 "Device");
+    }
     capabilities.maintenance6 = propertiesChain.get<vk::PhysicalDeviceMaintenance6Properties>();
     capabilities.maintenance7 = propertiesChain.get<vk::PhysicalDeviceMaintenance7PropertiesKHR>();
     capabilities.maintenance9 = propertiesChain.get<vk::PhysicalDeviceMaintenance9PropertiesKHR>();

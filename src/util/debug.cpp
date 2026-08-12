@@ -99,7 +99,3 @@ void setDebugName(const vk::raii::Device &device, const vk::raii::PipelineLayout
 void setDebugName(const vk::raii::Device &device, const vk::raii::Pipeline &pipeline, std::string_view name) {
 	setDebugNameImpl(device, pipeline, name, vk::ObjectType::ePipeline);
 }
-
-void setDebugName(const vk::raii::Device &device, const vk::raii::ShaderModule &shaderModule, std::string_view name) {
-	setDebugNameImpl(device, shaderModule, name, vk::ObjectType::eShaderModule);
-}

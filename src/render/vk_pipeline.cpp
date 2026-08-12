@@ -53,20 +53,25 @@ void Pipeline::createMeshPipeline()
     ZoneScopedN("Pipeline::createMeshPipeline");
     const auto shaderDir = std::filesystem::path(ENGINE_SHADER_DIR);
     const auto shaderPath = (shaderDir / "base" / "mesh.spv").string();
-    vk::raii::ShaderModule shaderModule = resourceManager.createShaderModule(readFile(shaderPath));
+    const auto spirv = readFile(shaderPath);
+    const vk::ShaderModuleCreateInfo shaderModuleInfo{
+        .codeSize = spirv.size(),
+        .pCode = reinterpret_cast<const uint32_t*>(spirv.data()),
+    };
     const bool useDescriptorHeaps = descriptorManager.descriptorBindingMode == DescriptorBindingMode::DescriptorHeaps;
 
     // Mesh-only: no task stage, no vertex input / input assembly.
+    // maintenance5: inline SPIR-V, no transient VkShaderModule.
     const vk::PipelineShaderStageCreateInfo meshShaderStageInfo{
-        .pNext = nullptr,
+        .pNext = &shaderModuleInfo,
         .stage = vk::ShaderStageFlagBits::eMeshEXT,
-        .module = shaderModule,
+        .module = {},
         .pName = "meshMain",
     };
     const vk::PipelineShaderStageCreateInfo fragShaderStageInfo{
-        .pNext = nullptr,
+        .pNext = &shaderModuleInfo,
         .stage = vk::ShaderStageFlagBits::eFragment,
-        .module = shaderModule,
+        .module = {},
         .pName = "fragMain",
     };
     const std::array shaderStages = {meshShaderStageInfo, fragShaderStageInfo};
@@ -148,7 +153,6 @@ void Pipeline::createMeshPipeline()
         pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
     }
 
-    setDebugName(device, shaderModule, "ShaderModule_Mesh");
     setDebugName(device, pipelineLayout, "PipelineLayout_Mesh");
 
     const vk::Format depthFormat = resourceManager.findDepthFormat();
@@ -157,9 +161,9 @@ void Pipeline::createMeshPipeline()
         .pColorAttachmentFormats = &swapChainImageFormat,
         .depthAttachmentFormat = depthFormat,
     };
-    vk::PipelineCreateFlags2CreateInfoKHR pipelineFlags2CreateInfo{
+    vk::PipelineCreateFlags2CreateInfo pipelineFlags2CreateInfo{
         .pNext = &pipelineRenderingCreateInfo,
-        .flags = vk::PipelineCreateFlagBits2KHR::eDescriptorHeapEXT,
+        .flags = vk::PipelineCreateFlagBits2::eDescriptorHeapEXT,
     };
     const void* pipelinePNext = useDescriptorHeaps ? static_cast<const void*>(&pipelineFlags2CreateInfo)
                                                    : static_cast<const void*>(&pipelineRenderingCreateInfo);

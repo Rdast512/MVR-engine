@@ -210,16 +210,6 @@ void ResourceManager::createCommandBuffers()
     log_info(std::format("Transfer command buffers allocated: {}", transferCommandBuffer.size()), "ResourceManager");
 }
 
-[[nodiscard]] vk::raii::ShaderModule ResourceManager::createShaderModule(const std::vector<char>& code) const
-{
-    ZoneScopedN("ResourceManager::createShaderModule");
-    log_info("createShaderModule() started", "ResourceManager");
-    vk::ShaderModuleCreateInfo createInfo{.codeSize = code.size() * sizeof(char),
-                                          .pCode = reinterpret_cast<const uint32_t*>(code.data())};
-    vk::raii::ShaderModule shaderModule{device, createInfo};
-    return shaderModule;
-}
-
 void ResourceManager::copyBuffer(vk::raii::Buffer& srcBuffer, vk::raii::Buffer& dstBuffer, vk::DeviceSize size)
 {
     ZoneScopedN("ResourceManager::copyBuffer");
