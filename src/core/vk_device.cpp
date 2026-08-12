@@ -454,6 +454,43 @@ void Device::createLogicalDevice()
     capabilities.multiDraw = propertiesChain.get<vk::PhysicalDeviceMultiDrawPropertiesEXT>();
     capabilities.memoryDecompression = propertiesChain.get<vk::PhysicalDeviceMemoryDecompressionPropertiesEXT>();
     capabilities.hostImageCopy = propertiesChain.get<vk::PhysicalDeviceHostImageCopyPropertiesEXT>();
+    {
+        auto& hic = capabilities.hostImageCopy;
+        capabilities.hostImageCopySrcLayouts.resize(hic.copySrcLayoutCount);
+        capabilities.hostImageCopyDstLayouts.resize(hic.copyDstLayoutCount);
+
+        vk::PhysicalDeviceHostImageCopyProperties layoutProps{
+            .copySrcLayoutCount = hic.copySrcLayoutCount,
+            .pCopySrcLayouts = capabilities.hostImageCopySrcLayouts.data(),
+            .copyDstLayoutCount = hic.copyDstLayoutCount,
+            .pCopyDstLayouts = capabilities.hostImageCopyDstLayouts.data(),
+        };
+        vk::PhysicalDeviceProperties2 props2{.pNext = &layoutProps};
+        physicalDevice.getProperties2(&props2);
+
+        hic.copySrcLayoutCount = layoutProps.copySrcLayoutCount;
+        hic.copyDstLayoutCount = layoutProps.copyDstLayoutCount;
+        hic.pCopySrcLayouts = capabilities.hostImageCopySrcLayouts.data();
+        hic.pCopyDstLayouts = capabilities.hostImageCopyDstLayouts.data();
+
+        const bool hasGeneralSrc =
+            std::ranges::find(capabilities.hostImageCopySrcLayouts, vk::ImageLayout::eGeneral) !=
+            capabilities.hostImageCopySrcLayouts.end();
+        const bool hasGeneralDst =
+            std::ranges::find(capabilities.hostImageCopyDstLayouts, vk::ImageLayout::eGeneral) !=
+            capabilities.hostImageCopyDstLayouts.end();
+
+        std::string uuidHex;
+        uuidHex.reserve(VK_UUID_SIZE * 2);
+        for (const uint8_t byte : hic.optimalTilingLayoutUUID) {
+            uuidHex += std::format("{:02x}", byte);
+        }
+        log_info(std::format("hostImageCopy: srcLayouts={} dstLayouts={} generalSrc={} generalDst={} "
+                             "identicalMemTypes={} uuid={}",
+                             hic.copySrcLayoutCount, hic.copyDstLayoutCount, hasGeneralSrc, hasGeneralDst,
+                             static_cast<bool>(hic.identicalMemoryTypeRequirements), uuidHex),
+                 "Device");
+    }
     capabilities.texelBufferAlignment = propertiesChain.get<vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT>();
     capabilities.descriptorBuffer = propertiesChain.get<vk::PhysicalDeviceDescriptorBufferPropertiesEXT>();
     capabilities.fragmentShadingRate = propertiesChain.get<vk::PhysicalDeviceFragmentShadingRatePropertiesKHR>();

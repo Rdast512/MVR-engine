@@ -27,10 +27,7 @@ public:
 
     void init();
 
-    [[nodiscard]] bool isAvailable() const noexcept { return available; }
-
-    // Writes the current-frame sequence buffer. False = nothing to execute.
-    [[nodiscard]] bool updateSequences(uint32_t frameSlot, const Camera& camera);
+    void updateSequences(uint32_t frameSlot, const Camera& camera);
 
     void recordPreprocess(vk::raii::CommandBuffer& cmd) const;
     void recordExecute(vk::raii::CommandBuffer& cmd) const;
@@ -52,7 +49,6 @@ private:
 
     vk::raii::IndirectCommandsLayoutEXT layout = nullptr;
     vk::ShaderStageFlags shaderStages{};
-    bool available = false;
     bool explicitPreprocess = false;
 
     uint32_t sequenceCount = 0;

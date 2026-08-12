@@ -48,26 +48,21 @@ void DeviceGeneratedCommands::init()
     ZoneScopedN("DeviceGeneratedCommands::init");
 
     if (descriptorManager.descriptorBindingMode != DescriptorBindingMode::DescriptorHeaps) {
-        log_info("DGC skipped: descriptor heaps required for PUSH_DATA tokens", "DGC");
-        return;
+        throw std::runtime_error("DGC requires descriptor heaps for PUSH_DATA tokens");
     }
 
     const auto& props = device.capabilities.deviceGeneratedCommands;
     if (props.maxIndirectSequenceCount == 0 || props.maxIndirectCommandsTokenCount < 2) {
-        log_info("DGC skipped: sequence/token limits too small", "DGC");
-        return;
+        throw std::runtime_error("DGC sequence/token limits too small");
     }
     if ((props.supportedIndirectCommandsShaderStages & kDgcMeshStages) != kDgcMeshStages) {
-        log_info("DGC skipped: mesh+fragment stages not in supportedIndirectCommandsShaderStages", "DGC");
-        return;
+        throw std::runtime_error("DGC mesh+fragment stages not in supportedIndirectCommandsShaderStages");
     }
     if (props.maxIndirectCommandsTokenOffset < offsetof(MeshDgcSequence, draw)) {
-        log_info("DGC skipped: maxIndirectCommandsTokenOffset below mesh draw token", "DGC");
-        return;
+        throw std::runtime_error("DGC maxIndirectCommandsTokenOffset below mesh draw token");
     }
     if (props.maxIndirectCommandsIndirectStride < sizeof(MeshDgcSequence)) {
-        log_info("DGC skipped: maxIndirectCommandsIndirectStride below sequence stride", "DGC");
-        return;
+        throw std::runtime_error("DGC maxIndirectCommandsIndirectStride below sequence stride");
     }
 
     shaderStages = kDgcMeshStages;
@@ -79,7 +74,6 @@ void DeviceGeneratedCommands::init()
         ensureFrameCapacity(frame, initialCapacity);
     }
 
-    available = true;
     log_info(std::format("DGC ready: stride={} explicitPreprocess={} initialSequences={}", sizeof(MeshDgcSequence),
                          explicitPreprocess, initialCapacity),
              "DGC");
@@ -247,23 +241,20 @@ void DeviceGeneratedCommands::destroyFrameResources(uint32_t frameSlot)
     preprocessSizes[frameSlot] = 0;
 }
 
-bool DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& camera)
+void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& camera)
 {
     ZoneScopedN("DeviceGeneratedCommands::updateSequences");
     sequenceCount = 0;
     recordedFrame = frameSlot;
-    if (!available) {
-        return false;
-    }
     if (resourceManager.vertexBufferAddress == 0 || resourceManager.meshletBufferAddress == 0 ||
         resourceManager.meshletVertexBufferAddress == 0 || resourceManager.meshletTriangleBufferAddress == 0) {
-        return false;
+        return;
     }
 
     const auto& storage = resourceManager.objectStorage;
     const uint32_t entityCount = storage.size();
     if (entityCount == 0) {
-        return false;
+        return;
     }
 
     ensureFrameCapacity(frameSlot, entityCount);
@@ -303,7 +294,6 @@ bool DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
     }
 
     TracyPlot("Vulkan/DgcSequenceCount", static_cast<double>(sequenceCount));
-    return sequenceCount > 0;
 }
 
 void DeviceGeneratedCommands::fillGeneratedCommandsInfo(vk::GeneratedCommandsInfoEXT& info,
@@ -327,7 +317,7 @@ void DeviceGeneratedCommands::fillGeneratedCommandsInfo(vk::GeneratedCommandsInf
 void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd) const
 {
     ZoneScopedN("DeviceGeneratedCommands::recordPreprocess");
-    if (!available || sequenceCount == 0 || !explicitPreprocess) {
+    if (sequenceCount == 0 || !explicitPreprocess) {
         return;
     }
 
@@ -356,7 +346,7 @@ void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd) con
 void DeviceGeneratedCommands::recordExecute(vk::raii::CommandBuffer& cmd) const
 {
     ZoneScopedN("DeviceGeneratedCommands::recordExecute");
-    if (!available || sequenceCount == 0) {
+    if (sequenceCount == 0) {
         return;
     }
 

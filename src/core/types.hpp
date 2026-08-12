@@ -155,6 +155,8 @@ struct HardwareCapabilities
     vk::PhysicalDeviceMultiDrawPropertiesEXT multiDraw;
     vk::PhysicalDeviceMemoryDecompressionPropertiesEXT memoryDecompression;
     vk::PhysicalDeviceHostImageCopyPropertiesEXT hostImageCopy;
+    std::vector<vk::ImageLayout> hostImageCopySrcLayouts;
+    std::vector<vk::ImageLayout> hostImageCopyDstLayouts;
     vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT texelBufferAlignment;
     vk::PhysicalDeviceDescriptorBufferPropertiesEXT descriptorBuffer;
 

@@ -66,12 +66,6 @@ TextureManager::~TextureManager()
         }
     }
     loadedTextures.clear();
-
-    if (stagingBufferMemory != nullptr) {
-        VkBuffer raw = stagingBuffer.release();
-        vmaDestroyBuffer(allocator.allocator, raw, stagingBufferMemory);
-        stagingBufferMemory = nullptr;
-    }
     log_info("Resources destroyed", "TextureManager");
 }
 
@@ -101,6 +95,31 @@ TextureFormat detectFormat(std::string_view path)
     if (ext == ".ktx" || ext == ".ktx2") return TextureFormat::Ktx;
     if (ext == ".png"  || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp") return TextureFormat::Png;
     return TextureFormat::Unknown;
+}
+
+bool containsImageLayout(const std::vector<vk::ImageLayout>& layouts, vk::ImageLayout layout)
+{
+    return std::ranges::find(layouts, layout) != layouts.end();
+}
+
+vk::ImageLayout stbHostCopyDstLayout(const vk::raii::PhysicalDevice& physicalDevice,
+                                     const HardwareCapabilities& capabilities)
+{
+    const auto formatChain =
+        physicalDevice.getFormatProperties2<vk::FormatProperties2, vk::FormatProperties3>(vk::Format::eR8G8B8A8Srgb);
+    if (!(formatChain.get<vk::FormatProperties3>().optimalTilingFeatures &
+          vk::FormatFeatureFlagBits2::eHostImageTransfer)) {
+        throw std::runtime_error("R8G8B8A8_SRGB lacks HOST_IMAGE_TRANSFER");
+    }
+
+    const auto& dstLayouts = capabilities.hostImageCopyDstLayouts;
+    if (containsImageLayout(dstLayouts, vk::ImageLayout::eTransferDstOptimal)) {
+        return vk::ImageLayout::eTransferDstOptimal;
+    }
+    if (containsImageLayout(dstLayouts, vk::ImageLayout::eGeneral)) {
+        return vk::ImageLayout::eGeneral;
+    }
+    throw std::runtime_error("host image copy dest layouts missing GENERAL");
 }
 
 } // anonymous namespace
@@ -195,8 +214,11 @@ uint32_t TextureManager::loadTexture(std::string texturePath)
         return loadedTextures[path].descriptorHeapIndex;
     }
 
-    // ── PNG / STB fallback ───────────────────────────────
+    // ── PNG / STB ────────────────────────────────────────
     {
+        const vk::ImageLayout hostDstLayout =
+            stbHostCopyDstLayout(physicalDevice, deviceWrapper.capabilities);
+
         int texWidth  = 0;
         int texHeight = 0;
         int texChannels = 0;
@@ -207,38 +229,17 @@ uint32_t TextureManager::loadTexture(std::string texturePath)
             throw std::runtime_error("Failed to load texture via stb: " + path);
         }
 
-        if (stagingBufferMemory != nullptr) {
-            VkBuffer rawStaging = stagingBuffer.release();
-            vmaDestroyBuffer(allocator.allocator, rawStaging, stagingBufferMemory);
-            stagingBufferMemory = nullptr;
-        }
-
         vk::DeviceSize imageSize =
             static_cast<vk::DeviceSize>(texWidth) * static_cast<vk::DeviceSize>(texHeight) * 4;
         mipLevels = static_cast<uint32_t>(
             std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
 
-        createBuffer(imageSize,
-                     vk::BufferUsageFlagBits::eTransferSrc,
-                     vk::MemoryPropertyFlagBits::eHostVisible |
-                         vk::MemoryPropertyFlagBits::eHostCoherent,
-                     stagingBuffer, stagingBufferMemory,
-                     "TextureStagingBufferMemory");
-        setDebugName(device, stagingBuffer, "TextureStagingBuffer");
-
-        void* data = nullptr;
-        vmaMapMemory(allocator.allocator, stagingBufferMemory, &data);
-        memcpy(data, pixels, static_cast<size_t>(imageSize));
-        vmaUnmapMemory(allocator.allocator, stagingBufferMemory);
-        stbi_image_free(const_cast<stbi_uc*>(pixels));
-
         TextureAsset asset{};
         createImage(static_cast<uint32_t>(texWidth),
                     static_cast<uint32_t>(texHeight), mipLevels,
                     vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
-                    vk::ImageUsageFlagBits::eTransferSrc |
-                        vk::ImageUsageFlagBits::eTransferDst |
-                        vk::ImageUsageFlagBits::eSampled,
+                    vk::ImageUsageFlagBits::eHostTransfer | vk::ImageUsageFlagBits::eTransferSrc |
+                        vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
                     vk::MemoryPropertyFlagBits::eDeviceLocal,
                     asset.textureImage, asset.textureImageMemory,
                     "TextureImageMemory");
@@ -253,16 +254,49 @@ uint32_t TextureManager::loadTexture(std::string texturePath)
                 std::format("Texture '{}' {}x{} mips={}", path, texWidth, texHeight, mipLevels);
             TracyMessage(texMsg.c_str(), texMsg.size());
         }
+        TracyPlot("Vulkan/HostImageCopyBytes", static_cast<double>(imageSize));
 #endif
 
-        auto cmdBuffer = beginSingleTimeCommands(graphicsQueue);
-        transitionImageLayout(&cmdBuffer, *asset.textureImage, mipLevels,
-                              vk::ImageLayout::eUndefined,
-                              vk::ImageLayout::eTransferDstOptimal);
-        copyBufferToImage(cmdBuffer, stagingBuffer, asset.textureImage,
-                          static_cast<uint32_t>(texWidth),
-                          static_cast<uint32_t>(texHeight));
-        endSingleTimeCommands(cmdBuffer, graphicsQueue);
+        {
+            ZoneScopedN("TextureManager::copyMemoryToImage");
+            const vk::HostImageLayoutTransitionInfo hostTransition{
+                .image = *asset.textureImage,
+                .oldLayout = vk::ImageLayout::eUndefined,
+                .newLayout = hostDstLayout,
+                .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, mipLevels, 0, 1},
+            };
+            device.transitionImageLayout({hostTransition});
+
+            const vk::MemoryToImageCopy region{
+                .pHostPointer = pixels,
+                .memoryRowLength = 0,
+                .memoryImageHeight = 0,
+                .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                .imageOffset = {0, 0, 0},
+                .imageExtent = {static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1},
+            };
+            const vk::CopyMemoryToImageInfo copyInfo{
+                .dstImage = *asset.textureImage,
+                .dstImageLayout = hostDstLayout,
+                .regionCount = 1,
+                .pRegions = &region,
+            };
+            device.copyMemoryToImage(copyInfo);
+        }
+        stbi_image_free(const_cast<stbi_uc*>(pixels));
+
+        if (hostDstLayout != vk::ImageLayout::eTransferDstOptimal) {
+            auto cmdBuffer = beginSingleTimeCommands(graphicsQueue);
+            transitionImageLayout(&cmdBuffer, *asset.textureImage, mipLevels, hostDstLayout,
+                                  vk::ImageLayout::eTransferDstOptimal,
+                                  {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+                                  VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                                  vk::PipelineStageFlagBits2::eHost,
+                                  vk::PipelineStageFlagBits2::eTransfer,
+                                  vk::AccessFlagBits2::eHostWrite,
+                                  vk::AccessFlagBits2::eTransferWrite);
+            endSingleTimeCommands(cmdBuffer, graphicsQueue);
+        }
 
         generateMipmaps(asset.textureImage, vk::Format::eR8G8B8A8Srgb,
                         texWidth, texHeight, mipLevels);
@@ -277,65 +311,10 @@ uint32_t TextureManager::loadTexture(std::string texturePath)
         descriptorManager.writeImageDescriptor(asset, viewInfo);
         loadedTextures[path] = std::move(asset);
 
-        log_info(std::format("STB texture loaded: {}×{}, {} mips", texWidth, texHeight, mipLevels), "TextureManager");
+        log_info(std::format("STB texture loaded: {}×{}, {} mips (hostImageCopy)", texWidth, texHeight, mipLevels),
+                 "TextureManager");
         return loadedTextures[path].descriptorHeapIndex;
     }
-}
-
-// Find a suitable memory type index on the physical device that satisfies
-// the requested property flags and type filter.
-uint32_t TextureManager::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties)
-{
-    log_info("findMemoryType() started", "TextureManager");
-    vk::PhysicalDeviceMemoryProperties memProperties = physicalDevice.getMemoryProperties2().memoryProperties;
-    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
-    {
-        if ((typeFilter & (1u << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
-        {
-            return i;
-        }
-    }
-    throw std::runtime_error("failed to find suitable memory type");
-}
-
-// Create a buffer of given size/usage and allocate memory through VMA.
-void TextureManager::createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties,
-                                  vk::raii::Buffer& buffer, VmaAllocation& bufferMemory,
-                                  std::string_view memoryDebugBaseName)
-{
-    ZoneScopedN("TextureManager::createBuffer");
-    log_info("createBuffer() started", "TextureManager");
-    // const bool needsConcurrent = (usage &
-    // vk::BufferUsageFlagBits::eTransferSrc ||
-    //                               usage &
-    //                               vk::BufferUsageFlagBits::eTransferDst) &&
-    //                              transferQueueFamilyIndex != UINT32_MAX &&
-    //                              transferQueueFamilyIndex !=
-    //                              graphicsQueueFamilyIndex;
-    // TODO currently disable concurrent sharing for buffers until testing is done
-    const bool needsConcurrent = false;
-    vk::BufferCreateInfo bufferInfo{.size = size,
-                                    .usage = usage,
-                                    .sharingMode =
-                                        needsConcurrent ? vk::SharingMode::eConcurrent : vk::SharingMode::eExclusive,
-                                    .queueFamilyIndexCount = needsConcurrent ? 2u : 0u,
-                                    .pQueueFamilyIndices = nullptr};
-    VmaAllocationCreateInfo allocInfo{};
-    if (properties & vk::MemoryPropertyFlagBits::eHostVisible)
-    {
-        allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-        // Keep host access but avoid CREATE_MAPPED to prevent double map/unmap;
-        // we map explicitly where needed.
-        allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-        allocInfo.priority = 0.25f;
-    }
-    else
-    {
-        allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-        allocInfo.priority = 0.75f;
-    }
-
-    allocator.alocateBuffer(bufferInfo, allocInfo, buffer, bufferMemory, memoryDebugBaseName);
 }
 
 // Create an image with the requested properties and allocate GPU memory
@@ -412,23 +391,6 @@ void TextureManager::endSingleTimeCommands(vk::raii::CommandBuffer& commandBuffe
     queue.waitIdle();
 }
 
-
-// Record a command to copy buffer contents into the given image (used for
-// staging uploads).
-void TextureManager::copyBufferToImage(vk::raii::CommandBuffer& commandBuffer, const vk::raii::Buffer& buffer,
-                                       const vk::raii::Image& image, uint32_t width, uint32_t height)
-{
-    ZoneScopedN("TextureManager::copyBufferToImage");
-    log_info("copyBufferToImage() started", "TextureManager");
-    vk::BufferImageCopy region{.bufferOffset = 0,
-                               .bufferRowLength = 0,
-                               .bufferImageHeight = 0,
-                               .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
-                               .imageOffset = {0, 0, 0},
-                               .imageExtent = {width, height, 1}};
-
-    commandBuffer.copyBufferToImage(buffer, image, vk::ImageLayout::eTransferDstOptimal, {region});
-}
 
 // Generate mipmaps on the GPU by successively blitting between mip levels.
 // Layout strategy (avoids BestPractices-PipelineBarrier-readToReadBarrier):

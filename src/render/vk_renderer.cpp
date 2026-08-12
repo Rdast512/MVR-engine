@@ -2,7 +2,6 @@
 #include "../Constants.h"
 #include "../util/vk_tracy.hpp"
 #include "../util/vk_utils.hpp"
-#include "push_data.hpp"
 #if ENGINE_ENABLE_IMGUI
     #include "imgui.h"
     #include "imgui_impl_vulkan.h"
@@ -180,13 +179,13 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
                                        .pColorAttachments = &colorAttachmentInfo,
                                        .pDepthAttachment = &depthAttachmentInfo};
 
-    {
-        ZoneScopedN("DrawCalls");
-#ifdef TRACY_ENABLE
-        TracyVkNamedZone(gpuCtx, gpuZoneDrawCalls, *cmd, "GPU_DrawCalls", gpuTrace);
-#endif
-        const bool useDgc = dgc.isAvailable() && dgc.updateSequences(currentFrame, camera);
+    dgc.updateSequences(currentFrame, camera);
 
+    {
+        ZoneScopedN("DgcPreprocess");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneDgcPreprocess, *cmd, "GPU_DgcPreprocess", gpuTrace);
+#endif
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.pipeline);
         cmd.setViewport(0,
                         vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChain.swapChainExtent.width),
@@ -196,59 +195,16 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
         cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
 
         // bind once: preprocess snapshots this state; it persists into the render pass
-        if (useDgc) {
-            dgc.recordPreprocess(cmd);
-        }
+        dgc.recordPreprocess(cmd);
+    }
 
-        cmd.beginRendering(renderingInfo);
-
-        if (useDgc) {
-            dgc.recordExecute(cmd);
-        } else {
-            const auto& storage = resourceManager.objectStorage;
-            const uint32_t entityCount = storage.size();
-
-            for (EntityId id = 0; id < entityCount; ++id) {
-                if ((storage.flags[id] & EntityFlag::Active) == 0) {
-                    continue;
-                }
-
-                const MeshletDraw& meshletDraw = storage.meshletDraws[id];
-                if (meshletDraw.meshletCount == 0 || resourceManager.vertexBufferAddress == 0 ||
-                    resourceManager.meshletBufferAddress == 0 || resourceManager.meshletVertexBufferAddress == 0 ||
-                    resourceManager.meshletTriangleBufferAddress == 0) {
-                    continue;
-                }
-
-                MeshPushData pushData{};
-                pushData.cameraAddress = camera.cameraBufferAddresses[currentFrame];
-                pushData.objectUbAddress = resourceManager.instanceUboAddress(currentFrame, id);
-                pushData.vertices = resourceManager.vertexBufferAddress;
-                pushData.meshlets = resourceManager.meshletBufferAddress;
-                pushData.meshletVertices = resourceManager.meshletVertexBufferAddress;
-                pushData.meshletTriangles = resourceManager.meshletTriangleBufferAddress;
-                pushData.firstMeshlet = meshletDraw.firstMeshlet;
-                pushData.meshletCount = meshletDraw.meshletCount;
-                pushData.texture = {
-                    .resourceIndex = storage.materials[id].textureIndex,
-                    .samplerIndex = 0,
-                };
-                pushData.samplerHandle = {
-                    .resourceIndex = descriptorManager.getSamplerDescriptorIndex(),
-                    .samplerIndex = 0,
-                };
-
-                const vk::PushDataInfoEXT pushDataInfo = {
-                    .sType = vk::StructureType::ePushDataInfoEXT,
-                    .pNext = nullptr,
-                    .offset = 0,
-                    .data = vk::HostAddressRangeConstEXT{.address = &pushData, .size = sizeof(MeshPushData)}};
-                cmd.pushDataEXT(pushDataInfo);
-
-                // One workgroup per meshlet (matches mesh.slang SV_GroupID usage).
-                cmd.drawMeshTasksEXT(meshletDraw.meshletCount, 1, 1);
-            }
-        }
+    cmd.beginRendering(renderingInfo);
+    {
+        ZoneScopedN("DrawCalls");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneDrawCalls, *cmd, "GPU_DrawCalls", gpuTrace);
+#endif
+        dgc.recordExecute(cmd);
     }
 
 #if ENGINE_ENABLE_IMGUI

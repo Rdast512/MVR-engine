@@ -43,8 +43,6 @@ public:
 
     std::unordered_map<std::string, TextureAsset> loadedTextures;
     vk::raii::CommandPool commandPool = nullptr;
-    vk::raii::Buffer stagingBuffer = nullptr;
-    VmaAllocation stagingBufferMemory = nullptr;
     vk::ImageViewCreateInfo textureImageViewCreateInfo;
     uint32_t mipLevels = 0;
 
@@ -52,10 +50,6 @@ private:
     // Resolve a path relative to the executable directory if it's a relative path
     [[nodiscard]] std::string resolvePath(std::string_view path);
 
-    auto findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) -> uint32_t;
-    void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties,
-                      vk::raii::Buffer &buffer, VmaAllocation &bufferMemory,
-                      std::string_view memoryDebugBaseName = "TextureBufferMemory");
     vk::ImageCreateInfo createImage(uint32_t width, uint32_t height, uint32_t mipLevelsIn, vk::Format format,
                      vk::ImageTiling tiling, vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties,
                      vk::raii::Image &image, VmaAllocation &imageMemory,
@@ -63,8 +57,6 @@ private:
 
     auto beginSingleTimeCommands(const vk::raii::Queue &queue) -> vk::raii::CommandBuffer;
     void endSingleTimeCommands(vk::raii::CommandBuffer &commandBuffer, const vk::raii::Queue &queue);
-    void copyBufferToImage(vk::raii::CommandBuffer &commandBuffer, const vk::raii::Buffer &buffer,
-                           const vk::raii::Image &image, uint32_t width, uint32_t height);
     void generateMipmaps(vk::raii::Image &image, vk::Format imageFormat, int32_t texWidth, int32_t texHeight,
                          uint32_t mipLevels);
 };
