@@ -1,21 +1,23 @@
 #include "vk_renderer.hpp"
-#include "push_data.hpp"
 #include "../Constants.h"
 #include "../util/vk_tracy.hpp"
 #include "../util/vk_utils.hpp"
+#include "push_data.hpp"
 #if ENGINE_ENABLE_IMGUI
-#include "imgui.h"
-#include "imgui_impl_vulkan.h"
+    #include "imgui.h"
+    #include "imgui_impl_vulkan.h"
 #endif
 
 #include <format>
 
 Renderer::Renderer(Device& device, SwapChain& swapChain, ResourceManager& resourceManager,
-                   DescriptorManager& descriptorManager, Pipeline& pipeline, Camera& camera, VkTracyContext* tracyContext,
-                   bool imguiEnabled) :
+                   DescriptorManager& descriptorManager, Pipeline& pipeline, Camera& camera,
+                   VkTracyContext* tracyContext, bool imguiEnabled) :
     device(device), swapChain(swapChain), resourceManager(resourceManager), descriptorManager(descriptorManager),
-    pipeline(pipeline), tracyContext(tracyContext), imguiEnabled(imguiEnabled), camera(camera)
+    pipeline(pipeline), camera(camera), dgc(device, resourceManager, descriptorManager, pipeline),
+    tracyContext(tracyContext), imguiEnabled(imguiEnabled)
 {
+    dgc.init();
 }
 
 void Renderer::setTracyContext(VkTracyContext* tracyContextIn) { tracyContext = tracyContextIn; }
@@ -147,9 +149,9 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneTransitionToRender, *cmd, "GPU_TransitionToRender", gpuTrace);
 #endif
-        transitionImageLayout(&cmd, swapChain.swapChainImages[imageIndex], 1,
-                              vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal, colorRange,
-                              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eTopOfPipe,
+        transitionImageLayout(&cmd, swapChain.swapChainImages[imageIndex], 1, vk::ImageLayout::eUndefined,
+                              vk::ImageLayout::eColorAttachmentOptimal, colorRange, VK_QUEUE_FAMILY_IGNORED,
+                              VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eTopOfPipe,
                               vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eNone,
                               vk::AccessFlagBits2::eColorAttachmentWrite);
     }
@@ -183,76 +185,78 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneDrawCalls, *cmd, "GPU_DrawCalls", gpuTrace);
 #endif
-        cmd.beginRendering(renderingInfo);
+        const bool useDgc = dgc.isAvailable() && dgc.updateSequences(currentFrame, camera);
+
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.pipeline);
-
-        cmd.setViewport(
-            0,
-            vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChain.swapChainExtent.width),
-                         static_cast<float>(swapChain.swapChainExtent.height), 0.0f, 1.0f));
+        cmd.setViewport(0,
+                        vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChain.swapChainExtent.width),
+                                     static_cast<float>(swapChain.swapChainExtent.height), 0.0f, 1.0f));
         cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChain.swapChainExtent));
+        cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
+        cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
 
-        const auto& resourceHeapInfo = descriptorManager.resourceHeapInfo;
-        const auto& samplerHeapInfo = descriptorManager.samplerHeapInfo;
-        cmd.bindResourceHeapEXT(resourceHeapInfo);
-        cmd.bindSamplerHeapEXT(samplerHeapInfo);
+        // bind once: preprocess snapshots this state; it persists into the render pass
+        if (useDgc) {
+            dgc.recordPreprocess(cmd);
+        }
 
-        const auto& storage = resourceManager.objectStorage;
-        const uint32_t entityCount = storage.size();
+        cmd.beginRendering(renderingInfo);
 
-        for (EntityId id = 0; id < entityCount; ++id)
-        {
-            if ((storage.flags[id] & EntityFlag::Active) == 0)
-            {
-                continue;
+        if (useDgc) {
+            dgc.recordExecute(cmd);
+        } else {
+            const auto& storage = resourceManager.objectStorage;
+            const uint32_t entityCount = storage.size();
+
+            for (EntityId id = 0; id < entityCount; ++id) {
+                if ((storage.flags[id] & EntityFlag::Active) == 0) {
+                    continue;
+                }
+
+                const MeshletDraw& meshletDraw = storage.meshletDraws[id];
+                if (meshletDraw.meshletCount == 0 || resourceManager.vertexBufferAddress == 0 ||
+                    resourceManager.meshletBufferAddress == 0 || resourceManager.meshletVertexBufferAddress == 0 ||
+                    resourceManager.meshletTriangleBufferAddress == 0) {
+                    continue;
+                }
+
+                MeshPushData pushData{};
+                pushData.cameraAddress = camera.cameraBufferAddresses[currentFrame];
+                pushData.objectUbAddress = resourceManager.instanceUboAddress(currentFrame, id);
+                pushData.vertices = resourceManager.vertexBufferAddress;
+                pushData.meshlets = resourceManager.meshletBufferAddress;
+                pushData.meshletVertices = resourceManager.meshletVertexBufferAddress;
+                pushData.meshletTriangles = resourceManager.meshletTriangleBufferAddress;
+                pushData.firstMeshlet = meshletDraw.firstMeshlet;
+                pushData.meshletCount = meshletDraw.meshletCount;
+                pushData.texture = {
+                    .resourceIndex = storage.materials[id].textureIndex,
+                    .samplerIndex = 0,
+                };
+                pushData.samplerHandle = {
+                    .resourceIndex = descriptorManager.getSamplerDescriptorIndex(),
+                    .samplerIndex = 0,
+                };
+
+                const vk::PushDataInfoEXT pushDataInfo = {
+                    .sType = vk::StructureType::ePushDataInfoEXT,
+                    .pNext = nullptr,
+                    .offset = 0,
+                    .data = vk::HostAddressRangeConstEXT{.address = &pushData, .size = sizeof(MeshPushData)}};
+                cmd.pushDataEXT(pushDataInfo);
+
+                // One workgroup per meshlet (matches mesh.slang SV_GroupID usage).
+                cmd.drawMeshTasksEXT(meshletDraw.meshletCount, 1, 1);
             }
-
-            const MeshletDraw& meshletDraw = storage.meshletDraws[id];
-            if (meshletDraw.meshletCount == 0
-                || resourceManager.vertexBufferAddress == 0
-                || resourceManager.meshletBufferAddress == 0
-                || resourceManager.meshletVertexBufferAddress == 0
-                || resourceManager.meshletTriangleBufferAddress == 0)
-            {
-                continue;
-            }
-
-            MeshPushData pushData{};
-            pushData.cameraAddress = camera.cameraBufferAddresses[currentFrame];
-            pushData.objectUbAddress = resourceManager.instanceUboAddress(currentFrame, id);
-            pushData.vertices = resourceManager.vertexBufferAddress;
-            pushData.meshlets = resourceManager.meshletBufferAddress;
-            pushData.meshletVertices = resourceManager.meshletVertexBufferAddress;
-            pushData.meshletTriangles = resourceManager.meshletTriangleBufferAddress;
-            pushData.firstMeshlet = meshletDraw.firstMeshlet;
-            pushData.meshletCount = meshletDraw.meshletCount;
-            pushData.texture = {
-                .resourceIndex = storage.materials[id].textureIndex,
-                .samplerIndex = 0,
-            };
-            pushData.samplerHandle = {
-                .resourceIndex = descriptorManager.getSamplerDescriptorIndex(),
-                .samplerIndex = 0,
-            };
-
-            const vk::PushDataInfoEXT pushDataInfo = {
-                .sType = vk::StructureType::ePushDataInfoEXT,
-                .pNext = nullptr,
-                .offset = 0,
-                .data = vk::HostAddressRangeConstEXT{.address = &pushData, .size = sizeof(MeshPushData)}};
-            cmd.pushDataEXT(pushDataInfo);
-
-            // One workgroup per meshlet (matches mesh.slang SV_GroupID usage).
-            cmd.drawMeshTasksEXT(meshletDraw.meshletCount, 1, 1);
         }
     }
 
 #if ENGINE_ENABLE_IMGUI
     if (imguiEnabled && imguiVisible) {
         ZoneScopedN("RenderImGui");
-#ifdef TRACY_ENABLE
+    #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneImGui, *cmd, "GPU_ImGui", gpuTrace);
-#endif
+    #endif
         if (ImGui::GetDrawData() != nullptr) {
             ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), *cmd);
         }
@@ -265,11 +269,11 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneTransitionToPresent, *cmd, "GPU_TransitionToPresent", gpuTrace);
 #endif
-        transitionImageLayout(
-            &cmd, swapChain.swapChainImages[imageIndex], 1,
-            vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::ePresentSrcKHR, colorRange,
-            VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-            vk::PipelineStageFlagBits2::eBottomOfPipe, vk::AccessFlagBits2::eColorAttachmentWrite, {});
+        transitionImageLayout(&cmd, swapChain.swapChainImages[imageIndex], 1, vk::ImageLayout::eColorAttachmentOptimal,
+                              vk::ImageLayout::ePresentSrcKHR, colorRange, VK_QUEUE_FAMILY_IGNORED,
+                              VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                              vk::PipelineStageFlagBits2::eBottomOfPipe, vk::AccessFlagBits2::eColorAttachmentWrite,
+                              {});
     }
 
     if (tracyContext) {

@@ -1,4 +1,5 @@
 set(RENDER_SOURCES
+    vk_dgc.cpp
     vk_materials.cpp
     vk_pipeline.cpp
     vk_renderer.cpp

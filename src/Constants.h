@@ -23,7 +23,7 @@ const uint32_t test = 42;
 // Use 0 while running with validation layers so ImGui does not create GPU objects or noise.
 // Override from CMake: target_compile_definitions(... ENGINE_ENABLE_IMGUI=1)
 #ifndef ENGINE_ENABLE_IMGUI
-#define ENGINE_ENABLE_IMGUI 1
+#define ENGINE_ENABLE_IMGUI 0
 #endif
 
 inline const std::filesystem::path MODEL_PATH = std::filesystem::path(ENGINE_MODELS_DIR) / "room.obj";
