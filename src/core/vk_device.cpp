@@ -411,7 +411,7 @@ void Device::createLogicalDevice()
         vk::PhysicalDeviceBlendOperationAdvancedPropertiesEXT, vk::PhysicalDeviceDescriptorHeapPropertiesEXT,
         vk::PhysicalDeviceDescriptorIndexingPropertiesEXT, // Maybe not ext
         vk::PhysicalDeviceMeshShaderPropertiesEXT, vk::PhysicalDeviceDeviceGeneratedCommandsPropertiesEXT,
-        vk::PhysicalDeviceMultiDrawPropertiesEXT, vk::PhysicalDeviceMemoryDecompressionPropertiesEXT,
+        vk::PhysicalDeviceMemoryDecompressionPropertiesEXT,
         vk::PhysicalDeviceHostImageCopyPropertiesEXT, // Maybe not ext
         vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT, // Maybe not ext + after that comes only khr when baseline
                                                              // 2060
@@ -451,7 +451,6 @@ void Device::createLogicalDevice()
                              static_cast<bool>(dgc.deviceGeneratedCommandsMultiDrawIndirectCount)),
                  "Device");
     }
-    capabilities.multiDraw = propertiesChain.get<vk::PhysicalDeviceMultiDrawPropertiesEXT>();
     capabilities.memoryDecompression = propertiesChain.get<vk::PhysicalDeviceMemoryDecompressionPropertiesEXT>();
     capabilities.hostImageCopy = propertiesChain.get<vk::PhysicalDeviceHostImageCopyPropertiesEXT>();
     {
@@ -543,9 +542,9 @@ void Device::createLogicalDevice()
         vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, vk::PhysicalDeviceDescriptorHeapFeaturesEXT,
         vk::PhysicalDeviceDescriptorBufferFeaturesEXT, vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT,
         vk::PhysicalDeviceMeshShaderFeaturesEXT, vk::PhysicalDeviceDeviceGeneratedCommandsFeaturesEXT,
-        vk::PhysicalDeviceMultiDrawFeaturesEXT, vk::PhysicalDeviceMemoryPriorityFeaturesEXT,
+        vk::PhysicalDeviceMemoryPriorityFeaturesEXT,
         vk::PhysicalDeviceMemoryDecompressionFeaturesEXT, vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT,
-        vk::PhysicalDeviceShaderObjectFeaturesEXT, vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT,
+        vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT,
         vk::PhysicalDevicePresentTimingFeaturesEXT, vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT,
         vk::PhysicalDeviceTexelBufferAlignmentFeaturesEXT, vk::PhysicalDeviceOpacityMicromapFeaturesEXT,
         // KHR
@@ -568,11 +567,10 @@ void Device::createLogicalDevice()
                                  .shaderInt64 = true,
                              }},
                         // vk::PhysicalDeviceVulkan11Features
-                        {.shaderDrawParameters = true},
+                        {},
                         // vk::PhysicalDeviceVulkan12Features
                         // Designators must follow the struct field order (ISO C++).
                         {
-                            .drawIndirectCount = true,
                             // mesh.slang: uint8_t* meshletTriangles via PhysicalStorageBuffer
                             .storageBuffer8BitAccess = true,
                             .shaderInt8 = true,
@@ -611,16 +609,12 @@ void Device::createLogicalDevice()
                         {.taskShader = true, .meshShader = true, .meshShaderQueries = true},
                         // vk::PhysicalDeviceDeviceGeneratedCommandsFeaturesEXT
                         {.deviceGeneratedCommands = true},
-                        // vk::PhysicalDeviceMultiDrawFeaturesEXT
-                        {.multiDraw = true},
                         // vk::PhysicalDeviceMemoryPriorityFeaturesEXT
                         {.memoryPriority = true},
                         // vk::PhysicalDeviceMemoryDecompressionFeaturesEXT
                         {.memoryDecompression = true},
                         // vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT
                         {.pageableDeviceLocalMemory = true},
-                        // vk::PhysicalDeviceShaderObjectFeaturesEXT
-                        {.shaderObject = true},
                         // vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT (disabled: extension not enabled)
                         {},
                         // vk::PhysicalDevicePresentTimingFeaturesEXT (disabled: extension not enabled)

@@ -152,7 +152,6 @@ struct HardwareCapabilities
     vk::PhysicalDeviceDescriptorIndexingPropertiesEXT descriptorIndexing;
     vk::PhysicalDeviceMeshShaderPropertiesEXT meshShader;
     vk::PhysicalDeviceDeviceGeneratedCommandsPropertiesEXT deviceGeneratedCommands;
-    vk::PhysicalDeviceMultiDrawPropertiesEXT multiDraw;
     vk::PhysicalDeviceMemoryDecompressionPropertiesEXT memoryDecompression;
     vk::PhysicalDeviceHostImageCopyPropertiesEXT hostImageCopy;
     std::vector<vk::ImageLayout> hostImageCopySrcLayouts;
