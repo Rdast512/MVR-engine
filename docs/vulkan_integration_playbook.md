@@ -87,7 +87,7 @@ How to use:
 - Use `VK_EXT_mesh_shader` for GPU-generated geometry when task/mesh support is available.
 - Add `VK_EXT_multi_draw` before jumping to fully GPU-generated command streams; it is the lowest-risk way to reduce CPU submission overhead.
 - Add `VK_EXT_device_generated_commands` when the draw/dispatch emission itself should move onto the GPU.
-- Use `VK_KHR_copy_memory_indirect` for streaming and upload work that benefits from GPU-driven copy scheduling.
+- `VK_KHR_copy_memory_indirect` is enabled but not consumed; uploads still use core `copyBuffer` / `copyBufferToImage`.
 - Keep `VK_EXT_shader_object` as an optional future pipeline path; the stable default remains full pipeline objects.
 - Keep descriptor resource binding aligned with the chosen descriptor mode, and do not let the GPU-driven path bypass the fallback CPU path.
 

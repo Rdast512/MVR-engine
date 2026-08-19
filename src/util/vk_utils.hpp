@@ -27,7 +27,7 @@ void transitionImageLayout(
 // Creates a VkBuffer with VMA allocation.  Pure utility — does not depend on any manager class.
 void createBuffer(
     vk::DeviceSize size,
-    vk::BufferUsageFlags usage,
+    vk::BufferUsageFlags2 usage,
     vk::MemoryPropertyFlags properties,
     vk::raii::Buffer& buffer,
     VmaAllocation& bufferMemory,

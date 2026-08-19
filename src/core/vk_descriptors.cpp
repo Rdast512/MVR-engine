@@ -188,8 +188,8 @@ void DescriptorManager::createHeapBuffers(vk::DeviceSize resourceHeapSize, vk::D
     ZoneScopedN("DescriptorManager::createHeapBuffers");
     createBuffer(
         resourceHeapSize,
-        vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress |
-            vk::BufferUsageFlagBits::eDescriptorHeapEXT,
+        vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress |
+            vk::BufferUsageFlagBits2::eDescriptorHeapEXT,
         vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, resourceHeapBuffer,
         resourceHeapMemory, allocator, device,
         queueFamilyIndices, "DescriptorHeapResourceMemory",
@@ -220,8 +220,8 @@ void DescriptorManager::createHeapBuffers(vk::DeviceSize resourceHeapSize, vk::D
 
     createBuffer(
         samplerHeapSize,
-        vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress |
-            vk::BufferUsageFlagBits::eDescriptorHeapEXT,
+        vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress |
+            vk::BufferUsageFlagBits2::eDescriptorHeapEXT,
         vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, samplerHeapBuffer,
         samplerHeapMemory, allocator, device,
         queueFamilyIndices, "DescriptorHeapSamplerMemory",

@@ -157,7 +157,7 @@ void DeviceGeneratedCommands::allocateSequenceBuffer(uint32_t frameSlot, uint32_
     const vk::DeviceSize bufferSize = static_cast<vk::DeviceSize>(capacity) * sizeof(MeshDgcSequence);
     vk::raii::Buffer buffer({});
     VmaAllocation memory = nullptr;
-    createBuffer(bufferSize, vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+    createBuffer(bufferSize, vk::BufferUsageFlagBits2::eIndirectBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                  vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, buffer, memory,
                  resourceManager.allocator.allocator, device.vkdevice, device.queueFamilyIndices,
                  std::format("DgcSequenceMemory_{}", frameSlot));

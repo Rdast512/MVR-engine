@@ -3,11 +3,12 @@
 #include <string_view>
 #include <vulkan/vulkan_raii.hpp>
 #include "../core/types.hpp"
-    #include "object_storage.hpp"
+#include "Constants.h"
+#include "fmt/chrono.h"
+#include "object_storage.hpp"
+#include "scene/vk_camera.hpp"
 #include "vk_allocator.hpp"
 #include "vk_device.hpp"
-#include "scene/vk_camera.hpp"
-#include "Constants.h"
 
 // Manages GPU resources (buffers, images, command pools) using Device + Assets data.
 // Instance ObjectUB data lives in a single host-visible buffer per frame slot (SoA-friendly).
@@ -31,6 +32,7 @@ public:
 	void createDepthResources();
 	void createVertexBuffer();
     void createMeshBuffers();
+    void createIndirectBuffer();
     // Grow/recreate the per-frame ObjectUB arrays so they fit at least entityCount entries.
     void ensureInstanceCapacity(uint32_t entityCount);
     void createUniformBuffers();
@@ -100,6 +102,8 @@ static void endCommandBuffer(vk::raii::CommandBuffer &commandBuffer, const vk::r
 	VmaAllocation vertexBufferMemory = nullptr;
 	vk::raii::Buffer stagingBuffer = nullptr;
 	VmaAllocation stagingBufferMemory = nullptr;
+    vk::raii::Buffer indirectBuffer = nullptr;
+    VmaAllocation indirectBufferMemory = nullptr;
 	vk::raii::Image colorImage = nullptr;
 	VmaAllocation colorImageMemory = nullptr;
 	vk::raii::ImageView colorImageView = nullptr;
@@ -120,7 +124,7 @@ static void endCommandBuffer(vk::raii::CommandBuffer &commandBuffer, const vk::r
     vk::DeviceAddress meshletBufferAddress = 0;
     vk::DeviceAddress meshletVertexBufferAddress = 0;
     vk::DeviceAddress meshletTriangleBufferAddress = 0;
-
+    vk::DeviceAddress indirectBufferAddress = 0;
 
     // One ObjectUB[capacity] buffer per frame-in-flight (host-visible).
     std::array<vk::raii::Buffer, MAX_FRAMES_IN_FLIGHT> instanceUboBuffers = {nullptr, nullptr};

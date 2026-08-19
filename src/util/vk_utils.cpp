@@ -70,7 +70,7 @@ void transitionImageLayout(
     commandBuffer->pipelineBarrier2(dependencyInfo);
 }
 
-void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties,
+void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags2 usage, vk::MemoryPropertyFlags properties,
                   vk::raii::Buffer& buffer, VmaAllocation& bufferMemory, VmaAllocator allocator,
                   const vk::raii::Device& device, const std::vector<uint32_t>& queueFamilyIndices,
                   std::string_view memoryDebugBaseName, VmaAllocationCreateFlags extraAllocationFlags)
@@ -78,8 +78,10 @@ void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPro
     ZoneScopedN("createBuffer");
     log_info("createBuffer() started", "Utils");
 
-    vk::BufferCreateInfo bufferInfo{.size = size,
-                                    .usage = usage,
+    // maintenance5: usage lives in BufferUsageFlags2CreateInfo; VkBufferCreateInfo::usage is ignored.
+    const vk::BufferUsageFlags2CreateInfo usage2{.usage = usage};
+    vk::BufferCreateInfo bufferInfo{.pNext = &usage2,
+                                    .size = size,
                                     .sharingMode = vk::SharingMode::eConcurrent,
                                     .queueFamilyIndexCount = static_cast<uint32_t>(queueFamilyIndices.size()),
                                     .pQueueFamilyIndices = queueFamilyIndices.data()};

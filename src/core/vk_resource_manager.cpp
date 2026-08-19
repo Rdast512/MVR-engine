@@ -96,6 +96,13 @@ ResourceManager::~ResourceManager()
             meshletTriangleBufferAddress = 0;
             trackedMeshletTriangleBytes = 0;
         }
+        if (indirectBufferMemory) {
+            VkBuffer raw = indirectBuffer.release();
+            tracyResourceFree(raw, "GPU/IndirectCopyCommand");
+            vmaDestroyBuffer(allocator.allocator, raw, indirectBufferMemory);
+            indirectBufferMemory = nullptr;
+            indirectBufferAddress = 0;
+        }
         vertexBufferAddress = 0;
         if (colorImageMemory) {
             VkImage raw = colorImage.release();
@@ -119,6 +126,8 @@ void ResourceManager::init()
     createCommandPool();
     createCommandBuffers();
     createUniformBuffers();
+    // Host-visible CopyMemoryIndirectCommandKHR buffer; copyBuffer needs it first. NOTE: disabled since not sure if its even better if no streaming is implomented
+    // createIndirectBuffer();
     createVertexBuffer();
     // Meshlet tables + BDAs for mesh shaders (static geometry; single addresses).
     createMeshBuffers();
@@ -213,6 +222,61 @@ void ResourceManager::createCommandBuffers()
 void ResourceManager::copyBuffer(vk::raii::Buffer& srcBuffer, vk::raii::Buffer& dstBuffer, vk::DeviceSize size)
 {
     ZoneScopedN("ResourceManager::copyBuffer");
+    // NOTE: potentionnaly not needed or even worse on perf since if using a transfer queue these copies are already fast and cpu overhead is low
+    // const auto srcAddress =
+    //     device.getBufferAddress({
+    //         .buffer = *srcBuffer
+    //     });
+    //
+    // const auto dstAddress =
+    //     device.getBufferAddress({
+    //         .buffer = *dstBuffer
+    //     });
+    //
+    // // This structure must live in GPU-visible memory.
+    // const vk::CopyMemoryIndirectCommandKHR indirectCommand{
+    //     .srcAddress = srcAddress,
+    //     .dstAddress = dstAddress,
+    //     .size       = size
+    // };
+    //
+    // void* dataStaging = nullptr;
+    // vmaMapMemory(allocator.allocator, indirectBufferMemory, &dataStaging);
+    // memcpy(dataStaging, &indirectCommand, sizeof(vk::CopyMemoryIndirectCommandKHR));
+    // vmaUnmapMemory(allocator.allocator, indirectBufferMemory);
+    //
+    // // Submit on the family that allocated the command buffer (VUID-vkQueueSubmit2-commandBuffer-03878).
+    // vk::raii::CommandBuffer const& cmd = commandBuffers[0];
+    // const vk::raii::Queue& queue = graphicsQueue;
+    //
+    // cmd.begin({
+    //     .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit
+    // });
+    //
+    // cmd.copyMemoryIndirectKHR({
+    //     .srcCopyFlags = {},
+    //     .dstCopyFlags = {},
+    //     .copyCount = 1,
+    //     .copyAddressRange = {
+    //         .address = indirectBufferAddress,
+    //         .size = sizeof(vk::CopyMemoryIndirectCommandKHR),
+    //         .stride = sizeof(vk::CopyMemoryIndirectCommandKHR)
+    //     }
+    // });
+    //
+    // cmd.end();
+    //
+    // vk::CommandBufferSubmitInfo const commandBufferInfo{
+    //     .commandBuffer = *cmd,
+    // };
+    //
+    // const vk::SubmitInfo2 submitInfo{
+    //     .commandBufferInfoCount = 1,
+    //     .pCommandBufferInfos = &commandBufferInfo,
+    // };
+    // queue.submit2(submitInfo, nullptr);
+    // queue.waitIdle();
+
     log_info("copyBuffer() started", "ResourceManager");
     transferCommandBuffer[0].begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     transferCommandBuffer[0].copyBuffer(srcBuffer, dstBuffer, vk::BufferCopy(0, 0, size));
@@ -250,7 +314,8 @@ void ResourceManager::createVertexBuffer()
     vk::DeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
 
 
-    createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+    createBuffer(bufferSize,
+                 vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                  vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, stagingBuffer,
                  stagingBufferMemory, allocator.allocator, device, queueFamilyIndices, "VertexStagingBufferMemory");
     setDebugName(device, stagingBuffer, "VertexStagingBuffer");
@@ -270,8 +335,8 @@ void ResourceManager::createVertexBuffer()
 
     // eStorageBuffer | eShaderDeviceAddress: mesh shader BDA loads (MeshPushData.vertices).
     createBuffer(bufferSize,
-                 vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eStorageBuffer |
-                     vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                 vk::BufferUsageFlagBits2::eTransferDst | vk::BufferUsageFlagBits2::eStorageBuffer |
+                     vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                  vk::MemoryPropertyFlagBits::eDeviceLocal, vertexBuffer, vertexBufferMemory, allocator.allocator, device, queueFamilyIndices, "VertexBufferMemory");
     setDebugName(device, vertexBuffer, "VertexBuffer");
     tracyResourceAlloc(static_cast<VkBuffer>(*vertexBuffer), static_cast<size_t>(bufferSize), "GPU/Vertices");
@@ -289,6 +354,29 @@ void ResourceManager::createVertexBuffer()
     vertexBufferAddress = device.getBufferAddress({.buffer = *vertexBuffer});
 }
 
+void ResourceManager::createIndirectBuffer()
+{
+    ZoneScopedN("ResourceManager::createIndirectBuffer");
+    log_info("createIndirectBuffer() started", "ResourceManager");
+    if (indirectBufferMemory != nullptr) {
+        VkBuffer raw = indirectBuffer.release();
+        tracyResourceFree(raw, "GPU/IndirectCopyCommand");
+        vmaDestroyBuffer(allocator.allocator, raw, indirectBufferMemory);
+        indirectBufferMemory = nullptr;
+        indirectBufferAddress = 0;
+    }
+    // Host-visible: copyBuffer memcpy's VkCopyMemoryIndirectCommandKHR here.
+    // Device-local cannot be mapped; SDA required for copyAddressRange.
+    const vk::DeviceSize bufferSize = sizeof(vk::CopyMemoryIndirectCommandKHR);
+    createBuffer(bufferSize, vk::BufferUsageFlagBits2::eShaderDeviceAddress | vk::BufferUsageFlagBits2::eIndirectBuffer,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, indirectBuffer,
+                 indirectBufferMemory, allocator.allocator, device, queueFamilyIndices, "IndirectBufferMemory");
+    setDebugName(device, indirectBuffer, "IndirectCopyCommandBuffer");
+    indirectBufferAddress = device.getBufferAddress({.buffer = *indirectBuffer});
+    tracyResourceAlloc(static_cast<VkBuffer>(*indirectBuffer), static_cast<size_t>(bufferSize),
+                       "GPU/IndirectCopyCommand");
+}
+
 void ResourceManager::createMeshBuffers()
 {
     ZoneScopedN("ResourceManager::createMeshBuffers");
@@ -300,7 +388,8 @@ void ResourceManager::createMeshBuffers()
     } else {
         vk::DeviceSize bufferSize = sizeof(MeshletDesc) * meshlets.size();
 
-        createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+        createBuffer(bufferSize,
+                     vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                      vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, stagingBuffer,
                      stagingBufferMemory, allocator.allocator, device, queueFamilyIndices, "MeshletStagingBufferMemory");
         setDebugName(device, stagingBuffer, "MeshletStagingBuffer");
@@ -319,7 +408,7 @@ void ResourceManager::createMeshBuffers()
         }
 
         createBuffer(bufferSize,
-                     vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                     vk::BufferUsageFlagBits2::eTransferDst | vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                      vk::MemoryPropertyFlagBits::eDeviceLocal, meshletBuffer, meshletBufferMemory, allocator.allocator, device, queueFamilyIndices,
                      "MeshletBufferMemory");
         setDebugName(device, meshletBuffer, "MeshletBuffer");
@@ -345,7 +434,8 @@ void ResourceManager::createMeshBuffers()
     } else {
         vk::DeviceSize vertexBufferSize = sizeof(meshletVertices[0]) * meshletVertices.size();
 
-        createBuffer(vertexBufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+        createBuffer(vertexBufferSize,
+                     vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                      vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, stagingBuffer,
                      stagingBufferMemory, allocator.allocator, device, queueFamilyIndices, "MeshletVertexStagingBufferMemory");
         setDebugName(device, stagingBuffer, "MeshletVertexStagingBuffer");
@@ -365,8 +455,8 @@ void ResourceManager::createMeshBuffers()
 
         // Remap table is SSBO-style BDA traffic in the mesh shader (uint[]), not a vertex binding.
         createBuffer(vertexBufferSize,
-                     vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eStorageBuffer |
-                         vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                     vk::BufferUsageFlagBits2::eTransferDst | vk::BufferUsageFlagBits2::eStorageBuffer |
+                         vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                      vk::MemoryPropertyFlagBits::eDeviceLocal, meshletVertexBuffer, meshletVertexBufferMemory, allocator.allocator,
                      device, queueFamilyIndices, "MeshletVertexBufferMemory");
         setDebugName(device, meshletVertexBuffer, "MeshletVertexBuffer");
@@ -392,7 +482,8 @@ void ResourceManager::createMeshBuffers()
     } else {
         vk::DeviceSize triBufferSize = sizeof(meshletTriangles[0]) * meshletTriangles.size();
 
-        createBuffer(triBufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+        createBuffer(triBufferSize,
+                     vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                      vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, stagingBuffer,
                      stagingBufferMemory, allocator.allocator, device, queueFamilyIndices, "MeshletTriangleStagingBufferMemory");
         setDebugName(device, stagingBuffer, "MeshletTriangleStagingBuffer");
@@ -411,7 +502,7 @@ void ResourceManager::createMeshBuffers()
         }
 
         createBuffer(triBufferSize,
-                     vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                     vk::BufferUsageFlagBits2::eTransferDst | vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                      vk::MemoryPropertyFlagBits::eDeviceLocal, meshletTriangleBuffer, meshletTriangleBufferMemory, allocator.allocator,
                      device, queueFamilyIndices, "MeshletTriangleBufferMemory");
         setDebugName(device, meshletTriangleBuffer, "MeshletTriangleBuffer");
@@ -429,8 +520,9 @@ void ResourceManager::createMeshBuffers()
 
         meshletTriangleBufferAddress = device.getBufferAddress({.buffer = *meshletTriangleBuffer});
     }
-
 }
+
+
 
 void ResourceManager::createCameraBuffers(Camera& camera)
 {
@@ -442,8 +534,8 @@ void ResourceManager::createCameraBuffers(Camera& camera)
         vk::raii::Buffer buffer({});
         VmaAllocation bufferMem = nullptr;
         createBuffer(bufferSize,
-                     vk::BufferUsageFlagBits::eUniformBuffer | vk::BufferUsageFlagBits::eStorageBuffer |
-                         vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                     vk::BufferUsageFlagBits2::eUniformBuffer | vk::BufferUsageFlagBits2::eStorageBuffer |
+                         vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                      vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, buffer,
                      bufferMem, allocator.allocator, device, queueFamilyIndices,
                      std::format("CameraUniformBufferMemory_{}", i));
@@ -484,8 +576,8 @@ void ResourceManager::ensureInstanceCapacity(uint32_t entityCount)
         vk::raii::Buffer buffer({});
         VmaAllocation bufferMem = nullptr;
         createBuffer(bufferSize,
-                     vk::BufferUsageFlagBits::eUniformBuffer | vk::BufferUsageFlagBits::eStorageBuffer |
-                         vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                     vk::BufferUsageFlagBits2::eUniformBuffer | vk::BufferUsageFlagBits2::eStorageBuffer |
+                         vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                      vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, buffer,
                      bufferMem, allocator.allocator, device, queueFamilyIndices,
                      std::format("InstanceObjectUBMemory_{}", i));
@@ -751,7 +843,7 @@ void ResourceManager::copyBufferToImage(const vk::raii::Buffer& buffer, vk::raii
     ZoneScopedN("ResourceManager::copyBufferToImage");
     log_info("copyBufferToImage() started", "ResourceManager");
 
-    vk::BufferImageCopy region{.bufferOffset = 0,
+    vk::BufferImageCopy const region{.bufferOffset = 0,
                                .bufferRowLength = 0,
                                .bufferImageHeight = 0,
                                .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},

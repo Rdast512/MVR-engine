@@ -335,12 +335,17 @@ target_link_libraries(imgui PUBLIC
 # Force static Tracy client library.
 set(TRACY_STATIC ON CACHE BOOL "" FORCE)
 
+# v0.14.0 defaults TRACY_ENABLE OFF; client ABI must match engine TUs
+# that define TRACY_ENABLE for non-Release.
+set(TRACY_ENABLE ON CACHE BOOL "Enable Tracy profiling" FORCE)
+
 # Tracy build-time options — must be set before MakeAvailable so Tracy's
 # own CMakeLists.txt picks them up when it is first configured.
+# v0.14.0: TRACY_CALLSTACK is a zone call-stack depth, not a bool.
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-        # Keep current Debug behavior unchanged.
+        # Debug: higher-fidelity capture.
         set(TRACY_ON_DEMAND   ON CACHE BOOL "Tracy: connect/profile on demand" FORCE)
-        set(TRACY_CALLSTACK   ON CACHE BOOL "Tracy: capture call stacks"        FORCE)
+        set(TRACY_CALLSTACK   16 CACHE STRING "Tracy: zone call stack depth"    FORCE)
         set(TRACY_NO_EXIT     ON CACHE BOOL "Tracy: keep client alive on exit"  FORCE)
         set(TRACY_FIBERS      ON CACHE BOOL "Tracy: fiber support"              FORCE)
         set(TRACY_VERBOSE     ON CACHE BOOL "Tracy: verbose output"             FORCE)
@@ -349,7 +354,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug")
 else ()
         # Lower overhead profile for Release/RelWithDebInfo/MinSizeRel.
         set(TRACY_ON_DEMAND   ON  CACHE BOOL "Tracy: connect/profile on demand" FORCE)
-        set(TRACY_CALLSTACK   OFF CACHE BOOL "Tracy: capture call stacks"       FORCE)
+        set(TRACY_CALLSTACK   ""  CACHE STRING "Tracy: zone call stack depth"   FORCE)
         set(TRACY_NO_EXIT     OFF CACHE BOOL "Tracy: keep client alive on exit" FORCE)
         set(TRACY_FIBERS      OFF CACHE BOOL "Tracy: fiber support"             FORCE)
         set(TRACY_VERBOSE     OFF CACHE BOOL "Tracy: verbose output"            FORCE)
@@ -360,7 +365,7 @@ endif ()
 FetchContent_Declare(
         tracy
         GIT_REPOSITORY https://github.com/wolfpld/tracy.git
-        GIT_TAG v0.13.1
+        GIT_TAG v0.14.0
         GIT_SHALLOW TRUE
         GIT_PROGRESS TRUE
 )
