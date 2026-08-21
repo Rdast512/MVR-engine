@@ -41,11 +41,6 @@
 #define VULKAN_HPP_NO_STD_MODULE
 #include <vulkan/vulkan_raii.hpp>
 #include <vulkan/vk_platform.h>
-#include <rapidjson/document.h>
-#include <rapidjson/prettywriter.h>
-#include <rapidjson/rapidjson.h>
-#include <rapidjson/stringbuffer.h>
-#include <rapidjson/writer.h>
 #include "vma/vk_mem_alloc.h"
 #include "tiny_obj_loader.h"
 #include "tiny_gltf_v3.h"

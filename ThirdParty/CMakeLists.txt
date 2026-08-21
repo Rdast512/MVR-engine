@@ -1,16 +1,22 @@
 # ThirdParty/CMakeLists.txt
 include(FetchContent)
 
+# Shared git clones under ThirdParty/_deps/src (survive cache wipes, not forked
+# per Debug/Release). Configure/build trees live in the binary dir so two
+# presets can configure at once without clobbering CMake caches.
+set(ENGINE_TP_SRC "${CMAKE_CURRENT_LIST_DIR}/_deps/src")
+set(ENGINE_TP_BIN "${CMAKE_BINARY_DIR}/_deps")
+message(STATUS "FetchContent sources: ${ENGINE_TP_SRC}")
+message(STATUS "FetchContent builds:  ${ENGINE_TP_BIN}")
 
-# Keep downloaded third-party sources/builds inside ThirdParty/_deps/<config> so
-# debug/release (or multi-config) artifacts stay separated and survive cache wipes.
-if (CMAKE_CONFIGURATION_TYPES)
-    set(_thirdparty_cfg_dir "multi-config")
-else ()
-    string(TOLOWER "${CMAKE_BUILD_TYPE}" _thirdparty_cfg_dir)
-endif ()
-set(FETCHCONTENT_BASE_DIR "${CMAKE_CURRENT_LIST_DIR}/_deps/${_thirdparty_cfg_dir}" CACHE PATH "Where FetchContent stores dependency sources/builds" FORCE)
-message(STATUS "FetchContent base dir: ${FETCHCONTENT_BASE_DIR}")
+macro(engine_fetch_declare name)
+    FetchContent_Declare(${name}
+            ${ARGN}
+            SOURCE_DIR "${ENGINE_TP_SRC}/${name}"
+            BINARY_DIR "${ENGINE_TP_BIN}/${name}-build"
+            SUBBUILD_DIR "${ENGINE_TP_BIN}/${name}-subbuild"
+    )
+endmacro()
 
 # Optimization: Disable C++ Module scanning for third-party libs
 # They don't use modules yet, so scanning them is wasted time.
@@ -140,7 +146,7 @@ set(SPDLOG_BUILD_SHARED ON CACHE BOOL "" FORCE)
 set(SPDLOG_BUILD_PIC ON CACHE BOOL "" FORCE)
 set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(SPDLOG_FMT_EXTERNAL OFF CACHE BOOL "" FORCE)
+set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
 
 # --- Taskflow ---
 set(TF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -178,96 +184,80 @@ set(MESHOPT_INSTALL OFF CACHE BOOL "" FORCE) # TODO explore this
 # ==============================================================================
 
 # 2. GLM (Header Only)
-FetchContent_Declare(
-        glm
+engine_fetch_declare(glm
         GIT_REPOSITORY https://github.com/g-truc/glm.git
         GIT_TAG 1.0.2
         GIT_SHALLOW TRUE
 )
 
 # 3. SDL3
-FetchContent_Declare(
-        SDL3
+engine_fetch_declare(SDL3
         GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
         GIT_TAG release-3.4.12
         GIT_SHALLOW TRUE
 )
 
-# 4. fmt
-FetchContent_Declare(
-        fmt
+# 4. fmt — populated before spdlog so TARGET fmt::fmt exists (SPDLOG_FMT_EXTERNAL)
+engine_fetch_declare(fmt
         GIT_REPOSITORY https://github.com/fmtlib/fmt.git
         GIT_TAG 12.2.0
         GIT_SHALLOW TRUE
 )
 
 # 5. spdlog
-FetchContent_Declare(
-        spdlog
+engine_fetch_declare(spdlog
         GIT_REPOSITORY https://github.com/gabime/spdlog.git
         GIT_TAG v1.17.0
         GIT_SHALLOW TRUE
 )
 
-# 7. ImGui
-FetchContent_Declare(
-        ImGui
-        GIT_REPOSITORY https://github.com/ocornut/imgui.git
-        GIT_TAG v1.92.8
-        GIT_SHALLOW TRUE
-)
+# 7. ImGui (sources only; we add_library ourselves).
+# SOURCE_SUBDIR skips imgui's own CMakeLists (v1.92+) which would clash with
+# our static imgui target.
+if (ENGINE_ENABLE_IMGUI)
+    engine_fetch_declare(ImGui
+            GIT_REPOSITORY https://github.com/ocornut/imgui.git
+            GIT_TAG v1.92.8
+            GIT_SHALLOW TRUE
+            SOURCE_SUBDIR skip-add-subdirectory
+    )
+endif ()
 
 # 8. Taskflow
-FetchContent_Declare(
-        taskflow
+engine_fetch_declare(taskflow
         GIT_REPOSITORY https://github.com/taskflow/taskflow.git
         GIT_TAG v4.1.0
         GIT_SHALLOW TRUE
 )
 
-
-
-# 10. RapidJSON (header-only)
-set(RAPIDJSON_BUILD_DOC OFF CACHE BOOL "" FORCE)
-set(RAPIDJSON_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(RAPIDJSON_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-        rapidjson
-        GIT_REPOSITORY https://github.com/Tencent/rapidjson.git
-        GIT_TAG master
-        GIT_SHALLOW TRUE
-)
-
 # 11. KTX-Software (library only)
-FetchContent_Declare(
-        KTXSoftware
+engine_fetch_declare(KTXSoftware
         GIT_REPOSITORY https://github.com/KhronosGroup/KTX-Software.git
         GIT_TAG v4.4.2
         GIT_SHALLOW TRUE
 )
 
 # 12. mimalloc
-FetchContent_Declare(
-        mimalloc
+engine_fetch_declare(mimalloc
         GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
         GIT_TAG v3.3.2
         GIT_SHALLOW TRUE
 )
 
 # 14. meshoptimizer (mesh optimization / clustering for GPU-driven rendering)
-FetchContent_Declare(
-        meshoptimizer
+engine_fetch_declare(meshoptimizer
         GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
         GIT_TAG v1.2
         GIT_SHALLOW TRUE
 )
 
-# ==============================================================================
-# Populate all dependencies in a single batch call.
-# Tracy is declared and populated separately below (after GIT_SHALLOW/PROGRESS).
-# ==============================================================================
-message(STATUS "Fetching ThirdParty dependencies (glm, SDL3, fmt, spdlog, ImGui, taskflow, rapidjson, KTX, mimalloc, meshoptimizer)...")
-FetchContent_MakeAvailable(glm SDL3 fmt spdlog ImGui taskflow rapidjson KTXSoftware mimalloc meshoptimizer)
+# fmt before spdlog: spdlog's CMake uses TARGET fmt::fmt when SPDLOG_FMT_EXTERNAL=ON.
+set(_tp_fetch_names glm SDL3 fmt spdlog taskflow KTXSoftware mimalloc meshoptimizer)
+if (ENGINE_ENABLE_IMGUI)
+    list(APPEND _tp_fetch_names ImGui)
+endif ()
+message(STATUS "Fetching ThirdParty dependencies: ${_tp_fetch_names}")
+FetchContent_MakeAvailable(${_tp_fetch_names})
 
 
 
@@ -296,36 +286,38 @@ else ()
 endif ()
 
 # ------------------------------------------------------------------------------
-set(IMGUI_SOURCES
-        ${imgui_SOURCE_DIR}/imgui.cpp
-        ${imgui_SOURCE_DIR}/imgui_demo.cpp
-        ${imgui_SOURCE_DIR}/imgui_draw.cpp
-        ${imgui_SOURCE_DIR}/imgui_tables.cpp
-        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-        # BACKENDS
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
-)
+if (ENGINE_ENABLE_IMGUI)
+    set(IMGUI_SOURCES
+            ${imgui_SOURCE_DIR}/imgui.cpp
+            ${imgui_SOURCE_DIR}/imgui_demo.cpp
+            ${imgui_SOURCE_DIR}/imgui_draw.cpp
+            ${imgui_SOURCE_DIR}/imgui_tables.cpp
+            ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+            # BACKENDS
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
+    )
 
-# NOTE: Keeping ImGui STATIC is highly recommended even in a shared build.
-# Exporting ImGui symbols across DLL boundaries requires complex configuration.
-add_library(imgui STATIC ${IMGUI_SOURCES})
+    # NOTE: Keeping ImGui STATIC is highly recommended even in a shared build.
+    # Exporting ImGui symbols across DLL boundaries requires complex configuration.
+    add_library(imgui STATIC ${IMGUI_SOURCES})
 
-# UNITY_BUILD merges all 7 imgui .cpp files into one TU — ~3-4x faster compile.
-# PIC required so imgui can link into shared engine libraries.
-set_target_properties(imgui PROPERTIES
-        UNITY_BUILD ON
-        POSITION_INDEPENDENT_CODE ON
-)
+    # UNITY_BUILD merges all 7 imgui .cpp files into one TU — ~3-4x faster compile.
+    # PIC required so imgui can link into shared engine libraries.
+    set_target_properties(imgui PROPERTIES
+            UNITY_BUILD ON
+            POSITION_INDEPENDENT_CODE ON
+    )
 
-target_include_directories(imgui PUBLIC
-        ${imgui_SOURCE_DIR}
-        ${imgui_SOURCE_DIR}/backends
-)
-target_link_libraries(imgui PUBLIC
-        SDL3::SDL3
-        Vulkan::Vulkan
-)
+    target_include_directories(imgui PUBLIC
+            ${imgui_SOURCE_DIR}
+            ${imgui_SOURCE_DIR}/backends
+    )
+    target_link_libraries(imgui PUBLIC
+            SDL3::SDL3
+            Vulkan::Vulkan
+    )
+endif ()
 
 
 # ------------------------------------------------------------------------------
@@ -362,8 +354,7 @@ else ()
         set(TRACY_NO_SYSTEM_TRACING ON CACHE BOOL "Tracy: disable system tracing" FORCE)
 endif ()
 
-FetchContent_Declare(
-        tracy
+engine_fetch_declare(tracy
         GIT_REPOSITORY https://github.com/wolfpld/tracy.git
         GIT_TAG v0.14.0
         GIT_SHALLOW TRUE
@@ -389,13 +380,13 @@ add_library(ThirdPartyHeaders INTERFACE)
 target_include_directories(ThirdPartyHeaders INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
         $<BUILD_INTERFACE:${SLANG_EXTRACT_DIR}/include>
-        $<BUILD_INTERFACE:${rapidjson_SOURCE_DIR}/include>
-        $<BUILD_INTERFACE:${directxmath_SOURCE_DIR}>
 )
 add_library(ThirdParty::headers ALIAS ThirdPartyHeaders)
 
 # Compile it as a STATIC library
 add_library(ThirdPartyImpl STATIC implementations.cpp)
+# *_IMPLEMENTATION TUs must not pick up the engine PCH (guards already set).
+set_source_files_properties(implementations.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 
 # Add tiny glTF C source to static ThirdPartyImpl
 # tiny_gltf_v3.c is C code; compile it as C11 and enable stdio-backed fs helpers.
@@ -427,11 +418,10 @@ target_link_libraries(ThirdPartyLibs INTERFACE
         ThirdParty::ktx
         glm::glm
         SDL3::SDL3
-        #  vk-bootstrap::vk-bootstrap
         spdlog::spdlog
         $<$<NOT:$<CONFIG:Release>>:Tracy::TracyClient>
         fmt::fmt
-        imgui
+        $<$<BOOL:${ENGINE_ENABLE_IMGUI}>:imgui>
         ThirdParty::mimalloc
         ThirdParty::meshoptimizer
         Taskflow::Taskflow

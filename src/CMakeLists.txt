@@ -2,8 +2,8 @@
 
 set(PCH_HEADER ${CMAKE_SOURCE_DIR}/src/pch.h)
 
-# [COVERAGE] Directory-scoped link flag — applies to every engine_* shared lib AND
-# the engine executable defined below.
+# [COVERAGE] Directory-scoped flags — apply to every engine_* shared lib AND
+# the engine executable defined below. Off unless ENGINE_ENABLE_COVERAGE=ON.
 #
 # WHY all targets (not just the exe):
 #   -fprofile-instr-generate at *compile* time instruments the code and emits
@@ -24,18 +24,25 @@ set(PCH_HEADER ${CMAKE_SOURCE_DIR}/src/pch.h)
 # %m expands to a per-module magic number, creating one .profraw per DLL + exe
 # so each module flushes independently. CLion then merges them before calling
 # llvm-cov export.
-if(WIN32)
+if (ENGINE_ENABLE_COVERAGE AND WIN32)
+    add_compile_options("$<$<CONFIG:Debug>:-fprofile-instr-generate>")
     add_link_options("$<$<CONFIG:Debug>:-fprofile-instr-generate>")
-endif()
+endif ()
 
 add_library(engine_build_config INTERFACE)
 target_include_directories(engine_build_config INTERFACE ${CMAKE_SOURCE_DIR}/src)
 target_include_directories(engine_build_config INTERFACE ${CMAKE_SOURCE_DIR}/src/static_headers)
 target_compile_definitions(engine_build_config INTERFACE
     $<$<NOT:$<CONFIG:Release>>:TRACY_ENABLE>
+    ENGINE_ENABLE_IMGUI=$<BOOL:${ENGINE_ENABLE_IMGUI}>
     ENGINE_SHADER_DIR="${ENGINE_SHADER_DIR_PATH}"
     ENGINE_MODELS_DIR="${ENGINE_MODELS_DIR_PATH}"
     ENGINE_TEXTURES_DIR="${ENGINE_TEXTURES_DIR_PATH}"
+)
+target_compile_options(engine_build_config INTERFACE
+    $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang,GNU>:-Wall>
+    $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang,GNU>:-Wextra>
+    $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang,GNU>:-Wpedantic>
 )
 
 add_subdirectory(util)
@@ -62,7 +69,7 @@ target_link_libraries(engine_runtime PRIVATE
 
 target_precompile_headers(engine_runtime PRIVATE ${PCH_HEADER})
 
-add_executable(engine main.cpp pch.h Constants.h)
+add_executable(engine main.cpp)
 target_link_libraries(engine PRIVATE engine_runtime)
 target_precompile_headers(engine PRIVATE ${PCH_HEADER})
 add_dependencies(engine Shaders)
@@ -92,28 +99,7 @@ if(WIN32)
             endif()
         endif()
     endforeach()
-
-    # Copy module DLLs next to the executable
-    add_custom_command(TARGET engine POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:engine_runtime>
-            $<TARGET_FILE_DIR:engine>
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:engine_core>
-            $<TARGET_FILE_DIR:engine>
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:engine_render>
-            $<TARGET_FILE_DIR:engine>
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:engine_util>
-            $<TARGET_FILE_DIR:engine>
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:engine_scene>
-            $<TARGET_FILE_DIR:engine>
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:engine_postprocessing>
-            $<TARGET_FILE_DIR:engine>
-        COMMENT "Copying engine module DLLs")
+    # engine_* DLLs already land in CMAKE_RUNTIME_OUTPUT_DIRECTORY (== binary dir)
 else()
     # On Linux copy third-party shared libs next to the executable
     set(SHARED_LIBS_TO_COPY
@@ -147,14 +133,20 @@ else()
         endif()
     endforeach()
 
-    set_target_properties(engine PROPERTIES
-        BUILD_WITH_INSTALL_RPATH TRUE
-        INSTALL_RPATH "$ORIGIN"
-        BUILD_RPATH "$ORIGIN")
-
-    # Ensure the runtime module resolves siblings via $ORIGIN
-    set_target_properties(engine_runtime PROPERTIES
-        BUILD_WITH_INSTALL_RPATH TRUE
-        INSTALL_RPATH "$ORIGIN"
-        BUILD_RPATH "$ORIGIN")
+    foreach (_t engine engine_runtime engine_core engine_render engine_util engine_scene engine_postprocessing)
+        if (TARGET ${_t})
+            set_target_properties(${_t} PROPERTIES
+                BUILD_WITH_INSTALL_RPATH TRUE
+                INSTALL_RPATH "$ORIGIN"
+                BUILD_RPATH "$ORIGIN")
+        endif ()
+    endforeach ()
 endif()
+
+if (ENGINE_UNITY_BUILD)
+    foreach (_t engine_util engine_core engine_render engine_scene engine_runtime)
+        if (TARGET ${_t})
+            set_target_properties(${_t} PROPERTIES UNITY_BUILD ON)
+        endif ()
+    endforeach ()
+endif ()

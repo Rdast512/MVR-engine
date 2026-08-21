@@ -15,7 +15,7 @@
 
 
 class Engine{
-    // Driven by ENGINE_ENABLE_IMGUI (Constants.h). When false, no ImGui Vulkan/SDL backends.
+    // Driven by CMake ENGINE_ENABLE_IMGUI. When false, no ImGui Vulkan/SDL backends.
     bool enableImGui = (ENGINE_ENABLE_IMGUI != 0);
     // Runtime UI visibility (I key). Hidden + game-focused until toggled open. No-op if !enableImGui.
     bool imguiUiOpen = false;
