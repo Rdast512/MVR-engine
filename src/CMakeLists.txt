@@ -34,7 +34,6 @@ target_include_directories(engine_build_config INTERFACE ${CMAKE_SOURCE_DIR}/src
 target_include_directories(engine_build_config INTERFACE ${CMAKE_SOURCE_DIR}/src/static_headers)
 target_compile_definitions(engine_build_config INTERFACE
     $<$<NOT:$<CONFIG:Release>>:TRACY_ENABLE>
-    ENGINE_ENABLE_IMGUI=$<BOOL:${ENGINE_ENABLE_IMGUI}>
     ENGINE_SHADER_DIR="${ENGINE_SHADER_DIR_PATH}"
     ENGINE_MODELS_DIR="${ENGINE_MODELS_DIR_PATH}"
     ENGINE_TEXTURES_DIR="${ENGINE_TEXTURES_DIR_PATH}"

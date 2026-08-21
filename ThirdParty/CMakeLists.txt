@@ -213,15 +213,13 @@ engine_fetch_declare(spdlog
 
 # 7. ImGui (sources only; we add_library ourselves).
 # SOURCE_SUBDIR skips imgui's own CMakeLists (v1.92+) which would clash with
-# our static imgui target.
-if (ENGINE_ENABLE_IMGUI)
-    engine_fetch_declare(ImGui
-            GIT_REPOSITORY https://github.com/ocornut/imgui.git
-            GIT_TAG v1.92.8
-            GIT_SHALLOW TRUE
-            SOURCE_SUBDIR skip-add-subdirectory
-    )
-endif ()
+# our static imgui target. Feature toggle is Constants.h ENGINE_ENABLE_IMGUI.
+engine_fetch_declare(ImGui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG v1.92.8
+        GIT_SHALLOW TRUE
+        SOURCE_SUBDIR skip-add-subdirectory
+)
 
 # 8. Taskflow
 engine_fetch_declare(taskflow
@@ -252,10 +250,7 @@ engine_fetch_declare(meshoptimizer
 )
 
 # fmt before spdlog: spdlog's CMake uses TARGET fmt::fmt when SPDLOG_FMT_EXTERNAL=ON.
-set(_tp_fetch_names glm SDL3 fmt spdlog taskflow KTXSoftware mimalloc meshoptimizer)
-if (ENGINE_ENABLE_IMGUI)
-    list(APPEND _tp_fetch_names ImGui)
-endif ()
+set(_tp_fetch_names glm SDL3 fmt spdlog ImGui taskflow KTXSoftware mimalloc meshoptimizer)
 message(STATUS "Fetching ThirdParty dependencies: ${_tp_fetch_names}")
 FetchContent_MakeAvailable(${_tp_fetch_names})
 
@@ -286,38 +281,36 @@ else ()
 endif ()
 
 # ------------------------------------------------------------------------------
-if (ENGINE_ENABLE_IMGUI)
-    set(IMGUI_SOURCES
-            ${imgui_SOURCE_DIR}/imgui.cpp
-            ${imgui_SOURCE_DIR}/imgui_demo.cpp
-            ${imgui_SOURCE_DIR}/imgui_draw.cpp
-            ${imgui_SOURCE_DIR}/imgui_tables.cpp
-            ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-            # BACKENDS
-            ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
-            ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
-    )
+set(IMGUI_SOURCES
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_demo.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        # BACKENDS
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
+)
 
-    # NOTE: Keeping ImGui STATIC is highly recommended even in a shared build.
-    # Exporting ImGui symbols across DLL boundaries requires complex configuration.
-    add_library(imgui STATIC ${IMGUI_SOURCES})
+# NOTE: Keeping ImGui STATIC is highly recommended even in a shared build.
+# Exporting ImGui symbols across DLL boundaries requires complex configuration.
+add_library(imgui STATIC ${IMGUI_SOURCES})
 
-    # UNITY_BUILD merges all 7 imgui .cpp files into one TU — ~3-4x faster compile.
-    # PIC required so imgui can link into shared engine libraries.
-    set_target_properties(imgui PROPERTIES
-            UNITY_BUILD ON
-            POSITION_INDEPENDENT_CODE ON
-    )
+# UNITY_BUILD merges all 7 imgui .cpp files into one TU — ~3-4x faster compile.
+# PIC required so imgui can link into shared engine libraries.
+set_target_properties(imgui PROPERTIES
+        UNITY_BUILD ON
+        POSITION_INDEPENDENT_CODE ON
+)
 
-    target_include_directories(imgui PUBLIC
-            ${imgui_SOURCE_DIR}
-            ${imgui_SOURCE_DIR}/backends
-    )
-    target_link_libraries(imgui PUBLIC
-            SDL3::SDL3
-            Vulkan::Vulkan
-    )
-endif ()
+target_include_directories(imgui PUBLIC
+        ${imgui_SOURCE_DIR}
+        ${imgui_SOURCE_DIR}/backends
+)
+target_link_libraries(imgui PUBLIC
+        SDL3::SDL3
+        Vulkan::Vulkan
+)
 
 
 # ------------------------------------------------------------------------------
@@ -421,7 +414,7 @@ target_link_libraries(ThirdPartyLibs INTERFACE
         spdlog::spdlog
         $<$<NOT:$<CONFIG:Release>>:Tracy::TracyClient>
         fmt::fmt
-        $<$<BOOL:${ENGINE_ENABLE_IMGUI}>:imgui>
+        imgui
         ThirdParty::mimalloc
         ThirdParty::meshoptimizer
         Taskflow::Taskflow
