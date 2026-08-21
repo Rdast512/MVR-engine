@@ -266,7 +266,7 @@ FetchContent_Declare(
 # Populate all dependencies in a single batch call.
 # Tracy is declared and populated separately below (after GIT_SHALLOW/PROGRESS).
 # ==============================================================================
-message(STATUS "Fetching ThirdParty dependencies (glm, SDL3, fmt, spdlog, ImGui, taskflow, rapidjson, KTX, mimalloc, DirectXMath, meshoptimizer)...")
+message(STATUS "Fetching ThirdParty dependencies (glm, SDL3, fmt, spdlog, ImGui, taskflow, rapidjson, KTX, mimalloc, meshoptimizer)...")
 FetchContent_MakeAvailable(glm SDL3 fmt spdlog ImGui taskflow rapidjson KTXSoftware mimalloc meshoptimizer)
 
 

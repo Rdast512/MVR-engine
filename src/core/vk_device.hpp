@@ -144,6 +144,7 @@ public:
         vk::EXTMeshShaderExtensionName,
         vk::EXTDeviceGeneratedCommandsExtensionName,
         vk::EXTPageableDeviceLocalMemoryExtensionName,
+        vk::EXTShaderObjectExtensionName,
         // vk::EXTGraphicsPipelineLibraryExtensionName,
         vk::EXTPresentTimingExtensionName,
         vk::EXTRayTracingInvocationReorderExtensionName,

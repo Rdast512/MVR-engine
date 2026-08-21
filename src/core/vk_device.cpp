@@ -546,7 +546,7 @@ void Device::createLogicalDevice()
         vk::PhysicalDeviceMemoryDecompressionFeaturesEXT, vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT,
         vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT,
         vk::PhysicalDevicePresentTimingFeaturesEXT, vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT,
-        vk::PhysicalDeviceTexelBufferAlignmentFeaturesEXT, vk::PhysicalDeviceOpacityMicromapFeaturesEXT,
+        vk::PhysicalDeviceTexelBufferAlignmentFeaturesEXT, vk::PhysicalDeviceOpacityMicromapFeaturesEXT, vk::PhysicalDeviceShaderObjectFeaturesEXT,
         // KHR
         vk::PhysicalDeviceFragmentShadingRateFeaturesKHR, vk::PhysicalDeviceDeviceAddressCommandsFeaturesKHR,
         vk::PhysicalDeviceAccelerationStructureFeaturesKHR, vk::PhysicalDeviceRayTracingPipelineFeaturesKHR,
@@ -625,6 +625,8 @@ void Device::createLogicalDevice()
                         {},
                         // vk::PhysicalDeviceOpacityMicromapFeaturesEXT
                         {.micromap = true},
+                        // vk::PhysicalDeviceShaderObjectFeaturesEXT
+                        {.shaderObject = true},
                         // vk::PhysicalDeviceFragmentShadingRateFeaturesKHR
                         {.pipelineFragmentShadingRate = true,
                          .primitiveFragmentShadingRate = true,
