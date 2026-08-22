@@ -177,10 +177,36 @@ void DescriptorManager::createHeapDescriptors()
         device.writeSamplerDescriptorsEXT(samplerInfo, samplerWrite);
     }
 
+    defaultSamplerHeapIndex = static_cast<uint32_t>(currentSampOffset / samplerDescriptorSize);
+    nextSamplerDescriptorOffset = currentSampOffset + samplerDescriptorSize;
+    nextSamplerDescriptorOffset = alignUp(nextSamplerDescriptorOffset, samplerDescriptorAlignment);
+    samplerDescriptorOffset = currentSampOffset;
+
     log_info(std::format("Descriptor heap sampler layout samplerDescSize={} "
                          "samplerAlign={} samplerIndex={}",
                          samplerDescriptorSize,
                          samplerDescriptorAlignment, getSamplerDescriptorIndex()), "DescriptorHeap");
+}
+
+uint32_t DescriptorManager::writeSamplerDescriptor(const vk::SamplerCreateInfo& samplerInfo)
+{
+    const vk::DeviceSize currentSampOffset = alignUp(nextSamplerDescriptorOffset, samplerDescriptorAlignment);
+    const vk::HostAddressRangeEXT samplerWrite{
+        .address = static_cast<uint8_t*>(mappedSamplerHeapPtr) + currentSampOffset,
+        .size = samplerDescriptorSize,
+    };
+    {
+        ZoneScopedN("DescriptorManager::writeSamplerDescriptor");
+        device.writeSamplerDescriptorsEXT(samplerInfo, samplerWrite);
+    }
+
+    nextSamplerDescriptorOffset = currentSampOffset + samplerDescriptorSize;
+    nextSamplerDescriptorOffset = alignUp(nextSamplerDescriptorOffset, samplerDescriptorAlignment);
+
+    const uint32_t heapIndex = static_cast<uint32_t>(currentSampOffset / samplerDescriptorSize);
+    log_info(std::format("Descriptor heap sampler write: offset={} index={}", currentSampOffset, heapIndex),
+             "DescriptorHeap");
+    return heapIndex;
 }
 
 void DescriptorManager::createHeapBuffers(vk::DeviceSize resourceHeapSize, vk::DeviceSize samplerHeapSize)
@@ -273,8 +299,5 @@ uint32_t DescriptorManager::getTextureDescriptorIndex() const
 
 uint32_t DescriptorManager::getSamplerDescriptorIndex() const
 {
-    if (samplerDescriptorSize == 0) {
-        return 0;
-    }
-    return static_cast<uint32_t>(samplerDescriptorOffset / samplerDescriptorSize);
+    return defaultSamplerHeapIndex;
 }

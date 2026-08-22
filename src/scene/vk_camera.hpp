@@ -48,7 +48,7 @@ public:
     // ── GPU resources (stable handles: direct access) ─────────
     VmaAllocator allocator = nullptr;
     SwapChain& swapChain;
-    CameraData cameraData = {};
+    GpuCameraData cameraData = {};
     glm::mat4 prevViewProj = {};
     std::array<void*, 2> cameraBuffersMapped = {nullptr, nullptr};
     std::array<vk::raii::Buffer, 2> cameraBuffers = {nullptr, nullptr};

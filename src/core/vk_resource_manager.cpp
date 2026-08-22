@@ -12,10 +12,8 @@
 
 ResourceManager::ResourceManager(const Device &deviceWrapper,
                const VkAllocator &allocator,
-               const std::vector<Vertex> &verticesIn,
-               const std::vector<MeshletDesc>& meshletsIn,
-               const std::vector<uint32_t>& meshletVerticesIn,
-               const std::vector<uint8_t>& meshletTrianglesIn,
+               GeometryStore &geometryStoreIn,
+               MaterialStore &materialStoreIn,
                ObjectStorage &objectStorageIn)
     : deviceWrapper(deviceWrapper),
       allocator(allocator),
@@ -26,13 +24,15 @@ ResourceManager::ResourceManager(const Device &deviceWrapper,
       transferQueue(deviceWrapper.transferQueue),
       hardwareCapabilities(deviceWrapper.capabilities),
       objectStorage(objectStorageIn),
+      geometryStore(geometryStoreIn),
+      materialStore(materialStoreIn),
       graphicsIndex(deviceWrapper.graphicsIndex),
       transferIndex(deviceWrapper.transferIndex),
       msaaSamples(deviceWrapper.msaaSamples),
-      vertices(verticesIn),
-      meshlets(meshletsIn),
-      meshletVertices(meshletVerticesIn),
-      meshletTriangles(meshletTrianglesIn)
+      vertices(geometryStoreIn.vertices),
+      meshlets(geometryStoreIn.meshlets),
+      meshletVertices(geometryStoreIn.meshletVertices),
+      meshletTriangles(geometryStoreIn.meshletTriangles)
 {
     log_info("Initialized", "ResourceManager");
 }
@@ -167,13 +167,13 @@ void ResourceManager::updateUniformBuffers(uint32_t currentImage)
     const glm::mat4 meshPreRotation =
         glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
 
-    auto* mapped = static_cast<ObjectUB*>(instanceUboMapped[currentImage]);
+    auto* mapped = static_cast<GpuObjectUB*>(instanceUboMapped[currentImage]);
     writeObjectUbs(objectStorage, std::span(mapped, objectStorage.size()), meshPreRotation);
 }
 
 vk::DeviceAddress ResourceManager::instanceUboAddress(uint32_t frameSlot, EntityId entityId) const noexcept
 {
-    return instanceUboBaseAddresses[frameSlot] + static_cast<vk::DeviceAddress>(entityId) * sizeof(ObjectUB);
+    return instanceUboBaseAddresses[frameSlot] + static_cast<vk::DeviceAddress>(entityId) * sizeof(GpuObjectUB);
 }
 
 
@@ -381,12 +381,12 @@ void ResourceManager::createMeshBuffers()
 {
     ZoneScopedN("ResourceManager::createMeshBuffers");
     log_info("createMeshBuffers() started", "ResourceManager");
-    // Create meshlet descriptor buffer (MeshletDesc[])
+    // Create meshlet descriptor buffer (GpuMeshletDesc[])
     log_info(std::format("Creating Meshlet buffer with {} entries", meshlets.size()), "ResourceManager");
     if (meshlets.empty()) {
         log_info("No meshlets present, skipping meshlet buffer creation", "ResourceManager");
     } else {
-        vk::DeviceSize bufferSize = sizeof(MeshletDesc) * meshlets.size();
+        vk::DeviceSize bufferSize = sizeof(GpuMeshletDesc) * meshlets.size();
 
         createBuffer(bufferSize,
                      vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
@@ -530,7 +530,7 @@ void ResourceManager::createCameraBuffers(Camera& camera)
     log_info("createCameraBuffers() started", "ResourceManager");
     camera.allocator = allocator.allocator;
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        vk::DeviceSize bufferSize = sizeof(CameraData);
+        vk::DeviceSize bufferSize = sizeof(GpuCameraData);
         vk::raii::Buffer buffer({});
         VmaAllocation bufferMem = nullptr;
         createBuffer(bufferSize,
@@ -564,13 +564,13 @@ void ResourceManager::ensureInstanceCapacity(uint32_t entityCount)
     ZoneScopedN("ResourceManager::ensureInstanceCapacity");
     // Grow with headroom so interactive loads do not reallocate every time.
     const uint32_t newCapacity = std::max(entityCount, instanceCapacity == 0 ? entityCount : instanceCapacity * 2);
-    log_info(std::format("Growing instance ObjectUB capacity {} -> {}", instanceCapacity, newCapacity),
+    log_info(std::format("Growing instance GpuObjectUB capacity {} -> {}", instanceCapacity, newCapacity),
              "ResourceManager");
 
     destroyInstanceUboBuffers();
     instanceCapacity = newCapacity;
 
-    const vk::DeviceSize bufferSize = sizeof(ObjectUB) * static_cast<vk::DeviceSize>(instanceCapacity);
+    const vk::DeviceSize bufferSize = sizeof(GpuObjectUB) * static_cast<vk::DeviceSize>(instanceCapacity);
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
     {
         vk::raii::Buffer buffer({});

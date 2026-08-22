@@ -5,22 +5,22 @@
 #include "../core/types.hpp"
 #include "Constants.h"
 #include "fmt/chrono.h"
+#include "geometry_store.hpp"
+#include "material_store.hpp"
 #include "object_storage.hpp"
 #include "scene/vk_camera.hpp"
 #include "vk_allocator.hpp"
 #include "vk_device.hpp"
 
 // Manages GPU resources (buffers, images, command pools) using Device + Assets data.
-// Instance ObjectUB data lives in a single host-visible buffer per frame slot (SoA-friendly).
+// Instance GpuObjectUB data lives in a single host-visible buffer per frame slot (SoA-friendly).
 // Geometry is mesh-shader only: vertex SSBO + meshlet tables via BDA (no index buffer).
 class ResourceManager {
 public:
 	ResourceManager(const Device &deviceWrapper,
 			   const VkAllocator &allocator,
-			   const std::vector<Vertex> &vertices,
-			   const std::vector<MeshletDesc>& meshlets,
-			   const std::vector<uint32_t>& meshletVertices,
-			   const std::vector<uint8_t>& meshletTriangles,
+			   GeometryStore &geometryStore,
+			   MaterialStore &materialStore,
 			   ObjectStorage &objectStorage);
 	~ResourceManager();
 
@@ -33,7 +33,7 @@ public:
 	void createVertexBuffer();
     void createMeshBuffers();
     void createIndirectBuffer();
-    // Grow/recreate the per-frame ObjectUB arrays so they fit at least entityCount entries.
+    // Grow/recreate the per-frame GpuObjectUB arrays so they fit at least entityCount entries.
     void ensureInstanceCapacity(uint32_t entityCount);
     void createUniformBuffers();
 	void createColorResources();
@@ -76,12 +76,14 @@ static void endCommandBuffer(vk::raii::CommandBuffer &commandBuffer, const vk::r
 	const vk::raii::Queue &transferQueue;
     const HardwareCapabilities hardwareCapabilities;
     ObjectStorage &objectStorage;
+    GeometryStore &geometryStore;
+    MaterialStore &materialStore;
 	uint32_t graphicsIndex;
 	uint32_t transferIndex;
 	vk::SampleCountFlagBits msaaSamples;
 	vk::Extent2D swapChainExtent{};
-	const std::vector<Vertex> &vertices;
-    const std::vector<MeshletDesc> &meshlets;
+	const std::vector<GpuVertex> &vertices;
+    const std::vector<GpuMeshletDesc> &meshlets;
     const std::vector<uint32_t> &meshletVertices;
     const std::vector<uint8_t> &meshletTriangles;
 	uint32_t swapChainImageCount = 0;
@@ -112,7 +114,7 @@ static void endCommandBuffer(vk::raii::CommandBuffer &commandBuffer, const vk::r
     // Every frame (CPU write)          | MAX_FRAMES_IN_FLIGHT	| array of that size
     // Once / rare (load, level swap)	| single device-local	| one DeviceAddress
     // Meshlet GPU buffers (device-local, read by mesh shaders via BDA)
-    vk::raii::Buffer meshletBuffer = nullptr;           // MeshletDesc[]
+    vk::raii::Buffer meshletBuffer = nullptr;           // GpuMeshletDesc[]
     VmaAllocation    meshletBufferMemory = nullptr;
     vk::raii::Buffer meshletVertexBuffer = nullptr;     // uint32_t[] remap
     VmaAllocation    meshletVertexBufferMemory = nullptr;
@@ -126,12 +128,12 @@ static void endCommandBuffer(vk::raii::CommandBuffer &commandBuffer, const vk::r
     vk::DeviceAddress meshletTriangleBufferAddress = 0;
     vk::DeviceAddress indirectBufferAddress = 0;
 
-    // One ObjectUB[capacity] buffer per frame-in-flight (host-visible).
+    // One GpuObjectUB[capacity] buffer per frame-in-flight (host-visible).
     std::array<vk::raii::Buffer, MAX_FRAMES_IN_FLIGHT> instanceUboBuffers = {nullptr, nullptr};
     std::array<VmaAllocation, MAX_FRAMES_IN_FLIGHT> instanceUboMemory = {nullptr, nullptr};
     std::array<void*, MAX_FRAMES_IN_FLIGHT> instanceUboMapped = {nullptr, nullptr};
     std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> instanceUboBaseAddresses = {0, 0};
-    // Allocated instance ObjectUB slots per frame buffer (may be > entity count).
+    // Allocated instance GpuObjectUB slots per frame buffer (may be > entity count).
     uint32_t instanceCapacity = 0;
 
 private:

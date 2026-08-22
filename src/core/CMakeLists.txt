@@ -1,5 +1,6 @@
 set(CORE_SOURCES
     assets_loader.cpp
+    geometry_store.cpp
     texture_manager.cpp
     vk_allocator.cpp
     vk_descriptors.cpp

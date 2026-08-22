@@ -257,19 +257,29 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
         return;
     }
 
-    ensureFrameCapacity(frameSlot, entityCount);
-    auto* sequences = static_cast<MeshDgcSequence*>(sequenceMapped[frameSlot]);
+    const auto& geometry = resourceManager.geometryStore;
+    const auto& materials = resourceManager.materialStore;
 
+    uint32_t needed = 0;
     for (EntityId id = 0; id < entityCount; ++id) {
         if ((storage.flags[id] & EntityFlag::Active) == 0) {
             continue;
         }
-
-        const MeshletDraw& meshletDraw = storage.meshletDraws[id];
-        if (meshletDraw.meshletCount == 0) {
-            continue;
+        const uint32_t primCount = storage.primitiveCounts[id];
+        if (primCount > 0) {
+            needed += primCount;
+        } else if (storage.meshletDraws[id].meshletCount > 0) {
+            ++needed;
         }
+    }
+    if (needed == 0) {
+        return;
+    }
 
+    ensureFrameCapacity(frameSlot, needed);
+    auto* sequences = static_cast<MeshDgcSequence*>(sequenceMapped[frameSlot]);
+
+    auto fillSequence = [&](EntityId id, const MeshletDraw& meshletDraw, uint32_t textureIndex, uint32_t samplerIndex) {
         MeshDgcSequence& sequence = sequences[sequenceCount];
         sequence.pushData.cameraAddress = camera.cameraBufferAddresses[frameSlot];
         sequence.pushData.objectUbAddress = resourceManager.instanceUboAddress(frameSlot, id);
@@ -280,17 +290,53 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
         sequence.pushData.firstMeshlet = meshletDraw.firstMeshlet;
         sequence.pushData.meshletCount = meshletDraw.meshletCount;
         sequence.pushData.texture = {
-            .resourceIndex = storage.materials[id].textureIndex,
+            .resourceIndex = textureIndex,
             .samplerIndex = 0,
         };
         sequence.pushData.samplerHandle = {
-            .resourceIndex = descriptorManager.getSamplerDescriptorIndex(),
+            .resourceIndex = samplerIndex,
             .samplerIndex = 0,
         };
         sequence.draw.groupCountX = meshletDraw.meshletCount;
         sequence.draw.groupCountY = 1;
         sequence.draw.groupCountZ = 1;
         ++sequenceCount;
+    };
+
+    for (EntityId id = 0; id < entityCount; ++id) {
+        if ((storage.flags[id] & EntityFlag::Active) == 0) {
+            continue;
+        }
+
+        const uint32_t primCount = storage.primitiveCounts[id];
+        const uint32_t primFirst = storage.firstPrimitives[id];
+        if (primCount > 0) {
+            for (uint32_t p = 0; p < primCount; ++p) {
+                const PrimitiveDraw& prim = geometry.primitiveDraws[primFirst + p];
+                if (prim.meshlets.meshletCount == 0) {
+                    continue;
+                }
+                uint32_t textureIndex = storage.materials[id].textureIndex;
+                uint32_t samplerIndex = descriptorManager.getSamplerDescriptorIndex();
+                if (prim.materialId < materials.size()) {
+                    const GpuMaterial& gpu = materials.gpuMaterials[prim.materialId];
+                    if (gpu.baseColorTex != kNoneIndex) {
+                        textureIndex = gpu.baseColorTex;
+                    }
+                    if (gpu.baseColorSamp != kNoneIndex) {
+                        samplerIndex = gpu.baseColorSamp;
+                    }
+                }
+                fillSequence(id, prim.meshlets, textureIndex, samplerIndex);
+            }
+            continue;
+        }
+
+        const MeshletDraw& meshletDraw = storage.meshletDraws[id];
+        if (meshletDraw.meshletCount == 0) {
+            continue;
+        }
+        fillSequence(id, meshletDraw, storage.materials[id].textureIndex, descriptorManager.getSamplerDescriptorIndex());
     }
 
     TracyPlot("Vulkan/DgcSequenceCount", static_cast<double>(sequenceCount));

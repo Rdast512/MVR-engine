@@ -580,7 +580,7 @@ void Device::createLogicalDevice()
                             .descriptorBindingPartiallyBound = true,
                             .descriptorBindingVariableDescriptorCount = true,
                             .runtimeDescriptorArray = true,
-                            // Vertex float3@0/12 packing with slang -fvk-use-scalar-layout
+                            // GpuVertex float3@0/12 packing with slang -fvk-use-scalar-layout
                             .scalarBlockLayout = true,
                             .bufferDeviceAddress = true,
                             .vulkanMemoryModel = true,

@@ -7,7 +7,8 @@
 #include <format>
 
 EntityId ObjectStorage::create(const Transform& transform, const MeshletDraw& meshletDraw,
-                               const MaterialRef& material, std::string_view name)
+                               const MaterialRef& material, uint32_t firstPrimitive, uint32_t primitiveCount,
+                               std::string_view name)
 {
     const auto id = static_cast<EntityId>(transforms.size());
     transforms.push_back(transform);
@@ -17,6 +18,8 @@ EntityId ObjectStorage::create(const Transform& transform, const MeshletDraw& me
     materials.push_back(material);
     flags.push_back(EntityFlag::Active | EntityFlag::Dynamic);
     names.emplace_back(name);
+    firstPrimitives.push_back(firstPrimitive);
+    primitiveCounts.push_back(primitiveCount);
 
 #ifdef TRACY_ENABLE
     const std::string msg = std::format(
@@ -37,6 +40,8 @@ void ObjectStorage::clear() noexcept
     materials.clear();
     flags.clear();
     names.clear();
+    firstPrimitives.clear();
+    primitiveCounts.clear();
 }
 
 glm::mat4 computeModelMatrix(const Transform& transform)
@@ -57,7 +62,7 @@ void applyYawSpin(std::span<Transform> transforms, float deltaYawRadians)
     }
 }
 
-void writeObjectUbs(ObjectStorage& storage, std::span<ObjectUB> mappedUbs, const glm::mat4& meshPreRotation)
+void writeObjectUbs(ObjectStorage& storage, std::span<GpuObjectUB> mappedUbs, const glm::mat4& meshPreRotation)
 {
     const uint32_t count = storage.size();
     assert(mappedUbs.size() >= count);
@@ -68,9 +73,11 @@ void writeObjectUbs(ObjectStorage& storage, std::span<ObjectUB> mappedUbs, const
         }
 
         const glm::mat4 model = computeModelMatrix(storage.transforms[i]) * meshPreRotation;
-        mappedUbs[i] = ObjectUB{
+        mappedUbs[i] = GpuObjectUB{
             .modelMatrix = model,
             .prevModelMatrix = storage.prevModelMatrices[i],
+            .materialID = storage.materials[i].materialId,
+            .instanceFlags = storage.flags[i],
         };
         storage.prevModelMatrices[i] = model;
         storage.modelMatrices[i] = model;

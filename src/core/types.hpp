@@ -1,5 +1,8 @@
 #pragma once
 
+#include <string>
+#include <utility>
+#include <vector>
 
 struct TextureAsset {
     vk::raii::Image textureImage = nullptr;
@@ -11,27 +14,27 @@ struct TextureAsset {
 
 // Tight packing: pos@0, color@12, texCoord@24, sizeof==32 (glm). Mesh BDA path requires
 // device scalarBlockLayout + slangc -fvk-use-scalar-layout so SPIR-V matches this layout.
-struct Vertex
+struct GpuVertex
 {
     glm::vec3 pos;
     glm::vec3 color;
     glm::vec2 texCoord;
 
-    bool operator==(const Vertex& other) const
+    bool operator==(const GpuVertex& other) const
     {
         return pos == other.pos && color == other.color && texCoord == other.texCoord;
     }
 };
-static_assert(sizeof(Vertex) == 32, "Vertex must stay 32 B for mesh BDA / scalar layout");
-static_assert(offsetof(Vertex, color) == 12);
-static_assert(offsetof(Vertex, texCoord) == 24);
+static_assert(sizeof(GpuVertex) == 32, "GpuVertex must stay 32 B for mesh BDA / scalar layout");
+static_assert(offsetof(GpuVertex, color) == 12);
+static_assert(offsetof(GpuVertex, texCoord) == 24);
 
 namespace std
 {
     template <>
-    struct hash<Vertex>
+    struct hash<GpuVertex>
     {
-        size_t operator()(Vertex const& vertex) const
+        size_t operator()(GpuVertex const& vertex) const
         {
             return ((hash<glm::vec3>()(vertex.pos) ^ (hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
                 (hash<glm::vec2>()(vertex.texCoord) << 1);
@@ -40,8 +43,8 @@ namespace std
 } // namespace std
 
 
-// GPU-friendly meshlet header (CPU layout matches mesh.slang MeshletDesc / SSBO).
-struct alignas(16) MeshletDesc
+// GPU-friendly meshlet header (CPU layout matches mesh.slang GpuMeshletDesc / SSBO).
+struct alignas(16) GpuMeshletDesc
 {
     uint32_t vertexOffset = 0; // into meshletVertices
     uint32_t triangleOffset = 0; // into meshletTriangles (first corner index)
@@ -49,7 +52,7 @@ struct alignas(16) MeshletDesc
     uint32_t triangleCount = 0;
     glm::vec4 boundingSphere{0.0f}; // xyz = center, w = radius (object space)
 };
-static_assert(sizeof(MeshletDesc) == 32, "MeshletDesc must match mesh.slang (4x uint + float4, 32 B)");
+static_assert(sizeof(GpuMeshletDesc) == 32, "GpuMeshletDesc must match mesh.slang (4x uint + float4, 32 B)");
 
 // Per-entity range into the global meshlet arrays.
 struct MeshletDraw
@@ -64,7 +67,115 @@ struct MaterialRef
     uint32_t materialId = 0;
 };
 
-struct UniformBufferObject
+inline constexpr uint32_t kNoneIndex = ~0u;
+
+struct PrimitiveDraw
+{
+    MeshletDraw meshlets;
+    uint32_t materialId = kNoneIndex;
+    uint32_t firstVertex = 0;
+    uint32_t vertexCount = 0;
+    uint32_t firstIndex = 0;
+    uint32_t indexCount = 0;
+    uint32_t morphFirst = 0;
+    uint32_t morphCount = 0;
+    uint32_t morphWeightFirst = 0;
+};
+
+struct MorphTarget
+{
+    uint32_t posOffset = kNoneIndex;
+    uint32_t nrmOffset = kNoneIndex;
+    uint32_t tanOffset = kNoneIndex;
+};
+
+namespace GpuMaterialFlag
+{
+    inline constexpr uint32_t AlphaOpaque = 0;
+    inline constexpr uint32_t AlphaMask = 1;
+    inline constexpr uint32_t AlphaBlend = 2;
+    inline constexpr uint32_t AlphaModeMask = 3u;
+    inline constexpr uint32_t DoubleSided = 1u << 2;
+} // namespace GpuMaterialFlag
+
+struct alignas(16) GpuMaterial
+{
+    glm::vec4 baseColorFactor{1.0f, 1.0f, 1.0f, 1.0f};
+    glm::vec3 emissiveFactor{0.0f};
+    float metallicFactor = 1.0f;
+    float roughnessFactor = 1.0f;
+    float normalScale = 1.0f;
+    float occlusionStrength = 1.0f;
+    float alphaCutoff = 0.5f;
+    uint32_t flags = 0;
+
+    uint32_t baseColorTex = kNoneIndex;
+    uint32_t metalRoughTex = kNoneIndex;
+    uint32_t normalTex = kNoneIndex;
+    uint32_t occlusionTex = kNoneIndex;
+    uint32_t emissiveTex = kNoneIndex;
+
+    uint32_t baseColorSamp = kNoneIndex;
+    uint32_t metalRoughSamp = kNoneIndex;
+    uint32_t normalSamp = kNoneIndex;
+    uint32_t occlusionSamp = kNoneIndex;
+    uint32_t emissiveSamp = kNoneIndex;
+
+    uint8_t baseColorUv = 0;
+    uint8_t metalRoughUv = 0;
+    uint8_t normalUv = 0;
+    uint8_t occlusionUv = 0;
+    uint8_t emissiveUv = 0;
+};
+
+struct SamplerDesc
+{
+    int32_t minFilter = -1;
+    int32_t magFilter = -1;
+    int32_t wrapS = 10497;
+    int32_t wrapT = 10497;
+    uint32_t heapIndex = 0;
+};
+
+struct LightDef
+{
+    uint8_t type = 1;
+    glm::vec3 color{1.0f};
+    float intensity = 1.0f;
+    float range = 0.0f;
+    float innerCone = 0.0f;
+    float outerCone = 0.785398163f;
+};
+
+struct LightInstance
+{
+    uint32_t defIndex = kNoneIndex;
+    glm::vec3 worldPos{0.0f};
+    glm::vec3 worldDir{0.0f, 0.0f, -1.0f};
+};
+
+namespace AuxOwnerKind
+{
+    inline constexpr uint32_t Model = 0;
+    inline constexpr uint32_t Asset = 1;
+    inline constexpr uint32_t Mesh = 2;
+    inline constexpr uint32_t Primitive = 3;
+    inline constexpr uint32_t Material = 4;
+    inline constexpr uint32_t Sampler = 5;
+    inline constexpr uint32_t Texture = 6;
+    inline constexpr uint32_t Image = 7;
+    inline constexpr uint32_t Light = 8;
+} // namespace AuxOwnerKind
+
+struct AuxBlob
+{
+    uint32_t ownerKind = 0;
+    uint32_t ownerIndex = 0;
+    std::string extrasJson;
+    std::vector<std::pair<std::string, std::string>> extensions;
+};
+
+struct GpuUniformBufferObject
 {
     alignas(16) glm::mat4 model;
     alignas(16) glm::mat4 view;
@@ -72,7 +183,7 @@ struct UniformBufferObject
 };
 
 
-struct alignas(16) CameraData {
+struct alignas(16) GpuCameraData {
     // Primary Matrices
     glm::mat4 view;
     glm::mat4 proj;
@@ -99,7 +210,7 @@ struct alignas(16) CameraData {
     glm::vec4 cameraParams; // reserved
 };
 
-struct alignas(16) ObjectUB {
+struct alignas(16) GpuObjectUB {
     // Transform Matrices
     glm::mat4 modelMatrix;     // World transformation matrix (64 bytes)
     glm::mat4 prevModelMatrix; // Previous frame world matrix for temporal motion vectors (64 bytes)

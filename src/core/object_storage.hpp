@@ -43,9 +43,12 @@ public:
     std::vector<MaterialRef> materials;
     std::vector<uint32_t> flags;
     std::vector<std::string> names;
+    std::vector<uint32_t> firstPrimitives;
+    std::vector<uint32_t> primitiveCounts;
 
     [[nodiscard]] EntityId create(const Transform& transform, const MeshletDraw& meshletDraw,
-                                  const MaterialRef& material, std::string_view name = {});
+                                  const MaterialRef& material, uint32_t firstPrimitive, uint32_t primitiveCount,
+                                  std::string_view name = {});
 
     [[nodiscard]] uint32_t size() const noexcept { return static_cast<uint32_t>(transforms.size()); }
     [[nodiscard]] bool empty() const noexcept { return transforms.empty(); }
@@ -62,6 +65,6 @@ public:
 // Demo / gameplay spin on Y (radians per call).
 void applyYawSpin(std::span<Transform> transforms, float deltaYawRadians);
 
-// Writes ObjectUB[i] for each active entity; updates prevModelMatrices for next frame.
+// Writes GpuObjectUB[i] for each active entity; updates prevModelMatrices for next frame.
 // meshPreRotation is applied as: model = trs * meshPreRotation (same order as before).
-void writeObjectUbs(ObjectStorage& storage, std::span<ObjectUB> mappedUbs, const glm::mat4& meshPreRotation);
+void writeObjectUbs(ObjectStorage& storage, std::span<GpuObjectUB> mappedUbs, const glm::mat4& meshPreRotation);

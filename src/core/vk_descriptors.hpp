@@ -33,6 +33,7 @@ public:
     [[nodiscard]] auto getTextureDescriptorIndex() const -> uint32_t;
     [[nodiscard]] auto getSamplerDescriptorIndex() const -> uint32_t;
     void writeImageDescriptor(TextureAsset& textureAsset, const vk::ImageViewCreateInfo& imageViewCreateInfo);
+    [[nodiscard]] uint32_t writeSamplerDescriptor(const vk::SamplerCreateInfo& samplerInfo);
 
 
 
@@ -57,6 +58,8 @@ public:
 
     vk::DeviceSize textureDescriptorOffset = 0;
     vk::DeviceSize samplerDescriptorOffset = 0;
+    vk::DeviceSize nextSamplerDescriptorOffset = 0;
+    uint32_t defaultSamplerHeapIndex = 0;
     vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
     vk::raii::DescriptorPool descriptorPool = nullptr;
     std::vector<vk::raii::DescriptorSet> descriptorSets;

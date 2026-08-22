@@ -2,8 +2,8 @@
 // One workgroup per meshlet: drawMeshTasksEXT(meshletCount, 1, 1).
 // Geometry is loaded via buffer-device addresses in MeshPushData (no vertex input).
 
-// ── Camera buffer (matches CameraData in types.hpp) ──────────────
-struct CameraData
+// ── Camera buffer (matches GpuCameraData in types.hpp) ──────────────
+struct GpuCameraData
 {
     float4x4 view;
     float4x4 proj;
@@ -25,11 +25,11 @@ struct CameraData
     float farZ;
     float frameDeltaTime;
 
-    float4 cameraParams; // reserved (matches C++ CameraData)
+    float4 cameraParams; // reserved (matches C++ GpuCameraData)
 };
 
-// ── Per-object buffer (matches ObjectUB in types.hpp) ────────────
-struct ObjectUB
+// ── Per-object buffer (matches GpuObjectUB in types.hpp) ────────────
+struct GpuObjectUB
 {
     float4x4 modelMatrix;
     float4x4 prevModelMatrix;
@@ -42,18 +42,18 @@ struct ObjectUB
     uint baseIndex;
 };
 
-// GPU vertex — matches C++ Vertex (glm::vec3/vec3/vec2, 32 B, no std430 padding).
+// GPU vertex — matches C++ GpuVertex (glm::vec3/vec3/vec2, 32 B, no std430 padding).
 // Requires slangc -fvk-use-scalar-layout and device scalarBlockLayout (Vulkan 1.2).
 // Without scalar layout, SPIR-V puts color at offset 16 and validation fails BDA loads.
-struct Vertex
+struct GpuVertex
 {
     float3 pos;      // offset 0
     float3 color;    // offset 12
     float2 texCoord; // offset 24
 };
 
-// Matches C++ MeshletDesc (alignas(16), 32 B)
-struct MeshletDesc
+// Matches C++ GpuMeshletDesc (alignas(16), 32 B)
+struct GpuMeshletDesc
 {
     uint vertexOffset;    // into meshletVertices
     uint triangleOffset;  // into meshletTriangles (byte / corner index)
@@ -66,8 +66,8 @@ struct MeshletDesc
 // Layout (std430 / natural, 8-byte aligned device addresses):
 //   +0  cameraAddress      uint64
 //   +8  objectUbAddress    uint64
-//  +16  vertices           uint64  (Vertex*)
-//  +24  meshlets           uint64  (MeshletDesc*)
+//  +16  vertices           uint64  (GpuVertex*)
+//  +24  meshlets           uint64  (GpuMeshletDesc*)
 //  +32  meshletVertices    uint64  (uint*)
 //  +40  meshletTriangles   uint64  (uint8*)
 //  +48  firstMeshlet       uint
@@ -120,8 +120,8 @@ void meshMain(
         return;
     }
 
-    MeshletDesc* meshletTable = reinterpret<MeshletDesc*>(push.meshlets);
-    MeshletDesc meshlet = meshletTable[push.firstMeshlet + gid];
+    GpuMeshletDesc* meshletTable = reinterpret<GpuMeshletDesc*>(push.meshlets);
+    GpuMeshletDesc meshlet = meshletTable[push.firstMeshlet + gid];
 
     const uint vertCount = min(meshlet.vertexCount, kMaxMeshletVertices);
     const uint primCount = min(meshlet.triangleCount, kMaxMeshletTriangles);
@@ -132,9 +132,9 @@ void meshMain(
         return;
     }
 
-    ObjectUB* object = reinterpret<ObjectUB*>(push.objectUbAddress);
-    CameraData* camera = reinterpret<CameraData*>(push.cameraAddress);
-    Vertex* vertexTable = reinterpret<Vertex*>(push.vertices);
+    GpuObjectUB* object = reinterpret<GpuObjectUB*>(push.objectUbAddress);
+    GpuCameraData* camera = reinterpret<GpuCameraData*>(push.cameraAddress);
+    GpuVertex* vertexTable = reinterpret<GpuVertex*>(push.vertices);
     uint* meshletVertTable = reinterpret<uint*>(push.meshletVertices);
     uint8_t* meshletTriTable = reinterpret<uint8_t*>(push.meshletTriangles);
 
@@ -144,7 +144,7 @@ void meshMain(
     for (uint vi = gtid; vi < vertCount; vi += kGroupSize)
     {
         uint globalVertexIndex = meshletVertTable[meshlet.vertexOffset + vi];
-        Vertex v = vertexTable[globalVertexIndex];
+        GpuVertex v = vertexTable[globalVertexIndex];
 
         verts[vi].pos = mul(mvp, float4(v.pos, 1.0));
         verts[vi].fragColor = v.color;

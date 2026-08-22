@@ -64,15 +64,15 @@ void Engine::initialize()
     textureManager->init();
 
     scene = std::make_unique<Scene>();
-    assetsLoader = std::make_unique<AssetsLoader>(scene->objectStorage, *textureManager);
+    assetsLoader = std::make_unique<AssetsLoader>(scene->objectStorage, *textureManager, scene->geometryStore,
+                                                  scene->materialStore, scene->lightStore);
 
     const glm::vec3 initialAssetPos{0.0f, 0.0f, 0.0f};
     assetsLoader->loadModel(MODEL_PATH.string(), initialAssetPos);
     // Aim free-fly camera at the only startup model so the scene is visible immediately.
     camera->focusOn(initialAssetPos);
-    resourceManager = std::make_unique<ResourceManager>(
-        *device, *allocator, assetsLoader->vertices, assetsLoader->meshlets, assetsLoader->meshletVertices,
-        assetsLoader->meshletTriangles, scene->objectStorage);
+    resourceManager = std::make_unique<ResourceManager>(*device, *allocator, scene->geometryStore, scene->materialStore,
+                                                        scene->objectStorage);
     resourceManager->init();
     resourceManager->createCameraBuffers(*camera);
 
