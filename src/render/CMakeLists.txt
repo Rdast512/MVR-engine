@@ -1,8 +1,8 @@
 set(RENDER_SOURCES
     vk_dgc.cpp
-    vk_materials.cpp
     vk_pipeline.cpp
     vk_renderer.cpp
+    vk_pbr.cpp
 )
 
 add_library(engine_render SHARED ${RENDER_SOURCES})
