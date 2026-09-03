@@ -11,10 +11,8 @@
 class DescriptorManager;
 class Camera;
 
-// GPU-driven mesh draws: PUSH_DATA + DRAW_MESH_TASKS via VK_EXT_device_generated_commands.
-// Sequences are CPU-filled until a cull compute pass exists.
+// GPU-driven mesh draws via VK_EXT_device_generated_commands
 class DeviceGeneratedCommands
-{
 public:
     DeviceGeneratedCommands(Device& device, ResourceManager& resourceManager, DescriptorManager& descriptorManager,
                             Pipeline& pipeline);

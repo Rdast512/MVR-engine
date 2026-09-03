@@ -1,26 +1,27 @@
 #pragma once
 #include "../Constants.h"
-#include "assets_loader.hpp"
-#include "texture_manager.hpp"
 #include "../render/vk_pipeline.hpp"
 #include "../render/vk_renderer.hpp"
 #include "../util/vk_tracy.hpp"
+#include "assets_loader.hpp"
+#include "scene/vk_camera.hpp"
+#include "scene/vk_scene.hpp"
+#include "texture_manager.hpp"
 #include "vk_allocator.hpp"
 #include "vk_descriptors.hpp"
 #include "vk_device.hpp"
 #include "vk_resource_manager.hpp"
 #include "vk_swapchain.hpp"
-#include "scene/vk_camera.hpp"
-#include "scene/vk_scene.hpp"
 
 
-class Engine{
-    // Driven by Constants.h ENGINE_ENABLE_IMGUI. When false, no ImGui Vulkan/SDL backends.
+class Engine
+{
+    // imgui backend enabled state
     bool enableImGui = (ENGINE_ENABLE_IMGUI != 0);
-    // Runtime UI visibility (I key). Hidden + game-focused until toggled open. No-op if !enableImGui.
+    // runtime ui visibility
     bool imguiUiOpen = false;
 
-    SDL_Window *window = nullptr;
+    SDL_Window* window = nullptr;
     std::unique_ptr<Device> device;
     std::unique_ptr<VkAllocator> allocator;
     std::unique_ptr<SwapChain> swapChain;
@@ -50,7 +51,7 @@ class Engine{
     void createImGuiDescriptorPool();
     void drawImGui();
     void loadObject();
-    // Full host-side swapchain recreate (waitIdle inside swapchain, color/depth/sync, ImGui).
+    // recreate swapchain and frame resources
     void recreateSwapchain();
 
 public:
@@ -60,6 +61,6 @@ public:
     void render();
     void cleanup();
     void shutdown();
-    // ImGui callback stub: invoked when the demo button is pressed. Implement later.
+    // scan models folder for assets
     void scanFolder();
 };
