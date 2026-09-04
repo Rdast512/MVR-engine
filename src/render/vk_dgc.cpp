@@ -16,7 +16,10 @@
 
 namespace
 {
-    struct MeshDgcSequence
+    // Packed size is 84 (72-byte push + 12-byte draw). Sequence N then starts at 84*N,
+    // which is not 8-byte aligned, so uint64 BDAs in pushData are misaligned for N>=1.
+    // Room (1 sequence) works; Sponza (~100 sequences) hits this and GPU-AV/submit dies.
+    struct alignas(16) MeshDgcSequence
     {
         MeshPushData pushData;
         vk::DrawMeshTasksIndirectCommandEXT draw;
@@ -25,9 +28,30 @@ namespace
     static_assert(std::is_trivially_copyable_v<MeshDgcSequence>);
     static_assert(offsetof(MeshDgcSequence, pushData) == 0);
     static_assert(offsetof(MeshDgcSequence, draw) == sizeof(MeshPushData));
+    static_assert(sizeof(MeshDgcSequence) % 16 == 0);
+    static_assert(sizeof(MeshDgcSequence) >= sizeof(MeshPushData) + sizeof(vk::DrawMeshTasksIndirectCommandEXT));
 
     constexpr vk::ShaderStageFlags kDgcMeshStages =
         vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eFragment;
+
+    uint32_t maxMeshGroupsX(const HardwareCapabilities& capabilities)
+    {
+        const uint32_t countX = capabilities.meshShader.maxMeshWorkGroupCount[0];
+        const uint32_t total = capabilities.meshShader.maxMeshWorkGroupTotalCount;
+        uint32_t cap = countX == 0 ? 1u : countX;
+        if (total != 0) {
+            cap = std::min(cap, total);
+        }
+        return std::max(1u, cap);
+    }
+
+    uint32_t sequenceCountForMeshlets(uint32_t meshletCount, uint32_t maxGroupsX)
+    {
+        if (meshletCount == 0) {
+            return 0;
+        }
+        return (meshletCount + maxGroupsX - 1) / maxGroupsX;
+    }
 } // namespace
 
 DeviceGeneratedCommands::DeviceGeneratedCommands(Device& device, ResourceManager& resourceManager,
@@ -147,6 +171,9 @@ void DeviceGeneratedCommands::ensureFrameCapacity(uint32_t frameSlot, uint32_t m
         throw std::runtime_error("DGC sequence count exceeds maxIndirectSequenceCount");
     }
 
+    log_info(std::format("DGC frame {} capacity {} -> {} (need {}, stride={})", frameSlot,
+                         sequenceCapacity[frameSlot], newCapacity, minSequences, sizeof(MeshDgcSequence)),
+             "DGC");
     destroyFrameResources(frameSlot);
     allocateSequenceBuffer(frameSlot, newCapacity);
     allocatePreprocessBuffer(frameSlot, newCapacity);
@@ -259,6 +286,7 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
 
     const auto& geometry = resourceManager.geometryStore;
     const auto& materials = resourceManager.materialStore;
+    const uint32_t maxGroupsX = maxMeshGroupsX(device.capabilities);
 
     uint32_t needed = 0;
     for (EntityId id = 0; id < entityCount; ++id) {
@@ -267,9 +295,13 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
         }
         const uint32_t primCount = storage.primitiveCounts[id];
         if (primCount > 0) {
-            needed += primCount;
-        } else if (storage.meshletDraws[id].meshletCount > 0) {
-            ++needed;
+            const uint32_t primFirst = storage.firstPrimitives[id];
+            for (uint32_t p = 0; p < primCount; ++p) {
+                needed += sequenceCountForMeshlets(geometry.primitiveDraws[primFirst + p].meshlets.meshletCount,
+                                                   maxGroupsX);
+            }
+        } else {
+            needed += sequenceCountForMeshlets(storage.meshletDraws[id].meshletCount, maxGroupsX);
         }
     }
     if (needed == 0) {
@@ -280,27 +312,34 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
     auto* sequences = static_cast<MeshDgcSequence*>(sequenceMapped[frameSlot]);
 
     auto fillSequence = [&](EntityId id, const MeshletDraw& meshletDraw, uint32_t textureIndex, uint32_t samplerIndex) {
-        MeshDgcSequence& sequence = sequences[sequenceCount];
-        sequence.pushData.cameraAddress = camera.cameraBufferAddresses[frameSlot];
-        sequence.pushData.objectUbAddress = resourceManager.instanceUboAddress(frameSlot, id);
-        sequence.pushData.vertices = resourceManager.vertexBufferAddress;
-        sequence.pushData.meshlets = resourceManager.meshletBufferAddress;
-        sequence.pushData.meshletVertices = resourceManager.meshletVertexBufferAddress;
-        sequence.pushData.meshletTriangles = resourceManager.meshletTriangleBufferAddress;
-        sequence.pushData.firstMeshlet = meshletDraw.firstMeshlet;
-        sequence.pushData.meshletCount = meshletDraw.meshletCount;
-        sequence.pushData.texture = {
-            .resourceIndex = textureIndex,
-            .samplerIndex = 0,
-        };
-        sequence.pushData.samplerHandle = {
-            .resourceIndex = samplerIndex,
-            .samplerIndex = 0,
-        };
-        sequence.draw.groupCountX = meshletDraw.meshletCount;
-        sequence.draw.groupCountY = 1;
-        sequence.draw.groupCountZ = 1;
-        ++sequenceCount;
+        uint32_t remaining = meshletDraw.meshletCount;
+        uint32_t firstMeshlet = meshletDraw.firstMeshlet;
+        while (remaining > 0) {
+            const uint32_t batch = std::min(remaining, maxGroupsX);
+            MeshDgcSequence& sequence = sequences[sequenceCount];
+            sequence.pushData.cameraAddress = camera.cameraBufferAddresses[frameSlot];
+            sequence.pushData.objectUbAddress = resourceManager.instanceUboAddress(frameSlot, id);
+            sequence.pushData.vertices = resourceManager.vertexBufferAddress;
+            sequence.pushData.meshlets = resourceManager.meshletBufferAddress;
+            sequence.pushData.meshletVertices = resourceManager.meshletVertexBufferAddress;
+            sequence.pushData.meshletTriangles = resourceManager.meshletTriangleBufferAddress;
+            sequence.pushData.firstMeshlet = firstMeshlet;
+            sequence.pushData.meshletCount = batch;
+            sequence.pushData.texture = {
+                .resourceIndex = textureIndex,
+                .samplerIndex = 0,
+            };
+            sequence.pushData.samplerHandle = {
+                .resourceIndex = samplerIndex,
+                .samplerIndex = 0,
+            };
+            sequence.draw.groupCountX = batch;
+            sequence.draw.groupCountY = 1;
+            sequence.draw.groupCountZ = 1;
+            ++sequenceCount;
+            firstMeshlet += batch;
+            remaining -= batch;
+        }
     };
 
     for (EntityId id = 0; id < entityCount; ++id) {
