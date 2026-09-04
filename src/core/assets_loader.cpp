@@ -473,6 +473,253 @@ namespace
                         info.ext, slot);
     }
 
+    static const tg3_value* objectField(const tg3_value* obj, std::string_view key)
+    {
+        if (obj == nullptr || obj->type != TG3_VALUE_OBJECT || obj->object_data == nullptr) {
+            return nullptr;
+        }
+        for (uint32_t i = 0; i < obj->object_count; ++i) {
+            if (strView(obj->object_data[i].key) == key) {
+                return &obj->object_data[i].value;
+            }
+        }
+        return nullptr;
+    }
+
+    static const tg3_value* findExtensionValue(const tg3_extras_ext& ext, std::string_view name)
+    {
+        for (uint32_t i = 0; i < ext.extensions_count; ++i) {
+            if (strView(ext.extensions[i].name) == name) {
+                return &ext.extensions[i].value;
+            }
+        }
+        return nullptr;
+    }
+
+    static float valueAsFloat(const tg3_value* value, float fallback)
+    {
+        if (value == nullptr) {
+            return fallback;
+        }
+        if (value->type == TG3_VALUE_REAL) {
+            return static_cast<float>(value->real_val);
+        }
+        if (value->type == TG3_VALUE_INT) {
+            return static_cast<float>(value->int_val);
+        }
+        return fallback;
+    }
+
+    static int32_t valueAsInt(const tg3_value* value, int32_t fallback)
+    {
+        if (value == nullptr) {
+            return fallback;
+        }
+        if (value->type == TG3_VALUE_INT) {
+            return static_cast<int32_t>(value->int_val);
+        }
+        if (value->type == TG3_VALUE_REAL) {
+            return static_cast<int32_t>(value->real_val);
+        }
+        return fallback;
+    }
+
+    static glm::vec2 valueAsVec2(const tg3_value* value, glm::vec2 fallback)
+    {
+        if (value == nullptr || value->type != TG3_VALUE_ARRAY || value->array_data == nullptr || value->array_count < 2) {
+            return fallback;
+        }
+        return {valueAsFloat(&value->array_data[0], fallback.x), valueAsFloat(&value->array_data[1], fallback.y)};
+    }
+
+    static glm::vec3 valueAsVec3(const tg3_value* value, glm::vec3 fallback)
+    {
+        if (value == nullptr || value->type != TG3_VALUE_ARRAY || value->array_data == nullptr || value->array_count < 3) {
+            return fallback;
+        }
+        return {valueAsFloat(&value->array_data[0], fallback.x), valueAsFloat(&value->array_data[1], fallback.y),
+                valueAsFloat(&value->array_data[2], fallback.z)};
+    }
+
+    static void parseTextureTransform(const tg3_value* transform, uint8_t& uv, MaterialUvTransform& xform)
+    {
+        if (transform == nullptr) {
+            return;
+        }
+        xform.offset = valueAsVec2(objectField(transform, "offset"), xform.offset);
+        xform.scale = valueAsVec2(objectField(transform, "scale"), xform.scale);
+        xform.rotation = valueAsFloat(objectField(transform, "rotation"), xform.rotation);
+        const int32_t texCoord = valueAsInt(objectField(transform, "texCoord"), -1);
+        if (texCoord >= 0) {
+            uv = static_cast<uint8_t>(texCoord);
+        }
+    }
+
+    static const tg3_value* nestedExtension(const tg3_value* obj, std::string_view name)
+    {
+        return objectField(objectField(obj, "extensions"), name);
+    }
+
+    static void parseCoreTextureTransform(const tg3_extras_ext& ext, uint8_t& uv, MaterialUvTransform& xform)
+    {
+        parseTextureTransform(findExtensionValue(ext, "KHR_texture_transform"), uv, xform);
+    }
+
+    static MaterialTextureRef parseExtensionTexture(GltfLoadCtx& ctx, const tg3_value* textureInfo,
+                                                    TextureColorSpace colorSpace, std::string_view slot)
+    {
+        MaterialTextureRef ref{};
+        if (textureInfo == nullptr || textureInfo->type != TG3_VALUE_OBJECT) {
+            return ref;
+        }
+        const int32_t index = valueAsInt(objectField(textureInfo, "index"), -1);
+        const int32_t texCoord = valueAsInt(objectField(textureInfo, "texCoord"), 0);
+        ref.uv = static_cast<uint8_t>(std::max(texCoord, 0));
+        ref.normalScale = valueAsFloat(objectField(textureInfo, "scale"), 1.0f);
+        parseTextureTransform(nestedExtension(textureInfo, "KHR_texture_transform"), ref.uv, ref.uvXform);
+        if (index >= 0) {
+            ref.tex = resolveTextureImage(ctx, index, colorSpace);
+            ref.samp = resolveTextureSampler(ctx, index);
+        }
+        log_info(std::format("glTF {} index={} texCoord={} heap={} sampler={}", slot, index, ref.uv, ref.tex, ref.samp),
+                 "AssetLoader");
+        return ref;
+    }
+
+    static void parseGltfMaterialPbrExtensions(GltfLoadCtx& ctx, const tg3_material& material, GpuMaterial& gpu,
+                                               MaterialPbrExtension& ext, std::string_view owner)
+    {
+        const auto slot = [owner](std::string_view name) { return std::format("{}.{}", owner, name); };
+
+        parseCoreTextureTransform(material.pbr_metallic_roughness.base_color_texture.ext, gpu.baseColorUv, ext.baseColorUv);
+        parseCoreTextureTransform(material.pbr_metallic_roughness.metallic_roughness_texture.ext, gpu.metalRoughUv,
+                                  ext.metalRoughUv);
+        parseCoreTextureTransform(material.normal_texture.ext, gpu.normalUv, ext.normalUv);
+        parseCoreTextureTransform(material.occlusion_texture.ext, gpu.occlusionUv, ext.occlusionUv);
+        parseCoreTextureTransform(material.emissive_texture.ext, gpu.emissiveUv, ext.emissiveUv);
+
+        for (uint32_t i = 0; i < material.ext.extensions_count; ++i) {
+            const std::string_view name = strView(material.ext.extensions[i].name);
+            const tg3_value* value = &material.ext.extensions[i].value;
+
+            if (name == "KHR_materials_unlit") {
+                ext.flags |= MaterialExtFlag::Unlit;
+                gpu.flags |= GpuMaterialFlag::Unlit;
+                log_info(std::format("glTF {} KHR_materials_unlit", owner), "AssetLoader");
+            } else if (name == "KHR_materials_emissive_strength") {
+                ext.flags |= MaterialExtFlag::EmissiveStrength;
+                ext.emissiveStrength = valueAsFloat(objectField(value, "emissiveStrength"), 1.0f);
+                log_info(std::format("glTF {} KHR_materials_emissive_strength={}", owner, ext.emissiveStrength),
+                         "AssetLoader");
+            } else if (name == "KHR_materials_ior") {
+                ext.flags |= MaterialExtFlag::Ior;
+                ext.ior = valueAsFloat(objectField(value, "ior"), 1.5f);
+                log_info(std::format("glTF {} KHR_materials_ior={}", owner, ext.ior), "AssetLoader");
+            } else if (name == "KHR_materials_dispersion") {
+                ext.flags |= MaterialExtFlag::Dispersion;
+                ext.dispersion = valueAsFloat(objectField(value, "dispersion"), 0.0f);
+                log_info(std::format("glTF {} KHR_materials_dispersion={}", owner, ext.dispersion), "AssetLoader");
+            } else if (name == "KHR_materials_specular") {
+                ext.flags |= MaterialExtFlag::Specular;
+                ext.specularFactor = valueAsFloat(objectField(value, "specularFactor"), 1.0f);
+                ext.specularColorFactor = valueAsVec3(objectField(value, "specularColorFactor"), glm::vec3{1.0f});
+                ext.specular = parseExtensionTexture(ctx, objectField(value, "specularTexture"), TextureColorSpace::Linear,
+                                                     slot("specularTexture"));
+                ext.specularColor = parseExtensionTexture(ctx, objectField(value, "specularColorTexture"),
+                                                          TextureColorSpace::Srgb, slot("specularColorTexture"));
+                log_info(std::format("glTF {} KHR_materials_specular factor={} color=({}, {}, {})", owner,
+                                     ext.specularFactor, ext.specularColorFactor.x, ext.specularColorFactor.y,
+                                     ext.specularColorFactor.z),
+                         "AssetLoader");
+            } else if (name == "KHR_materials_clearcoat") {
+                ext.flags |= MaterialExtFlag::Clearcoat;
+                ext.clearcoatFactor = valueAsFloat(objectField(value, "clearcoatFactor"), 0.0f);
+                ext.clearcoatRoughnessFactor = valueAsFloat(objectField(value, "clearcoatRoughnessFactor"), 0.0f);
+                ext.clearcoat = parseExtensionTexture(ctx, objectField(value, "clearcoatTexture"),
+                                                      TextureColorSpace::Linear, slot("clearcoatTexture"));
+                ext.clearcoatRoughness =
+                    parseExtensionTexture(ctx, objectField(value, "clearcoatRoughnessTexture"), TextureColorSpace::Linear,
+                                          slot("clearcoatRoughnessTexture"));
+                ext.clearcoatNormal = parseExtensionTexture(ctx, objectField(value, "clearcoatNormalTexture"),
+                                                            TextureColorSpace::Linear, slot("clearcoatNormalTexture"));
+                log_info(std::format("glTF {} KHR_materials_clearcoat factor={} roughness={}", owner, ext.clearcoatFactor,
+                                     ext.clearcoatRoughnessFactor),
+                         "AssetLoader");
+            } else if (name == "KHR_materials_sheen") {
+                ext.flags |= MaterialExtFlag::Sheen;
+                ext.sheenColorFactor = valueAsVec3(objectField(value, "sheenColorFactor"), glm::vec3{0.0f});
+                ext.sheenRoughnessFactor = valueAsFloat(objectField(value, "sheenRoughnessFactor"), 0.0f);
+                ext.sheenColor = parseExtensionTexture(ctx, objectField(value, "sheenColorTexture"), TextureColorSpace::Srgb,
+                                                       slot("sheenColorTexture"));
+                ext.sheenRoughness = parseExtensionTexture(ctx, objectField(value, "sheenRoughnessTexture"),
+                                                           TextureColorSpace::Linear, slot("sheenRoughnessTexture"));
+                log_info(std::format("glTF {} KHR_materials_sheen color=({}, {}, {}) roughness={}", owner,
+                                     ext.sheenColorFactor.x, ext.sheenColorFactor.y, ext.sheenColorFactor.z,
+                                     ext.sheenRoughnessFactor),
+                         "AssetLoader");
+            } else if (name == "KHR_materials_transmission") {
+                ext.flags |= MaterialExtFlag::Transmission;
+                ext.transmissionFactor = valueAsFloat(objectField(value, "transmissionFactor"), 0.0f);
+                ext.transmission = parseExtensionTexture(ctx, objectField(value, "transmissionTexture"),
+                                                         TextureColorSpace::Linear, slot("transmissionTexture"));
+                log_info(std::format("glTF {} KHR_materials_transmission={}", owner, ext.transmissionFactor),
+                         "AssetLoader");
+            } else if (name == "KHR_materials_volume") {
+                ext.flags |= MaterialExtFlag::Volume;
+                ext.thicknessFactor = valueAsFloat(objectField(value, "thicknessFactor"), 0.0f);
+                ext.attenuationDistance = valueAsFloat(objectField(value, "attenuationDistance"), 0.0f);
+                ext.attenuationColor = valueAsVec3(objectField(value, "attenuationColor"), glm::vec3{1.0f});
+                ext.thickness = parseExtensionTexture(ctx, objectField(value, "thicknessTexture"), TextureColorSpace::Linear,
+                                                      slot("thicknessTexture"));
+                log_info(std::format("glTF {} KHR_materials_volume thickness={} attenDist={} color=({}, {}, {})", owner,
+                                     ext.thicknessFactor, ext.attenuationDistance, ext.attenuationColor.x,
+                                     ext.attenuationColor.y, ext.attenuationColor.z),
+                         "AssetLoader");
+            } else if (name == "KHR_materials_iridescence") {
+                ext.flags |= MaterialExtFlag::Iridescence;
+                ext.iridescenceFactor = valueAsFloat(objectField(value, "iridescenceFactor"), 0.0f);
+                ext.iridescenceIor = valueAsFloat(objectField(value, "iridescenceIor"), 1.3f);
+                ext.iridescenceThicknessMin = valueAsFloat(objectField(value, "iridescenceThicknessMinimum"), 100.0f);
+                ext.iridescenceThicknessMax = valueAsFloat(objectField(value, "iridescenceThicknessMaximum"), 400.0f);
+                ext.iridescence = parseExtensionTexture(ctx, objectField(value, "iridescenceTexture"),
+                                                        TextureColorSpace::Linear, slot("iridescenceTexture"));
+                ext.iridescenceThickness =
+                    parseExtensionTexture(ctx, objectField(value, "iridescenceThicknessTexture"), TextureColorSpace::Linear,
+                                          slot("iridescenceThicknessTexture"));
+                log_info(std::format("glTF {} KHR_materials_iridescence factor={} ior={} thickness=[{}, {}]", owner,
+                                     ext.iridescenceFactor, ext.iridescenceIor, ext.iridescenceThicknessMin,
+                                     ext.iridescenceThicknessMax),
+                         "AssetLoader");
+            } else if (name == "KHR_materials_anisotropy") {
+                ext.flags |= MaterialExtFlag::Anisotropy;
+                ext.anisotropyStrength = valueAsFloat(objectField(value, "anisotropyStrength"), 0.0f);
+                ext.anisotropyRotation = valueAsFloat(objectField(value, "anisotropyRotation"), 0.0f);
+                ext.anisotropy = parseExtensionTexture(ctx, objectField(value, "anisotropyTexture"),
+                                                       TextureColorSpace::Linear, slot("anisotropyTexture"));
+                log_info(std::format("glTF {} KHR_materials_anisotropy strength={} rotation={}", owner,
+                                     ext.anisotropyStrength, ext.anisotropyRotation),
+                         "AssetLoader");
+            } else if (name == "KHR_materials_diffuse_transmission") {
+                ext.flags |= MaterialExtFlag::DiffuseTransmission;
+                ext.diffuseTransmissionFactor = valueAsFloat(objectField(value, "diffuseTransmissionFactor"), 0.0f);
+                ext.diffuseTransmissionColorFactor =
+                    valueAsVec3(objectField(value, "diffuseTransmissionColorFactor"), glm::vec3{1.0f});
+                ext.diffuseTransmission =
+                    parseExtensionTexture(ctx, objectField(value, "diffuseTransmissionTexture"), TextureColorSpace::Linear,
+                                          slot("diffuseTransmissionTexture"));
+                ext.diffuseTransmissionColor =
+                    parseExtensionTexture(ctx, objectField(value, "diffuseTransmissionColorTexture"), TextureColorSpace::Srgb,
+                                          slot("diffuseTransmissionColorTexture"));
+                log_info(std::format("glTF {} KHR_materials_diffuse_transmission factor={} color=({}, {}, {})", owner,
+                                     ext.diffuseTransmissionFactor, ext.diffuseTransmissionColorFactor.x,
+                                     ext.diffuseTransmissionColorFactor.y, ext.diffuseTransmissionColorFactor.z),
+                         "AssetLoader");
+            } else {
+                log_info(std::format("glTF {} skipped non-PBR extension '{}'", owner, name), "AssetLoader");
+            }
+        }
+    }
+
     static uint32_t alphaModeFlags(std::string_view mode, int32_t doubleSided)
     {
         uint32_t flags = GpuMaterialFlag::AlphaOpaque;
@@ -558,7 +805,9 @@ namespace
             parseGltfExtras(ctx.geometry, AuxOwnerKind::Material, i, material.ext, owner);
             parseGltfExtras(ctx.geometry, AuxOwnerKind::Material, i, pbr.ext, owner + ".pbr");
 
-            ctx.materialIds[i] = ctx.materials.add(gpu);
+            MaterialPbrExtension pbrExt{};
+            parseGltfMaterialPbrExtensions(ctx, material, gpu, pbrExt, owner);
+            ctx.materialIds[i] = ctx.materials.add(gpu, pbrExt);
         }
     }
 

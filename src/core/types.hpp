@@ -96,6 +96,7 @@ namespace GpuMaterialFlag
     inline constexpr uint32_t AlphaBlend = 2;
     inline constexpr uint32_t AlphaModeMask = 3u;
     inline constexpr uint32_t DoubleSided = 1u << 2;
+    inline constexpr uint32_t Unlit = 1u << 3;
 } // namespace GpuMaterialFlag
 
 struct alignas(16) GpuMaterial
@@ -126,6 +127,94 @@ struct alignas(16) GpuMaterial
     uint8_t normalUv = 0;
     uint8_t occlusionUv = 0;
     uint8_t emissiveUv = 0;
+};
+
+// CPU-only KHR PBR-next + texture-transform. Not uploaded until the PBR path exists.
+struct MaterialUvTransform
+{
+    glm::vec2 offset{0.0f, 0.0f};
+    glm::vec2 scale{1.0f, 1.0f};
+    float rotation = 0.0f;
+};
+
+struct MaterialTextureRef
+{
+    uint32_t tex = kNoneIndex;
+    uint32_t samp = kNoneIndex;
+    uint8_t uv = 0;
+    float normalScale = 1.0f;
+    MaterialUvTransform uvXform{};
+};
+
+namespace MaterialExtFlag
+{
+    inline constexpr uint32_t Unlit = 1u << 0;
+    inline constexpr uint32_t Clearcoat = 1u << 1;
+    inline constexpr uint32_t Sheen = 1u << 2;
+    inline constexpr uint32_t Transmission = 1u << 3;
+    inline constexpr uint32_t Volume = 1u << 4;
+    inline constexpr uint32_t Ior = 1u << 5;
+    inline constexpr uint32_t Specular = 1u << 6;
+    inline constexpr uint32_t Iridescence = 1u << 7;
+    inline constexpr uint32_t Anisotropy = 1u << 8;
+    inline constexpr uint32_t EmissiveStrength = 1u << 9;
+    inline constexpr uint32_t Dispersion = 1u << 10;
+    inline constexpr uint32_t DiffuseTransmission = 1u << 11;
+} // namespace MaterialExtFlag
+
+struct MaterialPbrExtension
+{
+    uint32_t flags = 0;
+
+    MaterialUvTransform baseColorUv{};
+    MaterialUvTransform metalRoughUv{};
+    MaterialUvTransform normalUv{};
+    MaterialUvTransform occlusionUv{};
+    MaterialUvTransform emissiveUv{};
+
+    float ior = 1.5f;
+    float emissiveStrength = 1.0f;
+    float dispersion = 0.0f;
+
+    float specularFactor = 1.0f;
+    glm::vec3 specularColorFactor{1.0f};
+    MaterialTextureRef specular;
+    MaterialTextureRef specularColor;
+
+    float clearcoatFactor = 0.0f;
+    float clearcoatRoughnessFactor = 0.0f;
+    MaterialTextureRef clearcoat;
+    MaterialTextureRef clearcoatRoughness;
+    MaterialTextureRef clearcoatNormal;
+
+    glm::vec3 sheenColorFactor{0.0f};
+    float sheenRoughnessFactor = 0.0f;
+    MaterialTextureRef sheenColor;
+    MaterialTextureRef sheenRoughness;
+
+    float transmissionFactor = 0.0f;
+    MaterialTextureRef transmission;
+
+    float thicknessFactor = 0.0f;
+    float attenuationDistance = 0.0f; // 0 = infinite
+    glm::vec3 attenuationColor{1.0f};
+    MaterialTextureRef thickness;
+
+    float iridescenceFactor = 0.0f;
+    float iridescenceIor = 1.3f;
+    float iridescenceThicknessMin = 100.0f;
+    float iridescenceThicknessMax = 400.0f;
+    MaterialTextureRef iridescence;
+    MaterialTextureRef iridescenceThickness;
+
+    float anisotropyStrength = 0.0f;
+    float anisotropyRotation = 0.0f;
+    MaterialTextureRef anisotropy;
+
+    float diffuseTransmissionFactor = 0.0f;
+    glm::vec3 diffuseTransmissionColorFactor{1.0f};
+    MaterialTextureRef diffuseTransmission;
+    MaterialTextureRef diffuseTransmissionColor;
 };
 
 struct SamplerDesc
