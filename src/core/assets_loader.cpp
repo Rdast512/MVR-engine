@@ -19,9 +19,11 @@ namespace
     };
 
 
+
     // ── glTF accessor helpers ───────────────────────────────────
 
-    // read float data from glTF accessor
+    // Read float data from a glTF accessor. Returns an empty vector
+    // on any error (missing buffer, unsupported type, etc.).
     static std::vector<float> readAccessorFloats(const tg3_model& model, int32_t accessorIdx)
     {
         if (accessorIdx < 0 || static_cast<uint32_t>(accessorIdx) >= model.accessors_count)
@@ -81,12 +83,11 @@ namespace
                 case TG3_COMPONENT_TYPE_SHORT:
                     val = static_cast<float>(*reinterpret_cast<const int16_t*>(compSrc)) / 32767.0f;
                     break;
-                case TG3_COMPONENT_TYPE_BYTE:
-                    {
-                        const float c = static_cast<float>(*reinterpret_cast<const int8_t*>(compSrc));
-                        val = std::max(c / 127.0f, -1.0f);
-                        break;
-                    }
+                case TG3_COMPONENT_TYPE_BYTE: {
+                    const float c = static_cast<float>(*reinterpret_cast<const int8_t*>(compSrc));
+                    val = std::max(c / 127.0f, -1.0f);
+                    break;
+                }
                 default:
                     // unsupported component type — return what we have so far
                     return result;
@@ -217,7 +218,10 @@ namespace
         return tg3_span_u8{.data = buf.data.data + offset, .count = bv.byte_length};
     }
 
-    static std::string_view strView(tg3_str s) { return s.data ? std::string_view(s.data, s.len) : std::string_view{}; }
+    static std::string_view strView(tg3_str s)
+    {
+        return s.data ? std::string_view(s.data, s.len) : std::string_view{};
+    }
 
     static const char* primitiveModeName(int32_t mode)
     {
@@ -500,9 +504,10 @@ namespace
                      "AssetLoader");
 
             GpuMaterial gpu{};
-            gpu.baseColorFactor = {
-                static_cast<float>(pbr.base_color_factor[0]), static_cast<float>(pbr.base_color_factor[1]),
-                static_cast<float>(pbr.base_color_factor[2]), static_cast<float>(pbr.base_color_factor[3])};
+            gpu.baseColorFactor = {static_cast<float>(pbr.base_color_factor[0]),
+                                   static_cast<float>(pbr.base_color_factor[1]),
+                                   static_cast<float>(pbr.base_color_factor[2]),
+                                   static_cast<float>(pbr.base_color_factor[3])};
             gpu.metallicFactor = static_cast<float>(pbr.metallic_factor);
             gpu.roughnessFactor = static_cast<float>(pbr.roughness_factor);
             gpu.emissiveFactor = {static_cast<float>(material.emissive_factor[0]),
@@ -586,7 +591,7 @@ namespace
         const glm::vec3 scale{static_cast<float>(node.scale[0]), static_cast<float>(node.scale[1]),
                               static_cast<float>(node.scale[2])};
         return glm::translate(glm::mat4{1.0f}, translation) * glm::mat4_cast(rotation) *
-            glm::scale(glm::mat4{1.0f}, scale);
+               glm::scale(glm::mat4{1.0f}, scale);
     }
 
     static glm::mat4 gltfNodeWorldMatrix(const tg3_model& model, uint32_t nodeIndex, const std::vector<int32_t>& parent)
@@ -735,8 +740,8 @@ namespace
         return comps > 0 ? static_cast<uint32_t>(comps) : 0;
     }
 
-    static void fillVec3Range(std::vector<glm::vec3>& dst, uint32_t first, uint32_t count,
-                              const std::vector<float>& src, uint32_t comps)
+    static void fillVec3Range(std::vector<glm::vec3>& dst, uint32_t first, uint32_t count, const std::vector<float>& src,
+                              uint32_t comps)
     {
         if (src.empty() || comps == 0) {
             return;
@@ -751,8 +756,8 @@ namespace
         }
     }
 
-    static void fillVec4Range(std::vector<glm::vec4>& dst, uint32_t first, uint32_t count,
-                              const std::vector<float>& src, uint32_t comps, const glm::vec4& fallback)
+    static void fillVec4Range(std::vector<glm::vec4>& dst, uint32_t first, uint32_t count, const std::vector<float>& src,
+                              uint32_t comps, const glm::vec4& fallback)
     {
         if (src.empty() || comps == 0) {
             return;
@@ -794,8 +799,7 @@ namespace
         }
 
         std::vector<uint32_t> out;
-        auto emit = [&](uint32_t a, uint32_t b, uint32_t c)
-        {
+        auto emit = [&](uint32_t a, uint32_t b, uint32_t c) {
             if (a == b || b == c || c == a) {
                 return;
             }
@@ -844,9 +848,9 @@ namespace
                 const std::string_view key = strView(attrs[a].key);
                 const std::vector<float> delta = readAccessorFloats(model, attrs[a].value);
                 const uint32_t comps = accessorCompCount(model, attrs[a].value);
-                log_info(
-                    std::format("glTF morph[{}] attr='{}' accessor={} floats={}", t, key, attrs[a].value, delta.size()),
-                    "AssetLoader");
+                log_info(std::format("glTF morph[{}] attr='{}' accessor={} floats={}", t, key, attrs[a].value,
+                                     delta.size()),
+                         "AssetLoader");
                 if (key == "POSITION") {
                     target.posOffset = static_cast<uint32_t>(geometry.morphPos.size());
                     geometry.morphPos.resize(target.posOffset + vertexCount, glm::vec3{0.0f});
@@ -893,7 +897,8 @@ namespace
         }
         if (name == "TEXCOORD_1") {
             const std::vector<float> uvs = readAccessorFloats(model, accessorIdx);
-            log_info(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, uvs.size()), "AssetLoader");
+            log_info(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, uvs.size()),
+                     "AssetLoader");
             fillUvRange(geometry.uv1, firstVertex, vertexCount, uvs, accessorCompCount(model, accessorIdx), true);
             return;
         }
@@ -907,7 +912,8 @@ namespace
         }
         if (name == "JOINTS_0") {
             const std::vector<uint32_t> joints = readAccessorU32(model, accessorIdx);
-            log_info(std::format("glTF attr '{}' accessor={} u32={}", name, accessorIdx, joints.size()), "AssetLoader");
+            log_info(std::format("glTF attr '{}' accessor={} u32={}", name, accessorIdx, joints.size()),
+                     "AssetLoader");
             const uint32_t comps = accessorCompCount(model, accessorIdx);
             for (uint32_t i = 0; i < vertexCount && comps > 0; ++i) {
                 const uint32_t base = i * comps;
@@ -954,14 +960,12 @@ namespace
             for (uint32_t pi = 0; pi < mesh.primitives_count; ++pi) {
                 const tg3_primitive& prim = mesh.primitives[pi];
                 const int32_t mode = prim.mode < 0 ? TG3_MODE_TRIANGLES : prim.mode;
-                log_info(
-                    std::format("glTF mesh[{}].prim[{}] mode={} material={} attrs={} morphTargets={} indicesAcc={}", mi,
-                                pi, primitiveModeName(mode), prim.material, prim.attributes_count, prim.targets_count,
-                                prim.indices),
-                    "AssetLoader");
-                parseGltfExtras(geometry, AuxOwnerKind::Primitive,
-                                static_cast<uint32_t>(geometry.primitiveDraws.size()), prim.ext,
-                                std::format("mesh[{}].prim[{}]", mi, pi));
+                log_info(std::format("glTF mesh[{}].prim[{}] mode={} material={} attrs={} morphTargets={} indicesAcc={}",
+                                     mi, pi, primitiveModeName(mode), prim.material, prim.attributes_count,
+                                     prim.targets_count, prim.indices),
+                         "AssetLoader");
+                parseGltfExtras(geometry, AuxOwnerKind::Primitive, static_cast<uint32_t>(geometry.primitiveDraws.size()),
+                                prim.ext, std::format("mesh[{}].prim[{}]", mi, pi));
 
                 if (mode != TG3_MODE_TRIANGLES && mode != TG3_MODE_TRIANGLE_STRIP && mode != TG3_MODE_TRIANGLE_FAN) {
                     log_info(std::format("glTF mesh[{}].prim[{}] skipped: non-triangle mode", mi, pi), "AssetLoader");
@@ -1056,10 +1060,9 @@ namespace
                 geometry.primitiveDraws.push_back(draw);
                 ++storedPrimitives;
 
-                log_info(
-                    std::format("glTF mesh[{}].prim[{}] POSITION verts={} TEXCOORD_0 floats={} indices={} stored={}",
-                                mi, pi, vertexCount, texcoords.size(), indexCount, indexCount),
-                    "AssetLoader");
+                log_info(std::format("glTF mesh[{}].prim[{}] POSITION verts={} TEXCOORD_0 floats={} indices={} stored={}",
+                                     mi, pi, vertexCount, texcoords.size(), indexCount, indexCount),
+                         "AssetLoader");
             }
         }
 
@@ -1098,7 +1101,8 @@ AssetsLoader::AssetsLoader(ObjectStorage& objectStorageIn, TextureManager& textu
 void AssetsLoader::loadModel(std::string modelPath, glm::vec3 xyz)
 {
     ZoneScopedN("AssetsLoader::loadModel");
-    // normalize to preferred path format
+    // Normalise to native separators once so every loader receives a
+    // clean, OS-consistent path regardless of how it was supplied.
     const std::string path = std::filesystem::path(modelPath).make_preferred().string();
 
     const bool isGltf = path.ends_with(".gltf") || path.ends_with(".glb");
@@ -1120,7 +1124,9 @@ void AssetsLoader::loadModel(std::string modelPath, glm::vec3 xyz)
 bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
 {
     ZoneScopedN("AssetsLoader::loadGltfModel");
-    // use generic path format for glTF URI resolution
+    // glTF uses forward-slash URIs internally; normalise the base path
+    // to avoid mixed separators when the library resolves external .bin
+    // references (e.g. "models/AnimatedCube.bin" under "models\" on Windows).
     const std::string normalizedPath = std::filesystem::path(modelPath).generic_string();
 
     tg3_model model{};
@@ -1222,6 +1228,7 @@ bool AssetsLoader::loadObjModel(const std::string& modelPath, glm::vec3 xyz)
     std::vector<tinyobj::material_t> materials;
     std::string err;
 
+    // tinyobj wraps standard C file I/O — native separators are correct.
     if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &err, modelPath.c_str())) {
         log_error(std::format("Failed to load OBJ: {}", err), "AssetLoader");
         return false;

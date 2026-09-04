@@ -4,11 +4,9 @@
 #include <utility>
 #include <vector>
 
-struct TextureAsset
-{
+struct TextureAsset {
     vk::raii::Image textureImage = nullptr;
-    vk::raii::ImageView textureImageView = nullptr;
-    ;
+    vk::raii::ImageView textureImageView = nullptr;;
     VmaAllocation textureImageMemory = nullptr;
     uint32_t descriptorHeapIndex;
 };
@@ -185,47 +183,50 @@ struct GpuUniformBufferObject
 };
 
 
-struct alignas(16) GpuCameraData
-{
-    // primary matrices
+struct alignas(16) GpuCameraData {
+    // Primary Matrices
     glm::mat4 view;
     glm::mat4 proj;
     glm::mat4 viewProj;
 
-    // inverse matrices
+    // Inverses (for ray tracing, deferred depth reconstruction, world-space position calculation)
     glm::mat4 invView;
     glm::mat4 invProj;
     glm::mat4 invViewProj;
 
-    // temporal reprojection
+    // Temporal (for Motion Vectors / TAA / Velocity Buffers)
     glm::mat4 prevViewProj;
 
-    // position and view parameters
-    glm::vec3 cameraPos;
-    float nearZ;
+    // Position & View Parameters
+    glm::vec3 cameraPos;       // World-space camera position (for specular/lighting calculations)
+    float nearZ;               // Near clipping plane
 
-    glm::vec2 renderTargetSize;
-    glm::vec2 invRenderTargetSize;
+    glm::vec2 renderTargetSize;// Width, Height in pixels
+    glm::vec2 invRenderTargetSize; // 1.0 / Width, 1.0 / Height
 
-    glm::vec2 jitterOffset;
-    float farZ;
-    float frameDeltaTime;
+    glm::vec2 jitterOffset;    // TAA subpixel jitter offset
+    float farZ;                // Far clipping plane
+    float frameDeltaTime;      // Delta time in seconds
     glm::vec4 cameraParams; // reserved
 };
 
-struct alignas(16) GpuObjectUB
-{
-    glm::mat4 modelMatrix;
-    glm::mat4 prevModelMatrix; // previous frame matrix
+struct alignas(16) GpuObjectUB {
+    // Transform Matrices
+    glm::mat4 modelMatrix;     // World transformation matrix (64 bytes)
+    glm::mat4 prevModelMatrix; // Previous frame world matrix for temporal motion vectors (64 bytes)
 
-    // culling bounds
-    glm::vec4 boundingSphere; // xyz center, w radius
+    // // Direct BDA Geometry Pointers
+    // uint64_t vertexBufferAddress; // GPU Virtual Address of vertex array (8 bytes)
+    // uint64_t indexBufferAddress;  // GPU Virtual Address of index array (8 bytes)
 
-    // resource handles
-    uint32_t materialID;
-    uint32_t instanceFlags;
-    uint32_t baseVertex;
-    uint32_t baseIndex;
+    // Bounding Box / Sphere for GPU Culling (Frustum & Occlusion)
+    glm::vec4 boundingSphere;     // xyz = center, w = radius (16 bytes)
+
+    // Resource & Material Handles
+    uint32_t materialID;          // Index into global Material SSBO array (4 bytes)
+    uint32_t instanceFlags;        // Bit flags (e.g., bit 0: dynamic, bit 1: cast shadow) (4 bytes)
+    uint32_t baseVertex;          // Vertex offset in buffer (4 bytes)
+    uint32_t baseIndex;           // Index offset in buffer (4 bytes)
 };
 
 

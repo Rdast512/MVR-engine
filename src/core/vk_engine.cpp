@@ -18,7 +18,7 @@ Engine::~Engine() { cleanup(); }
 void Engine::initialize()
 {
     ZoneScopedN("Engine::initialize");
-    // sync imgui runtime flag
+    // Hard-sync runtime flag to the compile-time switch so a half-enabled path is impossible.
     enableImGui = (ENGINE_ENABLE_IMGUI != 0);
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -69,7 +69,7 @@ void Engine::initialize()
 
     const glm::vec3 initialAssetPos{0.0f, 0.0f, 0.0f};
     assetsLoader->loadModel(MODEL_PATH.string(), initialAssetPos);
-    // focus camera on initial model
+    // Aim free-fly camera at the only startup model so the scene is visible immediately.
     camera->focusOn(initialAssetPos);
     resourceManager = std::make_unique<ResourceManager>(*device, *allocator, scene->geometryStore, scene->materialStore,
                                                         scene->objectStorage);
@@ -178,15 +178,19 @@ void Engine::run()
 
     bool quit = false;
     bool minimized = false;
-    // OS window focus state
+    // OS keyboard focus (not ImGui "game focus"). Used to soft-cap FPS when another window is on top.
     bool windowFocused = true;
+    // Game mode: relative mouse + hidden ImGui. UI mode (I): free cursor, only ImGui focused.
     lastTime = std::chrono::high_resolution_clock::now();
     fpsTime = lastTime;
+    // Background throttle only — focused path relies on swapchain vsync (FIFO).
     constexpr double kUnfocusedTargetMs = 1000.0 / 30.0;
     auto& deviceRef = device->vkdevice;
 
     const auto setGameFocus = [this](bool gameFocused)
     {
+        // gameFocused = true  → capture mouse, hide cursor (look/move)
+        // gameFocused = false → free mouse, show cursor (ImGui only)
         SDL_SetWindowRelativeMouseMode(window, gameFocused);
         if (gameFocused) {
             SDL_HideCursor();
@@ -224,6 +228,7 @@ void Engine::run()
             SDL_Event e{};
             while (SDL_PollEvent(&e) != 0) {
 #if ENGINE_ENABLE_IMGUI
+                // Only feed ImGui while the UI is open so it cannot steal game input.
                 if (enableImGui && imguiUiOpen) {
                     ImGui_ImplSDL3_ProcessEvent(&e);
                 }
@@ -234,23 +239,26 @@ void Engine::run()
                 }
 #if ENGINE_ENABLE_IMGUI
                 else if (e.type == SDL_EVENT_KEY_DOWN && e.key.scancode == SDL_SCANCODE_I && !e.key.repeat) {
+                    // I toggles ImGui. While typing in an ImGui field, let 'i' go to the widget.
                     const bool typingInImGui = enableImGui && imguiUiOpen && ImGui::GetIO().WantTextInput;
                     if (!typingInImGui && enableImGui) {
                         imguiUiOpen = !imguiUiOpen;
                         if (renderer) {
                             renderer->setImGuiVisible(imguiUiOpen);
                         }
+                        // Open UI → ImGui focus. Close UI → game focus.
                         setGameFocus(!imguiUiOpen);
                     }
                 }
 #endif
                 else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !imguiUiOpen && e.button.button == SDL_BUTTON_LEFT) {
-                    // re-assert relative mouse on click
+                    // Re-assert relative mode on click while in game focus — SDL may
+                    // drop it on focus loss until a mouse button is pressed.
                     setGameFocus(true);
                 } else if (e.type == SDL_EVENT_MOUSE_MOTION && !imguiUiOpen) {
                     camera->rotate(-e.motion.xrel, e.motion.yrel);
                 } else if (e.type == SDL_EVENT_MOUSE_WHEEL && !imguiUiOpen) {
-                    camera->addFov(-e.wheel.y * 2.0f);
+                    camera->addFov(-e.wheel.y * 2.0f); // scroll up = zoom in (narrower FOV)
                 } else if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
                     windowFocused = true;
                     setGameFocus(!imguiUiOpen);
@@ -275,7 +283,10 @@ void Engine::run()
 #endif
 
         if (!minimized && !quit) {
-            // camera keyboard movement
+            // ── Camera keyboard movement (game focus only) ───────
+            // WASD        → forward / back / left / right
+            // LShift      → up (+Y)
+            // LCtrl       → down (-Y)
             if (!imguiUiOpen) {
                 ZoneScopedN("CameraInput");
                 const float dt = std::chrono::duration<float>(currentTime - lastTime).count();
@@ -299,7 +310,7 @@ void Engine::run()
                     camera->moveUp(-step);
             }
 
-            // update camera UBO
+            // Upload camera for this frame's in-flight slot before recording/submit.
             {
                 ZoneScopedN("DrawFrame");
                 camera->updateCameraData(renderer->currentFrame);
@@ -310,11 +321,13 @@ void Engine::run()
             SDL_Delay(100);
         }
 
-        // throttle framerate when unfocused
+        // When unfocused, Windows often stops vsync throttling and the loop burns CPU/GPU.
+        // Soft-cap only in that case; focused frames stay paced by present mode.
         if (!windowFocused && !minimized && !quit) {
             ZoneScopedN("UnfocusedFramePacing");
             const auto frameEndTime = std::chrono::high_resolution_clock::now();
-            const double frameMs = std::chrono::duration<double, std::milli>(frameEndTime - currentTime).count();
+            const double frameMs =
+                std::chrono::duration<double, std::milli>(frameEndTime - currentTime).count();
             if (frameMs < kUnfocusedTargetMs) {
                 SDL_Delay(static_cast<Uint32>(kUnfocusedTargetMs - frameMs));
             }
@@ -511,6 +524,7 @@ void Engine::cleanup()
         scene->objectStorage.clear();
     }
     log_info("Object storage cleared", "Engine");
+    // Explicitly clear command buffers before destroying other resources
     if (resourceManager) {
         resourceManager->commandBuffers.clear();
         resourceManager->transferCommandBuffer.clear();
@@ -520,7 +534,7 @@ void Engine::cleanup()
     pipeline.reset();
     descriptorManager.reset();
     textureManager.reset();
-    resourceManager.reset(); // holds references to assetsLoader data
+    resourceManager.reset(); // before assetsLoader: holds refs to its vertex/index vectors
     assetsLoader.reset();
     scene.reset();
     camera.reset();

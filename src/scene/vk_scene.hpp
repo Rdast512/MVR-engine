@@ -7,7 +7,9 @@
 
 #include <glm/glm.hpp>
 
-// world container for scene state
+// ---------------------------------------------------------------------------
+// Scene - world container: object SoA storage, origin, base axes.
+// ---------------------------------------------------------------------------
 class Scene
 {
 public:

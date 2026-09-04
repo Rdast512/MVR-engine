@@ -60,7 +60,8 @@ void Pipeline::createMeshPipeline()
     };
     const bool useDescriptorHeaps = descriptorManager.descriptorBindingMode == DescriptorBindingMode::DescriptorHeaps;
 
-    // inline SPIR-V via Maintenance5
+    // Mesh-only: no task stage, no vertex input / input assembly.
+    // maintenance5: inline SPIR-V, no transient VkShaderModule.
     const vk::PipelineShaderStageCreateInfo meshShaderStageInfo{
         .pNext = &shaderModuleInfo,
         .stage = vk::ShaderStageFlagBits::eMeshEXT,
@@ -167,7 +168,7 @@ void Pipeline::createMeshPipeline()
     const void* pipelinePNext = useDescriptorHeaps ? static_cast<const void*>(&pipelineFlags2CreateInfo)
                                                    : static_cast<const void*>(&pipelineRenderingCreateInfo);
 
-    // mesh pipeline omits vertex input and assembly
+    // Mesh pipelines omit vertex input + input assembly (must not mix with VS stages).
     const vk::GraphicsPipelineCreateInfo pipelineInfo{
         .pNext = pipelinePNext,
         .stageCount = static_cast<uint32_t>(shaderStages.size()),

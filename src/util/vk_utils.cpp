@@ -1,20 +1,26 @@
 #include "vk_utils.hpp"
 
-#include "../static_headers/logger.hpp"
 #include "vk_tracy.hpp"
+#include "../static_headers/logger.hpp"
 
 #include <atomic>
 #include <format>
 #include <stdexcept>
 
 
-void transitionImageLayout(vk::raii::CommandBuffer* commandBuffer, vk::Image image, uint32_t mipLevels,
-                           vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
-                           const vk::ImageSubresourceRange& subresourceRange, uint32_t srcQueueFamily,
-                           uint32_t dstQueueFamily, std::optional<vk::PipelineStageFlags2> srcStageMaskOverride,
-                           std::optional<vk::PipelineStageFlags2> dstStageMaskOverride,
-                           std::optional<vk::AccessFlags2> srcAccessMaskOverride,
-                           std::optional<vk::AccessFlags2> dstAccessMaskOverride)
+void transitionImageLayout(
+    vk::raii::CommandBuffer* commandBuffer,
+    vk::Image image,
+    uint32_t mipLevels,
+    vk::ImageLayout oldLayout,
+    vk::ImageLayout newLayout,
+    const vk::ImageSubresourceRange& subresourceRange,
+    uint32_t srcQueueFamily,
+    uint32_t dstQueueFamily,
+    std::optional<vk::PipelineStageFlags2> srcStageMaskOverride,
+    std::optional<vk::PipelineStageFlags2> dstStageMaskOverride,
+    std::optional<vk::AccessFlags2> srcAccessMaskOverride,
+    std::optional<vk::AccessFlags2> dstAccessMaskOverride)
 {
     ZoneScopedN("transitionImageLayout started");
     vk::ImageMemoryBarrier2 barrier{.srcQueueFamilyIndex = srcQueueFamily,
@@ -37,21 +43,21 @@ void transitionImageLayout(vk::raii::CommandBuffer* commandBuffer, vk::Image ima
             dstStage = vk::PipelineStageFlagBits2::eFragmentShader;
             srcAccess = vk::AccessFlagBits2::eTransferWrite;
             dstAccess = vk::AccessFlagBits2::eShaderRead;
-        } else if (oldLayout == vk::ImageLayout::eUndefined &&
-                   newLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
-            srcStage = vk::PipelineStageFlagBits2::eTopOfPipe;
-            dstStage = vk::PipelineStageFlagBits2::eEarlyFragmentTests;
-            srcAccess = vk::AccessFlagBits2::eNone;
-            dstAccess =
-                vk::AccessFlagBits2::eDepthStencilAttachmentWrite | vk::AccessFlagBits2::eDepthStencilAttachmentRead;
-        } else if (oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::eColorAttachmentOptimal) {
-            srcStage = vk::PipelineStageFlagBits2::eTopOfPipe;
-            dstStage = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
-            srcAccess = vk::AccessFlagBits2::eNone;
-            dstAccess = vk::AccessFlagBits2::eColorAttachmentWrite;
-        } else {
-            throw std::invalid_argument("unsupported layout transition");
-        }
+                   } else if (oldLayout == vk::ImageLayout::eUndefined &&
+                              newLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
+                       srcStage = vk::PipelineStageFlagBits2::eTopOfPipe;
+                       dstStage = vk::PipelineStageFlagBits2::eEarlyFragmentTests;
+                       srcAccess = vk::AccessFlagBits2::eNone;
+                       dstAccess =
+                           vk::AccessFlagBits2::eDepthStencilAttachmentWrite | vk::AccessFlagBits2::eDepthStencilAttachmentRead;
+                              } else if (oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::eColorAttachmentOptimal) {
+                                  srcStage = vk::PipelineStageFlagBits2::eTopOfPipe;
+                                  dstStage = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+                                  srcAccess = vk::AccessFlagBits2::eNone;
+                                  dstAccess = vk::AccessFlagBits2::eColorAttachmentWrite;
+                              } else {
+                                  throw std::invalid_argument("unsupported layout transition");
+                              }
     }
     barrier.srcStageMask = srcStage;
     barrier.dstStageMask = dstStage;
@@ -96,7 +102,8 @@ void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags2 usage, vk::MemoryPr
         allocInfo.priority = 0.75f;
     }
     allocInfo.flags |= extraAllocationFlags;
-    // avoid dedicated allocation below 1 MiB
+    // BestPractices-vkBindBufferMemory-small-dedicated-allocation: do not force
+    // dedicated blocks for small buffers (validation threshold is typically 1 MiB).
     constexpr vk::DeviceSize kMinDedicatedAllocationBytes = 1024 * 1024;
     if ((allocInfo.flags & VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT) != 0 && size < kMinDedicatedAllocationBytes) {
         allocInfo.flags &= ~VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;

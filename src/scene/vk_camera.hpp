@@ -11,20 +11,20 @@ public:
     ~Camera();
 
     // ── Free-fly movement (camera-local axes) ─────────────────
-    void moveForward(float delta);
-    void moveRight(float delta);
-    void moveUp(float delta);
+    void moveForward(float delta); // along forward vector
+    void moveRight(float delta); // along right vector
+    void moveUp(float delta); // along world-up vector
 
     // ── Mouse look ────────────────────────────────────────────
     void rotate(float yawDelta, float pitchDelta);
 
-    // focus camera on target
+    // Place the camera so it looks at target from a fixed offset (engine start / debug).
     void focusOn(const glm::vec3& target, float distance = 5.0f);
 
     // ── FOV / projection (mutable: accessors) ─────────────────
-    // clamped to [10, 150]
+    // fovVerticalDegrees clamped to [10, 150].
     void setFov(float fovVerticalDegrees);
-    void addFov(float deltaDegrees);
+    void addFov(float deltaDegrees); // for scroll-wheel
 
     [[nodiscard]] float getFovDegrees() const { return glm::degrees(fov); }
 

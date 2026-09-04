@@ -4,6 +4,7 @@
 #include "vk_device.hpp"
 
 
+
 class VkAllocator
 {
 public:
@@ -13,15 +14,18 @@ public:
     const vk::raii::Instance& instance;
 
     explicit VkAllocator(Device& deviceWrapper) :
-        physicalDevice(deviceWrapper.physicalDevice), device(deviceWrapper.vkdevice), instance(deviceWrapper.instance)
+        physicalDevice(deviceWrapper.physicalDevice), device(deviceWrapper.vkdevice),
+        instance(deviceWrapper.instance)
     {
 
+        // Get the dynamic dispatcher for proper Vulkan function access
         VmaVulkanFunctions vulkanFunctions = {};
         vulkanFunctions.vkGetInstanceProcAddr = &vkGetInstanceProcAddr;
         vulkanFunctions.vkGetDeviceProcAddr = &vkGetDeviceProcAddr;
 
         VmaAllocatorCreateInfo allocatorInfo = {};
-        // enable memory priority and maintenance features
+        // EXT_memory_priority: VMA calls vkSetDeviceMemoryPriorityEXT (NVIDIA best practice).
+        // Prefer suballocation; only force dedicated via per-allocation flags when size warrants it.
         allocatorInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT |
             VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT | VMA_ALLOCATOR_CREATE_KHR_BIND_MEMORY2_BIT |
             VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT | VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT |
@@ -40,7 +44,8 @@ public:
 
     ~VkAllocator() { vmaDestroyAllocator(allocator); }
 
-    // minimum dedicated allocation size
+    // Best-practices threshold: dedicated allocs below this size trigger
+    // BestPractices-vkBindBufferMemory-small-dedicated-allocation (typically 1 MiB).
     static constexpr vk::DeviceSize kMinDedicatedAllocationBytes = 1024 * 1024;
 
     void alocateBuffer(const vk::BufferCreateInfo& bufferInfo, const VmaAllocationCreateInfo& allocInfo,
@@ -73,21 +78,26 @@ public:
         nameAllocation(allocation, allocationDebugBaseName);
     }
 
+    // Non-copyable, non-movable: manages a unique VMA allocator handle.
     VkAllocator(const VkAllocator&) = delete;
     VkAllocator(VkAllocator&&) = delete;
     VkAllocator& operator=(const VkAllocator&) = delete;
     VkAllocator& operator=(VkAllocator&&) = delete;
 
 private:
-    // sanitize dedicated requests and set priority
+    // Drop tiny dedicated requests (sub-allocate instead) and ensure a priority is set
+    // so VK_EXT_memory_priority / NVIDIA best practices are satisfied.
     static VmaAllocationCreateInfo resolveAllocationCreateInfo(const VmaAllocationCreateInfo& in,
-                                                               vk::DeviceSize sizeBytes, bool isImage)
+                                                               vk::DeviceSize sizeBytes,
+                                                               bool isImage)
     {
         VmaAllocationCreateInfo out = in;
-        if ((out.flags & VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT) != 0 && sizeBytes < kMinDedicatedAllocationBytes) {
+        if ((out.flags & VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT) != 0 &&
+            sizeBytes < kMinDedicatedAllocationBytes) {
             out.flags &= ~VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
         }
-        // set explicit memory priority
+        // VMA default priority is 0.5; still set explicitly so priorities are intentional.
+        // Attachments / GPU-written images keep highest priority for OS demotion order.
         if (out.priority <= 0.0f) {
             if (isImage) {
                 out.priority = 1.0f;
