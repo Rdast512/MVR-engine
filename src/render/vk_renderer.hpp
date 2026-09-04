@@ -36,7 +36,6 @@ private:
     DeviceGeneratedCommands dgc;
     VkTracyContext* tracyContext = nullptr;
     bool imguiEnabled = false;
-    // Drawn only while the UI toggle is open (I key).
     // runtime ui visibility
     bool imguiVisible = false;
 };

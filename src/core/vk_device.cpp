@@ -1,23 +1,9 @@
-/**
- * @file vk_device.cpp
- * @brief Vulkan device management: instance, physical-device selection, logical device, and queue setup.
- *
- * This translation unit implements the full Vulkan device initialisation pipeline:
- *   - Vulkan instance creation with SDL3 WSI extensions and optional validation
- *   - VK_EXT_debug_utils messenger registration for validation layer output
- *   - Window-surface creation via SDL3
- *   - Physical-device scoring and selection
- *   - Logical-device creation with an exhaustive feature chain (Vulkan 1.1–1.4 +
- *     ray-tracing, mesh shaders, shader objects, present-timing, etc.)
- *   - Queue family resolution with fallback strategies for transfer and compute
- */
 #include "vk_device.hpp"
 #include <format>
 #include "../static_headers/logger.hpp"
 #include "../util/debug.hpp"
 #include "tracy/Tracy.hpp"
 #include "vulkan/vulkan.hpp"
-/// Validation layer requested when enableValidationLayers is true.
 
 const std::vector validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
@@ -41,8 +27,6 @@ void Device::createInstance()
 {
     ZoneScopedN("Device::createInstance");
 
-    // Describe the application to the Vulkan loader.  The version fields are
-    // informational; apiVersion selects the highest Vulkan API revision to use.
     constexpr vk::ApplicationInfo appInfo{.pApplicationName = "Hello Triangle",
                                           .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
                                           .pEngineName = "No Engine",
@@ -50,14 +34,11 @@ void Device::createInstance()
                                           .apiVersion = vk::ApiVersion14};
 
 
-    // Retrieve the WSI extensions required by SDL3 (e.g. VK_KHR_surface, VK_KHR_win32_surface).
     Uint32 count_instance_extensions;
     const char* const* instance_extensions = SDL_Vulkan_GetInstanceExtensions(&count_instance_extensions);
 
     auto extensionProperties = context.enumerateInstanceExtensionProperties();
 
-    // Verify every SDL3-required extension is advertised by the Vulkan loader before
-    // attempting to enable it; fail early with a descriptive message if one is missing.
     // verify required SDL extensions
     for (uint32_t i = 0; i < count_instance_extensions; ++i) {
         if (std::ranges::none_of(extensionProperties,
@@ -70,13 +51,8 @@ void Device::createInstance()
     for (const auto& extension : extensionProperties) {
         std::cout << "  " << extension.extensionName << std::endl;
     }
-    // Seed the extension list with the SDL3-required surface extensions, then append
-    // engine-specific ones.  EXT_debug_utils is always enabled (not just for validation
-    // mode) so that debug labels and object names work in RenderDoc / NVIDIA Nsight.
     std::vector extensions(instance_extensions, instance_extensions + count_instance_extensions);
     extensions.push_back(vk::EXTDebugUtilsExtensionName);
-    // The following instance extensions are required by KHR_swapchain_maintenance1 and
-    // must be promoted to instance scope before the logical device is created.
     // extensions required by KHR_swapchain_maintenance1
     extensions.push_back(vk::KHRDisplayExtensionName);
     extensions.push_back(vk::KHRSurfaceMaintenance1ExtensionName);
@@ -87,9 +63,6 @@ void Device::createInstance()
     for (const auto& extension : extensions) {
         std::cout << "  " << extension << std::endl;
     }
-    // Conditionally request the Khronos validation layer.  Enumerate available layers
-    // first and bail out immediately if any requested layer is not present, rather than
-    // letting the driver produce a cryptic error later.
     // verify validation layer availability
     std::vector<char const*> requiredLayers;
     if (enableValidationLayers) {
@@ -113,8 +86,6 @@ void Device::createInstance()
                                       .enabledExtensionCount = static_cast<uint32_t>(extensions.size()),
                                       .ppEnabledExtensionNames = extensions.data()};
 
-    // Attempt to create the instance; a SystemError here usually means a driver
-    // version mismatch or a missing extension, so surface the original message.
     try {
         instance = vk::raii::Instance(context, createInfo);
     } catch (const vk::SystemError& err) {
@@ -122,20 +93,6 @@ void Device::createInstance()
     }
 }
 
-/**
- * @brief VK_EXT_debug_utils message callback.
- *
- * Prints all validation/performance/general messages from enabled layers to stderr.
- * Returning VK_FALSE tells the driver that the Vulkan call that triggered the
- * message should NOT be aborted (returning VK_TRUE would only be appropriate for
- * testing layer behaviour itself).
- *
- * @param severity  Severity bitmask (verbose / info / warning / error).
- * @param type      Message category (general / validation / performance).
- * @param pCallbackData  Structured message payload including pMessage string.
- * @param           User data pointer; unused, kept for ABI conformance.
- * @return vk::False – do not abort the triggering Vulkan call.
- */
 // debug utils callback for validation messages
 static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
                                                       vk::DebugUtilsMessageTypeFlagsEXT type,
@@ -181,8 +138,6 @@ vk::SampleCountFlagBits Device::getMaxUsableSampleCount()
 {
     vk::PhysicalDeviceProperties physicalDeviceProperties = physicalDevice.getProperties2().properties;
 
-    // Intersect colour and depth sample-count bitmasks: only counts supported by
-    // both attachment types are usable for combined colour+depth MSAA render passes.
     // supported by both color and depth
     vk::SampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts &
         physicalDeviceProperties.limits.framebufferDepthSampleCounts;
@@ -217,8 +172,6 @@ void Device::pickPhysicalDevice()
         throw std::runtime_error("failed to find GPUs with Vulkan support!");
     }
 
-    // Score every enumerated device and keep them sorted in a multimap so the
-    // highest-scoring one can be retrieved with a single rbegin() call.
     // score candidate devices
     std::multimap<int, vk::raii::PhysicalDevice> candidates;
     for (const auto& device : devices) {
@@ -228,17 +181,14 @@ void Device::pickPhysicalDevice()
         deviceFeatures = features2.features;
         uint32_t score = 0;
 
-        // Discrete GPUs have a significant performance advantage over integrated ones.
         // prefer discrete GPU
         if (deviceProperties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu) {
             score += 1000;
         }
 
-        // Higher max texture dimension generally correlates with a more capable GPU.
         // score by max texture dimension
         score += deviceProperties.limits.maxImageDimension2D;
 
-        // Geometry shaders are required by the engine's rendering pipeline.
         // require geometry shader
         if (!deviceFeatures.geometryShader) {
             continue;
@@ -271,9 +221,6 @@ void Device::pickPhysicalDevice()
 
 void Device::findQueueFamilies(const std::vector<vk::QueueFamilyProperties2>& queueFamilyProperties2)
 {
-    // --- Graphics queue -------------------------------------------------
-    // Pick the first queue family that advertises graphics support.  On virtually
-    // every desktop GPU this will be family 0.
     // graphics queue
     auto graphicsQueueFamilyProperty =
         std::ranges::find_if(queueFamilyProperties2,
@@ -284,9 +231,6 @@ void Device::findQueueFamilies(const std::vector<vk::QueueFamilyProperties2>& qu
                              });
     graphicsIndex = static_cast<uint32_t>(std::distance(queueFamilyProperties2.begin(), graphicsQueueFamilyProperty));
 
-    // --- Present queue --------------------------------------------------
-    // Prefer sharing the graphics queue for present to avoid unnecessary ownership
-    // transfers; fall back to any family that supports present if needed.
     // present queue (prefer graphics queue)
     presentIndex = physicalDevice.getSurfaceSupportKHR(graphicsIndex, *surface)
         ? graphicsIndex
@@ -313,9 +257,6 @@ void Device::findQueueFamilies(const std::vector<vk::QueueFamilyProperties2>& qu
         throw std::runtime_error("Could not find a queue for graphics or present -> terminating");
     }
 
-    // --- Transfer queue -------------------------------------------------
-    // Prefer a dedicated DMA queue (transfer-only family) for async uploads and
-    // buffer copies; these bypass graphics pipeline scheduling on AMD/NVIDIA.
     // dedicated transfer queue
     transferIndex = static_cast<uint32_t>(queueFamilyProperties2.size()); // sentinel = "not found"
     for (size_t i = 0; i < queueFamilyProperties2.size(); i++) {
@@ -326,9 +267,6 @@ void Device::findQueueFamilies(const std::vector<vk::QueueFamilyProperties2>& qu
         }
     }
 
-    // --- Compute queue --------------------------------------------------
-    // Prefer a dedicated async-compute family (no graphics flag) to allow compute
-    // work to overlap with in-flight graphics frames on supporting hardware.
     // dedicated compute queue
     computeIndex = static_cast<uint32_t>(queueFamilyProperties2.size()); // sentinel = "not found"
     for (size_t i = 0; i < queueFamilyProperties2.size(); i++) {
@@ -339,17 +277,11 @@ void Device::findQueueFamilies(const std::vector<vk::QueueFamilyProperties2>& qu
         }
     }
 
-    // --- Fallback: shared transfer+compute ---------------------------------
-    // If either a dedicated transfer or compute family was not found, attempt to
-    // find a non-graphics family that supports both operations together (common on
-    // Qualcomm / Intel integrated).  If that also fails, fall all the way back to
-    // the graphics queue so the indices are always valid.
     // fallback to shared transfer+compute or graphics
     if (transferIndex == static_cast<uint32_t>(queueFamilyProperties2.size()) ||
         computeIndex == static_cast<uint32_t>(queueFamilyProperties2.size())) {
         uint32_t sharedTransferComputeIndex = static_cast<uint32_t>(queueFamilyProperties2.size());
 
-        // Pass 1: non-graphics family that can do both transfer and compute.
         // non-graphics transfer and compute
         for (size_t i = 0; i < queueFamilyProperties2.size(); i++) {
             const auto flags = queueFamilyProperties2[i].queueFamilyProperties.queueFlags;
@@ -362,7 +294,6 @@ void Device::findQueueFamilies(const std::vector<vk::QueueFamilyProperties2>& qu
             }
         }
 
-        // Pass 2: any family (including graphics) that supports both.
         // any family supporting both
         if (sharedTransferComputeIndex == static_cast<uint32_t>(queueFamilyProperties2.size())) {
             for (size_t i = 0; i < queueFamilyProperties2.size(); i++) {
@@ -376,7 +307,6 @@ void Device::findQueueFamilies(const std::vector<vk::QueueFamilyProperties2>& qu
             }
         }
 
-        // Pass 3: last resort – share the graphics queue.
         // fallback to graphics queue
         if (sharedTransferComputeIndex == static_cast<uint32_t>(queueFamilyProperties2.size())) {
             sharedTransferComputeIndex = graphicsIndex;
@@ -490,12 +420,8 @@ void Device::createLogicalDevice()
         hic.pCopySrcLayouts = capabilities.hostImageCopySrcLayouts.data();
         hic.pCopyDstLayouts = capabilities.hostImageCopyDstLayouts.data();
 
-        const bool hasGeneralSrc =
-            std::ranges::find(capabilities.hostImageCopySrcLayouts, vk::ImageLayout::eGeneral) !=
         const bool hasGeneralSrc = std::ranges::find(capabilities.hostImageCopySrcLayouts, vk::ImageLayout::eGeneral) !=
             capabilities.hostImageCopySrcLayouts.end();
-        const bool hasGeneralDst =
-            std::ranges::find(capabilities.hostImageCopyDstLayouts, vk::ImageLayout::eGeneral) !=
         const bool hasGeneralDst = std::ranges::find(capabilities.hostImageCopyDstLayouts, vk::ImageLayout::eGeneral) !=
             capabilities.hostImageCopyDstLayouts.end();
 
@@ -562,13 +488,9 @@ void Device::createLogicalDevice()
         vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, vk::PhysicalDeviceDescriptorHeapFeaturesEXT,
         vk::PhysicalDeviceDescriptorBufferFeaturesEXT, vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT,
         vk::PhysicalDeviceMeshShaderFeaturesEXT, vk::PhysicalDeviceDeviceGeneratedCommandsFeaturesEXT,
-        vk::PhysicalDeviceMemoryPriorityFeaturesEXT,
-        vk::PhysicalDeviceMemoryDecompressionFeaturesEXT, vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT,
-        vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT,
         vk::PhysicalDeviceMemoryPriorityFeaturesEXT, vk::PhysicalDeviceMemoryDecompressionFeaturesEXT,
         vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT, vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT,
         vk::PhysicalDevicePresentTimingFeaturesEXT, vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT,
-        vk::PhysicalDeviceTexelBufferAlignmentFeaturesEXT, vk::PhysicalDeviceOpacityMicromapFeaturesEXT, vk::PhysicalDeviceShaderObjectFeaturesEXT,
         vk::PhysicalDeviceTexelBufferAlignmentFeaturesEXT, vk::PhysicalDeviceOpacityMicromapFeaturesEXT,
         vk::PhysicalDeviceShaderObjectFeaturesEXT,
         // KHR
@@ -698,36 +620,28 @@ void Device::createLogicalDevice()
                         // vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV
                         {.partitionedAccelerationStructure = true}};
 
-    // Each unique queue family needs exactly one VkDeviceQueueCreateInfo entry.
-    // Requesting the same family index twice is a validation error, so we gate each
-    // additional queue on it being distinct from all previously added families.
     // unique queue family create infos
     float queuePriority = 0.0f;
     std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
 
-    // Graphics queue – always required.
     queueCreateInfos.push_back(
         {.queueFamilyIndex = graphicsIndex, .queueCount = 1, .pQueuePriorities = &queuePriority});
 
-    // Present queue – only add if it lives in a different family from graphics.
     if (presentIndex != graphicsIndex) {
         queueCreateInfos.push_back(
             {.queueFamilyIndex = presentIndex, .queueCount = 1, .pQueuePriorities = &queuePriority});
     }
 
-    // Transfer queue – only add if dedicated (not shared with graphics or present).
     if (transferIndex != graphicsIndex && transferIndex != presentIndex) {
         queueCreateInfos.push_back(
             {.queueFamilyIndex = transferIndex, .queueCount = 1, .pQueuePriorities = &queuePriority});
     }
 
-    // Compute queue – only add if it is a fully distinct family from all others.
     if (computeIndex != graphicsIndex && computeIndex != presentIndex && computeIndex != transferIndex) {
         queueCreateInfos.push_back(
             {.queueFamilyIndex = computeIndex, .queueCount = 1, .pQueuePriorities = &queuePriority});
     }
 
-    // create a Device
     vk::DeviceCreateInfo deviceCreateInfo{.pNext = &featureChain.get<vk::PhysicalDeviceFeatures2>(),
                                           .queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size()),
                                           .pQueueCreateInfos = queueCreateInfos.data(),
@@ -748,11 +662,9 @@ void Device::createLogicalDevice()
     setDebugName(vkdevice, surface, "WindowSurface");
     setDebugName(vkdevice, vkdevice, "LogicalDevice");
 
-    // Cache supported MSAA sample count for downstream components (e.g., pipelines, resources).
     // cache supported msaa sample count
     msaaSamples = getMaxUsableSampleCount();
 
-    // Print queue family usage
     if (graphicsIndex == presentIndex) {
         log_info(std::format("Using single queue for graphics and present: {}", graphicsIndex), "Device");
     } else {

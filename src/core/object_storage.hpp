@@ -8,9 +8,6 @@
 #include <string_view>
 #include <vector>
 
-// ---------------------------------------------------------------------------
-// Dense entity index into ObjectStorage SoA columns. Not a generational handle.
-// ---------------------------------------------------------------------------
 // dense entity index
 using EntityId = uint32_t;
 inline constexpr EntityId kInvalidEntityId = ~EntityId{0};
@@ -30,10 +27,6 @@ namespace EntityFlag
     inline constexpr uint32_t Dynamic = 1u << 1;
 } // namespace EntityFlag
 
-// ---------------------------------------------------------------------------
-// ObjectStorage — SoA world instances. No Vulkan handles here.
-// Columns are public for direct span-friendly access (DOD).
-// ---------------------------------------------------------------------------
 // SoA storage for world instances
 class ObjectStorage
 {
@@ -58,18 +51,11 @@ public:
     void clear() noexcept;
 };
 
-// ---------------------------------------------------------------------------
-// Systems (span-based; safe for future parallel ranges)
-// ---------------------------------------------------------------------------
-
 // systems
 [[nodiscard]] glm::mat4 computeModelMatrix(const Transform& transform);
 
-// Demo / gameplay spin on Y (radians per call).
 // apply yaw rotation to transforms
 void applyYawSpin(std::span<Transform> transforms, float deltaYawRadians);
 
-// Writes GpuObjectUB[i] for each active entity; updates prevModelMatrices for next frame.
-// meshPreRotation is applied as: model = trs * meshPreRotation (same order as before).
 // update instance UBOs and previous model matrices
 void writeObjectUbs(ObjectStorage& storage, std::span<GpuObjectUB> mappedUbs, const glm::mat4& meshPreRotation);

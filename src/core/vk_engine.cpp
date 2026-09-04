@@ -18,7 +18,6 @@ Engine::~Engine() { cleanup(); }
 void Engine::initialize()
 {
     ZoneScopedN("Engine::initialize");
-    // Hard-sync runtime flag to the compile-time switch so a half-enabled path is impossible.
     // sync imgui runtime flag
     enableImGui = (ENGINE_ENABLE_IMGUI != 0);
 
@@ -70,7 +69,6 @@ void Engine::initialize()
 
     const glm::vec3 initialAssetPos{0.0f, 0.0f, 0.0f};
     assetsLoader->loadModel(MODEL_PATH.string(), initialAssetPos);
-    // Aim free-fly camera at the only startup model so the scene is visible immediately.
     // focus camera on initial model
     camera->focusOn(initialAssetPos);
     resourceManager = std::make_unique<ResourceManager>(*device, *allocator, scene->geometryStore, scene->materialStore,
@@ -180,20 +178,15 @@ void Engine::run()
 
     bool quit = false;
     bool minimized = false;
-    // OS keyboard focus (not ImGui "game focus"). Used to soft-cap FPS when another window is on top.
     // OS window focus state
     bool windowFocused = true;
-    // Game mode: relative mouse + hidden ImGui. UI mode (I): free cursor, only ImGui focused.
     lastTime = std::chrono::high_resolution_clock::now();
     fpsTime = lastTime;
-    // Background throttle only — focused path relies on swapchain vsync (FIFO).
     constexpr double kUnfocusedTargetMs = 1000.0 / 30.0;
     auto& deviceRef = device->vkdevice;
 
     const auto setGameFocus = [this](bool gameFocused)
     {
-        // gameFocused = true  → capture mouse, hide cursor (look/move)
-        // gameFocused = false → free mouse, show cursor (ImGui only)
         SDL_SetWindowRelativeMouseMode(window, gameFocused);
         if (gameFocused) {
             SDL_HideCursor();
@@ -231,7 +224,6 @@ void Engine::run()
             SDL_Event e{};
             while (SDL_PollEvent(&e) != 0) {
 #if ENGINE_ENABLE_IMGUI
-                // Only feed ImGui while the UI is open so it cannot steal game input.
                 if (enableImGui && imguiUiOpen) {
                     ImGui_ImplSDL3_ProcessEvent(&e);
                 }
@@ -242,27 +234,22 @@ void Engine::run()
                 }
 #if ENGINE_ENABLE_IMGUI
                 else if (e.type == SDL_EVENT_KEY_DOWN && e.key.scancode == SDL_SCANCODE_I && !e.key.repeat) {
-                    // I toggles ImGui. While typing in an ImGui field, let 'i' go to the widget.
                     const bool typingInImGui = enableImGui && imguiUiOpen && ImGui::GetIO().WantTextInput;
                     if (!typingInImGui && enableImGui) {
                         imguiUiOpen = !imguiUiOpen;
                         if (renderer) {
                             renderer->setImGuiVisible(imguiUiOpen);
                         }
-                        // Open UI → ImGui focus. Close UI → game focus.
                         setGameFocus(!imguiUiOpen);
                     }
                 }
 #endif
                 else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !imguiUiOpen && e.button.button == SDL_BUTTON_LEFT) {
-                    // Re-assert relative mode on click while in game focus — SDL may
-                    // drop it on focus loss until a mouse button is pressed.
                     // re-assert relative mouse on click
                     setGameFocus(true);
                 } else if (e.type == SDL_EVENT_MOUSE_MOTION && !imguiUiOpen) {
                     camera->rotate(-e.motion.xrel, e.motion.yrel);
                 } else if (e.type == SDL_EVENT_MOUSE_WHEEL && !imguiUiOpen) {
-                    camera->addFov(-e.wheel.y * 2.0f); // scroll up = zoom in (narrower FOV)
                     camera->addFov(-e.wheel.y * 2.0f);
                 } else if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
                     windowFocused = true;
@@ -288,10 +275,6 @@ void Engine::run()
 #endif
 
         if (!minimized && !quit) {
-            // ── Camera keyboard movement (game focus only) ───────
-            // WASD        → forward / back / left / right
-            // LShift      → up (+Y)
-            // LCtrl       → down (-Y)
             // camera keyboard movement
             if (!imguiUiOpen) {
                 ZoneScopedN("CameraInput");
@@ -316,7 +299,6 @@ void Engine::run()
                     camera->moveUp(-step);
             }
 
-            // Upload camera for this frame's in-flight slot before recording/submit.
             // update camera UBO
             {
                 ZoneScopedN("DrawFrame");
@@ -328,14 +310,10 @@ void Engine::run()
             SDL_Delay(100);
         }
 
-        // When unfocused, Windows often stops vsync throttling and the loop burns CPU/GPU.
-        // Soft-cap only in that case; focused frames stay paced by present mode.
         // throttle framerate when unfocused
         if (!windowFocused && !minimized && !quit) {
             ZoneScopedN("UnfocusedFramePacing");
             const auto frameEndTime = std::chrono::high_resolution_clock::now();
-            const double frameMs =
-                std::chrono::duration<double, std::milli>(frameEndTime - currentTime).count();
             const double frameMs = std::chrono::duration<double, std::milli>(frameEndTime - currentTime).count();
             if (frameMs < kUnfocusedTargetMs) {
                 SDL_Delay(static_cast<Uint32>(kUnfocusedTargetMs - frameMs));
@@ -533,7 +511,6 @@ void Engine::cleanup()
         scene->objectStorage.clear();
     }
     log_info("Object storage cleared", "Engine");
-    // Explicitly clear command buffers before destroying other resources
     if (resourceManager) {
         resourceManager->commandBuffers.clear();
         resourceManager->transferCommandBuffer.clear();
@@ -543,7 +520,6 @@ void Engine::cleanup()
     pipeline.reset();
     descriptorManager.reset();
     textureManager.reset();
-    resourceManager.reset(); // before assetsLoader: holds refs to its vertex/index vectors
     resourceManager.reset(); // holds references to assetsLoader data
     assetsLoader.reset();
     scene.reset();
