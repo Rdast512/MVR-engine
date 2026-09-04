@@ -5,6 +5,7 @@
 
 Camera::Camera(SwapChain& swapChain) : swapChain(swapChain)
 {
+    // Default until Engine calls focusOn() with the initial asset position.
     // initial default position
     cameraData.cameraPos = glm::vec3(2.0f, 2.0f, 6.0f);
     updateProjection();
@@ -12,6 +13,7 @@ Camera::Camera(SwapChain& swapChain) : swapChain(swapChain)
 
 void Camera::focusOn(const glm::vec3& target, float distance)
 {
+    // Offset: slightly above and back so the model is in frame without clipping nearPlane.
     // offset above and behind target
     const float safeDistance = glm::max(distance, nearPlane * 4.0f);
     cameraData.cameraPos = target + glm::vec3(safeDistance * 0.55f, safeDistance * 0.4f, safeDistance * 0.85f);
@@ -137,6 +139,7 @@ void Camera::updateCameraData(uint8_t currentImage)
     cameraData.view = glm::lookAt(cameraData.cameraPos, cameraData.cameraPos + forward, worldUp);
     cameraData.viewProj = cameraData.proj * cameraData.view;
 
+    // Inverses — needed by ray tracing, SSR, screen→world reconstruct.
     // inverse matrices for reconstructions
     cameraData.invView = glm::inverse(cameraData.view);
     cameraData.invProj = glm::inverse(cameraData.proj);
