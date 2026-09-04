@@ -362,18 +362,18 @@ void Engine::drawImGui()
     }
 
     if (discoveredAssets.empty()) {
-        ImGui::TextUnformatted("No .gltf or .glb assets found yet. Scan a folder to populate the dropdown.");
+        ImGui::TextUnformatted("No model folders with a .gltf file found yet. Scan a folder to populate the dropdown.");
     } else {
         if (selectedAssetIndex < 0 || static_cast<std::size_t>(selectedAssetIndex) >= discoveredAssets.size()) {
             selectedAssetIndex = 0;
         }
 
         const std::size_t selectedIndex = static_cast<std::size_t>(selectedAssetIndex);
-        const std::string preview = discoveredAssets.at(selectedIndex).string();
+        const std::string preview = discoveredAssets.at(selectedIndex).filename().string();
         if (ImGui::BeginCombo("Discovered Assets", preview.c_str())) {
             for (std::size_t i = 0; i < discoveredAssets.size(); ++i) {
                 const bool isSelected = (selectedIndex == i);
-                const std::string itemLabel = discoveredAssets.at(i).string();
+                const std::string itemLabel = discoveredAssets.at(i).filename().string();
                 if (ImGui::Selectable(itemLabel.c_str(), isSelected)) {
                     selectedAssetIndex = static_cast<int>(i);
                 }
@@ -414,24 +414,34 @@ void Engine::scanFolder()
         return;
     }
 
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(
+    auto folderContainsGltf = [&errorCode](const std::filesystem::path& folder) -> bool {
+        for (const auto& file : std::filesystem::directory_iterator(
+                 folder, std::filesystem::directory_options::skip_permission_denied, errorCode)) {
+            if (errorCode || !file.is_regular_file(errorCode)) {
+                continue;
+            }
+            std::string extension = file.path().extension().string();
+            std::ranges::transform(extension, extension.begin(), [](unsigned char character) -> char
+                                   { return static_cast<char>(std::tolower(character)); });
+            if (extension == ".gltf" || extension == ".glb") {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    for (const auto& entry : std::filesystem::directory_iterator(
              rootPath, std::filesystem::directory_options::skip_permission_denied, errorCode)) {
         if (errorCode) {
             break;
         }
-
-        if (!entry.is_regular_file(errorCode)) {
+        if (!entry.is_directory(errorCode)) {
             continue;
         }
-
-        std::string extension = entry.path().extension().string();
-        std::ranges::transform(extension, extension.begin(), [](unsigned char character) -> char
-                               { return static_cast<char>(std::tolower(character)); });
-
-        if (extension == ".gltf" || extension == ".glb") {
-            auto assetPath = entry.path();
-            assetPath.make_preferred();
-            discoveredAssets.emplace_back(std::move(assetPath));
+        auto folderPath = entry.path();
+        folderPath.make_preferred();
+        if (folderContainsGltf(folderPath)) {
+            discoveredAssets.emplace_back(std::move(folderPath));
         }
     }
 
@@ -440,7 +450,7 @@ void Engine::scanFolder()
         selectedAssetIndex = 0;
     }
 
-    log_info("ImGui scanFolder found assets", "Engine");
+    log_info(std::format("ImGui scanFolder found {} model folders", discoveredAssets.size()), "Engine");
 }
 
 void Engine::recreateSwapchain()

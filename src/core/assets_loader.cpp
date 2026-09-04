@@ -4,6 +4,7 @@
 #include "../util/vk_tracy.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <glm/gtc/quaternion.hpp>
 
 // ── glTF external-reference detection ───────────────────────
@@ -773,7 +774,7 @@ namespace
         }
     }
 
-    static void fillUvRange(std::vector<glm::vec2>& dst, uint32_t first, uint32_t count, const std::vector<float>& src,
+    void fillUvRange(std::vector<glm::vec2>& dst, uint32_t first, uint32_t count, const std::vector<float>& src,
                             uint32_t comps, bool flipV)
     {
         if (src.empty() || comps < 2) {
@@ -1101,20 +1102,53 @@ AssetsLoader::AssetsLoader(ObjectStorage& objectStorageIn, TextureManager& textu
 void AssetsLoader::loadModel(std::string modelPath, glm::vec3 xyz)
 {
     ZoneScopedN("AssetsLoader::loadModel");
-    // Normalise to native separators once so every loader receives a
-    // clean, OS-consistent path regardless of how it was supplied.
-    const std::string path = std::filesystem::path(modelPath).make_preferred().string();
+    // Folder packs (models/<name>/*) or a direct file. Prefer .gltf, then .glb, then .obj.
+    std::filesystem::path path = std::filesystem::path(modelPath).make_preferred();
+    std::error_code errorCode;
+    if (std::filesystem::is_directory(path, errorCode)) {
+        std::filesystem::path gltf;
+        std::filesystem::path glb;
+        std::filesystem::path obj;
+        for (const auto& entry : std::filesystem::directory_iterator(
+                 path, std::filesystem::directory_options::skip_permission_denied, errorCode)) {
+            if (errorCode || !entry.is_regular_file(errorCode)) {
+                continue;
+            }
+            std::string extension = entry.path().extension().string();
+            std::ranges::transform(extension, extension.begin(),
+                                   [](unsigned char character) -> char { return static_cast<char>(std::tolower(character)); });
+            if (extension == ".gltf" && gltf.empty()) {
+                gltf = entry.path();
+            } else if (extension == ".glb" && glb.empty()) {
+                glb = entry.path();
+            } else if (extension == ".obj" && obj.empty()) {
+                obj = entry.path();
+            }
+        }
+        if (!gltf.empty()) {
+            path = std::move(gltf);
+        } else if (!glb.empty()) {
+            path = std::move(glb);
+        } else if (!obj.empty()) {
+            path = std::move(obj);
+        } else {
+            log_error(std::format("Model folder has no .gltf/.glb/.obj: {}", path.string()), "AssetLoader");
+            return;
+        }
+        path.make_preferred();
+    }
 
-    const bool isGltf = path.ends_with(".gltf") || path.ends_with(".glb");
-    const bool isObj = path.ends_with(".obj");
+    const std::string pathString = path.string();
+    const bool isGltf = pathString.ends_with(".gltf") || pathString.ends_with(".glb");
+    const bool isObj = pathString.ends_with(".obj");
 
     if (isGltf) {
-        loadGltfModel(path, xyz);
+        loadGltfModel(pathString, xyz);
         return;
     }
 
     if (isObj) {
-        loadObjModel(path, xyz);
+        loadObjModel(pathString, xyz);
         return;
     }
 
@@ -1267,7 +1301,8 @@ bool AssetsLoader::loadObjModel(const std::string& modelPath, glm::vec3 xyz)
     }
 
     GpuMaterial gpu{};
-    gpu.baseColorTex = textureManager.loadTexture(TEXTURE_PATH.string());
+    const auto objTexture = (std::filesystem::path(modelPath).parent_path() / TEXTURE_PATH.filename()).string();
+    gpu.baseColorTex = textureManager.loadTexture(objTexture);
     gpu.baseColorSamp = textureManager.getOrCreateSampler(-1, -1, 10497, 10497);
     const uint32_t materialId = materialStore.add(gpu);
 
