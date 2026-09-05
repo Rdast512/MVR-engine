@@ -171,6 +171,9 @@ set(MI_BUILD_OBJECT OFF CACHE BOOL "" FORCE)
 set(MI_BUILD_STATIC ON CACHE BOOL "" FORCE)
 set(MI_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(MI_OVERRIDE ON CACHE BOOL "" FORCE)
+# C build emits a weak _ZSt15get_new_handlerv stub; ThinLTO + static libc++
+# promotes it to a strong duplicate of std::get_new_handler().
+set(MI_USE_CXX ON CACHE BOOL "" FORCE)
 
 # --- meshoptimizer ---
 set(MESHOPT_BUILD_DEMO OFF CACHE BOOL "" FORCE)
@@ -265,8 +268,10 @@ else ()
 endif ()
 
 if (TARGET mimalloc)
+        set_target_properties(mimalloc PROPERTIES POSITION_INDEPENDENT_CODE ON)
         add_library(ThirdParty::mimalloc ALIAS mimalloc)
 elseif (TARGET mimalloc-static)
+        set_target_properties(mimalloc-static PROPERTIES POSITION_INDEPENDENT_CODE ON)
         add_library(ThirdParty::mimalloc ALIAS mimalloc-static)
 else ()
         message(FATAL_ERROR "mimalloc target not found after FetchContent_MakeAvailable(mimalloc).")
@@ -403,6 +408,11 @@ set_target_properties(ThirdPartyImpl PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # 2. All-in-one Interface for libs
 add_library(ThirdPartyLibs INTERFACE)
 
+# Tracy.hpp is included from engine headers in every config (macros no-op without
+# TRACY_ENABLE). The client library is only linked when profiling.
+target_include_directories(ThirdPartyLibs INTERFACE
+        $<BUILD_INTERFACE:${tracy_SOURCE_DIR}/public>
+)
 target_link_libraries(ThirdPartyLibs INTERFACE
         ThirdParty::headers
         Vulkan::Vulkan

@@ -7,8 +7,10 @@
 class MaterialStore
 {
 public:
+    // load scratch; cleared after GPU append. ids are uploadedCount + scratch index
     std::vector<GpuMaterial> gpuMaterials;
     std::vector<MaterialPbrExtension> pbrExtensions;
+    uint32_t uploadedCount = 0;
 
     MaterialStore()
     {
@@ -22,8 +24,31 @@ public:
     {
         gpuMaterials.push_back(material);
         pbrExtensions.push_back(ext);
-        return static_cast<uint32_t>(gpuMaterials.size() - 1);
+        return uploadedCount + static_cast<uint32_t>(gpuMaterials.size() - 1);
     }
 
-    [[nodiscard]] uint32_t size() const noexcept { return static_cast<uint32_t>(gpuMaterials.size()); }
+    [[nodiscard]] uint32_t size() const noexcept
+    {
+        return uploadedCount + static_cast<uint32_t>(gpuMaterials.size());
+    }
+
+    [[nodiscard]] const GpuMaterial* scratchMaterial(uint32_t id) const noexcept
+    {
+        if (id < uploadedCount) {
+            return nullptr;
+        }
+        const uint32_t i = id - uploadedCount;
+        if (i >= gpuMaterials.size()) {
+            return nullptr;
+        }
+        return &gpuMaterials[i];
+    }
+
+    void clearScratch()
+    {
+        gpuMaterials.clear();
+        pbrExtensions.clear();
+        gpuMaterials.shrink_to_fit();
+        pbrExtensions.shrink_to_fit();
+    }
 };

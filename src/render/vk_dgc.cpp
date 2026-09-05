@@ -285,7 +285,6 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
     }
 
     const auto& geometry = resourceManager.geometryStore;
-    const auto& materials = resourceManager.materialStore;
     const uint32_t maxGroupsX = maxMeshGroupsX(device.capabilities);
 
     uint32_t needed = 0;
@@ -357,14 +356,11 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
                 }
                 uint32_t textureIndex = storage.materials[id].textureIndex;
                 uint32_t samplerIndex = descriptorManager.getSamplerDescriptorIndex();
-                if (prim.materialId < materials.size()) {
-                    const GpuMaterial& gpu = materials.gpuMaterials[prim.materialId];
-                    if (gpu.baseColorTex != kNoneIndex) {
-                        textureIndex = gpu.baseColorTex;
-                    }
-                    if (gpu.baseColorSamp != kNoneIndex) {
-                        samplerIndex = gpu.baseColorSamp;
-                    }
+                if (prim.albedoTex != kNoneIndex) {
+                    textureIndex = prim.albedoTex;
+                }
+                if (prim.albedoSamp != kNoneIndex) {
+                    samplerIndex = prim.albedoSamp;
                 }
                 fillSequence(id, prim.meshlets, textureIndex, samplerIndex);
             }

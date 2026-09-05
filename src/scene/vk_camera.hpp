@@ -2,7 +2,6 @@
 #include <array>
 #include <core/types.hpp>
 #include "core/vk_swapchain.hpp"
-#include "tracy/Tracy.hpp"
 
 class Camera
 {

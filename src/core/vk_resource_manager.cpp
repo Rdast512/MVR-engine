@@ -1,5 +1,7 @@
 #include "vk_resource_manager.hpp"
 #include <algorithm>
+#include <array>
+#include <cstring>
 #include <format>
 #include <span>
 #include <glm/gtc/matrix_transform.hpp>
@@ -14,6 +16,7 @@ ResourceManager::ResourceManager(const Device &deviceWrapper,
                const VkAllocator &allocator,
                GeometryStore &geometryStoreIn,
                MaterialStore &materialStoreIn,
+               LightStore &lightStoreIn,
                ObjectStorage &objectStorageIn)
     : deviceWrapper(deviceWrapper),
       allocator(allocator),
@@ -26,13 +29,10 @@ ResourceManager::ResourceManager(const Device &deviceWrapper,
       objectStorage(objectStorageIn),
       geometryStore(geometryStoreIn),
       materialStore(materialStoreIn),
+      lightStore(lightStoreIn),
       graphicsIndex(deviceWrapper.graphicsIndex),
       transferIndex(deviceWrapper.transferIndex),
-      msaaSamples(deviceWrapper.msaaSamples),
-      vertices(geometryStoreIn.vertices),
-      meshlets(geometryStoreIn.meshlets),
-      meshletVertices(geometryStoreIn.meshletVertices),
-      meshletTriangles(geometryStoreIn.meshletTriangles)
+      msaaSamples(deviceWrapper.msaaSamples)
 {
     log_info("Initialized", "ResourceManager");
 }
@@ -60,42 +60,78 @@ void ResourceManager::destroyInstanceUboBuffers()
     instanceCapacity = 0;
 }
 
+namespace
+{
+    [[nodiscard]] std::string formatBytes(vk::DeviceSize bytes)
+    {
+        if (bytes < 1024) {
+            return std::format("{} B", bytes);
+        }
+        if (bytes < 1024ull * 1024ull) {
+            return std::format("{:.1f} KiB", static_cast<double>(bytes) / 1024.0);
+        }
+        return std::format("{:.2f} MiB", static_cast<double>(bytes) / (1024.0 * 1024.0));
+    }
+} // namespace
+
+void ResourceManager::destroyDeviceBuffer(vk::raii::Buffer& buffer, VmaAllocation& memory, vk::DeviceAddress& address,
+                                          vk::DeviceSize& bytes, const char* tracyName)
+{
+    if (memory == nullptr) {
+        return;
+    }
+    log_info(std::format("destroy {} ({} bda=0x{:x})", tracyName, formatBytes(bytes),
+                         static_cast<uint64_t>(address)),
+             "ResourceManager");
+    VkBuffer raw = buffer.release();
+    tracyResourceFree(raw, tracyName);
+    vmaDestroyBuffer(allocator.allocator, raw, memory);
+    memory = nullptr;
+    address = 0;
+    bytes = 0;
+}
+
+vk::raii::CommandBuffer& ResourceManager::oneTimeTransferCmd()
+{
+    return transferCommandBuffer.empty() ? commandBuffers[0] : transferCommandBuffer[0];
+}
+
+const vk::raii::Queue& ResourceManager::oneTimeTransferQueue() const noexcept
+{
+    return transferCommandBuffer.empty() ? graphicsQueue : transferQueue;
+}
+
 ResourceManager::~ResourceManager()
 {
     ZoneScopedN("ResourceManager::~ResourceManager");
     log_info("Destructor called", "ResourceManager");
     destroyInstanceUboBuffers();
     {
-        if (vertexBufferMemory) {
-            VkBuffer raw = vertexBuffer.release();
-            tracyResourceFree(raw, "GPU/Vertices");
-            vmaDestroyBuffer(allocator.allocator, raw, vertexBufferMemory);
-            trackedVertexBytes = 0;
-        }
-        if (meshletBufferMemory) {
-            VkBuffer raw = meshletBuffer.release();
-            tracyResourceFree(raw, "GPU/Meshlets");
-            vmaDestroyBuffer(allocator.allocator, raw, meshletBufferMemory);
-            meshletBufferMemory = nullptr;
-            meshletBufferAddress = 0;
-            trackedMeshletBytes = 0;
-        }
-        if (meshletVertexBufferMemory) {
-            VkBuffer raw = meshletVertexBuffer.release();
-            tracyResourceFree(raw, "GPU/MeshletVertices");
-            vmaDestroyBuffer(allocator.allocator, raw, meshletVertexBufferMemory);
-            meshletVertexBufferMemory = nullptr;
-            meshletVertexBufferAddress = 0;
-            trackedMeshletVertexBytes = 0;
-        }
-        if (meshletTriangleBufferMemory) {
-            VkBuffer raw = meshletTriangleBuffer.release();
-            tracyResourceFree(raw, "GPU/MeshletTriangles");
-            vmaDestroyBuffer(allocator.allocator, raw, meshletTriangleBufferMemory);
-            meshletTriangleBufferMemory = nullptr;
-            meshletTriangleBufferAddress = 0;
-            trackedMeshletTriangleBytes = 0;
-        }
+        destroyDeviceBuffer(vertexBuffer, vertexBufferMemory, vertexBufferAddress, trackedVertexBytes, "GPU/Vertices");
+        destroyDeviceBuffer(meshletBuffer, meshletBufferMemory, meshletBufferAddress, trackedMeshletBytes,
+                            "GPU/Meshlets");
+        destroyDeviceBuffer(meshletVertexBuffer, meshletVertexBufferMemory, meshletVertexBufferAddress,
+                            trackedMeshletVertexBytes, "GPU/MeshletVertices");
+        destroyDeviceBuffer(meshletTriangleBuffer, meshletTriangleBufferMemory, meshletTriangleBufferAddress,
+                            trackedMeshletTriangleBytes, "GPU/MeshletTriangles");
+        destroyDeviceBuffer(materialBuffer, materialBufferMemory, materialBufferAddress, trackedMaterialBytes,
+                            "GPU/Materials");
+        destroyDeviceBuffer(pbrExtBuffer, pbrExtBufferMemory, pbrExtBufferAddress, trackedPbrExtBytes,
+                            "GPU/PbrExtensions");
+        destroyDeviceBuffer(lightBuffer, lightBufferMemory, lightBufferAddress, trackedLightBytes, "GPU/Lights");
+        destroyDeviceBuffer(normalBuffer, normalBufferMemory, normalBufferAddress, trackedNormalBytes, "GPU/Normals");
+        destroyDeviceBuffer(tangentBuffer, tangentBufferMemory, tangentBufferAddress, trackedTangentBytes,
+                            "GPU/Tangents");
+        destroyDeviceBuffer(uv1Buffer, uv1BufferMemory, uv1BufferAddress, trackedUv1Bytes, "GPU/Uv1");
+        destroyDeviceBuffer(jointBuffer, jointBufferMemory, jointBufferAddress, trackedJointBytes, "GPU/Joints");
+        destroyDeviceBuffer(weightBuffer, weightBufferMemory, weightBufferAddress, trackedWeightBytes, "GPU/Weights");
+        destroyDeviceBuffer(indexBuffer, indexBufferMemory, indexBufferAddress, trackedIndexBytes, "GPU/Indices");
+        destroyDeviceBuffer(morphPosBuffer, morphPosBufferMemory, morphPosBufferAddress, trackedMorphPosBytes,
+                            "GPU/MorphPos");
+        destroyDeviceBuffer(morphNrmBuffer, morphNrmBufferMemory, morphNrmBufferAddress, trackedMorphNrmBytes,
+                            "GPU/MorphNrm");
+        destroyDeviceBuffer(morphTanBuffer, morphTanBufferMemory, morphTanBufferAddress, trackedMorphTanBytes,
+                            "GPU/MorphTan");
         if (indirectBufferMemory) {
             VkBuffer raw = indirectBuffer.release();
             tracyResourceFree(raw, "GPU/IndirectCopyCommand");
@@ -103,7 +139,6 @@ ResourceManager::~ResourceManager()
             indirectBufferMemory = nullptr;
             indirectBufferAddress = 0;
         }
-        vertexBufferAddress = 0;
         if (colorImageMemory) {
             VkImage raw = colorImage.release();
             tracyResourceFree(raw, "GPU/ColorMSAA");
@@ -128,9 +163,7 @@ void ResourceManager::init()
     createUniformBuffers();
     // Host-visible CopyMemoryIndirectCommandKHR buffer; copyBuffer needs it first. NOTE: disabled since not sure if its even better if no streaming is implomented
     // createIndirectBuffer();
-    createVertexBuffer();
-    // Meshlet tables + BDAs for mesh shaders (static geometry; single addresses).
-    createMeshBuffers();
+    flushGpuAssets();
 }
 
 void ResourceManager::createSyncObjects()
@@ -278,13 +311,14 @@ void ResourceManager::copyBuffer(vk::raii::Buffer& srcBuffer, vk::raii::Buffer& 
     // queue.waitIdle();
 
     log_info("copyBuffer() started", "ResourceManager");
-    transferCommandBuffer[0].begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    transferCommandBuffer[0].copyBuffer(srcBuffer, dstBuffer, vk::BufferCopy(0, 0, size));
-    transferCommandBuffer[0].end();
-    vk::CommandBufferSubmitInfo commandBufferInfo = {.commandBuffer = *transferCommandBuffer[0]};
+    vk::raii::CommandBuffer& cmd = oneTimeTransferCmd();
+    cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    cmd.copyBuffer(srcBuffer, dstBuffer, vk::BufferCopy(0, 0, size));
+    cmd.end();
+    vk::CommandBufferSubmitInfo commandBufferInfo = {.commandBuffer = *cmd};
     const vk::SubmitInfo2 submitInfo{.commandBufferInfoCount = 1, .pCommandBufferInfos = &commandBufferInfo};
-    transferQueue.submit2(submitInfo, nullptr);
-    transferQueue.waitIdle();
+    oneTimeTransferQueue().submit2(submitInfo, nullptr);
+    oneTimeTransferQueue().waitIdle();
 }
 
 
@@ -300,58 +334,153 @@ void ResourceManager::endCommandBuffer(vk::raii::CommandBuffer& commandBuffer, c
     queue.waitIdle();
 }
 
-void ResourceManager::createVertexBuffer()
+void ResourceManager::appendDeviceLocal(vk::raii::Buffer& dst, VmaAllocation& dstMemory, vk::DeviceAddress& dstAddress,
+                                        vk::DeviceSize& trackedBytes, const void* src, vk::DeviceSize srcBytes,
+                                        std::string_view debugName, const char* tracyName)
 {
-    ZoneScopedN("ResourceManager::createVertexBuffer");
-    log_info("createVertexBuffer() started", "ResourceManager");
-    log_info(std::format("Creating vertex buffer with {} vertices", vertices.size()), "ResourceManager");
-
-    if (vertices.empty()) {
-        log_info("No vertices present, skipping vertex buffer creation", "ResourceManager");
+    if (src == nullptr || srcBytes == 0) {
+        log_info(std::format("skip {}: empty scratch (gpu still {})", debugName, formatBytes(trackedBytes)),
+                 "ResourceManager");
         return;
     }
 
-    vk::DeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+    ZoneScopedN("ResourceManager::appendDeviceLocal");
+    ZoneText(debugName.data(), debugName.size());
+    ZoneValue(static_cast<uint64_t>(srcBytes));
 
-
-    createBuffer(bufferSize,
+    vk::raii::Buffer staging({});
+    VmaAllocation stagingMemory = nullptr;
+    createBuffer(srcBytes,
                  vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, stagingBuffer,
-                 stagingBufferMemory, allocator.allocator, device, queueFamilyIndices, "VertexStagingBufferMemory");
-    setDebugName(device, stagingBuffer, "VertexStagingBuffer");
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, staging,
+                 stagingMemory, allocator.allocator, device, queueFamilyIndices,
+                 std::format("{}StagingMemory", debugName));
 
-    void* dataStaging = nullptr;
-    vmaMapMemory(allocator.allocator, stagingBufferMemory, &dataStaging);
-    memcpy(dataStaging, vertices.data(), bufferSize);
-    vmaUnmapMemory(allocator.allocator, stagingBufferMemory);
+    void* mapped = nullptr;
+    vmaMapMemory(allocator.allocator, stagingMemory, &mapped);
+    std::memcpy(mapped, src, static_cast<size_t>(srcBytes));
+    vmaUnmapMemory(allocator.allocator, stagingMemory);
 
-    if (vertexBufferMemory != nullptr) {
-        VkBuffer rawVertex = vertexBuffer.release();
-        tracyResourceFree(rawVertex, "GPU/Vertices");
-        vmaDestroyBuffer(allocator.allocator, rawVertex, vertexBufferMemory);
-        vertexBufferMemory = nullptr;
-        trackedVertexBytes = 0;
+    const vk::DeviceSize oldBytes = trackedBytes;
+    const vk::DeviceSize newBytes = oldBytes + srcBytes;
+    log_info(std::format("{} {}: {} + {} -> {}", oldBytes == 0 ? "create" : "append", debugName, formatBytes(oldBytes),
+                         formatBytes(srcBytes), formatBytes(newBytes)),
+             "ResourceManager");
+
+    vk::raii::Buffer grown({});
+    VmaAllocation grownMemory = nullptr;
+    createBuffer(newBytes,
+                 vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eTransferDst |
+                     vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal, grown, grownMemory, allocator.allocator, device,
+                 queueFamilyIndices, std::format("{}Memory", debugName));
+
+    vk::raii::CommandBuffer& cmd = oneTimeTransferCmd();
+    cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    if (oldBytes > 0 && dstMemory != nullptr) {
+        cmd.copyBuffer(dst, grown, vk::BufferCopy(0, 0, oldBytes));
+    }
+    cmd.copyBuffer(staging, grown, vk::BufferCopy(0, oldBytes, srcBytes));
+    cmd.end();
+    vk::CommandBufferSubmitInfo commandBufferInfo{.commandBuffer = *cmd};
+    const vk::SubmitInfo2 submitInfo{.commandBufferInfoCount = 1, .pCommandBufferInfos = &commandBufferInfo};
+    oneTimeTransferQueue().submit2(submitInfo, nullptr);
+    oneTimeTransferQueue().waitIdle();
+
+    {
+        VkBuffer rawStaging = staging.release();
+        vmaDestroyBuffer(allocator.allocator, rawStaging, stagingMemory);
     }
 
-    // eStorageBuffer | eShaderDeviceAddress: mesh shader BDA loads (MeshPushData.vertices).
-    createBuffer(bufferSize,
-                 vk::BufferUsageFlagBits2::eTransferDst | vk::BufferUsageFlagBits2::eStorageBuffer |
-                     vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                 vk::MemoryPropertyFlagBits::eDeviceLocal, vertexBuffer, vertexBufferMemory, allocator.allocator, device, queueFamilyIndices, "VertexBufferMemory");
-    setDebugName(device, vertexBuffer, "VertexBuffer");
-    tracyResourceAlloc(static_cast<VkBuffer>(*vertexBuffer), static_cast<size_t>(bufferSize), "GPU/Vertices");
-    trackedVertexBytes = bufferSize;
+    destroyDeviceBuffer(dst, dstMemory, dstAddress, trackedBytes, tracyName);
 
-    copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
+    dst = std::move(grown);
+    dstMemory = grownMemory;
+    trackedBytes = newBytes;
+    dstAddress = device.getBufferAddress({.buffer = *dst});
+    setDebugName(device, dst, debugName);
+    tracyResourceAlloc(static_cast<VkBuffer>(*dst), static_cast<size_t>(newBytes), tracyName);
+    log_info(std::format("{} ready {} bda=0x{:x}", debugName, formatBytes(newBytes),
+                         static_cast<uint64_t>(dstAddress)),
+             "ResourceManager");
+#ifdef TRACY_ENABLE
+    const std::string tracyMsg =
+        std::format("{} {} -> {} bda=0x{:x}", debugName, formatBytes(oldBytes), formatBytes(newBytes),
+                    static_cast<uint64_t>(dstAddress));
+    TracyMessage(tracyMsg.c_str(), tracyMsg.size());
+#endif
+}
 
-    // Free staging buffer after use to avoid leaking allocations
-    if (stagingBufferMemory != nullptr) {
-        VkBuffer rawStaging = stagingBuffer.release();
-        vmaDestroyBuffer(allocator.allocator, rawStaging, stagingBufferMemory);
-        stagingBufferMemory = nullptr;
+void ResourceManager::remapScratchOffsets()
+{
+    ZoneScopedN("ResourceManager::remapScratchOffsets");
+    GeometryStore& geometry = geometryStore;
+    const uint32_t newPrimitives =
+        static_cast<uint32_t>(geometry.primitiveDraws.size()) - geometry.flushedPrimitiveCount;
+    const uint32_t newMorphTargets =
+        static_cast<uint32_t>(geometry.morphTargets.size()) - geometry.flushedMorphTargetCount;
+    log_info(std::format("remap scratch: +{} prims +{} morphTargets onto gpu verts={} meshlets={} indices={}",
+                         newPrimitives, newMorphTargets, uploadedVertexCount, uploadedMeshletCount,
+                         uploadedIndexCount),
+             "ResourceManager");
+    for (uint32_t& vertexIndex : geometry.meshletVertices) {
+        vertexIndex += uploadedVertexCount;
     }
+    for (uint32_t& index : geometry.indices) {
+        index += uploadedVertexCount;
+    }
+    for (GpuMeshletDesc& meshlet : geometry.meshlets) {
+        meshlet.vertexOffset += uploadedMeshletVertexCount;
+        meshlet.triangleOffset += uploadedMeshletTriangleCount;
+    }
+    for (uint32_t p = geometry.flushedPrimitiveCount; p < geometry.primitiveDraws.size(); ++p) {
+        PrimitiveDraw& draw = geometry.primitiveDraws[p];
+        draw.firstVertex += uploadedVertexCount;
+        draw.firstIndex += uploadedIndexCount;
+        draw.meshlets.firstMeshlet += uploadedMeshletCount;
+    }
+    auto bump = [](uint32_t& value, uint32_t delta) {
+        if (value != kNoneIndex) {
+            value += delta;
+        }
+    };
+    for (uint32_t t = geometry.flushedMorphTargetCount; t < geometry.morphTargets.size(); ++t) {
+        MorphTarget& target = geometry.morphTargets[t];
+        bump(target.posOffset, uploadedMorphPosCount);
+        bump(target.nrmOffset, uploadedMorphNrmCount);
+        bump(target.tanOffset, uploadedMorphTanCount);
+    }
+    for (EntityId id = 0; id < objectStorage.size(); ++id) {
+        if (objectStorage.firstPrimitives[id] >= geometry.flushedPrimitiveCount) {
+            objectStorage.meshletDraws[id].firstMeshlet += uploadedMeshletCount;
+        }
+    }
+}
 
-    vertexBufferAddress = device.getBufferAddress({.buffer = *vertexBuffer});
+std::vector<GpuLight> ResourceManager::packScratchLights() const
+{
+    ZoneScopedN("ResourceManager::packScratchLights");
+    std::vector<GpuLight> packed;
+    packed.reserve(lightStore.instances.size());
+    log_info(std::format("pack lights: {} defs {} instances (gpu already {})", lightStore.defs.size(),
+                         lightStore.instances.size(), lightStore.uploadedCount),
+             "ResourceManager");
+    for (const LightInstance& instance : lightStore.instances) {
+        GpuLight light{};
+        light.worldPos = instance.worldPos;
+        light.worldDir = instance.worldDir;
+        if (instance.defIndex < lightStore.defs.size()) {
+            const LightDef& def = lightStore.defs[instance.defIndex];
+            light.range = def.range;
+            light.intensity = def.intensity;
+            light.color = def.color;
+            light.type = def.type;
+            light.innerCone = def.innerCone;
+            light.outerCone = def.outerCone;
+        }
+        packed.push_back(light);
+    }
+    return packed;
 }
 
 void ResourceManager::createIndirectBuffer()
@@ -376,153 +505,6 @@ void ResourceManager::createIndirectBuffer()
     tracyResourceAlloc(static_cast<VkBuffer>(*indirectBuffer), static_cast<size_t>(bufferSize),
                        "GPU/IndirectCopyCommand");
 }
-
-void ResourceManager::createMeshBuffers()
-{
-    ZoneScopedN("ResourceManager::createMeshBuffers");
-    log_info("createMeshBuffers() started", "ResourceManager");
-    // Create meshlet descriptor buffer (GpuMeshletDesc[])
-    log_info(std::format("Creating Meshlet buffer with {} entries", meshlets.size()), "ResourceManager");
-    if (meshlets.empty()) {
-        log_info("No meshlets present, skipping meshlet buffer creation", "ResourceManager");
-    } else {
-        vk::DeviceSize bufferSize = sizeof(GpuMeshletDesc) * meshlets.size();
-
-        createBuffer(bufferSize,
-                     vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, stagingBuffer,
-                     stagingBufferMemory, allocator.allocator, device, queueFamilyIndices, "MeshletStagingBufferMemory");
-        setDebugName(device, stagingBuffer, "MeshletStagingBuffer");
-
-        void* data = nullptr;
-        vmaMapMemory(allocator.allocator, stagingBufferMemory, &data);
-        memcpy(data, meshlets.data(), bufferSize);
-        vmaUnmapMemory(allocator.allocator, stagingBufferMemory);
-
-        if (meshletBufferMemory != nullptr) {
-            VkBuffer rawMeshlet = meshletBuffer.release();
-            tracyResourceFree(rawMeshlet, "GPU/Meshlets");
-            vmaDestroyBuffer(allocator.allocator, rawMeshlet, meshletBufferMemory);
-            meshletBufferMemory = nullptr;
-            trackedMeshletBytes = 0;
-        }
-
-        createBuffer(bufferSize,
-                     vk::BufferUsageFlagBits2::eTransferDst | vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                     vk::MemoryPropertyFlagBits::eDeviceLocal, meshletBuffer, meshletBufferMemory, allocator.allocator, device, queueFamilyIndices,
-                     "MeshletBufferMemory");
-        setDebugName(device, meshletBuffer, "MeshletBuffer");
-        tracyResourceAlloc(static_cast<VkBuffer>(*meshletBuffer), static_cast<size_t>(bufferSize), "GPU/Meshlets");
-        trackedMeshletBytes = bufferSize;
-
-        copyBuffer(stagingBuffer, meshletBuffer, bufferSize);
-
-        // Free staging buffer after use to avoid leaking allocations
-        if (stagingBufferMemory != nullptr) {
-            VkBuffer rawStaging = stagingBuffer.release();
-            vmaDestroyBuffer(allocator.allocator, rawStaging, stagingBufferMemory);
-            stagingBufferMemory = nullptr;
-        }
-
-        meshletBufferAddress = device.getBufferAddress({.buffer = *meshletBuffer});
-    }
-
-    // Create meshlet vertex remap buffer (uint32_t[])
-    log_info(std::format("Creating meshletVertexBuffer buffer with {} entries", meshletVertices.size()), "ResourceManager");
-    if (meshletVertices.empty()) {
-        log_info("No meshlet vertex remap data, skipping meshletVertexBuffer creation", "ResourceManager");
-    } else {
-        vk::DeviceSize vertexBufferSize = sizeof(meshletVertices[0]) * meshletVertices.size();
-
-        createBuffer(vertexBufferSize,
-                     vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, stagingBuffer,
-                     stagingBufferMemory, allocator.allocator, device, queueFamilyIndices, "MeshletVertexStagingBufferMemory");
-        setDebugName(device, stagingBuffer, "MeshletVertexStagingBuffer");
-
-        void* vdata = nullptr;
-        vmaMapMemory(allocator.allocator, stagingBufferMemory, &vdata);
-        memcpy(vdata, meshletVertices.data(), vertexBufferSize);
-        vmaUnmapMemory(allocator.allocator, stagingBufferMemory);
-
-        if (meshletVertexBufferMemory != nullptr) {
-            VkBuffer raw = meshletVertexBuffer.release();
-            tracyResourceFree(raw, "GPU/MeshletVertices");
-            vmaDestroyBuffer(allocator.allocator, raw, meshletVertexBufferMemory);
-            meshletVertexBufferMemory = nullptr;
-            trackedMeshletVertexBytes = 0;
-        }
-
-        // Remap table is SSBO-style BDA traffic in the mesh shader (uint[]), not a vertex binding.
-        createBuffer(vertexBufferSize,
-                     vk::BufferUsageFlagBits2::eTransferDst | vk::BufferUsageFlagBits2::eStorageBuffer |
-                         vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                     vk::MemoryPropertyFlagBits::eDeviceLocal, meshletVertexBuffer, meshletVertexBufferMemory, allocator.allocator,
-                     device, queueFamilyIndices, "MeshletVertexBufferMemory");
-        setDebugName(device, meshletVertexBuffer, "MeshletVertexBuffer");
-        tracyResourceAlloc(static_cast<VkBuffer>(*meshletVertexBuffer), static_cast<size_t>(vertexBufferSize),
-                           "GPU/MeshletVertices");
-        trackedMeshletVertexBytes = vertexBufferSize;
-
-        copyBuffer(stagingBuffer, meshletVertexBuffer, vertexBufferSize);
-
-        if (stagingBufferMemory != nullptr) {
-            VkBuffer rawStaging = stagingBuffer.release();
-            vmaDestroyBuffer(allocator.allocator, rawStaging, stagingBufferMemory);
-            stagingBufferMemory = nullptr;
-        }
-
-        meshletVertexBufferAddress = device.getBufferAddress({.buffer = *meshletVertexBuffer});
-    }
-
-    // Create meshlet triangle local-corner buffer (uint8_t[])
-    log_info(std::format("Creating meshletTriangleBuffer buffer with {} entries", meshletTriangles.size()), "ResourceManager");
-    if (meshletTriangles.empty()) {
-        log_info("No meshlet triangle data, skipping meshletTriangleBuffer creation", "ResourceManager");
-    } else {
-        vk::DeviceSize triBufferSize = sizeof(meshletTriangles[0]) * meshletTriangles.size();
-
-        createBuffer(triBufferSize,
-                     vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, stagingBuffer,
-                     stagingBufferMemory, allocator.allocator, device, queueFamilyIndices, "MeshletTriangleStagingBufferMemory");
-        setDebugName(device, stagingBuffer, "MeshletTriangleStagingBuffer");
-
-        void* tdata = nullptr;
-        vmaMapMemory(allocator.allocator, stagingBufferMemory, &tdata);
-        memcpy(tdata, meshletTriangles.data(), triBufferSize);
-        vmaUnmapMemory(allocator.allocator, stagingBufferMemory);
-
-        if (meshletTriangleBufferMemory != nullptr) {
-            VkBuffer raw = meshletTriangleBuffer.release();
-            tracyResourceFree(raw, "GPU/MeshletTriangles");
-            vmaDestroyBuffer(allocator.allocator, raw, meshletTriangleBufferMemory);
-            meshletTriangleBufferMemory = nullptr;
-            trackedMeshletTriangleBytes = 0;
-        }
-
-        createBuffer(triBufferSize,
-                     vk::BufferUsageFlagBits2::eTransferDst | vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                     vk::MemoryPropertyFlagBits::eDeviceLocal, meshletTriangleBuffer, meshletTriangleBufferMemory, allocator.allocator,
-                     device, queueFamilyIndices, "MeshletTriangleBufferMemory");
-        setDebugName(device, meshletTriangleBuffer, "MeshletTriangleBuffer");
-        tracyResourceAlloc(static_cast<VkBuffer>(*meshletTriangleBuffer), static_cast<size_t>(triBufferSize),
-                           "GPU/MeshletTriangles");
-        trackedMeshletTriangleBytes = triBufferSize;
-
-        copyBuffer(stagingBuffer, meshletTriangleBuffer, triBufferSize);
-
-        if (stagingBufferMemory != nullptr) {
-            VkBuffer rawStaging = stagingBuffer.release();
-            vmaDestroyBuffer(allocator.allocator, rawStaging, stagingBufferMemory);
-            stagingBufferMemory = nullptr;
-        }
-
-        meshletTriangleBufferAddress = device.getBufferAddress({.buffer = *meshletTriangleBuffer});
-    }
-}
-
-
 
 void ResourceManager::createCameraBuffers(Camera& camera)
 {
@@ -601,12 +583,145 @@ void ResourceManager::createUniformBuffers()
     ensureInstanceCapacity(std::max(objectStorage.size(), 1u));
 }
 
-void ResourceManager::recreateObjectsBuffers()
+void ResourceManager::flushGpuAssets()
 {
-    ZoneScopedN("ResourceManager::recreateObjectsBuffers");
-    log_info("recreateObjectsBuffers() started", "ResourceManager");
-    createVertexBuffer();
-    createMeshBuffers();
+    ZoneScopedN("ResourceManager::flushGpuAssets");
+    log_info("flushGpuAssets() started", "ResourceManager");
+    log_info(std::format("cpu scratch: verts={} meshlets={} meshletVerts={} triCorners={} indices={} "
+                         "normals={} tangents={} uv1={} joints={} weights={} morphPos/Nrm/Tan={}/{}/{} "
+                         "materials={} pbrExt={} lights={}/{} prims={} (flushed {})",
+                         geometryStore.vertices.size(), geometryStore.meshlets.size(),
+                         geometryStore.meshletVertices.size(), geometryStore.meshletTriangles.size(),
+                         geometryStore.indices.size(), geometryStore.normals.size(), geometryStore.tangents.size(),
+                         geometryStore.uv1.size(), geometryStore.joints0.size(), geometryStore.weights0.size(),
+                         geometryStore.morphPos.size(), geometryStore.morphNrm.size(), geometryStore.morphTan.size(),
+                         materialStore.gpuMaterials.size(), materialStore.pbrExtensions.size(),
+                         lightStore.defs.size(), lightStore.instances.size(), geometryStore.primitiveDraws.size(),
+                         geometryStore.flushedPrimitiveCount),
+             "ResourceManager");
+
+    remapScratchOffsets();
+
+    const uint32_t newVertexCount = static_cast<uint32_t>(geometryStore.vertices.size());
+    const uint32_t newMeshletCount = static_cast<uint32_t>(geometryStore.meshlets.size());
+    const uint32_t newMeshletVertexCount = static_cast<uint32_t>(geometryStore.meshletVertices.size());
+    const uint32_t newMeshletTriangleCount = static_cast<uint32_t>(geometryStore.meshletTriangles.size());
+    const uint32_t newIndexCount = static_cast<uint32_t>(geometryStore.indices.size());
+    const uint32_t newMorphPosCount = static_cast<uint32_t>(geometryStore.morphPos.size());
+    const uint32_t newMorphNrmCount = static_cast<uint32_t>(geometryStore.morphNrm.size());
+    const uint32_t newMorphTanCount = static_cast<uint32_t>(geometryStore.morphTan.size());
+    const uint32_t newMaterialCount = static_cast<uint32_t>(materialStore.gpuMaterials.size());
+
+    appendDeviceLocal(vertexBuffer, vertexBufferMemory, vertexBufferAddress, trackedVertexBytes,
+                      geometryStore.vertices.data(),
+                      static_cast<vk::DeviceSize>(newVertexCount) * sizeof(GpuVertex), "VertexBuffer",
+                      "GPU/Vertices");
+    appendDeviceLocal(meshletBuffer, meshletBufferMemory, meshletBufferAddress, trackedMeshletBytes,
+                      geometryStore.meshlets.data(),
+                      static_cast<vk::DeviceSize>(newMeshletCount) * sizeof(GpuMeshletDesc), "MeshletBuffer",
+                      "GPU/Meshlets");
+    appendDeviceLocal(meshletVertexBuffer, meshletVertexBufferMemory, meshletVertexBufferAddress,
+                      trackedMeshletVertexBytes, geometryStore.meshletVertices.data(),
+                      static_cast<vk::DeviceSize>(newMeshletVertexCount) * sizeof(uint32_t), "MeshletVertexBuffer",
+                      "GPU/MeshletVertices");
+    appendDeviceLocal(meshletTriangleBuffer, meshletTriangleBufferMemory, meshletTriangleBufferAddress,
+                      trackedMeshletTriangleBytes, geometryStore.meshletTriangles.data(),
+                      static_cast<vk::DeviceSize>(newMeshletTriangleCount) * sizeof(uint8_t), "MeshletTriangleBuffer",
+                      "GPU/MeshletTriangles");
+    appendDeviceLocal(normalBuffer, normalBufferMemory, normalBufferAddress, trackedNormalBytes,
+                      geometryStore.normals.data(),
+                      static_cast<vk::DeviceSize>(geometryStore.normals.size()) * sizeof(glm::vec3), "NormalBuffer",
+                      "GPU/Normals");
+    appendDeviceLocal(tangentBuffer, tangentBufferMemory, tangentBufferAddress, trackedTangentBytes,
+                      geometryStore.tangents.data(),
+                      static_cast<vk::DeviceSize>(geometryStore.tangents.size()) * sizeof(glm::vec4), "TangentBuffer",
+                      "GPU/Tangents");
+    appendDeviceLocal(uv1Buffer, uv1BufferMemory, uv1BufferAddress, trackedUv1Bytes, geometryStore.uv1.data(),
+                      static_cast<vk::DeviceSize>(geometryStore.uv1.size()) * sizeof(glm::vec2), "Uv1Buffer",
+                      "GPU/Uv1");
+    appendDeviceLocal(jointBuffer, jointBufferMemory, jointBufferAddress, trackedJointBytes,
+                      geometryStore.joints0.data(),
+                      static_cast<vk::DeviceSize>(geometryStore.joints0.size()) * sizeof(std::array<uint16_t, 4>),
+                      "JointBuffer", "GPU/Joints");
+    appendDeviceLocal(weightBuffer, weightBufferMemory, weightBufferAddress, trackedWeightBytes,
+                      geometryStore.weights0.data(),
+                      static_cast<vk::DeviceSize>(geometryStore.weights0.size()) * sizeof(glm::vec4), "WeightBuffer",
+                      "GPU/Weights");
+    appendDeviceLocal(indexBuffer, indexBufferMemory, indexBufferAddress, trackedIndexBytes,
+                      geometryStore.indices.data(), static_cast<vk::DeviceSize>(newIndexCount) * sizeof(uint32_t),
+                      "IndexBuffer", "GPU/Indices");
+    appendDeviceLocal(morphPosBuffer, morphPosBufferMemory, morphPosBufferAddress, trackedMorphPosBytes,
+                      geometryStore.morphPos.data(), static_cast<vk::DeviceSize>(newMorphPosCount) * sizeof(glm::vec3),
+                      "MorphPosBuffer", "GPU/MorphPos");
+    appendDeviceLocal(morphNrmBuffer, morphNrmBufferMemory, morphNrmBufferAddress, trackedMorphNrmBytes,
+                      geometryStore.morphNrm.data(), static_cast<vk::DeviceSize>(newMorphNrmCount) * sizeof(glm::vec3),
+                      "MorphNrmBuffer", "GPU/MorphNrm");
+    appendDeviceLocal(morphTanBuffer, morphTanBufferMemory, morphTanBufferAddress, trackedMorphTanBytes,
+                      geometryStore.morphTan.data(), static_cast<vk::DeviceSize>(newMorphTanCount) * sizeof(glm::vec4),
+                      "MorphTanBuffer", "GPU/MorphTan");
+    appendDeviceLocal(materialBuffer, materialBufferMemory, materialBufferAddress, trackedMaterialBytes,
+                      materialStore.gpuMaterials.data(),
+                      static_cast<vk::DeviceSize>(newMaterialCount) * sizeof(GpuMaterial), "MaterialBuffer",
+                      "GPU/Materials");
+    appendDeviceLocal(pbrExtBuffer, pbrExtBufferMemory, pbrExtBufferAddress, trackedPbrExtBytes,
+                      materialStore.pbrExtensions.data(),
+                      static_cast<vk::DeviceSize>(materialStore.pbrExtensions.size()) * sizeof(MaterialPbrExtension),
+                      "PbrExtBuffer", "GPU/PbrExtensions");
+
+    const std::vector<GpuLight> packedLights = packScratchLights();
+    appendDeviceLocal(lightBuffer, lightBufferMemory, lightBufferAddress, trackedLightBytes, packedLights.data(),
+                      static_cast<vk::DeviceSize>(packedLights.size()) * sizeof(GpuLight), "LightBuffer", "GPU/Lights");
+
+    uploadedVertexCount += newVertexCount;
+    uploadedMeshletCount += newMeshletCount;
+    uploadedMeshletVertexCount += newMeshletVertexCount;
+    uploadedMeshletTriangleCount += newMeshletTriangleCount;
+    uploadedIndexCount += newIndexCount;
+    uploadedMorphPosCount += newMorphPosCount;
+    uploadedMorphNrmCount += newMorphNrmCount;
+    uploadedMorphTanCount += newMorphTanCount;
+    materialStore.uploadedCount += newMaterialCount;
+    lightStore.uploadedCount += static_cast<uint32_t>(packedLights.size());
+
+    geometryStore.clearScratch();
+    materialStore.clearScratch();
+    lightStore.clearScratch();
+
+    const vk::DeviceSize gpuAssetBytes = trackedVertexBytes + trackedMeshletBytes + trackedMeshletVertexBytes +
+        trackedMeshletTriangleBytes + trackedNormalBytes + trackedTangentBytes + trackedUv1Bytes + trackedJointBytes +
+        trackedWeightBytes + trackedIndexBytes + trackedMorphPosBytes + trackedMorphNrmBytes + trackedMorphTanBytes +
+        trackedMaterialBytes + trackedPbrExtBytes + trackedLightBytes;
+
+    log_info(std::format("gpu catalog: verts={} meshlets={} meshletVerts={} triCorners={} indices={} "
+                         "morphPos/Nrm/Tan={}/{}/{} materials={} lights={} prims={} morphTargets={}",
+                         uploadedVertexCount, uploadedMeshletCount, uploadedMeshletVertexCount,
+                         uploadedMeshletTriangleCount, uploadedIndexCount, uploadedMorphPosCount,
+                         uploadedMorphNrmCount, uploadedMorphTanCount, materialStore.uploadedCount,
+                         lightStore.uploadedCount, geometryStore.primitiveDraws.size(),
+                         geometryStore.morphTargets.size()),
+             "ResourceManager");
+    log_info(std::format("gpu ssbo bytes: verts={} meshlets={} meshletVerts={} tris={} normals={} tangents={} "
+                         "uv1={} joints={} weights={} indices={} morph={}/{}/{} materials={} pbrExt={} lights={} "
+                         "total={}",
+                         formatBytes(trackedVertexBytes), formatBytes(trackedMeshletBytes),
+                         formatBytes(trackedMeshletVertexBytes), formatBytes(trackedMeshletTriangleBytes),
+                         formatBytes(trackedNormalBytes), formatBytes(trackedTangentBytes), formatBytes(trackedUv1Bytes),
+                         formatBytes(trackedJointBytes), formatBytes(trackedWeightBytes), formatBytes(trackedIndexBytes),
+                         formatBytes(trackedMorphPosBytes), formatBytes(trackedMorphNrmBytes),
+                         formatBytes(trackedMorphTanBytes), formatBytes(trackedMaterialBytes),
+                         formatBytes(trackedPbrExtBytes), formatBytes(trackedLightBytes), formatBytes(gpuAssetBytes)),
+             "ResourceManager");
+    log_info(std::format("cpu scratch after drop: verts={} meshlets={} materials={} lights={} (capacity released)",
+                         geometryStore.vertices.size(), geometryStore.meshlets.size(),
+                         materialStore.gpuMaterials.size(), lightStore.instances.size()),
+             "ResourceManager");
+#ifdef TRACY_ENABLE
+    const std::string tracyMsg = std::format(
+        "flush gpu assets total={} verts={} meshlets={} materials={} lights={}", formatBytes(gpuAssetBytes),
+        uploadedVertexCount, uploadedMeshletCount, materialStore.uploadedCount, lightStore.uploadedCount);
+    TracyMessage(tracyMsg.c_str(), tracyMsg.size());
+#endif
+    tracyPlotResources();
 }
 
 void ResourceManager::tracyPlotResources() const
@@ -622,17 +737,44 @@ void ResourceManager::tracyPlotResources() const
         activeMeshlets += objectStorage.meshletDraws[id].meshletCount;
     }
 
+    const vk::DeviceSize gpuAssetBytes = trackedVertexBytes + trackedMeshletBytes + trackedMeshletVertexBytes +
+        trackedMeshletTriangleBytes + trackedNormalBytes + trackedTangentBytes + trackedUv1Bytes + trackedJointBytes +
+        trackedWeightBytes + trackedIndexBytes + trackedMorphPosBytes + trackedMorphNrmBytes + trackedMorphTanBytes +
+        trackedMaterialBytes + trackedPbrExtBytes + trackedLightBytes;
+
     TracyPlot("Vulkan/EntityCount", static_cast<double>(objectStorage.size()));
     TracyPlot("Vulkan/ActiveEntities", static_cast<double>(activeEntities));
     TracyPlot("Vulkan/ActiveMeshlets", static_cast<double>(activeMeshlets));
-    TracyPlot("Vulkan/MeshletCount", static_cast<double>(meshlets.size()));
-    TracyPlot("Vulkan/MeshletVertexCount", static_cast<double>(meshletVertices.size()));
-    TracyPlot("Vulkan/MeshletTriangleCorners", static_cast<double>(meshletTriangles.size()));
-    TracyPlot("Vulkan/VerticesInUse", static_cast<double>(vertices.size()));
-    TracyPlot("Vulkan/VertexBytesInUse", static_cast<double>(trackedVertexBytes));
+    TracyPlot("Vulkan/PrimitiveCount", static_cast<double>(geometryStore.primitiveDraws.size()));
+    TracyPlot("Vulkan/MeshletCount", static_cast<double>(uploadedMeshletCount));
+    TracyPlot("Vulkan/MeshletVertexCount", static_cast<double>(uploadedMeshletVertexCount));
+    TracyPlot("Vulkan/MeshletTriangleCorners", static_cast<double>(uploadedMeshletTriangleCount));
+    TracyPlot("Vulkan/VerticesInUse", static_cast<double>(uploadedVertexCount));
+    TracyPlot("Vulkan/IndexCount", static_cast<double>(uploadedIndexCount));
+    TracyPlot("Vulkan/MaterialCount", static_cast<double>(materialStore.uploadedCount));
+    TracyPlot("Vulkan/LightCount", static_cast<double>(lightStore.uploadedCount));
+    TracyPlot("Vulkan/MorphPosCount", static_cast<double>(uploadedMorphPosCount));
+    TracyPlot("Vulkan/MorphNrmCount", static_cast<double>(uploadedMorphNrmCount));
+    TracyPlot("Vulkan/MorphTanCount", static_cast<double>(uploadedMorphTanCount));
+    TracyPlot("Vulkan/VertexBytes", static_cast<double>(trackedVertexBytes));
     TracyPlot("Vulkan/MeshletBytes", static_cast<double>(trackedMeshletBytes));
     TracyPlot("Vulkan/MeshletVertexBytes", static_cast<double>(trackedMeshletVertexBytes));
     TracyPlot("Vulkan/MeshletTriangleBytes", static_cast<double>(trackedMeshletTriangleBytes));
+    TracyPlot("Vulkan/NormalBytes", static_cast<double>(trackedNormalBytes));
+    TracyPlot("Vulkan/TangentBytes", static_cast<double>(trackedTangentBytes));
+    TracyPlot("Vulkan/Uv1Bytes", static_cast<double>(trackedUv1Bytes));
+    TracyPlot("Vulkan/JointBytes", static_cast<double>(trackedJointBytes));
+    TracyPlot("Vulkan/WeightBytes", static_cast<double>(trackedWeightBytes));
+    TracyPlot("Vulkan/IndexBytes", static_cast<double>(trackedIndexBytes));
+    TracyPlot("Vulkan/MorphPosBytes", static_cast<double>(trackedMorphPosBytes));
+    TracyPlot("Vulkan/MorphNrmBytes", static_cast<double>(trackedMorphNrmBytes));
+    TracyPlot("Vulkan/MorphTanBytes", static_cast<double>(trackedMorphTanBytes));
+    TracyPlot("Vulkan/MaterialBytes", static_cast<double>(trackedMaterialBytes));
+    TracyPlot("Vulkan/PbrExtBytes", static_cast<double>(trackedPbrExtBytes));
+    TracyPlot("Vulkan/LightBytes", static_cast<double>(trackedLightBytes));
+    TracyPlot("Vulkan/GpuAssetBytes", static_cast<double>(gpuAssetBytes));
+    TracyPlot("Vulkan/CpuScratchVertices", static_cast<double>(geometryStore.vertices.size()));
+    TracyPlot("Vulkan/CpuScratchMeshlets", static_cast<double>(geometryStore.meshlets.size()));
     TracyPlot("Vulkan/InstanceCapacity", static_cast<double>(instanceCapacity));
     TracyPlot("Vulkan/InstanceUboBytes", static_cast<double>(trackedInstanceUboBytes[0]));
     TracyPlot("Vulkan/CommandBuffersInUse", static_cast<double>(commandBuffers.size()));

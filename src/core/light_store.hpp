@@ -7,8 +7,10 @@
 class LightStore
 {
 public:
+    // load scratch; cleared after GPU append
     std::vector<LightDef> defs;
     std::vector<LightInstance> instances;
+    uint32_t uploadedCount = 0;
 
     uint32_t addDef(const LightDef& def)
     {
@@ -20,5 +22,13 @@ public:
     {
         instances.push_back(instance);
         return static_cast<uint32_t>(instances.size() - 1);
+    }
+
+    void clearScratch()
+    {
+        defs.clear();
+        instances.clear();
+        defs.shrink_to_fit();
+        instances.shrink_to_fit();
     }
 };

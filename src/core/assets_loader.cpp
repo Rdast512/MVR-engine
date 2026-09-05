@@ -1299,6 +1299,10 @@ namespace
 
                 PrimitiveDraw draw{};
                 draw.materialId = materialId;
+                if (const GpuMaterial* gpu = ctx.materials.scratchMaterial(materialId)) {
+                    draw.albedoTex = gpu->baseColorTex;
+                    draw.albedoSamp = gpu->baseColorSamp;
+                }
                 draw.firstVertex = firstVertex;
                 draw.vertexCount = vertexCount;
                 draw.firstIndex = firstIndex;
@@ -1478,11 +1482,8 @@ bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
     if (primitiveCount > 0) {
         const PrimitiveDraw& first = geometryStore.primitiveDraws[firstPrimitive];
         previewMat = first.materialId;
-        if (first.materialId < materialStore.size()) {
-            const GpuMaterial& gpu = materialStore.gpuMaterials[first.materialId];
-            if (gpu.baseColorTex != kNoneIndex) {
-                previewTex = gpu.baseColorTex;
-            }
+        if (first.albedoTex != kNoneIndex) {
+            previewTex = first.albedoTex;
         }
     }
 
@@ -1557,6 +1558,8 @@ bool AssetsLoader::loadObjModel(const std::string& modelPath, glm::vec3 xyz)
 
     PrimitiveDraw draw{};
     draw.materialId = materialId;
+    draw.albedoTex = gpu.baseColorTex;
+    draw.albedoSamp = gpu.baseColorSamp;
     draw.firstVertex = firstVertex;
     draw.vertexCount = static_cast<uint32_t>(geometryStore.positions.size()) - firstVertex;
     draw.firstIndex = firstIndex;

@@ -15,7 +15,7 @@
 #include <format>
 #include "../static_headers/logger.hpp"
 #include "../util/debug.hpp"
-#include "tracy/Tracy.hpp"
+#include "util/vk_tracy.hpp"
 #include "vulkan/vulkan.hpp"
 /// Validation layer requested when enableValidationLayers is true.
 const std::vector validationLayers = {"VK_LAYER_KHRONOS_validation"};

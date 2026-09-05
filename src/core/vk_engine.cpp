@@ -72,7 +72,7 @@ void Engine::initialize()
     // Aim free-fly camera at the only startup model so the scene is visible immediately.
     camera->focusOn(initialAssetPos);
     resourceManager = std::make_unique<ResourceManager>(*device, *allocator, scene->geometryStore, scene->materialStore,
-                                                        scene->objectStorage);
+                                                        scene->lightStore, scene->objectStorage);
     resourceManager->init();
     resourceManager->createCameraBuffers(*camera);
 
@@ -497,7 +497,7 @@ void Engine::loadObject()
 #endif
     device->vkdevice.waitIdle();
     assetsLoader->loadModel(assetPath, glm::make_vec3(loadedModelPosition));
-    resourceManager->recreateObjectsBuffers();
+    resourceManager->flushGpuAssets();
     resourceManager->ensureInstanceCapacity(scene->objectStorage.size());
 }
 

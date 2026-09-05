@@ -108,3 +108,29 @@ MeshletDraw GeometryStore::buildMeshletsForRange(uint32_t firstIndex, uint32_t i
 
     return draw;
 }
+
+void GeometryStore::clearScratch()
+{
+    auto drop = [](auto& vec) {
+        vec.clear();
+        vec.shrink_to_fit();
+    };
+    drop(positions);
+    drop(normals);
+    drop(tangents);
+    drop(uv0);
+    drop(uv1);
+    drop(colors);
+    drop(joints0);
+    drop(weights0);
+    drop(indices);
+    drop(vertices);
+    drop(meshlets);
+    drop(meshletVertices);
+    drop(meshletTriangles);
+    drop(morphPos);
+    drop(morphNrm);
+    drop(morphTan);
+    flushedPrimitiveCount = static_cast<uint32_t>(primitiveDraws.size());
+    flushedMorphTargetCount = static_cast<uint32_t>(morphTargets.size());
+}

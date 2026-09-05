@@ -37,6 +37,10 @@ public:
     std::vector<std::string> extensionsUsed;
     std::vector<std::string> extensionsRequired;
 
+    // catalog watermarks: primitiveDraws/morphTargets below these are GPU-absolute
+    uint32_t flushedPrimitiveCount = 0;
+    uint32_t flushedMorphTargetCount = 0;
+
     // grow SoA + packed GpuVertex to newCount; new verts get default attrs
     void resizeVertices(uint32_t newCount);
 
@@ -44,4 +48,7 @@ public:
     void packVertex(uint32_t v);
 
     [[nodiscard]] MeshletDraw buildMeshletsForRange(uint32_t firstIndex, uint32_t indexCount);
+
+    // drop load scratch after GPU append; catalog (primitiveDraws, morphTargets, weights, aux) stays
+    void clearScratch();
 };

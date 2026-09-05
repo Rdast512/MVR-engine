@@ -73,6 +73,8 @@ struct PrimitiveDraw
 {
     MeshletDraw meshlets;
     uint32_t materialId = kNoneIndex;
+    uint32_t albedoTex = kNoneIndex;
+    uint32_t albedoSamp = kNoneIndex;
     uint32_t firstVertex = 0;
     uint32_t vertexCount = 0;
     uint32_t firstIndex = 0;
@@ -242,6 +244,22 @@ struct LightInstance
     glm::vec3 worldPos{0.0f};
     glm::vec3 worldDir{0.0f, 0.0f, -1.0f};
 };
+
+// folded LightDef + LightInstance for the light SSBO (RT/PT later)
+struct alignas(16) GpuLight
+{
+    glm::vec3 worldPos{0.0f};
+    float range = 0.0f;
+    glm::vec3 worldDir{0.0f, 0.0f, -1.0f};
+    float intensity = 1.0f;
+    glm::vec3 color{1.0f};
+    uint32_t type = 1;
+    float innerCone = 0.0f;
+    float outerCone = 0.785398163f;
+    float pad0 = 0.0f;
+    float pad1 = 0.0f;
+};
+static_assert(sizeof(GpuLight) == 64, "GpuLight must stay 64 B");
 
 namespace AuxOwnerKind
 {
