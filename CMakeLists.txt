@@ -124,8 +124,10 @@ foreach (CONFIG DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
 endforeach ()
 
 # --- Shader Compilation (Slang only) ---
+# Include-only libraries (types/, core/, geometry/, material/, …) are not compiled.
+# Compile units live in shaders/passes/ and each lists its slangc -entry names.
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/shaders)
-file(GLOB_RECURSE SLANG_SHADERS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/shaders/*.slang")
+set(ENGINE_SLANG_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/shaders")
 
 if (WIN32)
   set(SLANGC_EXECUTABLE "${CMAKE_SOURCE_DIR}/ThirdParty/Slang-win/bin/slangc.exe")
@@ -199,46 +201,57 @@ set(ENGINE_SLANG_CONFIG_FLAGS
 )
 
 set(COMPILED_SHADERS)
-foreach (SLANG ${SLANG_SHADERS})
-  file(RELATIVE_PATH SLANG_REL_PATH "${CMAKE_SOURCE_DIR}/shaders" ${SLANG})
-  get_filename_component(SLANG_REL_DIR ${SLANG_REL_PATH} DIRECTORY)
-  get_filename_component(SLANG_NAME_WE ${SLANG} NAME_WE)
-  if (SLANG_REL_DIR STREQUAL "")
-    set(SLANG_OUT_DIR "${CMAKE_BINARY_DIR}/shaders")
-  else ()
-    set(SLANG_OUT_DIR "${CMAKE_BINARY_DIR}/shaders/${SLANG_REL_DIR}")
-  endif ()
-  set(SPV_OUT "${SLANG_OUT_DIR}/${SLANG_NAME_WE}.spv")
 
-  # Mesh-only shaders use meshMain; classic graphics shaders use vertMain.
-  if (SLANG_NAME_WE STREQUAL "mesh")
-    set(SLANG_ENTRY_ARGS -entry meshMain -entry fragMain)
+function(engine_add_slang_pass rel_path)
+  cmake_parse_arguments(PARSE_ARGV 1 ARG "" "" "ENTRIES;DEPENDS")
+  set(_src "${ENGINE_SLANG_INCLUDE_DIR}/${rel_path}")
+  get_filename_component(_rel_dir ${rel_path} DIRECTORY)
+  get_filename_component(_name_we ${_src} NAME_WE)
+  if (_rel_dir STREQUAL "")
+    set(_out_dir "${CMAKE_BINARY_DIR}/shaders")
   else ()
-    set(SLANG_ENTRY_ARGS -entry vertMain -entry fragMain)
+    set(_out_dir "${CMAKE_BINARY_DIR}/shaders/${_rel_dir}")
   endif ()
+  set(_spv "${_out_dir}/${_name_we}.spv")
+
+  set(_entry_args)
+  foreach (_e IN LISTS ARG_ENTRIES)
+    list(APPEND _entry_args -entry ${_e})
+  endforeach ()
+
+  set(_depends "${_src}")
+  foreach (_d IN LISTS ARG_DEPENDS)
+    list(APPEND _depends "${ENGINE_SLANG_INCLUDE_DIR}/${_d}")
+  endforeach ()
 
   add_custom_command(
-            OUTPUT ${SPV_OUT}
-            COMMAND ${CMAKE_COMMAND} -E make_directory ${SLANG_OUT_DIR}
-            COMMAND ${SLANGC_EXECUTABLE}
-            ${SLANG}
-            -target spirv
-            -profile sm_6_9
-            -capability ${ENGINE_SLANG_CAPABILITY_STRING}
-            -matrix-layout-column-major
-            -fvk-use-entrypoint-name
-            # Match C++/glm tight packing for BDA structs (Vertex float3@0/12/24 = 32 B).
-            # Requires VkPhysicalDeviceVulkan12Features::scalarBlockLayout = true.
-            -fvk-use-scalar-layout
-            ${ENGINE_SLANG_CONFIG_FLAGS}
-            ${SLANG_ENTRY_ARGS}
-            -o ${SPV_OUT}
-            DEPENDS ${SLANG}
-            COMMENT "Compiling Slang shader ${SLANG_REL_PATH}"
-            VERBATIM
-    )
-  list(APPEND COMPILED_SHADERS ${SPV_OUT})
-endforeach ()
+      OUTPUT ${_spv}
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${_out_dir}
+      COMMAND ${SLANGC_EXECUTABLE}
+      ${_src}
+      -target spirv
+      -profile sm_6_9
+      -capability ${ENGINE_SLANG_CAPABILITY_STRING}
+      -matrix-layout-column-major
+      -fvk-use-entrypoint-name
+      -fvk-use-scalar-layout
+      -I ${ENGINE_SLANG_INCLUDE_DIR}
+      ${ENGINE_SLANG_CONFIG_FLAGS}
+      ${_entry_args}
+      -o ${_spv}
+      DEPENDS ${_depends}
+      COMMENT "Compiling Slang shader ${rel_path}"
+      VERBATIM
+  )
+  set(COMPILED_SHADERS ${_spv} ${COMPILED_SHADERS} PARENT_SCOPE)
+endfunction()
+
+engine_add_slang_pass(passes/mesh_raster.slang
+    ENTRIES meshMain
+    DEPENDS types.slang core/binding.slang core/math.slang geometry/mesh.slang)
+engine_add_slang_pass(passes/mesh_fragment.slang
+    ENTRIES fragMain
+    DEPENDS types.slang core/binding.slang material/pbr.slang)
 
 add_custom_target(Shaders ALL DEPENDS ${COMPILED_SHADERS})
 

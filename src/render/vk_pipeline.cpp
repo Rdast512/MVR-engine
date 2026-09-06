@@ -23,7 +23,7 @@ namespace
         std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
         if (!file.is_open()) {
-            throw std::runtime_error("failed to open file!");
+            throw std::runtime_error("failed to open shader: " + filename);
         }
         std::vector<char> buffer(file.tellg());
         file.seekg(0, std::ios::beg);
@@ -52,24 +52,28 @@ void Pipeline::createMeshPipeline()
 {
     ZoneScopedN("Pipeline::createMeshPipeline");
     const auto shaderDir = std::filesystem::path(ENGINE_SHADER_DIR);
-    const auto shaderPath = (shaderDir / "base" / "mesh.spv").string();
-    const auto spirv = readFile(shaderPath);
-    const vk::ShaderModuleCreateInfo shaderModuleInfo{
-        .codeSize = spirv.size(),
-        .pCode = reinterpret_cast<const uint32_t*>(spirv.data()),
+    const auto meshSpirv = readFile((shaderDir / "passes" / "mesh_raster.spv").string());
+    const auto fragSpirv = readFile((shaderDir / "passes" / "mesh_fragment.spv").string());
+    const vk::ShaderModuleCreateInfo meshModuleInfo{
+        .codeSize = meshSpirv.size(),
+        .pCode = reinterpret_cast<const uint32_t*>(meshSpirv.data()),
+    };
+    const vk::ShaderModuleCreateInfo fragModuleInfo{
+        .codeSize = fragSpirv.size(),
+        .pCode = reinterpret_cast<const uint32_t*>(fragSpirv.data()),
     };
     const bool useDescriptorHeaps = descriptorManager.descriptorBindingMode == DescriptorBindingMode::DescriptorHeaps;
 
     // Mesh-only: no task stage, no vertex input / input assembly.
     // maintenance5: inline SPIR-V, no transient VkShaderModule.
     const vk::PipelineShaderStageCreateInfo meshShaderStageInfo{
-        .pNext = &shaderModuleInfo,
+        .pNext = &meshModuleInfo,
         .stage = vk::ShaderStageFlagBits::eMeshEXT,
         .module = {},
         .pName = "meshMain",
     };
     const vk::PipelineShaderStageCreateInfo fragShaderStageInfo{
-        .pNext = &shaderModuleInfo,
+        .pNext = &fragModuleInfo,
         .stage = vk::ShaderStageFlagBits::eFragment,
         .module = {},
         .pName = "fragMain",

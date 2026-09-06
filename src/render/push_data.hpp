@@ -27,7 +27,7 @@ static_assert(sizeof(SlangHandle) == sizeof(uint32_t) * 2,
               "Descriptor handle push layout must be uint2");
 static_assert(sizeof(SlangHandle) == 8);
 
-// MeshPushData must match shaders/base/mesh.slang MeshPushData (72 bytes).
+// MeshPushData must match shaders/types.slang MeshPushData (72 bytes).
 static_assert(std::is_trivially_copyable_v<MeshPushData>);
 static_assert(offsetof(MeshPushData, cameraAddress) == 0);
 static_assert(offsetof(MeshPushData, objectUbAddress) == 8);
