@@ -42,6 +42,17 @@ target_compile_options(engine_build_config INTERFACE
     $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang,GNU>:-Wall>
     $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang,GNU>:-Wextra>
     $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang,GNU>:-Wpedantic>
+    $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-malloc>
+    $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-calloc>
+    $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-realloc>
+    $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-free>
+)
+target_link_options(engine_build_config INTERFACE
+    "LINKER:--wrap=malloc"
+    "LINKER:--wrap=calloc"
+    "LINKER:--wrap=realloc"
+    "LINKER:--wrap=free"
+    "LINKER:--wrap=aligned_alloc"
 )
 
 add_subdirectory(util)
@@ -71,9 +82,13 @@ target_precompile_headers(engine_runtime PRIVATE ${PCH_HEADER})
 
 add_executable(engine main.cpp)
 target_compile_definitions(engine PRIVATE ENGINE_LOG_DLL=\"app\")
-target_link_libraries(engine PRIVATE engine_runtime)
+target_link_libraries(engine PRIVATE engine_runtime ThirdParty::mimalloc)
 target_precompile_headers(engine PRIVATE ${PCH_HEADER})
 add_dependencies(engine Shaders)
+
+foreach (_miTarget engine_util engine_core engine_render engine_scene engine_postprocessing engine_runtime engine)
+    target_link_libraries(${_miTarget} PRIVATE engine_mi_new_delete)
+endforeach ()
 
 if(WIN32)
     # Copy third-party DLLs needed at runtime next to the executable
@@ -82,6 +97,7 @@ if(WIN32)
         ktx
         fmt::fmt
         spdlog::spdlog
+        ThirdParty::mimalloc
     )
 
     if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -109,6 +125,7 @@ else()
         fmt::fmt
         spdlog::spdlog
         glm::glm
+        ThirdParty::mimalloc
     )
 
     if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")

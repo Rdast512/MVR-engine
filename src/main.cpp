@@ -3,8 +3,11 @@
 //
 
 #include "./core/vk_engine.hpp"
+#include "./util/debug.hpp"
+#include <cstdlib>
 #include <iostream>
 #include <mimalloc.h>
+#include <vector>
 
 // TODO add support for GLTF and KTX2
 // TODO Pipeline cache
@@ -37,16 +40,37 @@ void CheckSTL() {
     std::cout << "--------------------------------------------------\n";
 }
 
+static void requireMimalloc(const void* p, const char* what)
+{
+    if (p == nullptr || !mi_is_in_heap_region(p)) {
+        std::cerr << "mimalloc override failed: " << what << '\n';
+        std::abort();
+    }
+}
+
 int main() {
-    // Ensure mimalloc symbols are referenced so allocator override is loaded.
-    mi_stats_reset();  // only works if mimalloc is linked
+    (void)mi_version();
 
-    // Allocate and verify it comes from mimalloc
-    void* p = mi_malloc(64);
-    assert(mi_is_in_heap_region(p));  // true if mimalloc owns this pointer
-    mi_free(p);
+    void* direct = mi_malloc(64);
+    requireMimalloc(direct, "mi_malloc");
+    mi_free(direct);
 
-    mi_stats_print(nullptr);  // prints to stderr
+    void* cHeap = std::malloc(64);
+    requireMimalloc(cHeap, "malloc");
+    std::free(cHeap);
+
+    auto* cxxHeap = new char[64];
+    requireMimalloc(cxxHeap, "new[]");
+    delete[] cxxHeap;
+
+    const std::vector<char> bytes(256);
+    requireMimalloc(bytes.data(), "std::vector");
+
+    if (!checkMimallocHeap()) {
+        std::cerr << "mimalloc override failed: engine_util.dll\n";
+        return EXIT_FAILURE;
+    }
+
     CheckSTL();
     try {
         Engine engine;

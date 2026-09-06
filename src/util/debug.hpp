@@ -3,6 +3,9 @@
 #include <vulkan/vulkan_raii.hpp>
 #include <string_view>
 
+// malloc / new / vector in this dll must land in the process mimalloc heap
+[[nodiscard]] bool checkMimallocHeap();
+
 // Sets a debug name via VK_EXT_debug_utils if available (no-op otherwise).
 void setDebugName(const vk::raii::Device &device, const vk::raii::Image &image, std::string_view name);
 void setDebugName(const vk::raii::Device &device, const vk::raii::Buffer &buffer, std::string_view name);

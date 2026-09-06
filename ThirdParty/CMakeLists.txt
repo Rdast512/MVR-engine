@@ -166,14 +166,23 @@ set(LIBKTX_FEATURE_VK_UPLOAD ON CACHE BOOL "" FORCE)
 set(LIBKTX_FEATURE_GL_UPLOAD OFF CACHE BOOL "" FORCE)
 
 # --- mimalloc ---
+# Shared only: static mimalloc copied into each engine_*.dll is a separate heap.
 set(MI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(MI_BUILD_OBJECT OFF CACHE BOOL "" FORCE)
-set(MI_BUILD_STATIC ON CACHE BOOL "" FORCE)
-set(MI_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(MI_BUILD_STATIC OFF CACHE BOOL "" FORCE)
+set(MI_BUILD_SHARED ON CACHE BOOL "" FORCE)
 set(MI_OVERRIDE ON CACHE BOOL "" FORCE)
 # C build emits a weak _ZSt15get_new_handlerv stub; ThinLTO + static libc++
 # promotes it to a strong duplicate of std::get_new_handler().
 set(MI_USE_CXX ON CACHE BOOL "" FORCE)
+# MSVC /MD IAT hook; clang64 gnu target uses --wrap + new-delete instead.
+set(MI_WIN_REDIRECT OFF CACHE BOOL "" FORCE)
+# ASan Debug: mimalloc poisons via the ASan interface. Other configs: raw override.
+if (ENABLE_SANITIZERS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(MI_TRACK_ASAN ON CACHE BOOL "" FORCE)
+else ()
+        set(MI_TRACK_ASAN OFF CACHE BOOL "" FORCE)
+endif ()
 
 # --- meshoptimizer ---
 set(MESHOPT_BUILD_DEMO OFF CACHE BOOL "" FORCE)
@@ -267,15 +276,24 @@ else ()
         message(FATAL_ERROR "KTX target not found after FetchContent_MakeAvailable(KTXSoftware).")
 endif ()
 
-if (TARGET mimalloc)
-        set_target_properties(mimalloc PROPERTIES POSITION_INDEPENDENT_CODE ON)
-        add_library(ThirdParty::mimalloc ALIAS mimalloc)
-elseif (TARGET mimalloc-static)
-        set_target_properties(mimalloc-static PROPERTIES POSITION_INDEPENDENT_CODE ON)
-        add_library(ThirdParty::mimalloc ALIAS mimalloc-static)
-else ()
-        message(FATAL_ERROR "mimalloc target not found after FetchContent_MakeAvailable(mimalloc).")
+if (NOT TARGET mimalloc)
+        message(FATAL_ERROR "mimalloc shared target not found after FetchContent_MakeAvailable(mimalloc).")
 endif ()
+set_target_properties(mimalloc PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+        ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+foreach (_miCfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+        set_target_properties(mimalloc PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY_${_miCfg} ${CMAKE_BINARY_DIR}
+                LIBRARY_OUTPUT_DIRECTORY_${_miCfg} ${CMAKE_BINARY_DIR}
+                ARCHIVE_OUTPUT_DIRECTORY_${_miCfg} ${CMAKE_BINARY_DIR}
+        )
+endforeach ()
+add_library(ThirdParty::mimalloc ALIAS mimalloc)
+message(STATUS "mimalloc: shared override MI_TRACK_ASAN=${MI_TRACK_ASAN}")
 
 if (TARGET meshoptimizer)
         # Static meshoptimizer is linked into shared engine modules — need PIC.
@@ -432,6 +450,30 @@ target_link_libraries(ThirdPartyLibs INTERFACE
 
 # Link it to your interface so it gets the includes
 target_link_libraries(ThirdPartyImpl PUBLIC ThirdPartyLibs)
+
+# C/C++ single-header impls compiled here: bind heap to mimalloc, not CRT.
+target_compile_definitions(ThirdPartyImpl PRIVATE
+        STBI_MALLOC=mi_malloc
+        STBI_REALLOC=mi_realloc
+        STBI_FREE=mi_free
+        STBIW_MALLOC=mi_malloc
+        STBIW_REALLOC=mi_realloc
+        STBIW_FREE=mi_free
+        TINYGLTF3_MALLOC=mi_malloc
+        TINYGLTF3_REALLOC=mi_realloc
+        TINYGLTF3_FREE=mi_free
+        TINYGLTF_JSON_MALLOC=mi_malloc
+        TINYGLTF_JSON_REALLOC=mi_realloc
+        TINYGLTF_JSON_FREE=mi_free
+)
+target_compile_options(ThirdPartyImpl PRIVATE
+        -include
+        mimalloc.h
+        -fno-builtin-malloc
+        -fno-builtin-calloc
+        -fno-builtin-realloc
+        -fno-builtin-free
+)
 
 
 add_library(ThirdParty::all ALIAS ThirdPartyLibs)

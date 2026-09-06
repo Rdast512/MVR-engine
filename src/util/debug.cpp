@@ -4,8 +4,26 @@
 
 #include "debug.hpp"
 
+#include <cstdlib>
+#include <mimalloc.h>
 #include <string>
 #include <string_view>
+#include <vector>
+
+bool checkMimallocHeap()
+{
+	void* cHeap = std::malloc(64);
+	const bool cOk = cHeap != nullptr && mi_is_in_heap_region(cHeap);
+	std::free(cHeap);
+
+	auto* cxxHeap = new char[64];
+	const bool cxxOk = cxxHeap != nullptr && mi_is_in_heap_region(cxxHeap);
+	delete[] cxxHeap;
+
+	const std::vector<char> bytes(256);
+	const bool stlOk = !bytes.empty() && mi_is_in_heap_region(bytes.data());
+	return cOk && cxxOk && stlOk;
+}
 
 namespace {
     void setDebugNameHandle(const vk::raii::Device &device, uint64_t handle, vk::ObjectType type, std::string_view name) {
