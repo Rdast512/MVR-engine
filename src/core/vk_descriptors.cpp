@@ -80,8 +80,11 @@ void DescriptorManager::createHeaps()
     // resourceHeapSize = alignUp(resourceHeapSize, resourceReservedOffsetAlignment);
     // resourceHeapSize += minResourceHeapReservedRange;
 
-    log_info(std::format("Creating resource descriptor heap: size={} imageDesc={} reserve={}", resourceHeapSize,
-                         imageDescriptorSize, minResourceHeapReservedRange), "DescriptorManager");
+    log_info(std::format("Creating resource descriptor heap: size={} ({:.1f} MiB) imageDesc={} reserve={}  "
+                         "[host-visible mapped — counts as process RAM]",
+                         resourceHeapSize, static_cast<double>(resourceHeapSize) / (1024.0 * 1024.0),
+                         imageDescriptorSize, minResourceHeapReservedRange),
+             "DescriptorManager");
 
     vk::DeviceSize samplerHeapSize = capabilities.descriptorHeap.maxSamplerHeapSize;
 
@@ -90,8 +93,11 @@ void DescriptorManager::createHeaps()
     // samplerHeapSize = alignUp(samplerHeapSize, samplerDescriptorAlignment);
     // samplerHeapSize += minSamplerHeapReservedRange;
 
-    log_info(std::format("Creating sampler descriptor heap: size={} samplerDesc={} reserve={}", samplerHeapSize,
-                         samplerDescriptorSize, minSamplerHeapReservedRange), "DescriptorManager");
+    log_info(std::format("Creating sampler descriptor heap: size={} ({:.1f} MiB) samplerDesc={} reserve={}  "
+                         "[host-visible mapped — counts as process RAM]",
+                         samplerHeapSize, static_cast<double>(samplerHeapSize) / (1024.0 * 1024.0),
+                         samplerDescriptorSize, minSamplerHeapReservedRange),
+             "DescriptorManager");
 
     createHeapBuffers(resourceHeapSize, samplerHeapSize);
 }

@@ -183,31 +183,47 @@ static void endCommandBuffer(vk::raii::CommandBuffer &commandBuffer, const vk::r
 private:
     void destroyInstanceUboBuffers();
     void destroyDeviceBuffer(vk::raii::Buffer& buffer, VmaAllocation& memory, vk::DeviceAddress& address,
-                             vk::DeviceSize& bytes, const char* tracyName);
+                             vk::DeviceSize& usedBytes, vk::DeviceSize& capacityBytes, const char* tracyName);
     void appendDeviceLocal(vk::raii::Buffer& dst, VmaAllocation& dstMemory, vk::DeviceAddress& dstAddress,
-                           vk::DeviceSize& trackedBytes, const void* src, vk::DeviceSize srcBytes,
-                           std::string_view debugName, const char* tracyName);
+                           vk::DeviceSize& usedBytes, vk::DeviceSize& capacityBytes, const void* src,
+                           vk::DeviceSize srcBytes, std::string_view debugName, const char* tracyName);
     void remapScratchOffsets();
     [[nodiscard]] std::vector<GpuLight> packScratchLights() const;
     [[nodiscard]] vk::raii::CommandBuffer& oneTimeTransferCmd();
     [[nodiscard]] const vk::raii::Queue& oneTimeTransferQueue() const noexcept;
-    // Track last-known sizes for Tracy free/realloc pairing.
+    // used vs allocated (capacity may be > used after grow-with-headroom).
     vk::DeviceSize trackedVertexBytes = 0;
+    vk::DeviceSize capacityVertexBytes = 0;
     vk::DeviceSize trackedMeshletBytes = 0;
+    vk::DeviceSize capacityMeshletBytes = 0;
     vk::DeviceSize trackedMeshletVertexBytes = 0;
+    vk::DeviceSize capacityMeshletVertexBytes = 0;
     vk::DeviceSize trackedMeshletTriangleBytes = 0;
+    vk::DeviceSize capacityMeshletTriangleBytes = 0;
     vk::DeviceSize trackedMaterialBytes = 0;
+    vk::DeviceSize capacityMaterialBytes = 0;
     vk::DeviceSize trackedPbrExtBytes = 0;
+    vk::DeviceSize capacityPbrExtBytes = 0;
     vk::DeviceSize trackedLightBytes = 0;
+    vk::DeviceSize capacityLightBytes = 0;
     vk::DeviceSize trackedNormalBytes = 0;
+    vk::DeviceSize capacityNormalBytes = 0;
     vk::DeviceSize trackedTangentBytes = 0;
+    vk::DeviceSize capacityTangentBytes = 0;
     vk::DeviceSize trackedUv1Bytes = 0;
+    vk::DeviceSize capacityUv1Bytes = 0;
     vk::DeviceSize trackedJointBytes = 0;
+    vk::DeviceSize capacityJointBytes = 0;
     vk::DeviceSize trackedWeightBytes = 0;
+    vk::DeviceSize capacityWeightBytes = 0;
     vk::DeviceSize trackedIndexBytes = 0;
+    vk::DeviceSize capacityIndexBytes = 0;
     vk::DeviceSize trackedMorphPosBytes = 0;
+    vk::DeviceSize capacityMorphPosBytes = 0;
     vk::DeviceSize trackedMorphNrmBytes = 0;
+    vk::DeviceSize capacityMorphNrmBytes = 0;
     vk::DeviceSize trackedMorphTanBytes = 0;
+    vk::DeviceSize capacityMorphTanBytes = 0;
     vk::DeviceSize trackedColorBytes = 0;
     vk::DeviceSize trackedDepthBytes = 0;
     std::array<vk::DeviceSize, MAX_FRAMES_IN_FLIGHT> trackedInstanceUboBytes = {0, 0};

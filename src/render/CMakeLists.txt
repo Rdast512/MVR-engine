@@ -6,5 +6,6 @@ set(RENDER_SOURCES
 )
 
 add_library(engine_render SHARED ${RENDER_SOURCES})
+target_compile_definitions(engine_render PRIVATE ENGINE_LOG_DLL=\"render\")
 target_link_libraries(engine_render PUBLIC engine_build_config engine_core engine_util engine_scene ThirdParty::all)
 target_precompile_headers(engine_render PRIVATE ${PCH_HEADER})

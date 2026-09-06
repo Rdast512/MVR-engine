@@ -51,6 +51,7 @@ add_subdirectory(scene)
 add_subdirectory(postprocessing)
 
 add_library(engine_runtime SHARED core/vk_engine.cpp core/vk_engine.hpp)
+target_compile_definitions(engine_runtime PRIVATE ENGINE_LOG_DLL=\"runtime\")
 target_link_libraries(engine_runtime
     PUBLIC
         engine_build_config
@@ -69,6 +70,7 @@ target_link_libraries(engine_runtime PRIVATE
 target_precompile_headers(engine_runtime PRIVATE ${PCH_HEADER})
 
 add_executable(engine main.cpp)
+target_compile_definitions(engine PRIVATE ENGINE_LOG_DLL=\"app\")
 target_link_libraries(engine PRIVATE engine_runtime)
 target_precompile_headers(engine PRIVATE ${PCH_HEADER})
 add_dependencies(engine Shaders)

@@ -72,23 +72,40 @@ namespace
         }
         return std::format("{:.2f} MiB", static_cast<double>(bytes) / (1024.0 * 1024.0));
     }
+
+    [[nodiscard]] vk::DeviceSize nextCapacity(vk::DeviceSize current, vk::DeviceSize needed)
+    {
+        if (needed == 0) {
+            return current;
+        }
+        if (current == 0) {
+            return needed;
+        }
+        vk::DeviceSize cap = current;
+        while (cap < needed) {
+            cap *= 2;
+        }
+        return cap;
+    }
 } // namespace
 
 void ResourceManager::destroyDeviceBuffer(vk::raii::Buffer& buffer, VmaAllocation& memory, vk::DeviceAddress& address,
-                                          vk::DeviceSize& bytes, const char* tracyName)
+                                          vk::DeviceSize& usedBytes, vk::DeviceSize& capacityBytes,
+                                          const char* tracyName)
 {
     if (memory == nullptr) {
         return;
     }
-    log_info(std::format("destroy {} ({} bda=0x{:x})", tracyName, formatBytes(bytes),
-                         static_cast<uint64_t>(address)),
+    log_info(std::format("destroy {} (used {} / cap {} bda=0x{:x})", tracyName, formatBytes(usedBytes),
+                         formatBytes(capacityBytes), static_cast<uint64_t>(address)),
              "ResourceManager");
     VkBuffer raw = buffer.release();
     tracyResourceFree(raw, tracyName);
     vmaDestroyBuffer(allocator.allocator, raw, memory);
     memory = nullptr;
     address = 0;
-    bytes = 0;
+    usedBytes = 0;
+    capacityBytes = 0;
 }
 
 vk::raii::CommandBuffer& ResourceManager::oneTimeTransferCmd()
@@ -107,31 +124,37 @@ ResourceManager::~ResourceManager()
     log_info("Destructor called", "ResourceManager");
     destroyInstanceUboBuffers();
     {
-        destroyDeviceBuffer(vertexBuffer, vertexBufferMemory, vertexBufferAddress, trackedVertexBytes, "GPU/Vertices");
+        destroyDeviceBuffer(vertexBuffer, vertexBufferMemory, vertexBufferAddress, trackedVertexBytes,
+                            capacityVertexBytes, "GPU/Vertices");
         destroyDeviceBuffer(meshletBuffer, meshletBufferMemory, meshletBufferAddress, trackedMeshletBytes,
-                            "GPU/Meshlets");
+                            capacityMeshletBytes, "GPU/Meshlets");
         destroyDeviceBuffer(meshletVertexBuffer, meshletVertexBufferMemory, meshletVertexBufferAddress,
-                            trackedMeshletVertexBytes, "GPU/MeshletVertices");
+                            trackedMeshletVertexBytes, capacityMeshletVertexBytes, "GPU/MeshletVertices");
         destroyDeviceBuffer(meshletTriangleBuffer, meshletTriangleBufferMemory, meshletTriangleBufferAddress,
-                            trackedMeshletTriangleBytes, "GPU/MeshletTriangles");
+                            trackedMeshletTriangleBytes, capacityMeshletTriangleBytes, "GPU/MeshletTriangles");
         destroyDeviceBuffer(materialBuffer, materialBufferMemory, materialBufferAddress, trackedMaterialBytes,
-                            "GPU/Materials");
+                            capacityMaterialBytes, "GPU/Materials");
         destroyDeviceBuffer(pbrExtBuffer, pbrExtBufferMemory, pbrExtBufferAddress, trackedPbrExtBytes,
-                            "GPU/PbrExtensions");
-        destroyDeviceBuffer(lightBuffer, lightBufferMemory, lightBufferAddress, trackedLightBytes, "GPU/Lights");
-        destroyDeviceBuffer(normalBuffer, normalBufferMemory, normalBufferAddress, trackedNormalBytes, "GPU/Normals");
+                            capacityPbrExtBytes, "GPU/PbrExtensions");
+        destroyDeviceBuffer(lightBuffer, lightBufferMemory, lightBufferAddress, trackedLightBytes, capacityLightBytes,
+                            "GPU/Lights");
+        destroyDeviceBuffer(normalBuffer, normalBufferMemory, normalBufferAddress, trackedNormalBytes,
+                            capacityNormalBytes, "GPU/Normals");
         destroyDeviceBuffer(tangentBuffer, tangentBufferMemory, tangentBufferAddress, trackedTangentBytes,
-                            "GPU/Tangents");
-        destroyDeviceBuffer(uv1Buffer, uv1BufferMemory, uv1BufferAddress, trackedUv1Bytes, "GPU/Uv1");
-        destroyDeviceBuffer(jointBuffer, jointBufferMemory, jointBufferAddress, trackedJointBytes, "GPU/Joints");
-        destroyDeviceBuffer(weightBuffer, weightBufferMemory, weightBufferAddress, trackedWeightBytes, "GPU/Weights");
-        destroyDeviceBuffer(indexBuffer, indexBufferMemory, indexBufferAddress, trackedIndexBytes, "GPU/Indices");
+                            capacityTangentBytes, "GPU/Tangents");
+        destroyDeviceBuffer(uv1Buffer, uv1BufferMemory, uv1BufferAddress, trackedUv1Bytes, capacityUv1Bytes, "GPU/Uv1");
+        destroyDeviceBuffer(jointBuffer, jointBufferMemory, jointBufferAddress, trackedJointBytes, capacityJointBytes,
+                            "GPU/Joints");
+        destroyDeviceBuffer(weightBuffer, weightBufferMemory, weightBufferAddress, trackedWeightBytes,
+                            capacityWeightBytes, "GPU/Weights");
+        destroyDeviceBuffer(indexBuffer, indexBufferMemory, indexBufferAddress, trackedIndexBytes, capacityIndexBytes,
+                            "GPU/Indices");
         destroyDeviceBuffer(morphPosBuffer, morphPosBufferMemory, morphPosBufferAddress, trackedMorphPosBytes,
-                            "GPU/MorphPos");
+                            capacityMorphPosBytes, "GPU/MorphPos");
         destroyDeviceBuffer(morphNrmBuffer, morphNrmBufferMemory, morphNrmBufferAddress, trackedMorphNrmBytes,
-                            "GPU/MorphNrm");
+                            capacityMorphNrmBytes, "GPU/MorphNrm");
         destroyDeviceBuffer(morphTanBuffer, morphTanBufferMemory, morphTanBufferAddress, trackedMorphTanBytes,
-                            "GPU/MorphTan");
+                            capacityMorphTanBytes, "GPU/MorphTan");
         if (indirectBufferMemory) {
             VkBuffer raw = indirectBuffer.release();
             tracyResourceFree(raw, "GPU/IndirectCopyCommand");
@@ -335,11 +358,12 @@ void ResourceManager::endCommandBuffer(vk::raii::CommandBuffer& commandBuffer, c
 }
 
 void ResourceManager::appendDeviceLocal(vk::raii::Buffer& dst, VmaAllocation& dstMemory, vk::DeviceAddress& dstAddress,
-                                        vk::DeviceSize& trackedBytes, const void* src, vk::DeviceSize srcBytes,
-                                        std::string_view debugName, const char* tracyName)
+                                        vk::DeviceSize& usedBytes, vk::DeviceSize& capacityBytes, const void* src,
+                                        vk::DeviceSize srcBytes, std::string_view debugName, const char* tracyName)
 {
     if (src == nullptr || srcBytes == 0) {
-        log_info(std::format("skip {}: empty scratch (gpu still {})", debugName, formatBytes(trackedBytes)),
+        log_info(std::format("skip {}: empty scratch (used {} / cap {})", debugName, formatBytes(usedBytes),
+                             formatBytes(capacityBytes)),
                  "ResourceManager");
         return;
     }
@@ -361,51 +385,72 @@ void ResourceManager::appendDeviceLocal(vk::raii::Buffer& dst, VmaAllocation& ds
     std::memcpy(mapped, src, static_cast<size_t>(srcBytes));
     vmaUnmapMemory(allocator.allocator, stagingMemory);
 
-    const vk::DeviceSize oldBytes = trackedBytes;
-    const vk::DeviceSize newBytes = oldBytes + srcBytes;
-    log_info(std::format("{} {}: {} + {} -> {}", oldBytes == 0 ? "create" : "append", debugName, formatBytes(oldBytes),
-                         formatBytes(srcBytes), formatBytes(newBytes)),
-             "ResourceManager");
+    const vk::DeviceSize oldUsed = usedBytes;
+    const vk::DeviceSize newUsed = oldUsed + srcBytes;
+    const bool fits = dstMemory != nullptr && newUsed <= capacityBytes;
 
-    vk::raii::Buffer grown({});
-    VmaAllocation grownMemory = nullptr;
-    createBuffer(newBytes,
-                 vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eTransferDst |
-                     vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                 vk::MemoryPropertyFlagBits::eDeviceLocal, grown, grownMemory, allocator.allocator, device,
-                 queueFamilyIndices, std::format("{}Memory", debugName));
+    auto submitCopies = [this](vk::raii::CommandBuffer& cmd) {
+        cmd.end();
+        vk::CommandBufferSubmitInfo commandBufferInfo{.commandBuffer = *cmd};
+        const vk::SubmitInfo2 submitInfo{.commandBufferInfoCount = 1, .pCommandBufferInfos = &commandBufferInfo};
+        oneTimeTransferQueue().submit2(submitInfo, nullptr);
+        oneTimeTransferQueue().waitIdle();
+    };
 
-    vk::raii::CommandBuffer& cmd = oneTimeTransferCmd();
-    cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    if (oldBytes > 0 && dstMemory != nullptr) {
-        cmd.copyBuffer(dst, grown, vk::BufferCopy(0, 0, oldBytes));
+    if (fits) {
+        log_info(std::format("cache-hit {} : used {} + {} -> {} (cap {})", debugName, formatBytes(oldUsed),
+                             formatBytes(srcBytes), formatBytes(newUsed), formatBytes(capacityBytes)),
+                 "ResourceManager");
+        vk::raii::CommandBuffer& cmd = oneTimeTransferCmd();
+        cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        cmd.copyBuffer(staging, dst, vk::BufferCopy(0, oldUsed, srcBytes));
+        submitCopies(cmd);
+        usedBytes = newUsed;
+    } else {
+        const vk::DeviceSize newCapacity = nextCapacity(capacityBytes, newUsed);
+        log_info(std::format("{} {}: used {} + {} -> {} (cap {} -> {})", oldUsed == 0 ? "create" : "grow", debugName,
+                             formatBytes(oldUsed), formatBytes(srcBytes), formatBytes(newUsed),
+                             formatBytes(capacityBytes), formatBytes(newCapacity)),
+                 "ResourceManager");
+
+        vk::raii::Buffer grown({});
+        VmaAllocation grownMemory = nullptr;
+        createBuffer(newCapacity,
+                     vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eTransferDst |
+                         vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
+                     vk::MemoryPropertyFlagBits::eDeviceLocal, grown, grownMemory, allocator.allocator, device,
+                     queueFamilyIndices, std::format("{}Memory", debugName));
+
+        vk::raii::CommandBuffer& cmd = oneTimeTransferCmd();
+        cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        if (oldUsed > 0 && dstMemory != nullptr) {
+            cmd.copyBuffer(dst, grown, vk::BufferCopy(0, 0, oldUsed));
+        }
+        cmd.copyBuffer(staging, grown, vk::BufferCopy(0, oldUsed, srcBytes));
+        submitCopies(cmd);
+
+        destroyDeviceBuffer(dst, dstMemory, dstAddress, usedBytes, capacityBytes, tracyName);
+
+        dst = std::move(grown);
+        dstMemory = grownMemory;
+        usedBytes = newUsed;
+        capacityBytes = newCapacity;
+        dstAddress = device.getBufferAddress({.buffer = *dst});
+        setDebugName(device, dst, debugName);
+        tracyResourceAlloc(static_cast<VkBuffer>(*dst), static_cast<size_t>(newCapacity), tracyName);
     }
-    cmd.copyBuffer(staging, grown, vk::BufferCopy(0, oldBytes, srcBytes));
-    cmd.end();
-    vk::CommandBufferSubmitInfo commandBufferInfo{.commandBuffer = *cmd};
-    const vk::SubmitInfo2 submitInfo{.commandBufferInfoCount = 1, .pCommandBufferInfos = &commandBufferInfo};
-    oneTimeTransferQueue().submit2(submitInfo, nullptr);
-    oneTimeTransferQueue().waitIdle();
 
     {
         VkBuffer rawStaging = staging.release();
         vmaDestroyBuffer(allocator.allocator, rawStaging, stagingMemory);
     }
 
-    destroyDeviceBuffer(dst, dstMemory, dstAddress, trackedBytes, tracyName);
-
-    dst = std::move(grown);
-    dstMemory = grownMemory;
-    trackedBytes = newBytes;
-    dstAddress = device.getBufferAddress({.buffer = *dst});
-    setDebugName(device, dst, debugName);
-    tracyResourceAlloc(static_cast<VkBuffer>(*dst), static_cast<size_t>(newBytes), tracyName);
-    log_info(std::format("{} ready {} bda=0x{:x}", debugName, formatBytes(newBytes),
-                         static_cast<uint64_t>(dstAddress)),
+    log_info(std::format("{} ready used {} / cap {} bda=0x{:x}", debugName, formatBytes(usedBytes),
+                         formatBytes(capacityBytes), static_cast<uint64_t>(dstAddress)),
              "ResourceManager");
 #ifdef TRACY_ENABLE
     const std::string tracyMsg =
-        std::format("{} {} -> {} bda=0x{:x}", debugName, formatBytes(oldBytes), formatBytes(newBytes),
+        std::format("{} used {} / cap {} bda=0x{:x}", debugName, formatBytes(usedBytes), formatBytes(capacityBytes),
                     static_cast<uint64_t>(dstAddress));
     TracyMessage(tracyMsg.c_str(), tracyMsg.size());
 #endif
@@ -610,67 +655,75 @@ void ResourceManager::flushGpuAssets()
     const uint32_t newMorphPosCount = static_cast<uint32_t>(geometryStore.morphPos.size());
     const uint32_t newMorphNrmCount = static_cast<uint32_t>(geometryStore.morphNrm.size());
     const uint32_t newMorphTanCount = static_cast<uint32_t>(geometryStore.morphTan.size());
-    const uint32_t newMaterialCount = static_cast<uint32_t>(materialStore.gpuMaterials.size());
+    const uint32_t pendingMaterials = materialStore.pendingCount();
+    log_info(std::format("material cache: total={} uploaded={} pending={} hits={} misses={}", materialStore.size(),
+                         materialStore.uploadedCount, pendingMaterials, materialStore.cacheHits,
+                         materialStore.cacheMisses),
+             "ResourceManager");
 
-    appendDeviceLocal(vertexBuffer, vertexBufferMemory, vertexBufferAddress, trackedVertexBytes,
+    appendDeviceLocal(vertexBuffer, vertexBufferMemory, vertexBufferAddress, trackedVertexBytes, capacityVertexBytes,
                       geometryStore.vertices.data(),
                       static_cast<vk::DeviceSize>(newVertexCount) * sizeof(GpuVertex), "VertexBuffer",
                       "GPU/Vertices");
     appendDeviceLocal(meshletBuffer, meshletBufferMemory, meshletBufferAddress, trackedMeshletBytes,
-                      geometryStore.meshlets.data(),
+                      capacityMeshletBytes, geometryStore.meshlets.data(),
                       static_cast<vk::DeviceSize>(newMeshletCount) * sizeof(GpuMeshletDesc), "MeshletBuffer",
                       "GPU/Meshlets");
     appendDeviceLocal(meshletVertexBuffer, meshletVertexBufferMemory, meshletVertexBufferAddress,
-                      trackedMeshletVertexBytes, geometryStore.meshletVertices.data(),
+                      trackedMeshletVertexBytes, capacityMeshletVertexBytes, geometryStore.meshletVertices.data(),
                       static_cast<vk::DeviceSize>(newMeshletVertexCount) * sizeof(uint32_t), "MeshletVertexBuffer",
                       "GPU/MeshletVertices");
     appendDeviceLocal(meshletTriangleBuffer, meshletTriangleBufferMemory, meshletTriangleBufferAddress,
-                      trackedMeshletTriangleBytes, geometryStore.meshletTriangles.data(),
+                      trackedMeshletTriangleBytes, capacityMeshletTriangleBytes, geometryStore.meshletTriangles.data(),
                       static_cast<vk::DeviceSize>(newMeshletTriangleCount) * sizeof(uint8_t), "MeshletTriangleBuffer",
                       "GPU/MeshletTriangles");
-    appendDeviceLocal(normalBuffer, normalBufferMemory, normalBufferAddress, trackedNormalBytes,
+    appendDeviceLocal(normalBuffer, normalBufferMemory, normalBufferAddress, trackedNormalBytes, capacityNormalBytes,
                       geometryStore.normals.data(),
                       static_cast<vk::DeviceSize>(geometryStore.normals.size()) * sizeof(glm::vec3), "NormalBuffer",
                       "GPU/Normals");
     appendDeviceLocal(tangentBuffer, tangentBufferMemory, tangentBufferAddress, trackedTangentBytes,
-                      geometryStore.tangents.data(),
+                      capacityTangentBytes, geometryStore.tangents.data(),
                       static_cast<vk::DeviceSize>(geometryStore.tangents.size()) * sizeof(glm::vec4), "TangentBuffer",
                       "GPU/Tangents");
-    appendDeviceLocal(uv1Buffer, uv1BufferMemory, uv1BufferAddress, trackedUv1Bytes, geometryStore.uv1.data(),
-                      static_cast<vk::DeviceSize>(geometryStore.uv1.size()) * sizeof(glm::vec2), "Uv1Buffer",
-                      "GPU/Uv1");
-    appendDeviceLocal(jointBuffer, jointBufferMemory, jointBufferAddress, trackedJointBytes,
+    appendDeviceLocal(uv1Buffer, uv1BufferMemory, uv1BufferAddress, trackedUv1Bytes, capacityUv1Bytes,
+                      geometryStore.uv1.data(), static_cast<vk::DeviceSize>(geometryStore.uv1.size()) * sizeof(glm::vec2),
+                      "Uv1Buffer", "GPU/Uv1");
+    appendDeviceLocal(jointBuffer, jointBufferMemory, jointBufferAddress, trackedJointBytes, capacityJointBytes,
                       geometryStore.joints0.data(),
                       static_cast<vk::DeviceSize>(geometryStore.joints0.size()) * sizeof(std::array<uint16_t, 4>),
                       "JointBuffer", "GPU/Joints");
-    appendDeviceLocal(weightBuffer, weightBufferMemory, weightBufferAddress, trackedWeightBytes,
+    appendDeviceLocal(weightBuffer, weightBufferMemory, weightBufferAddress, trackedWeightBytes, capacityWeightBytes,
                       geometryStore.weights0.data(),
                       static_cast<vk::DeviceSize>(geometryStore.weights0.size()) * sizeof(glm::vec4), "WeightBuffer",
                       "GPU/Weights");
-    appendDeviceLocal(indexBuffer, indexBufferMemory, indexBufferAddress, trackedIndexBytes,
+    appendDeviceLocal(indexBuffer, indexBufferMemory, indexBufferAddress, trackedIndexBytes, capacityIndexBytes,
                       geometryStore.indices.data(), static_cast<vk::DeviceSize>(newIndexCount) * sizeof(uint32_t),
                       "IndexBuffer", "GPU/Indices");
     appendDeviceLocal(morphPosBuffer, morphPosBufferMemory, morphPosBufferAddress, trackedMorphPosBytes,
-                      geometryStore.morphPos.data(), static_cast<vk::DeviceSize>(newMorphPosCount) * sizeof(glm::vec3),
-                      "MorphPosBuffer", "GPU/MorphPos");
+                      capacityMorphPosBytes, geometryStore.morphPos.data(),
+                      static_cast<vk::DeviceSize>(newMorphPosCount) * sizeof(glm::vec3), "MorphPosBuffer",
+                      "GPU/MorphPos");
     appendDeviceLocal(morphNrmBuffer, morphNrmBufferMemory, morphNrmBufferAddress, trackedMorphNrmBytes,
-                      geometryStore.morphNrm.data(), static_cast<vk::DeviceSize>(newMorphNrmCount) * sizeof(glm::vec3),
-                      "MorphNrmBuffer", "GPU/MorphNrm");
+                      capacityMorphNrmBytes, geometryStore.morphNrm.data(),
+                      static_cast<vk::DeviceSize>(newMorphNrmCount) * sizeof(glm::vec3), "MorphNrmBuffer",
+                      "GPU/MorphNrm");
     appendDeviceLocal(morphTanBuffer, morphTanBufferMemory, morphTanBufferAddress, trackedMorphTanBytes,
-                      geometryStore.morphTan.data(), static_cast<vk::DeviceSize>(newMorphTanCount) * sizeof(glm::vec4),
-                      "MorphTanBuffer", "GPU/MorphTan");
+                      capacityMorphTanBytes, geometryStore.morphTan.data(),
+                      static_cast<vk::DeviceSize>(newMorphTanCount) * sizeof(glm::vec4), "MorphTanBuffer",
+                      "GPU/MorphTan");
     appendDeviceLocal(materialBuffer, materialBufferMemory, materialBufferAddress, trackedMaterialBytes,
-                      materialStore.gpuMaterials.data(),
-                      static_cast<vk::DeviceSize>(newMaterialCount) * sizeof(GpuMaterial), "MaterialBuffer",
+                      capacityMaterialBytes, materialStore.gpuMaterials.data() + materialStore.uploadedCount,
+                      static_cast<vk::DeviceSize>(pendingMaterials) * sizeof(GpuMaterial), "MaterialBuffer",
                       "GPU/Materials");
-    appendDeviceLocal(pbrExtBuffer, pbrExtBufferMemory, pbrExtBufferAddress, trackedPbrExtBytes,
-                      materialStore.pbrExtensions.data(),
-                      static_cast<vk::DeviceSize>(materialStore.pbrExtensions.size()) * sizeof(MaterialPbrExtension),
-                      "PbrExtBuffer", "GPU/PbrExtensions");
+    appendDeviceLocal(pbrExtBuffer, pbrExtBufferMemory, pbrExtBufferAddress, trackedPbrExtBytes, capacityPbrExtBytes,
+                      materialStore.pbrExtensions.data() + materialStore.uploadedCount,
+                      static_cast<vk::DeviceSize>(pendingMaterials) * sizeof(MaterialPbrExtension), "PbrExtBuffer",
+                      "GPU/PbrExtensions");
 
     const std::vector<GpuLight> packedLights = packScratchLights();
-    appendDeviceLocal(lightBuffer, lightBufferMemory, lightBufferAddress, trackedLightBytes, packedLights.data(),
-                      static_cast<vk::DeviceSize>(packedLights.size()) * sizeof(GpuLight), "LightBuffer", "GPU/Lights");
+    appendDeviceLocal(lightBuffer, lightBufferMemory, lightBufferAddress, trackedLightBytes, capacityLightBytes,
+                      packedLights.data(), static_cast<vk::DeviceSize>(packedLights.size()) * sizeof(GpuLight),
+                      "LightBuffer", "GPU/Lights");
 
     uploadedVertexCount += newVertexCount;
     uploadedMeshletCount += newMeshletCount;
@@ -680,11 +733,10 @@ void ResourceManager::flushGpuAssets()
     uploadedMorphPosCount += newMorphPosCount;
     uploadedMorphNrmCount += newMorphNrmCount;
     uploadedMorphTanCount += newMorphTanCount;
-    materialStore.uploadedCount += newMaterialCount;
+    materialStore.markUploaded();
     lightStore.uploadedCount += static_cast<uint32_t>(packedLights.size());
 
     geometryStore.clearScratch();
-    materialStore.clearScratch();
     lightStore.clearScratch();
 
     const vk::DeviceSize gpuAssetBytes = trackedVertexBytes + trackedMeshletBytes + trackedMeshletVertexBytes +
@@ -700,7 +752,11 @@ void ResourceManager::flushGpuAssets()
                          lightStore.uploadedCount, geometryStore.primitiveDraws.size(),
                          geometryStore.morphTargets.size()),
              "ResourceManager");
-    log_info(std::format("gpu ssbo bytes: verts={} meshlets={} meshletVerts={} tris={} normals={} tangents={} "
+    const vk::DeviceSize gpuAssetCapacity = capacityVertexBytes + capacityMeshletBytes + capacityMeshletVertexBytes +
+        capacityMeshletTriangleBytes + capacityNormalBytes + capacityTangentBytes + capacityUv1Bytes +
+        capacityJointBytes + capacityWeightBytes + capacityIndexBytes + capacityMorphPosBytes + capacityMorphNrmBytes +
+        capacityMorphTanBytes + capacityMaterialBytes + capacityPbrExtBytes + capacityLightBytes;
+    log_info(std::format("gpu ssbo used: verts={} meshlets={} meshletVerts={} tris={} normals={} tangents={} "
                          "uv1={} joints={} weights={} indices={} morph={}/{}/{} materials={} pbrExt={} lights={} "
                          "total={}",
                          formatBytes(trackedVertexBytes), formatBytes(trackedMeshletBytes),
@@ -711,9 +767,14 @@ void ResourceManager::flushGpuAssets()
                          formatBytes(trackedMorphTanBytes), formatBytes(trackedMaterialBytes),
                          formatBytes(trackedPbrExtBytes), formatBytes(trackedLightBytes), formatBytes(gpuAssetBytes)),
              "ResourceManager");
-    log_info(std::format("cpu scratch after drop: verts={} meshlets={} materials={} lights={} (capacity released)",
-                         geometryStore.vertices.size(), geometryStore.meshlets.size(),
-                         materialStore.gpuMaterials.size(), lightStore.instances.size()),
+    log_info(std::format("gpu ssbo cap: verts={} meshlets={} materials={} pbrExt={} lights={} total={}",
+                         formatBytes(capacityVertexBytes), formatBytes(capacityMeshletBytes),
+                         formatBytes(capacityMaterialBytes), formatBytes(capacityPbrExtBytes),
+                         formatBytes(capacityLightBytes), formatBytes(gpuAssetCapacity)),
+             "ResourceManager");
+    log_info(std::format("cpu after flush: scratch verts={} meshlets={} | material cache={} lights scratch={}",
+                         geometryStore.vertices.size(), geometryStore.meshlets.size(), materialStore.size(),
+                         lightStore.instances.size()),
              "ResourceManager");
 #ifdef TRACY_ENABLE
     const std::string tracyMsg = std::format(
@@ -752,6 +813,9 @@ void ResourceManager::tracyPlotResources() const
     TracyPlot("Vulkan/VerticesInUse", static_cast<double>(uploadedVertexCount));
     TracyPlot("Vulkan/IndexCount", static_cast<double>(uploadedIndexCount));
     TracyPlot("Vulkan/MaterialCount", static_cast<double>(materialStore.uploadedCount));
+    TracyPlot("Vulkan/MaterialCacheSize", static_cast<double>(materialStore.size()));
+    TracyPlot("Vulkan/MaterialCacheHits", static_cast<double>(materialStore.cacheHits));
+    TracyPlot("Vulkan/MaterialCacheMisses", static_cast<double>(materialStore.cacheMisses));
     TracyPlot("Vulkan/LightCount", static_cast<double>(lightStore.uploadedCount));
     TracyPlot("Vulkan/MorphPosCount", static_cast<double>(uploadedMorphPosCount));
     TracyPlot("Vulkan/MorphNrmCount", static_cast<double>(uploadedMorphNrmCount));
@@ -772,7 +836,28 @@ void ResourceManager::tracyPlotResources() const
     TracyPlot("Vulkan/MaterialBytes", static_cast<double>(trackedMaterialBytes));
     TracyPlot("Vulkan/PbrExtBytes", static_cast<double>(trackedPbrExtBytes));
     TracyPlot("Vulkan/LightBytes", static_cast<double>(trackedLightBytes));
+    TracyPlot("Vulkan/VertexCapacityBytes", static_cast<double>(capacityVertexBytes));
+    TracyPlot("Vulkan/MeshletCapacityBytes", static_cast<double>(capacityMeshletBytes));
+    TracyPlot("Vulkan/MeshletVertexCapacityBytes", static_cast<double>(capacityMeshletVertexBytes));
+    TracyPlot("Vulkan/MeshletTriangleCapacityBytes", static_cast<double>(capacityMeshletTriangleBytes));
+    TracyPlot("Vulkan/NormalCapacityBytes", static_cast<double>(capacityNormalBytes));
+    TracyPlot("Vulkan/TangentCapacityBytes", static_cast<double>(capacityTangentBytes));
+    TracyPlot("Vulkan/Uv1CapacityBytes", static_cast<double>(capacityUv1Bytes));
+    TracyPlot("Vulkan/JointCapacityBytes", static_cast<double>(capacityJointBytes));
+    TracyPlot("Vulkan/WeightCapacityBytes", static_cast<double>(capacityWeightBytes));
+    TracyPlot("Vulkan/IndexCapacityBytes", static_cast<double>(capacityIndexBytes));
+    TracyPlot("Vulkan/MorphPosCapacityBytes", static_cast<double>(capacityMorphPosBytes));
+    TracyPlot("Vulkan/MorphNrmCapacityBytes", static_cast<double>(capacityMorphNrmBytes));
+    TracyPlot("Vulkan/MorphTanCapacityBytes", static_cast<double>(capacityMorphTanBytes));
+    TracyPlot("Vulkan/MaterialCapacityBytes", static_cast<double>(capacityMaterialBytes));
+    TracyPlot("Vulkan/PbrExtCapacityBytes", static_cast<double>(capacityPbrExtBytes));
+    TracyPlot("Vulkan/LightCapacityBytes", static_cast<double>(capacityLightBytes));
+    const vk::DeviceSize gpuAssetCapacity = capacityVertexBytes + capacityMeshletBytes + capacityMeshletVertexBytes +
+        capacityMeshletTriangleBytes + capacityNormalBytes + capacityTangentBytes + capacityUv1Bytes +
+        capacityJointBytes + capacityWeightBytes + capacityIndexBytes + capacityMorphPosBytes + capacityMorphNrmBytes +
+        capacityMorphTanBytes + capacityMaterialBytes + capacityPbrExtBytes + capacityLightBytes;
     TracyPlot("Vulkan/GpuAssetBytes", static_cast<double>(gpuAssetBytes));
+    TracyPlot("Vulkan/GpuAssetCapacityBytes", static_cast<double>(gpuAssetCapacity));
     TracyPlot("Vulkan/CpuScratchVertices", static_cast<double>(geometryStore.vertices.size()));
     TracyPlot("Vulkan/CpuScratchMeshlets", static_cast<double>(geometryStore.meshlets.size()));
     TracyPlot("Vulkan/InstanceCapacity", static_cast<double>(instanceCapacity));

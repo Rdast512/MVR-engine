@@ -76,11 +76,16 @@ endif ()
 
 add_compile_definitions($<$<NOT:$<CONFIG:Debug>>:NDEBUG>)
 
+# ASan/UBSan are Debug-only. Release/RelWithDebInfo never get -fsanitize even if
+# ENABLE_SANITIZERS is ON (CLion cache). Release presets force the option OFF.
 if (ENABLE_SANITIZERS)
   add_compile_options("$<$<CONFIG:Debug>:-fsanitize=address,undefined>"
       "$<$<CONFIG:Debug>:-fno-omit-frame-pointer>"
       "$<$<CONFIG:Debug>:-fno-optimize-sibling-calls>")
   add_link_options("$<$<CONFIG:Debug>:-fsanitize=address,undefined>")
+  message(STATUS "Sanitizers: ASan+UBSan on Debug only")
+else ()
+  message(STATUS "Sanitizers: OFF")
 endif ()
 
 message(STATUS "CMAKE_Version: ${CMAKE_VERSION}")

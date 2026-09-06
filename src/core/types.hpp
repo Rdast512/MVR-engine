@@ -129,6 +129,8 @@ struct alignas(16) GpuMaterial
     uint8_t normalUv = 0;
     uint8_t occlusionUv = 0;
     uint8_t emissiveUv = 0;
+
+    bool operator==(const GpuMaterial&) const = default;
 };
 
 // CPU-only KHR PBR-next + texture-transform. Not uploaded until the PBR path exists.
@@ -137,6 +139,8 @@ struct MaterialUvTransform
     glm::vec2 offset{0.0f, 0.0f};
     glm::vec2 scale{1.0f, 1.0f};
     float rotation = 0.0f;
+
+    bool operator==(const MaterialUvTransform&) const = default;
 };
 
 struct MaterialTextureRef
@@ -146,6 +150,8 @@ struct MaterialTextureRef
     uint8_t uv = 0;
     float normalScale = 1.0f;
     MaterialUvTransform uvXform{};
+
+    bool operator==(const MaterialTextureRef&) const = default;
 };
 
 namespace MaterialExtFlag
@@ -217,6 +223,8 @@ struct MaterialPbrExtension
     glm::vec3 diffuseTransmissionColorFactor{1.0f};
     MaterialTextureRef diffuseTransmission;
     MaterialTextureRef diffuseTransmissionColor;
+
+    bool operator==(const MaterialPbrExtension&) const = default;
 };
 
 struct SamplerDesc

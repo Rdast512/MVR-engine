@@ -20,7 +20,10 @@
       "name": "release",
       "hidden": true,
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_SANITIZERS": "OFF"
+      }
     },
     {
       "name": "relwithdebinfo",
