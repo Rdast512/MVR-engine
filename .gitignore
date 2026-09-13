@@ -25,3 +25,4 @@ renderDoc.cap
 /.reasonix
 /.codegraph
 reasonix.toml
+/spec
