@@ -55,13 +55,6 @@ glm::mat4 computeModelMatrix(const Transform& transform)
     return model;
 }
 
-void applyYawSpin(std::span<Transform> transforms, float deltaYawRadians)
-{
-    for (Transform& t : transforms) {
-        t.rotation.y += deltaYawRadians;
-    }
-}
-
 void writeObjectUbs(ObjectStorage& storage, std::span<GpuObjectUB> mappedUbs, const glm::mat4& meshPreRotation)
 {
     const uint32_t count = storage.size();

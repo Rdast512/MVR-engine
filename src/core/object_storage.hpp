@@ -62,9 +62,6 @@ public:
 
 [[nodiscard]] glm::mat4 computeModelMatrix(const Transform& transform);
 
-// Demo / gameplay spin on Y (radians per call).
-void applyYawSpin(std::span<Transform> transforms, float deltaYawRadians);
-
 // Writes GpuObjectUB[i] for each active entity; updates prevModelMatrices for next frame.
 // meshPreRotation is applied as: model = trs * meshPreRotation (same order as before).
 void writeObjectUbs(ObjectStorage& storage, std::span<GpuObjectUB> mappedUbs, const glm::mat4& meshPreRotation);

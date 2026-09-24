@@ -218,8 +218,6 @@ void ResourceManager::updateUniformBuffers(uint32_t currentImage)
 
     ensureInstanceCapacity(objectStorage.size());
 
-    applyYawSpin(objectStorage.transforms, 0.01f);
-
     const glm::mat4 meshPreRotation =
         glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
 
