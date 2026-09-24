@@ -41,12 +41,25 @@ void GeometryStore::packVertex(uint32_t v)
     vertices[v] = packed;
 }
 
-MeshletDraw GeometryStore::buildMeshletsForRange(uint32_t firstIndex, uint32_t indexCount)
+MeshletDraw GeometryStore::buildMeshletsForRange(uint32_t firstIndex, uint32_t indexCount, uint32_t firstVertex,
+                                                 uint32_t vertexCount)
 {
     ZoneScopedN("GeometryStore::buildMeshletsForRange");
-    if (indexCount == 0 || vertices.empty() || firstIndex + indexCount > indices.size()) {
+    if (indexCount == 0 || vertexCount == 0 || firstIndex + indexCount > indices.size() ||
+        firstVertex + vertexCount > vertices.size()) {
         return {};
     }
+
+    // meshopt tables scale with vertex_count; feed only this primitive's range
+    std::vector<unsigned int> rangeIndices(indexCount);
+    for (uint32_t i = 0; i < indexCount; ++i) {
+        const uint32_t index = indices[firstIndex + i];
+        if (index < firstVertex || index - firstVertex >= vertexCount) {
+            return {};
+        }
+        rangeIndices[i] = index - firstVertex;
+    }
+    const float* rangePositions = &vertices[firstVertex].pos.x;
 
     const size_t maxMeshlets = meshopt_buildMeshletsBound(indexCount, kMeshletMaxVertices, kMeshletMaxTriangles);
     std::vector<meshopt_Meshlet> built(maxMeshlets);
@@ -54,8 +67,8 @@ MeshletDraw GeometryStore::buildMeshletsForRange(uint32_t firstIndex, uint32_t i
     std::vector<unsigned char> localTriangles(indexCount);
 
     const size_t meshletCount =
-        meshopt_buildMeshlets(built.data(), localVertices.data(), localTriangles.data(), indices.data() + firstIndex,
-                              indexCount, &vertices[0].pos.x, vertices.size(), sizeof(GpuVertex), kMeshletMaxVertices,
+        meshopt_buildMeshlets(built.data(), localVertices.data(), localTriangles.data(), rangeIndices.data(),
+                              indexCount, rangePositions, vertexCount, sizeof(GpuVertex), kMeshletMaxVertices,
                               kMeshletMaxTriangles, kMeshletConeWeight);
 
     if (meshletCount == 0) {
@@ -85,7 +98,7 @@ MeshletDraw GeometryStore::buildMeshletsForRange(uint32_t firstIndex, uint32_t i
 
         const meshopt_Bounds bounds = meshopt_computeMeshletBounds(
             meshletVertices.data() + vertexOffset, meshletTriangles.data() + triangleOffset, m.triangle_count,
-            &vertices[0].pos.x, vertices.size(), sizeof(GpuVertex));
+            rangePositions, vertexCount, sizeof(GpuVertex));
 
         meshlets.push_back(GpuMeshletDesc{
             .vertexOffset = vertexOffset,
@@ -94,6 +107,11 @@ MeshletDraw GeometryStore::buildMeshletsForRange(uint32_t firstIndex, uint32_t i
             .triangleCount = m.triangle_count,
             .boundingSphere = glm::vec4{bounds.center[0], bounds.center[1], bounds.center[2], bounds.radius},
         });
+    }
+
+    // rebase range-local vertex ids to scratch-absolute after optimize/bounds used them
+    for (size_t i = baseVertexOffset; i < meshletVertices.size(); ++i) {
+        meshletVertices[i] += firstVertex;
     }
 
     const MeshletDraw draw{

@@ -5,6 +5,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstring>
+#include <limits>
+#include <optional>
 #include <glm/gtc/quaternion.hpp>
 
 // ── glTF external-reference detection ───────────────────────
@@ -23,180 +27,232 @@ namespace
 
     // ── glTF accessor helpers ───────────────────────────────────
 
+    struct AccessorView
+    {
+        const uint8_t* data = nullptr; // null: no bufferView, elements are zero
+        size_t count = 0;
+        size_t stride = 0;
+        int32_t componentType = 0;
+        uint32_t compSize = 0;
+        uint32_t numComp = 0;
+    };
+
+    // validates the accessor's byte range against its bufferView and buffer
+    static std::optional<AccessorView> viewAccessor(const tg3_model& model, int32_t accessorIdx)
+    {
+        if (accessorIdx < 0 || static_cast<uint32_t>(accessorIdx) >= model.accessors_count) {
+            return std::nullopt;
+        }
+        const tg3_accessor& acc = model.accessors[accessorIdx];
+        const int32_t compSize = tg3_component_size(acc.component_type);
+        const int32_t numComp = tg3_num_components(acc.type);
+        if (compSize <= 0 || numComp <= 0) {
+            return std::nullopt;
+        }
+
+        AccessorView view{
+            .count = static_cast<size_t>(acc.count),
+            .componentType = acc.component_type,
+            .compSize = static_cast<uint32_t>(compSize),
+            .numComp = static_cast<uint32_t>(numComp),
+        };
+        if (acc.buffer_view < 0) {
+            return view;
+        }
+        if (static_cast<uint32_t>(acc.buffer_view) >= model.buffer_views_count) {
+            return std::nullopt;
+        }
+
+        const tg3_buffer_view& bv = model.buffer_views[acc.buffer_view];
+        if (bv.buffer < 0 || static_cast<uint32_t>(bv.buffer) >= model.buffers_count) {
+            return std::nullopt;
+        }
+        const tg3_buffer& buf = model.buffers[bv.buffer];
+        if (buf.data.data == nullptr || bv.byte_offset > buf.data.count ||
+            bv.byte_length > buf.data.count - bv.byte_offset) {
+            return std::nullopt;
+        }
+
+        const int32_t stride = tg3_accessor_byte_stride(&acc, &bv);
+        if (stride <= 0) {
+            return std::nullopt;
+        }
+        view.stride = static_cast<size_t>(stride);
+
+        // count bounded by byte_length first so the span math cannot overflow
+        const uint64_t elemBytes = static_cast<uint64_t>(compSize) * static_cast<uint64_t>(numComp);
+        if (acc.count > bv.byte_length || acc.byte_offset > bv.byte_length) {
+            return std::nullopt;
+        }
+        const uint64_t span = acc.count == 0 ? 0 : (acc.count - 1) * view.stride + elemBytes;
+        if (span > bv.byte_length - acc.byte_offset) {
+            return std::nullopt;
+        }
+
+        view.data = buf.data.data + bv.byte_offset + acc.byte_offset;
+        return view;
+    }
+
+    // memcpy reads: bufferView offsets are not guaranteed aligned in malformed files
+    template <typename T>
+    static T loadUnaligned(const uint8_t* src)
+    {
+        T value;
+        std::memcpy(&value, src, sizeof(T));
+        return value;
+    }
+
+    // integer types are always treated as normalized
+    static bool readFloatComponent(const uint8_t* src, int32_t componentType, float& out)
+    {
+        switch (componentType) {
+        case TG3_COMPONENT_TYPE_FLOAT:
+            out = loadUnaligned<float>(src);
+            return true;
+        case TG3_COMPONENT_TYPE_UNSIGNED_SHORT:
+            out = static_cast<float>(loadUnaligned<uint16_t>(src)) / 65535.0f;
+            return true;
+        case TG3_COMPONENT_TYPE_UNSIGNED_BYTE:
+            out = static_cast<float>(*src) / 255.0f;
+            return true;
+        case TG3_COMPONENT_TYPE_SHORT:
+            out = std::max(static_cast<float>(loadUnaligned<int16_t>(src)) / 32767.0f, -1.0f);
+            return true;
+        case TG3_COMPONENT_TYPE_BYTE:
+            out = std::max(static_cast<float>(loadUnaligned<int8_t>(src)) / 127.0f, -1.0f);
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    static bool readUintComponent(const uint8_t* src, int32_t componentType, uint32_t& out)
+    {
+        switch (componentType) {
+        case TG3_COMPONENT_TYPE_UNSIGNED_INT:
+            out = loadUnaligned<uint32_t>(src);
+            return true;
+        case TG3_COMPONENT_TYPE_UNSIGNED_SHORT:
+            out = loadUnaligned<uint16_t>(src);
+            return true;
+        case TG3_COMPONENT_TYPE_UNSIGNED_BYTE:
+            out = *src;
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    static tg3_span_u8 readBufferViewBytes(const tg3_model& model, int32_t bufferViewIdx);
+
+    // overwrite sparse-substituted elements; sparse indices/values are tightly packed
+    static bool applySparseFloats(const tg3_model& model, int32_t accessorIdx, const AccessorView& view,
+                                  std::vector<float>& values)
+    {
+        const tg3_accessor_sparse& sparse = model.accessors[accessorIdx].sparse;
+        if (sparse.is_sparse == 0 || sparse.count <= 0) {
+            return true;
+        }
+        const tg3_span_u8 indexBytes = readBufferViewBytes(model, sparse.indices.buffer_view);
+        const tg3_span_u8 valueBytes = readBufferViewBytes(model, sparse.values.buffer_view);
+        const int32_t indexSize = tg3_component_size(sparse.indices.component_type);
+        if (indexBytes.data == nullptr || valueBytes.data == nullptr || indexSize <= 0) {
+            return false;
+        }
+
+        const auto count = static_cast<uint64_t>(sparse.count);
+        const uint64_t elemBytes = static_cast<uint64_t>(view.compSize) * view.numComp;
+        if (sparse.indices.byte_offset > indexBytes.count ||
+            count * static_cast<uint64_t>(indexSize) > indexBytes.count - sparse.indices.byte_offset ||
+            sparse.values.byte_offset > valueBytes.count ||
+            count * elemBytes > valueBytes.count - sparse.values.byte_offset) {
+            return false;
+        }
+
+        const uint8_t* indexSrc = indexBytes.data + sparse.indices.byte_offset;
+        const uint8_t* valueSrc = valueBytes.data + sparse.values.byte_offset;
+        for (uint64_t i = 0; i < count; ++i) {
+            uint32_t target = 0;
+            if (!readUintComponent(indexSrc + i * static_cast<uint64_t>(indexSize), sparse.indices.component_type,
+                                   target) ||
+                target >= view.count) {
+                return false;
+            }
+            for (uint32_t c = 0; c < view.numComp; ++c) {
+                const uint8_t* src = valueSrc + i * elemBytes + static_cast<uint64_t>(c) * view.compSize;
+                if (!readFloatComponent(src, view.componentType,
+                                        values[static_cast<size_t>(target) * view.numComp + c])) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     // Read float data from a glTF accessor. Returns an empty vector
-    // on any error (missing buffer, unsupported type, etc.).
+    // on any error (out-of-range buffer, unsupported type, etc.).
     static std::vector<float> readAccessorFloats(const tg3_model& model, int32_t accessorIdx)
     {
-        if (accessorIdx < 0 || static_cast<uint32_t>(accessorIdx) >= model.accessors_count)
+        const std::optional<AccessorView> view = viewAccessor(model, accessorIdx);
+        if (!view) {
             return {};
-
-        const tg3_accessor& acc = model.accessors[accessorIdx];
-        if (acc.buffer_view < 0 || static_cast<uint32_t>(acc.buffer_view) >= model.buffer_views_count)
-            return {};
-
-        const tg3_buffer_view& bv = model.buffer_views[acc.buffer_view];
-        if (bv.buffer < 0 || static_cast<uint32_t>(bv.buffer) >= model.buffers_count)
-            return {};
-
-        const tg3_buffer& buf = model.buffers[bv.buffer];
-        if (!buf.data.data)
-            return {};
-
-        const int32_t compSize = tg3_component_size(acc.component_type);
-        const int32_t numComp = tg3_num_components(acc.type);
-        if (compSize < 0 || numComp < 0)
-            return {};
-
-        const int32_t stride = tg3_accessor_byte_stride(&acc, &bv);
-        if (stride < 0)
-            return {};
-
-        const auto offset = static_cast<size_t>(bv.byte_offset) + static_cast<size_t>(acc.byte_offset);
-        const uint8_t* src = buf.data.data + offset;
-        const auto elemCount = static_cast<size_t>(acc.count);
-
-        std::vector<float> result;
-        result.reserve(elemCount * static_cast<size_t>(numComp));
-
-        // Fast path: tightly-packed float data
-        if (acc.component_type == TG3_COMPONENT_TYPE_FLOAT && compSize == 4 && stride == compSize * numComp) {
-            const auto* floats = reinterpret_cast<const float*>(src);
-            result.assign(floats, floats + elemCount * numComp);
-            return result;
         }
 
-        // General path — per-element, per-component read with normalisation
-        for (size_t elem = 0; elem < elemCount; ++elem) {
-            const uint8_t* elemSrc = src + elem * static_cast<size_t>(stride);
-            for (int32_t c = 0; c < numComp; ++c) {
-                const uint8_t* compSrc = elemSrc + static_cast<size_t>(c) * compSize;
-                float val = 0.0f;
-                switch (acc.component_type) {
-                case TG3_COMPONENT_TYPE_FLOAT:
-                    val = *reinterpret_cast<const float*>(compSrc);
-                    break;
-                case TG3_COMPONENT_TYPE_UNSIGNED_SHORT:
-                    val = static_cast<float>(*reinterpret_cast<const uint16_t*>(compSrc)) / 65535.0f;
-                    break;
-                case TG3_COMPONENT_TYPE_UNSIGNED_BYTE:
-                    val = static_cast<float>(*reinterpret_cast<const uint8_t*>(compSrc)) / 255.0f;
-                    break;
-                case TG3_COMPONENT_TYPE_SHORT:
-                    val = static_cast<float>(*reinterpret_cast<const int16_t*>(compSrc)) / 32767.0f;
-                    break;
-                case TG3_COMPONENT_TYPE_BYTE: {
-                    const float c = static_cast<float>(*reinterpret_cast<const int8_t*>(compSrc));
-                    val = std::max(c / 127.0f, -1.0f);
-                    break;
+        std::vector<float> result(view->count * view->numComp, 0.0f);
+        if (view->data != nullptr) {
+            const size_t elemBytes = static_cast<size_t>(view->compSize) * view->numComp;
+            if (view->componentType == TG3_COMPONENT_TYPE_FLOAT && view->stride == elemBytes) {
+                std::memcpy(result.data(), view->data, result.size() * sizeof(float));
+            } else {
+                for (size_t elem = 0; elem < view->count; ++elem) {
+                    const uint8_t* elemSrc = view->data + elem * view->stride;
+                    for (uint32_t c = 0; c < view->numComp; ++c) {
+                        if (!readFloatComponent(elemSrc + static_cast<size_t>(c) * view->compSize,
+                                                view->componentType, result[elem * view->numComp + c])) {
+                            return {};
+                        }
+                    }
                 }
-                default:
-                    // unsupported component type — return what we have so far
-                    return result;
-                }
-                result.push_back(val);
             }
         }
 
-        return result;
-    }
-
-    // Read index data from a glTF accessor. Supports UINT32, UINT16, and UINT8.
-    static std::vector<uint32_t> readAccessorIndices(const tg3_model& model, int32_t accessorIdx)
-    {
-        if (accessorIdx < 0 || static_cast<uint32_t>(accessorIdx) >= model.accessors_count)
+        if (!applySparseFloats(model, accessorIdx, *view, result)) {
             return {};
-
-        const tg3_accessor& acc = model.accessors[accessorIdx];
-        if (acc.buffer_view < 0 || static_cast<uint32_t>(acc.buffer_view) >= model.buffer_views_count)
-            return {};
-
-        const tg3_buffer_view& bv = model.buffer_views[acc.buffer_view];
-        if (bv.buffer < 0 || static_cast<uint32_t>(bv.buffer) >= model.buffers_count)
-            return {};
-
-        const tg3_buffer& buf = model.buffers[bv.buffer];
-        if (!buf.data.data)
-            return {};
-
-        const auto offset = static_cast<size_t>(bv.byte_offset) + static_cast<size_t>(acc.byte_offset);
-        const uint8_t* src = buf.data.data + offset;
-
-        std::vector<uint32_t> result;
-        result.reserve(static_cast<size_t>(acc.count));
-
-        for (uint32_t i = 0; i < acc.count; ++i) {
-            switch (acc.component_type) {
-            case TG3_COMPONENT_TYPE_UNSIGNED_INT:
-                result.push_back(reinterpret_cast<const uint32_t*>(src)[i]);
-                break;
-            case TG3_COMPONENT_TYPE_UNSIGNED_SHORT:
-                result.push_back(static_cast<uint32_t>(reinterpret_cast<const uint16_t*>(src)[i]));
-                break;
-            case TG3_COMPONENT_TYPE_UNSIGNED_BYTE:
-                result.push_back(static_cast<uint32_t>(src[i]));
-                break;
-            default:
-                return {}; // unsupported index type
-            }
         }
-
         return result;
     }
 
+    // Read unsigned integer data (indices, JOINTS_n). Supports UINT32, UINT16, and UINT8.
     static std::vector<uint32_t> readAccessorU32(const tg3_model& model, int32_t accessorIdx)
     {
-        if (accessorIdx < 0 || static_cast<uint32_t>(accessorIdx) >= model.accessors_count)
+        const std::optional<AccessorView> view = viewAccessor(model, accessorIdx);
+        if (!view) {
             return {};
+        }
 
-        const tg3_accessor& acc = model.accessors[accessorIdx];
-        if (acc.buffer_view < 0 || static_cast<uint32_t>(acc.buffer_view) >= model.buffer_views_count)
-            return {};
-
-        const tg3_buffer_view& bv = model.buffer_views[acc.buffer_view];
-        if (bv.buffer < 0 || static_cast<uint32_t>(bv.buffer) >= model.buffers_count)
-            return {};
-
-        const tg3_buffer& buf = model.buffers[bv.buffer];
-        if (!buf.data.data)
-            return {};
-
-        const int32_t compSize = tg3_component_size(acc.component_type);
-        const int32_t numComp = tg3_num_components(acc.type);
-        if (compSize < 0 || numComp < 0)
-            return {};
-
-        const int32_t stride = tg3_accessor_byte_stride(&acc, &bv);
-        if (stride < 0)
-            return {};
-
-        const auto offset = static_cast<size_t>(bv.byte_offset) + static_cast<size_t>(acc.byte_offset);
-        const uint8_t* src = buf.data.data + offset;
-        const auto elemCount = static_cast<size_t>(acc.count);
-
-        std::vector<uint32_t> result;
-        result.reserve(elemCount * static_cast<size_t>(numComp));
-
-        for (size_t elem = 0; elem < elemCount; ++elem) {
-            const uint8_t* elemSrc = src + elem * static_cast<size_t>(stride);
-            for (int32_t c = 0; c < numComp; ++c) {
-                const uint8_t* compSrc = elemSrc + static_cast<size_t>(c) * compSize;
-                switch (acc.component_type) {
-                case TG3_COMPONENT_TYPE_UNSIGNED_INT:
-                    result.push_back(*reinterpret_cast<const uint32_t*>(compSrc));
-                    break;
-                case TG3_COMPONENT_TYPE_UNSIGNED_SHORT:
-                    result.push_back(*reinterpret_cast<const uint16_t*>(compSrc));
-                    break;
-                case TG3_COMPONENT_TYPE_UNSIGNED_BYTE:
-                    result.push_back(*compSrc);
-                    break;
-                default:
+        std::vector<uint32_t> result(view->count * view->numComp, 0u);
+        if (view->data == nullptr) {
+            return result;
+        }
+        for (size_t elem = 0; elem < view->count; ++elem) {
+            const uint8_t* elemSrc = view->data + elem * view->stride;
+            for (uint32_t c = 0; c < view->numComp; ++c) {
+                if (!readUintComponent(elemSrc + static_cast<size_t>(c) * view->compSize, view->componentType,
+                                       result[elem * view->numComp + c])) {
                     return {};
                 }
             }
         }
-
         return result;
+    }
+
+    static std::vector<uint32_t> readAccessorIndices(const tg3_model& model, int32_t accessorIdx)
+    {
+        if (accessorIdx < 0 || static_cast<uint32_t>(accessorIdx) >= model.accessors_count ||
+            model.accessors[accessorIdx].buffer_view < 0 || tg3_num_components(model.accessors[accessorIdx].type) != 1) {
+            return {};
+        }
+        return readAccessorU32(model, accessorIdx);
     }
 
     static tg3_span_u8 readBufferViewBytes(const tg3_model& model, int32_t bufferViewIdx)
@@ -212,11 +268,10 @@ namespace
         if (!buf.data.data)
             return {};
 
-        const uint64_t offset = bv.byte_offset;
-        if (offset + bv.byte_length > buf.data.count)
+        if (bv.byte_offset > buf.data.count || bv.byte_length > buf.data.count - bv.byte_offset)
             return {};
 
-        return tg3_span_u8{.data = buf.data.data + offset, .count = bv.byte_length};
+        return tg3_span_u8{.data = buf.data.data + bv.byte_offset, .count = bv.byte_length};
     }
 
     static std::string_view strView(tg3_str s)
@@ -256,6 +311,7 @@ namespace
         std::string mime;
         uint32_t heapSrgb = kNoneIndex;
         uint32_t heapLinear = kNoneIndex;
+        bool isBroken = false;
     };
 
     struct GltfResolvedTexture
@@ -287,14 +343,87 @@ namespace
         return {};
     }
 
+    static void appendJsonString(std::string& out, std::string_view text)
+    {
+        out += '"';
+        for (const char c : text) {
+            switch (c) {
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    out += std::format("\\u{:04x}", static_cast<unsigned>(static_cast<unsigned char>(c)));
+                } else {
+                    out += c;
+                }
+            }
+        }
+        out += '"';
+    }
+
+    // extensions_json holds the whole "extensions" object; each entry needs only its own value
+    static void appendJsonValue(std::string& out, const tg3_value& value)
+    {
+        switch (value.type) {
+        case TG3_VALUE_BOOL:
+            out += value.bool_val != 0 ? "true" : "false";
+            return;
+        case TG3_VALUE_INT:
+            out += std::to_string(value.int_val);
+            return;
+        case TG3_VALUE_REAL:
+            out += std::isfinite(value.real_val) ? std::format("{}", value.real_val) : "null";
+            return;
+        case TG3_VALUE_STRING:
+            appendJsonString(out, strView(value.string_val));
+            return;
+        case TG3_VALUE_ARRAY:
+            out += '[';
+            for (uint32_t i = 0; i < value.array_count && value.array_data != nullptr; ++i) {
+                if (i > 0) {
+                    out += ',';
+                }
+                appendJsonValue(out, value.array_data[i]);
+            }
+            out += ']';
+            return;
+        case TG3_VALUE_OBJECT:
+            out += '{';
+            for (uint32_t i = 0; i < value.object_count && value.object_data != nullptr; ++i) {
+                if (i > 0) {
+                    out += ',';
+                }
+                appendJsonString(out, strView(value.object_data[i].key));
+                out += ':';
+                appendJsonValue(out, value.object_data[i].value);
+            }
+            out += '}';
+            return;
+        default:
+            out += "null";
+            return;
+        }
+    }
+
     static void storeAux(GeometryStore& geometry, uint32_t kind, uint32_t index, const tg3_extras_ext& ext)
     {
         AuxBlob blob{.ownerKind = kind, .ownerIndex = index, .extrasJson = extrasJsonOf(ext)};
         for (uint32_t i = 0; i < ext.extensions_count; ++i) {
             std::string json;
-            if (ext.extensions_json.data != nullptr && ext.extensions_json.len > 0) {
-                json.assign(ext.extensions_json.data, ext.extensions_json.len);
-            }
+            appendJsonValue(json, ext.extensions[i].value);
             blob.extensions.emplace_back(std::string(strView(ext.extensions[i].name)), std::move(json));
         }
         if (blob.extrasJson.empty() && blob.extensions.empty()) {
@@ -364,17 +493,23 @@ namespace
     static uint32_t loadGltfImage(GltfLoadCtx& ctx, GltfImageSrc& image, TextureColorSpace colorSpace)
     {
         uint32_t& heap = colorSpace == TextureColorSpace::Srgb ? image.heapSrgb : image.heapLinear;
-        if (heap != kNoneIndex) {
+        if (heap != kNoneIndex || image.isBroken) {
             return heap;
         }
-        if (!image.decodedRgba.empty() && image.width > 0 && image.height > 0) {
-            heap = ctx.textures.loadTextureFromPixels(image.cacheKey, image.decodedRgba,
-                                                      static_cast<uint32_t>(image.width),
-                                                      static_cast<uint32_t>(image.height), colorSpace);
-        } else if (!image.encoded.empty()) {
-            heap = ctx.textures.loadTextureFromMemory(image.cacheKey, image.encoded, image.mime, colorSpace);
-        } else if (!image.path.empty()) {
-            heap = ctx.textures.loadTexture(image.path, colorSpace);
+        // one undecodable image must not abort the model; material falls back to no texture
+        try {
+            if (!image.decodedRgba.empty() && image.width > 0 && image.height > 0) {
+                heap = ctx.textures.loadTextureFromPixels(image.cacheKey, image.decodedRgba,
+                                                          static_cast<uint32_t>(image.width),
+                                                          static_cast<uint32_t>(image.height), colorSpace);
+            } else if (!image.encoded.empty()) {
+                heap = ctx.textures.loadTextureFromMemory(image.cacheKey, image.encoded, image.mime, colorSpace);
+            } else if (!image.path.empty()) {
+                heap = ctx.textures.loadTexture(image.path, colorSpace);
+            }
+        } catch (const std::runtime_error& error) {
+            image.isBroken = true;
+            log_error(std::format("glTF image '{}' failed to load: {}", image.cacheKey, error.what()), "AssetLoader");
         }
         return heap;
     }
@@ -844,6 +979,21 @@ namespace
                glm::scale(glm::mat4{1.0f}, scale);
     }
 
+    static std::vector<int32_t> buildNodeParents(const tg3_model& model)
+    {
+        std::vector<int32_t> parent(model.nodes_count, -1);
+        for (uint32_t ni = 0; ni < model.nodes_count; ++ni) {
+            const tg3_node& node = model.nodes[ni];
+            for (uint32_t ci = 0; ci < node.children_count; ++ci) {
+                const int32_t child = node.children[ci];
+                if (child >= 0 && static_cast<uint32_t>(child) < model.nodes_count) {
+                    parent[static_cast<uint32_t>(child)] = static_cast<int32_t>(ni);
+                }
+            }
+        }
+        return parent;
+    }
+
     static glm::mat4 gltfNodeWorldMatrix(const tg3_model& model, uint32_t nodeIndex, const std::vector<int32_t>& parent)
     {
         std::vector<uint32_t> chain;
@@ -888,17 +1038,7 @@ namespace
             parseGltfExtras(ctx.geometry, AuxOwnerKind::Light, defBase + i, light.ext, std::format("light[{}]", i));
         }
 
-        std::vector<int32_t> parent(model.nodes_count, -1);
-        for (uint32_t ni = 0; ni < model.nodes_count; ++ni) {
-            const tg3_node& node = model.nodes[ni];
-            for (uint32_t ci = 0; ci < node.children_count; ++ci) {
-                const int32_t child = node.children[ci];
-                if (child >= 0 && static_cast<uint32_t>(child) < model.nodes_count) {
-                    parent[static_cast<uint32_t>(child)] = static_cast<int32_t>(ni);
-                }
-            }
-        }
-
+        const std::vector<int32_t> parent = buildNodeParents(model);
         for (uint32_t ni = 0; ni < model.nodes_count; ++ni) {
             const int32_t lightIndex = model.nodes[ni].light;
             if (lightIndex < 0) {
@@ -962,13 +1102,17 @@ namespace
                 const int channels = image.component > 0 ? image.component : 4;
                 for (uint32_t p = 0; p < pixelCount; ++p) {
                     const size_t srcOff = static_cast<size_t>(p) * static_cast<size_t>(channels);
-                    if (srcOff >= image.image.count) {
+                    if (srcOff + static_cast<size_t>(channels) > image.image.count) {
                         break;
                     }
-                    src.decodedRgba[p * 4u + 0] = image.image.data[srcOff];
-                    src.decodedRgba[p * 4u + 1] = channels > 1 ? image.image.data[srcOff + 1] : 0;
-                    src.decodedRgba[p * 4u + 2] = channels > 2 ? image.image.data[srcOff + 2] : 0;
-                    src.decodedRgba[p * 4u + 3] = channels > 3 ? image.image.data[srcOff + 3] : 255;
+                    const uint8_t* px = image.image.data + srcOff;
+                    uint8_t* dst = &src.decodedRgba[static_cast<size_t>(p) * 4u];
+                    // 1 = L, 2 = LA, 3 = RGB, 4 = RGBA
+                    const bool isGrey = channels < 3;
+                    dst[0] = px[0];
+                    dst[1] = isGrey ? px[0] : px[1];
+                    dst[2] = isGrey ? px[0] : px[2];
+                    dst[3] = channels == 2 ? px[1] : (channels > 3 ? px[3] : 255);
                 }
             }
 
@@ -1077,8 +1221,55 @@ namespace
         return {};
     }
 
+    // node world transform baked into vertices; the model is a single entity with one transform
+    struct GltfNodeXform
+    {
+        glm::mat4 world{1.0f};
+        glm::mat3 linear{1.0f};
+        glm::mat3 normal{1.0f};
+        bool isIdentity = true;
+        bool flipsWinding = false;
+    };
+
+    static GltfNodeXform makeNodeXform(const glm::mat4& world)
+    {
+        const glm::mat3 linear{world};
+        const float det = glm::determinant(linear);
+        return GltfNodeXform{
+            .world = world,
+            .linear = linear,
+            // degenerate scale has no inverse; linear keeps normals finite
+            .normal = std::abs(det) > std::numeric_limits<float>::min() ? glm::transpose(glm::inverse(linear)) : linear,
+            .isIdentity = world == glm::mat4{1.0f},
+            .flipsWinding = det < 0.0f,
+        };
+    }
+
+    static glm::vec3 normalizeOrZero(const glm::vec3& v)
+    {
+        const float len = glm::length(v);
+        return len > 0.0f ? v / len : v;
+    }
+
+    static void bakeNodeXform(GeometryStore& geometry, uint32_t firstVertex, uint32_t vertexCount,
+                              const GltfNodeXform& xform)
+    {
+        if (xform.isIdentity) {
+            return;
+        }
+        // mirrored transforms flip bitangent handedness
+        const float handedness = xform.flipsWinding ? -1.0f : 1.0f;
+        for (uint32_t v = firstVertex; v < firstVertex + vertexCount; ++v) {
+            geometry.positions[v] = glm::vec3(xform.world * glm::vec4(geometry.positions[v], 1.0f));
+            geometry.normals[v] = normalizeOrZero(xform.normal * geometry.normals[v]);
+            const glm::vec4 tangent = geometry.tangents[v];
+            geometry.tangents[v] =
+                glm::vec4(normalizeOrZero(xform.linear * glm::vec3(tangent)), tangent.w * handedness);
+        }
+    }
+
     static void storeMorphTargets(GeometryStore& geometry, const tg3_model& model, const tg3_primitive& prim,
-                                  uint32_t vertexCount)
+                                  uint32_t vertexCount, const GltfNodeXform& xform)
     {
         if (prim.targets_count == 0) {
             return;
@@ -1101,18 +1292,29 @@ namespace
                 log_info(std::format("glTF morph[{}] attr='{}' accessor={} floats={}", t, key, attrs[a].value,
                                      delta.size()),
                          "AssetLoader");
+                // deltas are directions: linear part only, no translation, no renormalize
                 if (key == "POSITION") {
                     target.posOffset = static_cast<uint32_t>(geometry.morphPos.size());
                     geometry.morphPos.resize(target.posOffset + vertexCount, glm::vec3{0.0f});
                     fillVec3Range(geometry.morphPos, target.posOffset, vertexCount, delta, comps);
+                    for (uint32_t v = 0; v < vertexCount && !xform.isIdentity; ++v) {
+                        geometry.morphPos[target.posOffset + v] = xform.linear * geometry.morphPos[target.posOffset + v];
+                    }
                 } else if (key == "NORMAL") {
                     target.nrmOffset = static_cast<uint32_t>(geometry.morphNrm.size());
                     geometry.morphNrm.resize(target.nrmOffset + vertexCount, glm::vec3{0.0f});
                     fillVec3Range(geometry.morphNrm, target.nrmOffset, vertexCount, delta, comps);
+                    for (uint32_t v = 0; v < vertexCount && !xform.isIdentity; ++v) {
+                        geometry.morphNrm[target.nrmOffset + v] = xform.normal * geometry.morphNrm[target.nrmOffset + v];
+                    }
                 } else if (key == "TANGENT") {
                     target.tanOffset = static_cast<uint32_t>(geometry.morphTan.size());
                     geometry.morphTan.resize(target.tanOffset + vertexCount, glm::vec4{0.0f});
                     fillVec4Range(geometry.morphTan, target.tanOffset, vertexCount, delta, comps, glm::vec4{0.0f});
+                    for (uint32_t v = 0; v < vertexCount && !xform.isIdentity; ++v) {
+                        glm::vec4& tangent = geometry.morphTan[target.tanOffset + v];
+                        tangent = glm::vec4(xform.linear * glm::vec3(tangent), tangent.w);
+                    }
                 }
             }
             geometry.morphTargets.push_back(target);
@@ -1190,134 +1392,227 @@ namespace
         log_info(std::format("glTF attr '{}' accessor={} skipped", name, accessorIdx), "AssetLoader");
     }
 
+    struct GltfMeshInstance
+    {
+        uint32_t mesh = 0;
+        glm::mat4 world{1.0f};
+    };
+
+    // walk the active scene; meshes are placed per referencing node, unreferenced meshes are not drawn
+    static std::vector<GltfMeshInstance> collectMeshInstances(const tg3_model& model)
+    {
+        std::vector<GltfMeshInstance> instances;
+        if (model.nodes_count == 0) {
+            for (uint32_t mi = 0; mi < model.meshes_count; ++mi) {
+                instances.push_back(GltfMeshInstance{.mesh = mi});
+            }
+            return instances;
+        }
+
+        std::vector<int32_t> roots;
+        const uint32_t sceneIndex = model.default_scene >= 0 ? static_cast<uint32_t>(model.default_scene) : 0u;
+        if (sceneIndex < model.scenes_count) {
+            const tg3_scene& scene = model.scenes[sceneIndex];
+            roots.assign(scene.nodes, scene.nodes + scene.nodes_count);
+        } else {
+            const std::vector<int32_t> parent = buildNodeParents(model);
+            for (uint32_t ni = 0; ni < model.nodes_count; ++ni) {
+                if (parent[ni] < 0) {
+                    roots.push_back(static_cast<int32_t>(ni));
+                }
+            }
+        }
+
+        // visited guards malformed graphs with cycles or shared children
+        std::vector<uint8_t> visited(model.nodes_count, 0);
+        std::vector<std::pair<int32_t, glm::mat4>> stack;
+        for (auto it = roots.rbegin(); it != roots.rend(); ++it) {
+            stack.emplace_back(*it, glm::mat4{1.0f});
+        }
+        while (!stack.empty()) {
+            const auto [nodeIndex, parentWorld] = stack.back();
+            stack.pop_back();
+            if (nodeIndex < 0 || static_cast<uint32_t>(nodeIndex) >= model.nodes_count || visited[nodeIndex] != 0) {
+                continue;
+            }
+            visited[nodeIndex] = 1;
+
+            const tg3_node& node = model.nodes[nodeIndex];
+            const glm::mat4 world = parentWorld * gltfNodeLocalMatrix(node);
+            if (node.mesh >= 0 && static_cast<uint32_t>(node.mesh) < model.meshes_count) {
+                instances.push_back(GltfMeshInstance{.mesh = static_cast<uint32_t>(node.mesh), .world = world});
+            }
+            for (uint32_t ci = node.children_count; ci > 0; --ci) {
+                stack.emplace_back(node.children[ci - 1], world);
+            }
+        }
+        return instances;
+    }
+
+    static uint32_t appendGltfMesh(GltfLoadCtx& ctx, const tg3_model& model, uint32_t mi, const GltfNodeXform& xform)
+    {
+        GeometryStore& geometry = ctx.geometry;
+        const tg3_mesh& mesh = model.meshes[mi];
+        uint32_t storedPrimitives = 0;
+
+        const uint32_t morphWeightFirst = static_cast<uint32_t>(geometry.morphWeights.size());
+        for (uint32_t wi = 0; wi < mesh.weights_count; ++wi) {
+            geometry.morphWeights.push_back(static_cast<float>(mesh.weights[wi]));
+        }
+
+        for (uint32_t pi = 0; pi < mesh.primitives_count; ++pi) {
+            const tg3_primitive& prim = mesh.primitives[pi];
+            const int32_t mode = prim.mode < 0 ? TG3_MODE_TRIANGLES : prim.mode;
+            log_info(std::format("glTF mesh[{}].prim[{}] mode={} material={} attrs={} morphTargets={} indicesAcc={}",
+                                 mi, pi, primitiveModeName(mode), prim.material, prim.attributes_count,
+                                 prim.targets_count, prim.indices),
+                     "AssetLoader");
+
+            if (mode != TG3_MODE_TRIANGLES && mode != TG3_MODE_TRIANGLE_STRIP && mode != TG3_MODE_TRIANGLE_FAN) {
+                log_info(std::format("glTF mesh[{}].prim[{}] skipped: non-triangle mode", mi, pi), "AssetLoader");
+                continue;
+            }
+
+            int32_t posAcc = -1;
+            int32_t tc0Acc = -1;
+            std::vector<std::pair<std::string_view, int32_t>> extraAttrs;
+            extraAttrs.reserve(prim.attributes_count);
+
+            for (uint32_t ai = 0; ai < prim.attributes_count; ++ai) {
+                const tg3_str_int_pair& attr = prim.attributes[ai];
+                const std::string_view name = strView(attr.key);
+                if (name == "POSITION") {
+                    posAcc = attr.value;
+                } else if (name == "TEXCOORD_0") {
+                    tc0Acc = attr.value;
+                } else {
+                    extraAttrs.emplace_back(name, attr.value);
+                }
+            }
+
+            if (posAcc < 0) {
+                log_info(std::format("glTF mesh[{}].prim[{}] skipped: no POSITION", mi, pi), "AssetLoader");
+                continue;
+            }
+
+            const std::vector<float> positions = readAccessorFloats(model, posAcc);
+            if (positions.empty()) {
+                log_info(std::format("glTF mesh[{}].prim[{}] skipped: empty POSITION accessor {}", mi, pi, posAcc),
+                         "AssetLoader");
+                continue;
+            }
+            const uint32_t posComps = accessorCompCount(model, posAcc);
+            const auto vertexCount = static_cast<uint32_t>(positions.size() / posComps);
+
+            // resolve triangles before appending vertices so skipped primitives leave no orphans
+            std::vector<uint32_t> srcIndices;
+            if (prim.indices >= 0) {
+                srcIndices = readAccessorIndices(model, prim.indices);
+                if (srcIndices.empty()) {
+                    log_info(std::format("glTF mesh[{}].prim[{}] skipped: unreadable indices accessor {}", mi, pi,
+                                         prim.indices),
+                             "AssetLoader");
+                    continue;
+                }
+                if (std::ranges::any_of(srcIndices, [vertexCount](uint32_t index) { return index >= vertexCount; })) {
+                    log_info(std::format("glTF mesh[{}].prim[{}] skipped: index out of range (verts={})", mi, pi,
+                                         vertexCount),
+                             "AssetLoader");
+                    continue;
+                }
+            } else {
+                srcIndices.resize(vertexCount);
+                for (uint32_t v = 0; v < vertexCount; ++v) {
+                    srcIndices[v] = v;
+                }
+            }
+            std::vector<uint32_t> triIndices = toTriangleIndices(mode, srcIndices);
+            if (triIndices.empty()) {
+                log_info(std::format("glTF mesh[{}].prim[{}] skipped: no triangles", mi, pi), "AssetLoader");
+                continue;
+            }
+            if (xform.flipsWinding) {
+                for (size_t t = 0; t + 2 < triIndices.size(); t += 3) {
+                    std::swap(triIndices[t + 1], triIndices[t + 2]);
+                }
+            }
+
+            const uint32_t firstVertex = static_cast<uint32_t>(geometry.positions.size());
+            geometry.resizeVertices(firstVertex + vertexCount);
+            fillVec3Range(geometry.positions, firstVertex, vertexCount, positions, posComps);
+
+            const std::vector<float> texcoords = readAccessorFloats(model, tc0Acc);
+            fillUvRange(geometry.uv0, firstVertex, vertexCount, texcoords, accessorCompCount(model, tc0Acc), true);
+
+            for (const auto& [name, acc] : extraAttrs) {
+                storeVertexAttribute(geometry, firstVertex, vertexCount, model, name, acc);
+            }
+            bakeNodeXform(geometry, firstVertex, vertexCount, xform);
+
+            for (uint32_t v = 0; v < vertexCount; ++v) {
+                geometry.packVertex(firstVertex + v);
+            }
+
+            const uint32_t firstIndex = static_cast<uint32_t>(geometry.indices.size());
+            geometry.indices.reserve(firstIndex + triIndices.size());
+            for (const uint32_t local : triIndices) {
+                geometry.indices.push_back(firstVertex + local);
+            }
+            const uint32_t indexCount = static_cast<uint32_t>(triIndices.size());
+
+            const uint32_t morphFirst = static_cast<uint32_t>(geometry.morphTargets.size());
+            storeMorphTargets(geometry, model, prim, vertexCount, xform);
+            const uint32_t morphCount = static_cast<uint32_t>(geometry.morphTargets.size()) - morphFirst;
+
+            uint32_t materialId = ctx.materials.defaultMaterialId();
+            if (prim.material >= 0 && static_cast<uint32_t>(prim.material) < ctx.materialIds.size()) {
+                materialId = ctx.materialIds[static_cast<uint32_t>(prim.material)];
+            }
+
+            PrimitiveDraw draw{};
+            draw.materialId = materialId;
+            if (const GpuMaterial* gpu = ctx.materials.scratchMaterial(materialId)) {
+                draw.albedoTex = gpu->baseColorTex;
+                draw.albedoSamp = gpu->baseColorSamp;
+            }
+            draw.firstVertex = firstVertex;
+            draw.vertexCount = vertexCount;
+            draw.firstIndex = firstIndex;
+            draw.indexCount = indexCount;
+            draw.morphFirst = morphCount > 0 ? morphFirst : 0;
+            draw.morphCount = morphCount;
+            draw.morphWeightFirst = mesh.weights_count > 0 ? morphWeightFirst : 0;
+            draw.meshlets = geometry.buildMeshletsForRange(firstIndex, indexCount, firstVertex, vertexCount);
+            parseGltfExtras(geometry, AuxOwnerKind::Primitive, static_cast<uint32_t>(geometry.primitiveDraws.size()),
+                            prim.ext, std::format("mesh[{}].prim[{}]", mi, pi));
+            geometry.primitiveDraws.push_back(draw);
+            ++storedPrimitives;
+
+            log_info(std::format("glTF mesh[{}].prim[{}] POSITION verts={} TEXCOORD_0 floats={} indices={} stored={}",
+                                 mi, pi, vertexCount, texcoords.size(), indexCount, indexCount),
+                     "AssetLoader");
+        }
+        return storedPrimitives;
+    }
+
     static uint32_t appendGltfGeometry(GltfLoadCtx& ctx, const tg3_model& model)
     {
         log_info(std::format("glTF meshes: {}", model.meshes_count), "AssetLoader");
         GeometryStore& geometry = ctx.geometry;
-        uint32_t storedPrimitives = 0;
-
         for (uint32_t mi = 0; mi < model.meshes_count; ++mi) {
             const tg3_mesh& mesh = model.meshes[mi];
             log_info(std::format("glTF mesh[{}] name='{}' primitives={} morphWeights={}", mi, strView(mesh.name),
                                  mesh.primitives_count, mesh.weights_count),
                      "AssetLoader");
-            const uint32_t morphWeightFirst = static_cast<uint32_t>(geometry.morphWeights.size());
-            for (uint32_t wi = 0; wi < mesh.weights_count; ++wi) {
-                geometry.morphWeights.push_back(static_cast<float>(mesh.weights[wi]));
-            }
             parseGltfExtras(geometry, AuxOwnerKind::Mesh, mi, mesh.ext, std::format("mesh[{}]", mi));
+        }
 
-            for (uint32_t pi = 0; pi < mesh.primitives_count; ++pi) {
-                const tg3_primitive& prim = mesh.primitives[pi];
-                const int32_t mode = prim.mode < 0 ? TG3_MODE_TRIANGLES : prim.mode;
-                log_info(std::format("glTF mesh[{}].prim[{}] mode={} material={} attrs={} morphTargets={} indicesAcc={}",
-                                     mi, pi, primitiveModeName(mode), prim.material, prim.attributes_count,
-                                     prim.targets_count, prim.indices),
-                         "AssetLoader");
-                parseGltfExtras(geometry, AuxOwnerKind::Primitive, static_cast<uint32_t>(geometry.primitiveDraws.size()),
-                                prim.ext, std::format("mesh[{}].prim[{}]", mi, pi));
+        const std::vector<GltfMeshInstance> instances = collectMeshInstances(model);
+        log_info(std::format("glTF mesh instances: {}", instances.size()), "AssetLoader");
 
-                if (mode != TG3_MODE_TRIANGLES && mode != TG3_MODE_TRIANGLE_STRIP && mode != TG3_MODE_TRIANGLE_FAN) {
-                    log_info(std::format("glTF mesh[{}].prim[{}] skipped: non-triangle mode", mi, pi), "AssetLoader");
-                    continue;
-                }
-
-                int32_t posAcc = -1;
-                int32_t tc0Acc = -1;
-                std::vector<std::pair<std::string_view, int32_t>> extraAttrs;
-                extraAttrs.reserve(prim.attributes_count);
-
-                for (uint32_t ai = 0; ai < prim.attributes_count; ++ai) {
-                    const tg3_str_int_pair& attr = prim.attributes[ai];
-                    const std::string_view name = strView(attr.key);
-                    if (name == "POSITION") {
-                        posAcc = attr.value;
-                    } else if (name == "TEXCOORD_0") {
-                        tc0Acc = attr.value;
-                    } else {
-                        extraAttrs.emplace_back(name, attr.value);
-                    }
-                }
-
-                if (posAcc < 0) {
-                    log_info(std::format("glTF mesh[{}].prim[{}] skipped: no POSITION", mi, pi), "AssetLoader");
-                    continue;
-                }
-
-                const std::vector<float> positions = readAccessorFloats(model, posAcc);
-                if (positions.empty()) {
-                    log_info(std::format("glTF mesh[{}].prim[{}] skipped: empty POSITION accessor {}", mi, pi, posAcc),
-                             "AssetLoader");
-                    continue;
-                }
-
-                const uint32_t posComps = accessorCompCount(model, posAcc);
-                const uint32_t vertexCount = model.accessors[posAcc].count;
-                const uint32_t firstVertex = static_cast<uint32_t>(geometry.positions.size());
-                geometry.resizeVertices(firstVertex + vertexCount);
-                fillVec3Range(geometry.positions, firstVertex, vertexCount, positions, posComps);
-
-                const std::vector<float> texcoords = readAccessorFloats(model, tc0Acc);
-                fillUvRange(geometry.uv0, firstVertex, vertexCount, texcoords, accessorCompCount(model, tc0Acc), true);
-
-                for (const auto& [name, acc] : extraAttrs) {
-                    storeVertexAttribute(geometry, firstVertex, vertexCount, model, name, acc);
-                }
-
-                for (uint32_t v = 0; v < vertexCount; ++v) {
-                    geometry.packVertex(firstVertex + v);
-                }
-
-                std::vector<uint32_t> srcIndices = readAccessorIndices(model, prim.indices);
-                if (srcIndices.empty()) {
-                    srcIndices.resize(vertexCount);
-                    for (uint32_t v = 0; v < vertexCount; ++v) {
-                        srcIndices[v] = v;
-                    }
-                }
-                const std::vector<uint32_t> triIndices = toTriangleIndices(mode, srcIndices);
-                if (triIndices.empty()) {
-                    log_info(std::format("glTF mesh[{}].prim[{}] skipped: no triangles", mi, pi), "AssetLoader");
-                    continue;
-                }
-
-                const uint32_t firstIndex = static_cast<uint32_t>(geometry.indices.size());
-                geometry.indices.reserve(firstIndex + triIndices.size());
-                for (const uint32_t local : triIndices) {
-                    geometry.indices.push_back(firstVertex + local);
-                }
-                const uint32_t indexCount = static_cast<uint32_t>(triIndices.size());
-
-                const uint32_t morphFirst = static_cast<uint32_t>(geometry.morphTargets.size());
-                storeMorphTargets(geometry, model, prim, vertexCount);
-                const uint32_t morphCount = static_cast<uint32_t>(geometry.morphTargets.size()) - morphFirst;
-
-                uint32_t materialId = ctx.materials.defaultMaterialId();
-                if (prim.material >= 0 && static_cast<uint32_t>(prim.material) < ctx.materialIds.size()) {
-                    materialId = ctx.materialIds[static_cast<uint32_t>(prim.material)];
-                }
-
-                PrimitiveDraw draw{};
-                draw.materialId = materialId;
-                if (const GpuMaterial* gpu = ctx.materials.scratchMaterial(materialId)) {
-                    draw.albedoTex = gpu->baseColorTex;
-                    draw.albedoSamp = gpu->baseColorSamp;
-                }
-                draw.firstVertex = firstVertex;
-                draw.vertexCount = vertexCount;
-                draw.firstIndex = firstIndex;
-                draw.indexCount = indexCount;
-                draw.morphFirst = morphCount > 0 ? morphFirst : 0;
-                draw.morphCount = morphCount;
-                draw.morphWeightFirst = mesh.weights_count > 0 ? morphWeightFirst : 0;
-                draw.meshlets = geometry.buildMeshletsForRange(firstIndex, indexCount);
-                geometry.primitiveDraws.push_back(draw);
-                ++storedPrimitives;
-
-                log_info(std::format("glTF mesh[{}].prim[{}] POSITION verts={} TEXCOORD_0 floats={} indices={} stored={}",
-                                     mi, pi, vertexCount, texcoords.size(), indexCount, indexCount),
-                         "AssetLoader");
-            }
+        uint32_t storedPrimitives = 0;
+        for (const GltfMeshInstance& instance : instances) {
+            storedPrimitives += appendGltfMesh(ctx, model, instance.mesh, makeNodeXform(instance.world));
         }
 
         log_info(std::format("glTF geometry appended: verts={} indices={} primitives={}", geometry.vertices.size(),
@@ -1325,6 +1620,18 @@ namespace
                  "AssetLoader");
         return storedPrimitives;
     }
+
+    struct Tg3ParseGuard
+    {
+        tg3_model& model;
+        tg3_error_stack& errors;
+
+        ~Tg3ParseGuard()
+        {
+            tg3_model_free(&model);
+            tg3_error_stack_free(&errors);
+        }
+    };
 
 } // anonymous namespace
 
@@ -1405,7 +1712,7 @@ void AssetsLoader::loadModel(std::string modelPath, glm::vec3 xyz)
         return;
     }
 
-    assert(false && "Unsupported model format");
+    log_error(std::format("Unsupported model format: {}", pathString), "AssetLoader");
 }
 
 bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
@@ -1419,6 +1726,8 @@ bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
     tg3_model model{};
     tg3_error_stack errors;
     tg3_error_stack_init(&errors);
+    // frees on every exit, including exceptions thrown mid-load
+    const Tg3ParseGuard parseGuard{.model = model, .errors = errors};
 
     tg3_parse_options opts;
     tg3_parse_options_init(&opts);
@@ -1444,8 +1753,6 @@ bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
         } else {
             log_error(std::format("Failed to parse glTF: rc={}", static_cast<int>(rc)), "AssetLoader");
         }
-        tg3_model_free(&model);
-        tg3_error_stack_free(&errors);
         return false;
     }
 
@@ -1497,9 +1804,6 @@ bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
     log_info(std::format("Model loaded (glTF): {} | vertices: {} | indices: {} | total meshlets: {}", modelPath,
                          geometryStore.vertices.size(), geometryStore.indices.size(), geometryStore.meshlets.size()),
              "AssetLoader");
-
-    tg3_model_free(&model);
-    tg3_error_stack_free(&errors);
     return true;
 }
 
@@ -1564,7 +1868,7 @@ bool AssetsLoader::loadObjModel(const std::string& modelPath, glm::vec3 xyz)
     draw.vertexCount = static_cast<uint32_t>(geometryStore.positions.size()) - firstVertex;
     draw.firstIndex = firstIndex;
     draw.indexCount = indexCount;
-    draw.meshlets = geometryStore.buildMeshletsForRange(firstIndex, indexCount);
+    draw.meshlets = geometryStore.buildMeshletsForRange(firstIndex, indexCount, firstVertex, draw.vertexCount);
     geometryStore.primitiveDraws.push_back(draw);
 
     const Transform transform{.position = glm::vec3{xyz[0], xyz[1], xyz[2]}};

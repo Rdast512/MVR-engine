@@ -47,7 +47,9 @@ public:
     // pack vertices[v] from positions/colors/uv0
     void packVertex(uint32_t v);
 
-    [[nodiscard]] MeshletDraw buildMeshletsForRange(uint32_t firstIndex, uint32_t indexCount);
+    // indices in [firstIndex, +indexCount) must reference vertices in [firstVertex, +vertexCount)
+    [[nodiscard]] MeshletDraw buildMeshletsForRange(uint32_t firstIndex, uint32_t indexCount, uint32_t firstVertex,
+                                                    uint32_t vertexCount);
 
     // drop load scratch after GPU append; catalog (primitiveDraws, morphTargets, weights, aux) stays
     void clearScratch();
