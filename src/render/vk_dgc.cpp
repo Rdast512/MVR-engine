@@ -16,9 +16,8 @@
 
 namespace
 {
-    // Packed size is 84 (72-byte push + 12-byte draw). Sequence N then starts at 84*N,
-    // which is not 8-byte aligned, so uint64 BDAs in pushData are misaligned for N>=1.
-    // Room (1 sequence) works; Sponza (~100 sequences) hits this and GPU-AV/submit dies.
+    // packed size is 84 (72-byte push + 12-byte draw); 16-byte stride keeps the
+    // uint64 BDAs in pushData 8-byte aligned for every sequence
     struct alignas(16) MeshDgcSequence
     {
         MeshPushData pushData;
@@ -225,6 +224,9 @@ void DeviceGeneratedCommands::allocatePreprocessBuffer(uint32_t frameSlot, uint3
     allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     allocInfo.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     allocInfo.priority = 0.75f;
+    // NVIDIA 616.92 reports 256 B alignment, but a suballocated preprocess buffer at a non-4 KiB
+    // offset faults (WriteInvalid @ VA 0) once a frame exceeds 96 sequences; own block = offset 0
+    allocInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
 
     VkBuffer rawBuffer{};
     VmaAllocation memory = nullptr;
