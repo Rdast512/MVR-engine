@@ -317,15 +317,13 @@ void ResourceManager::updateUniformBuffers(uint32_t currentImage)
     ensureInstanceCapacity(objectStorage.size());
     writeFrameRoot(currentImage);
 
-    const glm::mat4 meshPreRotation =
-        glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
     // write-combined memory: whole rows, never read back
     auto* instances = static_cast<GpuObjectUB*>(instanceUbos[currentImage].mapped);
     for (EntityId id = 0; id < objectStorage.size(); ++id) {
         if ((objectStorage.flags[id] & EntityFlag::Active) == 0) {
             continue;
         }
-        const glm::mat4 model = computeModelMatrix(objectStorage.transforms[id]) * meshPreRotation;
+        const glm::mat4 model = computeModelMatrix(objectStorage.transforms[id]);
         instances[id] = GpuObjectUB{
             .modelMatrix = model,
             .prevModelMatrix = objectStorage.prevModelMatrices[id],

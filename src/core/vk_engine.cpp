@@ -315,10 +315,8 @@ void Engine::run()
                 }
             }
 
-            // upload camera for this in-flight slot before submit
             {
                 ZoneScopedN("DrawFrame");
-                camera->updateCameraData(renderer->currentFrame);
                 renderer->drawFrame();
             }
         } else {

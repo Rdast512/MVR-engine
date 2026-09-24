@@ -31,6 +31,17 @@ namespace
     constexpr vk::ShaderStageFlags kDgcMeshStages =
         vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eFragment;
 
+    // NVIDIA 616.92: one execute with >= 96 sequences drops/garbles sequences nondeterministically
+    // (and faults with a non-4 KiB preprocess offset); split into chunks well below that
+    constexpr uint32_t kMaxSequencesPerExecute = 64;
+    // each chunk's preprocess region starts page-aligned; reported 256 B alignment is not enough
+    constexpr vk::DeviceSize kPreprocessChunkAlignment = 4096;
+
+    constexpr vk::DeviceSize alignUp(vk::DeviceSize size, vk::DeviceSize alignment)
+    {
+        return (size + alignment - 1) / alignment * alignment;
+    }
+
     uint32_t maxMeshGroupsX(const HardwareCapabilities& capabilities)
     {
         const uint32_t countX = capabilities.meshShader.maxMeshWorkGroupCount[0];
@@ -199,17 +210,20 @@ void DeviceGeneratedCommands::allocateSequenceBuffer(uint32_t frameSlot, uint32_
 
 void DeviceGeneratedCommands::allocatePreprocessBuffer(uint32_t frameSlot, uint32_t capacity)
 {
-    const vk::DeviceSize preprocessSize = queryPreprocessSize(capacity);
-    if (preprocessSize == 0) {
+    const vk::DeviceSize chunkSize = queryPreprocessSize(std::min(capacity, kMaxSequencesPerExecute));
+    if (chunkSize == 0) {
         preprocessSizes[frameSlot] = 0;
+        preprocessChunkStrides[frameSlot] = 0;
         preprocessAddresses[frameSlot] = 0;
         return;
     }
+    const vk::DeviceSize chunkStride = alignUp(chunkSize, kPreprocessChunkAlignment);
+    const uint32_t chunkCount = (capacity + kMaxSequencesPerExecute - 1) / kMaxSequencesPerExecute;
+    const vk::DeviceSize preprocessSize = chunkStride * chunkCount;
 
     vk::raii::Buffer buffer({});
     VmaAllocation memory = nullptr;
-    // NVIDIA 616.92 reports 256 B alignment, but a suballocated preprocess buffer at a non-4 KiB
-    // offset faults (WriteInvalid @ VA 0) once a frame exceeds 96 sequences; own block = offset 0
+    // own block puts the buffer at offset 0, so every chunk region is 4 KiB aligned
     createBuffer(preprocessSize,
                  vk::BufferUsageFlagBits2::ePreprocessBufferEXT | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                  vk::MemoryPropertyFlagBits::eDeviceLocal, buffer, memory, resourceManager.allocator.allocator,
@@ -220,6 +234,7 @@ void DeviceGeneratedCommands::allocatePreprocessBuffer(uint32_t frameSlot, uint3
     preprocessMemory[frameSlot] = memory;
     preprocessAddresses[frameSlot] = device.vkdevice.getBufferAddress({.buffer = *preprocessBuffers[frameSlot]});
     preprocessSizes[frameSlot] = preprocessSize;
+    preprocessChunkStrides[frameSlot] = chunkStride;
     tracyResourceAlloc(static_cast<VkBuffer>(*preprocessBuffers[frameSlot]), static_cast<size_t>(preprocessSize),
                        "GPU/DgcPreprocess");
 }
@@ -239,6 +254,7 @@ void DeviceGeneratedCommands::destroyFrameResources(uint32_t frameSlot)
                      "GPU/DgcPreprocess");
     preprocessAddresses[frameSlot] = 0;
     preprocessSizes[frameSlot] = 0;
+    preprocessChunkStrides[frameSlot] = 0;
 }
 
 void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot)
@@ -314,20 +330,29 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot)
 
 void DeviceGeneratedCommands::fillGeneratedCommandsInfo(vk::GeneratedCommandsInfoEXT& info,
                                                         vk::GeneratedCommandsPipelineInfoEXT& pipelineInfo,
-                                                        uint32_t frameSlot) const
+                                                        uint32_t frameSlot, uint32_t chunk) const
 {
+    const uint32_t firstSequence = chunk * kMaxSequencesPerExecute;
+    const uint32_t chunkSequences = std::min(sequenceCount - firstSequence, kMaxSequencesPerExecute);
+
     pipelineInfo.pipeline = *pipeline.pipeline;
     info.pNext = &pipelineInfo;
     info.shaderStages = shaderStages;
     info.indirectExecutionSet = nullptr;
     info.indirectCommandsLayout = *layout;
-    info.indirectAddress = sequenceAddresses[frameSlot];
-    info.indirectAddressSize = static_cast<vk::DeviceSize>(sequenceCapacity[frameSlot]) * sizeof(MeshDgcSequence);
-    info.preprocessAddress = preprocessAddresses[frameSlot];
-    info.preprocessSize = preprocessSizes[frameSlot];
-    info.maxSequenceCount = sequenceCount;
+    info.indirectAddress = sequenceAddresses[frameSlot] + firstSequence * sizeof(MeshDgcSequence);
+    info.indirectAddressSize = static_cast<vk::DeviceSize>(chunkSequences) * sizeof(MeshDgcSequence);
+    info.preprocessAddress =
+        preprocessAddresses[frameSlot] == 0 ? 0 : preprocessAddresses[frameSlot] + chunk * preprocessChunkStrides[frameSlot];
+    info.preprocessSize = preprocessChunkStrides[frameSlot];
+    info.maxSequenceCount = chunkSequences;
     info.sequenceCountAddress = 0;
     info.maxDrawCount = 1;
+}
+
+uint32_t DeviceGeneratedCommands::chunkCount() const
+{
+    return (sequenceCount + kMaxSequencesPerExecute - 1) / kMaxSequencesPerExecute;
 }
 
 void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd) const
@@ -345,10 +370,13 @@ void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd) con
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &hostBarrier});
 
-    vk::GeneratedCommandsPipelineInfoEXT pipelineInfo{};
-    vk::GeneratedCommandsInfoEXT info{};
-    fillGeneratedCommandsInfo(info, pipelineInfo, recordedFrame);
-    cmd.preprocessGeneratedCommandsEXT(info, *cmd);
+    // chunks use disjoint preprocess regions, so no barrier is needed between them
+    for (uint32_t chunk = 0; chunk < chunkCount(); ++chunk) {
+        vk::GeneratedCommandsPipelineInfoEXT pipelineInfo{};
+        vk::GeneratedCommandsInfoEXT info{};
+        fillGeneratedCommandsInfo(info, pipelineInfo, recordedFrame, chunk);
+        cmd.preprocessGeneratedCommandsEXT(info, *cmd);
+    }
 
     const vk::MemoryBarrier2 preprocessBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eCommandPreprocessEXT,
@@ -366,8 +394,10 @@ void DeviceGeneratedCommands::recordExecute(vk::raii::CommandBuffer& cmd) const
         return;
     }
 
-    vk::GeneratedCommandsPipelineInfoEXT pipelineInfo{};
-    vk::GeneratedCommandsInfoEXT info{};
-    fillGeneratedCommandsInfo(info, pipelineInfo, recordedFrame);
-    cmd.executeGeneratedCommandsEXT(explicitPreprocess ? vk::True : vk::False, info);
+    for (uint32_t chunk = 0; chunk < chunkCount(); ++chunk) {
+        vk::GeneratedCommandsPipelineInfoEXT pipelineInfo{};
+        vk::GeneratedCommandsInfoEXT info{};
+        fillGeneratedCommandsInfo(info, pipelineInfo, recordedFrame, chunk);
+        cmd.executeGeneratedCommandsEXT(explicitPreprocess ? vk::True : vk::False, info);
+    }
 }

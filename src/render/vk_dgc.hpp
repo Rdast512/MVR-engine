@@ -39,7 +39,9 @@ private:
     void allocatePreprocessBuffer(uint32_t frameSlot, uint32_t capacity);
     [[nodiscard]] vk::DeviceSize queryPreprocessSize(uint32_t capacity) const;
     void fillGeneratedCommandsInfo(vk::GeneratedCommandsInfoEXT& info,
-                                   vk::GeneratedCommandsPipelineInfoEXT& pipelineInfo, uint32_t frameSlot) const;
+                                   vk::GeneratedCommandsPipelineInfoEXT& pipelineInfo, uint32_t frameSlot,
+                                   uint32_t chunk) const;
+    [[nodiscard]] uint32_t chunkCount() const;
 
     Device& device;
     ResourceManager& resourceManager;
@@ -63,4 +65,6 @@ private:
     std::array<VmaAllocation, MAX_FRAMES_IN_FLIGHT> preprocessMemory = {nullptr, nullptr};
     std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> preprocessAddresses = {0, 0};
     std::array<vk::DeviceSize, MAX_FRAMES_IN_FLIGHT> preprocessSizes = {0, 0};
+    // byte stride between per-execute chunk regions inside the preprocess buffer
+    std::array<vk::DeviceSize, MAX_FRAMES_IN_FLIGHT> preprocessChunkStrides = {0, 0};
 };

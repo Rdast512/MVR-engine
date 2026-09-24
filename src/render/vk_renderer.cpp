@@ -56,6 +56,9 @@ void Renderer::drawFrame()
             ;
     }
 
+    // after the fence: this slot's camera buffer is no longer read by the GPU
+    camera.updateCameraData(currentFrame);
+
     vk::Result result{};
     uint32_t imageIndex{0};
     {
