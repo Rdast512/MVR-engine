@@ -70,7 +70,7 @@ private:
     // Projection parameters
     float fov = glm::radians(45.0f); // vertical FOV
     float nearPlane = 0.1f;
-    float farPlane = 20.0f;
+    float farPlane = 1000.0f;
     bool projDirty = true;
 
     static constexpr float kPitchLimit = glm::radians(89.0f);

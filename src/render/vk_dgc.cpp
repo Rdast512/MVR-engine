@@ -383,6 +383,7 @@ void DeviceGeneratedCommands::fillGeneratedCommandsInfo(vk::GeneratedCommandsInf
                                                         vk::GeneratedCommandsPipelineInfoEXT& pipelineInfo,
                                                         uint32_t frameSlot) const
 {
+    log_info(std::format("DGC fillGeneratedCommandsInfo frame {} sequenceCount={}", frameSlot, sequenceCount), "DGC");
     pipelineInfo.pipeline = *pipeline.pipeline;
     info.pNext = &pipelineInfo;
     info.shaderStages = shaderStages;
