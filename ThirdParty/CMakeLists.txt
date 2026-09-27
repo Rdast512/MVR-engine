@@ -86,7 +86,7 @@ target_link_libraries(VulkanMemoryAllocator INTERFACE Vulkan::Vulkan)
 # ------------------------------------------------------------------------------
 # 1. Slang (Manual Download & Extract)
 # ------------------------------------------------------------------------------
-set(SLANG_TAG "v2026.14.1")
+set(SLANG_TAG "v2026.18.3")
 string(REGEX REPLACE "^v" "" SLANG_VERSION "${SLANG_TAG}")
 set(SLANG_RELEASE_URL "https://github.com/shader-slang/slang/releases/download")
 
@@ -198,14 +198,14 @@ set(MESHOPT_INSTALL OFF CACHE BOOL "" FORCE) # TODO explore this
 # 2. GLM (Header Only)
 engine_fetch_declare(glm
         GIT_REPOSITORY https://github.com/g-truc/glm.git
-        GIT_TAG 1.0.2
+        GIT_TAG 1.0.3
         GIT_SHALLOW TRUE
 )
 
 # 3. SDL3
 engine_fetch_declare(SDL3
         GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-        GIT_TAG release-3.4.12
+        GIT_TAG release-3.4.16
         GIT_SHALLOW TRUE
 )
 
@@ -228,7 +228,7 @@ engine_fetch_declare(spdlog
 # our static imgui target. Feature toggle is Constants.h ENGINE_ENABLE_IMGUI.
 engine_fetch_declare(ImGui
         GIT_REPOSITORY https://github.com/ocornut/imgui.git
-        GIT_TAG v1.92.8
+        GIT_TAG v1.92.9b
         GIT_SHALLOW TRUE
         SOURCE_SUBDIR skip-add-subdirectory
 )
@@ -250,14 +250,14 @@ engine_fetch_declare(KTXSoftware
 # 12. mimalloc
 engine_fetch_declare(mimalloc
         GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
-        GIT_TAG v3.3.2
+        GIT_TAG v3.5.3
         GIT_SHALLOW TRUE
 )
 
 # 14. meshoptimizer (mesh optimization / clustering for GPU-driven rendering)
 engine_fetch_declare(meshoptimizer
         GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
-        GIT_TAG v1.2
+        GIT_TAG v1.3
         GIT_SHALLOW TRUE
 )
 
@@ -292,6 +292,25 @@ foreach (_miCfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
                 ARCHIVE_OUTPUT_DIRECTORY_${_miCfg} ${CMAKE_BINARY_DIR}
         )
 endforeach ()
+# clang64 is UCRT, but mimalloc defines MI_MINGW_UCRT64 only for MSYSTEM=UCRT64.
+# Without it, __MINGW32__ keeps the msvcrt constructor and the TLS callback.
+# Both call _mi_auto_process_init; the second asserts mi_out_default == NULL.
+if (WIN32 AND NOT "$ENV{MSYSTEM}" STREQUAL "UCRT64")
+        include(CheckCSourceCompiles)
+        set(CMAKE_REQUIRED_QUIET ON)
+        check_c_source_compiles([[
+#include <_mingw.h>
+#ifndef _UCRT
+#error not ucrt
+#endif
+int main(void) { return 0; }
+]] ENGINE_MIMALLOC_UCRT)
+        unset(CMAKE_REQUIRED_QUIET)
+        if (ENGINE_MIMALLOC_UCRT)
+                target_compile_definitions(mimalloc PRIVATE MI_MINGW_UCRT64=1)
+                message(STATUS "mimalloc: MI_MINGW_UCRT64 (MSYSTEM='$ENV{MSYSTEM}')")
+        endif ()
+endif ()
 add_library(ThirdParty::mimalloc ALIAS mimalloc)
 message(STATUS "mimalloc: shared override MI_TRACK_ASAN=${MI_TRACK_ASAN}")
 

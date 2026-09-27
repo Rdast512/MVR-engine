@@ -10,6 +10,8 @@ set(UTIL_SOURCES
 add_library(engine_mi_new_delete OBJECT mi_new_delete.cpp)
 set_target_properties(engine_mi_new_delete PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set_source_files_properties(mi_new_delete.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+# also linked into uninstrumented fmt/spdlog; profile hooks would need the runtime
+target_compile_options(engine_mi_new_delete PRIVATE -fno-profile-instr-generate)
 target_link_libraries(engine_mi_new_delete PRIVATE ThirdParty::mimalloc)
 
 add_library(engine_util SHARED ${UTIL_SOURCES})

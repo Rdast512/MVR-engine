@@ -47,13 +47,14 @@ target_compile_options(engine_build_config INTERFACE
     $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-realloc>
     $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-free>
 )
-target_link_options(engine_build_config INTERFACE
+set(ENGINE_MI_WRAP_LINK_OPTIONS
     "LINKER:--wrap=malloc"
     "LINKER:--wrap=calloc"
     "LINKER:--wrap=realloc"
     "LINKER:--wrap=free"
     "LINKER:--wrap=aligned_alloc"
 )
+target_link_options(engine_build_config INTERFACE ${ENGINE_MI_WRAP_LINK_OPTIONS})
 
 add_subdirectory(util)
 add_subdirectory(core)
@@ -88,6 +89,12 @@ add_dependencies(engine Shaders)
 
 foreach (_miTarget engine_util engine_core engine_render engine_scene engine_postprocessing engine_runtime engine)
     target_link_libraries(${_miTarget} PRIVATE engine_mi_new_delete)
+endforeach ()
+
+# fmt::detail::allocate mallocs inside libfmt while basic_memory_buffer frees inline in the caller
+foreach (_miTarget fmt spdlog)
+    target_link_options(${_miTarget} PRIVATE ${ENGINE_MI_WRAP_LINK_OPTIONS})
+    target_link_libraries(${_miTarget} PRIVATE engine_mi_new_delete ThirdParty::mimalloc)
 endforeach ()
 
 if(WIN32)
