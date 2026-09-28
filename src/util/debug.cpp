@@ -5,13 +5,16 @@
 #include "debug.hpp"
 
 #include <cstdlib>
+#if ENGINE_USE_MIMALLOC
 #include <mimalloc.h>
+#endif
 #include <string>
 #include <string_view>
 #include <vector>
 
 bool checkMimallocHeap()
 {
+#if ENGINE_USE_MIMALLOC
 	void* cHeap = std::malloc(64);
 	const bool cOk = cHeap != nullptr && mi_is_in_heap_region(cHeap);
 	std::free(cHeap);
@@ -23,6 +26,9 @@ bool checkMimallocHeap()
 	const std::vector<char> bytes(256);
 	const bool stlOk = !bytes.empty() && mi_is_in_heap_region(bytes.data());
 	return cOk && cxxOk && stlOk;
+#else
+	return true;
+#endif
 }
 
 namespace {

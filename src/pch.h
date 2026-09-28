@@ -45,5 +45,7 @@
 #include "tiny_obj_loader.h"
 #include "tiny_gltf_v3.h"
 #include "termcolor.hpp"
+#if ENGINE_USE_MIMALLOC
 #include "mimalloc.h"
+#endif
 #include "stb_image.h"

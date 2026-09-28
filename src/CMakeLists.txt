@@ -34,6 +34,7 @@ target_include_directories(engine_build_config INTERFACE ${CMAKE_SOURCE_DIR}/src
 target_include_directories(engine_build_config INTERFACE ${CMAKE_SOURCE_DIR}/src/static_headers)
 target_compile_definitions(engine_build_config INTERFACE
     $<$<NOT:$<CONFIG:Release>>:TRACY_ENABLE>
+    ENGINE_USE_MIMALLOC=$<BOOL:${ENGINE_USE_MIMALLOC}>
     ENGINE_SHADER_DIR="${ENGINE_SHADER_DIR_PATH}"
     ENGINE_MODELS_DIR="${ENGINE_MODELS_DIR_PATH}"
     ENGINE_TEXTURES_DIR="${ENGINE_TEXTURES_DIR_PATH}"
@@ -42,19 +43,25 @@ target_compile_options(engine_build_config INTERFACE
     $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang,GNU>:-Wall>
     $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang,GNU>:-Wextra>
     $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang,GNU>:-Wpedantic>
-    $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-malloc>
-    $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-calloc>
-    $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-realloc>
-    $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-free>
 )
-set(ENGINE_MI_WRAP_LINK_OPTIONS
-    "LINKER:--wrap=malloc"
-    "LINKER:--wrap=calloc"
-    "LINKER:--wrap=realloc"
-    "LINKER:--wrap=free"
-    "LINKER:--wrap=aligned_alloc"
-)
-target_link_options(engine_build_config INTERFACE ${ENGINE_MI_WRAP_LINK_OPTIONS})
+if (ENGINE_USE_MIMALLOC)
+    target_compile_options(engine_build_config INTERFACE
+        $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-malloc>
+        $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-calloc>
+        $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-realloc>
+        $<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-free>
+    )
+endif ()
+if (ENGINE_USE_MIMALLOC)
+    set(ENGINE_MI_WRAP_LINK_OPTIONS
+        "LINKER:--wrap=malloc"
+        "LINKER:--wrap=calloc"
+        "LINKER:--wrap=realloc"
+        "LINKER:--wrap=free"
+        "LINKER:--wrap=aligned_alloc"
+    )
+    target_link_options(engine_build_config INTERFACE ${ENGINE_MI_WRAP_LINK_OPTIONS})
+endif ()
 
 add_subdirectory(util)
 add_subdirectory(core)
@@ -83,19 +90,24 @@ target_precompile_headers(engine_runtime PRIVATE ${PCH_HEADER})
 
 add_executable(engine main.cpp)
 target_compile_definitions(engine PRIVATE ENGINE_LOG_DLL=\"app\")
-target_link_libraries(engine PRIVATE engine_runtime ThirdParty::mimalloc)
+target_link_libraries(engine PRIVATE engine_runtime)
+if (ENGINE_USE_MIMALLOC)
+    target_link_libraries(engine PRIVATE ThirdParty::mimalloc)
+endif ()
 target_precompile_headers(engine PRIVATE ${PCH_HEADER})
 add_dependencies(engine Shaders)
 
-foreach (_miTarget engine_util engine_core engine_render engine_scene engine_postprocessing engine_runtime engine)
-    target_link_libraries(${_miTarget} PRIVATE engine_mi_new_delete)
-endforeach ()
+if (ENGINE_USE_MIMALLOC)
+    foreach (_miTarget engine_util engine_core engine_render engine_scene engine_postprocessing engine_runtime engine)
+        target_link_libraries(${_miTarget} PRIVATE engine_mi_new_delete)
+    endforeach ()
 
-# fmt::detail::allocate mallocs inside libfmt while basic_memory_buffer frees inline in the caller
-foreach (_miTarget fmt spdlog)
-    target_link_options(${_miTarget} PRIVATE ${ENGINE_MI_WRAP_LINK_OPTIONS})
-    target_link_libraries(${_miTarget} PRIVATE engine_mi_new_delete ThirdParty::mimalloc)
-endforeach ()
+    # fmt::detail::allocate mallocs inside libfmt while basic_memory_buffer frees inline in the caller
+    foreach (_miTarget fmt spdlog)
+        target_link_options(${_miTarget} PRIVATE ${ENGINE_MI_WRAP_LINK_OPTIONS})
+        target_link_libraries(${_miTarget} PRIVATE engine_mi_new_delete ThirdParty::mimalloc)
+    endforeach ()
+endif ()
 
 if(WIN32)
     # Copy third-party DLLs needed at runtime next to the executable
@@ -104,8 +116,11 @@ if(WIN32)
         ktx
         fmt::fmt
         spdlog::spdlog
-        ThirdParty::mimalloc
     )
+
+    if (ENGINE_USE_MIMALLOC)
+        list(APPEND SHARED_LIBS_TO_COPY ThirdParty::mimalloc)
+    endif ()
 
     if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
         list(APPEND SHARED_LIBS_TO_COPY Tracy::TracyClient)
@@ -132,8 +147,11 @@ else()
         fmt::fmt
         spdlog::spdlog
         glm::glm
-        ThirdParty::mimalloc
     )
+
+    if (ENGINE_USE_MIMALLOC)
+        list(APPEND SHARED_LIBS_TO_COPY ThirdParty::mimalloc)
+    endif ()
 
     if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
         list(APPEND SHARED_LIBS_TO_COPY Tracy::TracyClient)

@@ -6,12 +6,11 @@
 #include "./util/debug.hpp"
 #include <cstdlib>
 #include <iostream>
+#if ENGINE_USE_MIMALLOC
 #include <mimalloc.h>
+#endif
 #include <vector>
 
-// TODO add support for GLTF and KTX2
-// TODO Pipeline cache
-// TODO (createVertexBuffer, createIndexBuffer, createTextureImage) are still using the "single-time command" pattern
 
 void CheckSTL() {
     std::cout << "--------------------------------------------------\n";
@@ -40,6 +39,7 @@ void CheckSTL() {
     std::cout << "--------------------------------------------------\n";
 }
 
+ #if ENGINE_USE_MIMALLOC
 static void requireMimalloc(const void* p, const char* what)
 {
     if (p == nullptr || !mi_is_in_heap_region(p)) {
@@ -47,8 +47,10 @@ static void requireMimalloc(const void* p, const char* what)
         std::abort();
     }
 }
+#endif
 
 int main() {
+#if ENGINE_USE_MIMALLOC
     (void)mi_version();
 
     void* direct = mi_malloc(64);
@@ -70,6 +72,7 @@ int main() {
         std::cerr << "mimalloc override failed: engine_util.dll\n";
         return EXIT_FAILURE;
     }
+#endif
 
     CheckSTL();
     try {

@@ -24,6 +24,7 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 option(ENABLE_SANITIZERS "ASan+UBSan in Debug (engine and third-party)" ON)
 option(ENGINE_ENABLE_COVERAGE "Clang source-based coverage in Debug (engine targets)" ON)
 option(ENGINE_UNITY_BUILD "UNITY_BUILD on engine libraries (not postprocessing)" OFF)
+option(ENGINE_USE_MIMALLOC "Use mimalloc for engine and third-party allocations" ON)
 
 if (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU")
   message(FATAL_ERROR "Unsupported compiler: ${CMAKE_CXX_COMPILER_ID}. This project targets Clang toolchains.")

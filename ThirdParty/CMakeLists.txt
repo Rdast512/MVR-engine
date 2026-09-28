@@ -171,7 +171,7 @@ set(MI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(MI_BUILD_OBJECT OFF CACHE BOOL "" FORCE)
 set(MI_BUILD_STATIC OFF CACHE BOOL "" FORCE)
 set(MI_BUILD_SHARED ON CACHE BOOL "" FORCE)
-set(MI_OVERRIDE ON CACHE BOOL "" FORCE)
+set(MI_OVERRIDE ${ENGINE_USE_MIMALLOC} CACHE BOOL "" FORCE)
 # C build emits a weak _ZSt15get_new_handlerv stub; ThinLTO + static libc++
 # promotes it to a strong duplicate of std::get_new_handler().
 set(MI_USE_CXX ON CACHE BOOL "" FORCE)
@@ -462,7 +462,7 @@ target_link_libraries(ThirdPartyLibs INTERFACE
         $<$<NOT:$<CONFIG:Release>>:Tracy::TracyClient>
         fmt::fmt
         imgui
-        ThirdParty::mimalloc
+        $<$<BOOL:${ENGINE_USE_MIMALLOC}>:ThirdParty::mimalloc>
         ThirdParty::meshoptimizer
         Taskflow::Taskflow
 )
@@ -470,29 +470,31 @@ target_link_libraries(ThirdPartyLibs INTERFACE
 # Link it to your interface so it gets the includes
 target_link_libraries(ThirdPartyImpl PUBLIC ThirdPartyLibs)
 
-# C/C++ single-header impls compiled here: bind heap to mimalloc, not CRT.
-target_compile_definitions(ThirdPartyImpl PRIVATE
-        STBI_MALLOC=mi_malloc
-        STBI_REALLOC=mi_realloc
-        STBI_FREE=mi_free
-        STBIW_MALLOC=mi_malloc
-        STBIW_REALLOC=mi_realloc
-        STBIW_FREE=mi_free
-        TINYGLTF3_MALLOC=mi_malloc
-        TINYGLTF3_REALLOC=mi_realloc
-        TINYGLTF3_FREE=mi_free
-        TINYGLTF_JSON_MALLOC=mi_malloc
-        TINYGLTF_JSON_REALLOC=mi_realloc
-        TINYGLTF_JSON_FREE=mi_free
-)
-target_compile_options(ThirdPartyImpl PRIVATE
-        -include
-        mimalloc.h
-        -fno-builtin-malloc
-        -fno-builtin-calloc
-        -fno-builtin-realloc
-        -fno-builtin-free
-)
+if (ENGINE_USE_MIMALLOC)
+        # C/C++ single-header impls compiled here: bind heap to mimalloc, not CRT.
+        target_compile_definitions(ThirdPartyImpl PRIVATE
+                STBI_MALLOC=mi_malloc
+                STBI_REALLOC=mi_realloc
+                STBI_FREE=mi_free
+                STBIW_MALLOC=mi_malloc
+                STBIW_REALLOC=mi_realloc
+                STBIW_FREE=mi_free
+                TINYGLTF3_MALLOC=mi_malloc
+                TINYGLTF3_REALLOC=mi_realloc
+                TINYGLTF3_FREE=mi_free
+                TINYGLTF_JSON_MALLOC=mi_malloc
+                TINYGLTF_JSON_REALLOC=mi_realloc
+                TINYGLTF_JSON_FREE=mi_free
+        )
+        target_compile_options(ThirdPartyImpl PRIVATE
+                -include
+                mimalloc.h
+                -fno-builtin-malloc
+                -fno-builtin-calloc
+                -fno-builtin-realloc
+                -fno-builtin-free
+        )
+endif ()
 
 
 add_library(ThirdParty::all ALIAS ThirdPartyLibs)
