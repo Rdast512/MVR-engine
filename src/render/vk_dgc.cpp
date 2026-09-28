@@ -209,40 +209,23 @@ void DeviceGeneratedCommands::allocatePreprocessBuffer(uint32_t frameSlot, uint3
         return;
     }
 
-    const vk::BufferUsageFlags2CreateInfo usage2{
-        .usage = vk::BufferUsageFlagBits2::ePreprocessBufferEXT | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-    };
-    const vk::BufferCreateInfo bufferInfo{
-        .pNext = &usage2,
-        .size = preprocessSize,
-        .sharingMode = vk::SharingMode::eConcurrent,
-        .queueFamilyIndexCount = static_cast<uint32_t>(device.queueFamilyIndices.size()),
-        .pQueueFamilyIndices = device.queueFamilyIndices.data(),
-    };
-
-    VmaAllocationCreateInfo allocInfo{};
-    allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    allocInfo.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    allocInfo.priority = 0.75f;
+    vk::raii::Buffer buffer({});
+    VmaAllocation memory = nullptr;
     // NVIDIA 616.92 reports 256 B alignment, but a suballocated preprocess buffer at a non-4 KiB
     // offset faults (WriteInvalid @ VA 0) once a frame exceeds 96 sequences; own block = offset 0
-    allocInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    createBuffer(preprocessSize,
+                 vk::BufferUsageFlagBits2::ePreprocessBufferEXT | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal, buffer, memory, resourceManager.allocator.allocator,
+                 device.vkdevice, device.queueFamilyIndices, std::format("DgcPreprocessMemory_{}", frameSlot),
+                 VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
 
-    VkBuffer rawBuffer{};
-    VmaAllocation memory = nullptr;
-    if (vmaCreateBuffer(resourceManager.allocator.allocator, &static_cast<const VkBufferCreateInfo&>(bufferInfo),
-                        &allocInfo, &rawBuffer, &memory, nullptr) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to allocate DGC preprocess buffer");
-    }
-
-    preprocessBuffers[frameSlot] = vk::raii::Buffer(device.vkdevice, rawBuffer);
+    preprocessBuffers[frameSlot] = std::move(buffer);
     preprocessMemory[frameSlot] = memory;
     preprocessAddresses[frameSlot] = device.vkdevice.getBufferAddress({.buffer = *preprocessBuffers[frameSlot]});
     preprocessSizes[frameSlot] = preprocessSize;
-    vmaSetAllocationName(resourceManager.allocator.allocator, memory,
-                         std::format("DgcPreprocessMemory_{}", frameSlot).c_str());
     setDebugName(device.vkdevice, preprocessBuffers[frameSlot], std::format("DgcPreprocess_{}", frameSlot));
-    tracyResourceAlloc(rawBuffer, static_cast<size_t>(preprocessSize), "GPU/DgcPreprocess");
+    tracyResourceAlloc(static_cast<VkBuffer>(*preprocessBuffers[frameSlot]), static_cast<size_t>(preprocessSize),
+                       "GPU/DgcPreprocess");
 }
 
 void DeviceGeneratedCommands::destroyFrameResources(uint32_t frameSlot)
@@ -383,7 +366,7 @@ void DeviceGeneratedCommands::fillGeneratedCommandsInfo(vk::GeneratedCommandsInf
                                                         vk::GeneratedCommandsPipelineInfoEXT& pipelineInfo,
                                                         uint32_t frameSlot) const
 {
-    log_info(std::format("DGC fillGeneratedCommandsInfo frame {} sequenceCount={}", frameSlot, sequenceCount), "DGC");
+    // log_info(std::format("DGC fillGeneratedCommandsInfo frame {} sequenceCount={}", frameSlot, sequenceCount), "DGC");
     pipelineInfo.pipeline = *pipeline.pipeline;
     info.pNext = &pipelineInfo;
     info.shaderStages = shaderStages;
