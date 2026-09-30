@@ -148,7 +148,7 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneTransitionToRender, *cmd, "GPU_TransitionToRender", gpuTrace);
 #endif
-        transitionImageLayout(&cmd, swapChain.swapChainImages[imageIndex], 1, vk::ImageLayout::eUndefined,
+        transitionImageLayout(&cmd, swapChain.swapChainImages[imageIndex], vk::ImageLayout::eUndefined,
                               vk::ImageLayout::eColorAttachmentOptimal, colorRange, VK_QUEUE_FAMILY_IGNORED,
                               VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eTopOfPipe,
                               vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eNone,
@@ -159,7 +159,7 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
     // (BestPractices-NVIDIA-ClearColor-NotCompressed). Alpha 1.0 blocked compression.
     const vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 0.0f);
     const vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
-    vk::RenderingAttachmentInfo colorAttachmentInfo = {.imageView = resourceManager.colorImageView,
+    vk::RenderingAttachmentInfo colorAttachmentInfo = {.imageView = resourceManager.colorAttachment.view,
                                                        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
                                                        .resolveMode = vk::ResolveModeFlagBits::eAverage,
                                                        .resolveImageView = swapChain.swapChainImageViews[imageIndex],
@@ -167,7 +167,7 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
                                                        .loadOp = vk::AttachmentLoadOp::eClear,
                                                        .storeOp = vk::AttachmentStoreOp::eStore,
                                                        .clearValue = clearColor};
-    vk::RenderingAttachmentInfo depthAttachmentInfo = {.imageView = resourceManager.depthImageView,
+    vk::RenderingAttachmentInfo depthAttachmentInfo = {.imageView = resourceManager.depthAttachment.view,
                                                        .imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
                                                        .loadOp = vk::AttachmentLoadOp::eClear,
                                                        .storeOp = vk::AttachmentStoreOp::eDontCare,
@@ -225,7 +225,7 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneTransitionToPresent, *cmd, "GPU_TransitionToPresent", gpuTrace);
 #endif
-        transitionImageLayout(&cmd, swapChain.swapChainImages[imageIndex], 1, vk::ImageLayout::eColorAttachmentOptimal,
+        transitionImageLayout(&cmd, swapChain.swapChainImages[imageIndex], vk::ImageLayout::eColorAttachmentOptimal,
                               vk::ImageLayout::ePresentSrcKHR, colorRange, VK_QUEUE_FAMILY_IGNORED,
                               VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eColorAttachmentOutput,
                               vk::PipelineStageFlagBits2::eBottomOfPipe, vk::AccessFlagBits2::eColorAttachmentWrite,

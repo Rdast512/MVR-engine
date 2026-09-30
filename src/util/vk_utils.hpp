@@ -11,7 +11,6 @@
 void transitionImageLayout(
     vk::raii::CommandBuffer* commandBuffer,
     vk::Image image,
-    uint32_t mipLevels,
     vk::ImageLayout oldLayout,
     vk::ImageLayout newLayout,
     const vk::ImageSubresourceRange& subresourceRange = {
@@ -36,3 +35,14 @@ void createBuffer(
     const std::vector<uint32_t>& queueFamilyIndices,
     std::string_view memoryDebugBaseName = "ResourceBufferMemory",
     VmaAllocationCreateFlags extraAllocationFlags = 0);
+
+// Ends a one-time command buffer, submits it and blocks until the queue drains.
+void submitAndWait(vk::raii::CommandBuffer& commandBuffer, const vk::raii::Queue& queue);
+
+// Frees a VMA-backed buffer / image; no-op when allocation is null.
+// Explicit vmaMapMemory mappings must be unmapped first (VMA asserts on m_MapCount).
+// tracyName must match the pool used at alloc time; nullptr skips Tracy tracking.
+void destroyVmaBuffer(VmaAllocator allocator, vk::raii::Buffer& buffer, VmaAllocation& allocation,
+                      const char* tracyName = nullptr);
+void destroyVmaImage(VmaAllocator allocator, vk::raii::Image& image, VmaAllocation& allocation,
+                     const char* tracyName = nullptr);

@@ -42,16 +42,8 @@ DescriptorManager::~DescriptorManager()
         mappedSamplerHeapPtr = nullptr;
     }
 
-    if (resourceHeapMemory != nullptr) {
-        VkBuffer rawResourceHeap = resourceHeapBuffer.release();
-        vmaDestroyBuffer(allocator, rawResourceHeap, resourceHeapMemory);
-        resourceHeapMemory = nullptr;
-    }
-    if (samplerHeapMemory != nullptr) {
-        VkBuffer rawSamplerHeap = samplerHeapBuffer.release();
-        vmaDestroyBuffer(allocator, rawSamplerHeap, samplerHeapMemory);
-        samplerHeapMemory = nullptr;
-    }
+    destroyVmaBuffer(allocator, resourceHeapBuffer, resourceHeapMemory);
+    destroyVmaBuffer(allocator, samplerHeapBuffer, samplerHeapMemory);
 }
 
 // New: perform descriptor-related initialization after construction

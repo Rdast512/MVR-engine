@@ -52,7 +52,6 @@ public:
     const vk::raii::Queue &graphicsQueue;
     const vk::raii::Queue &transferQueue;
     uint32_t graphicsQueueFamilyIndex;
-    uint32_t transferQueueFamilyIndex;
 
     std::unordered_map<std::string, TextureAsset> loadedTextures;
     std::vector<SamplerDesc> samplers;
@@ -64,13 +63,7 @@ private:
     // Resolve a path relative to the executable directory if it's a relative path
     [[nodiscard]] std::string resolvePath(std::string_view path);
 
-    vk::ImageCreateInfo createImage(uint32_t width, uint32_t height, uint32_t mipLevelsIn, vk::Format format,
-                     vk::ImageTiling tiling, vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties,
-                     vk::raii::Image &image, VmaAllocation &imageMemory,
-                     std::string_view memoryDebugBaseName = "TextureImageMemory");
-
     auto beginSingleTimeCommands(const vk::raii::Queue &queue) -> vk::raii::CommandBuffer;
-    void endSingleTimeCommands(vk::raii::CommandBuffer &commandBuffer, const vk::raii::Queue &queue);
     void generateMipmaps(vk::raii::Image &image, vk::Format imageFormat, int32_t texWidth, int32_t texHeight,
                          uint32_t mipLevels);
 

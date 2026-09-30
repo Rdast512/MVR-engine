@@ -179,6 +179,12 @@ public:
     uint32_t graphicsIndex = 0; ///< Queue family index of the graphics queue.
     uint32_t presentIndex = 0; ///< Queue family index of the present queue.
 
+    /// True when transfer work has its own queue family (separate pool / command buffers).
+    [[nodiscard]] bool hasDedicatedTransferQueue() const noexcept
+    {
+        return transferIndex != UINT32_MAX && transferIndex != graphicsIndex;
+    }
+
     HardwareCapabilities capabilities =
         HardwareCapabilities{}; ///< Cached hardware capability support flags (e.g., ray-tracing, mesh shaders).
     DescriptorBindingMode descriptorBindingMode =

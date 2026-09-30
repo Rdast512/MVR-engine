@@ -78,6 +78,29 @@ public:
         nameAllocation(allocation, allocationDebugBaseName);
     }
 
+    // Optimal-tiling single-layer 2D image with exclusive sharing (only the graphics queue touches images)
+    void createImage2D(uint32_t width, uint32_t height, uint32_t mipLevels, vk::SampleCountFlagBits samples,
+                       vk::Format format, vk::ImageUsageFlags usage, vk::raii::Image& image,
+                       VmaAllocation& allocation, std::string_view allocationDebugBaseName) const
+    {
+        const vk::ImageCreateInfo imageInfo{.imageType = vk::ImageType::e2D,
+                                            .format = format,
+                                            .extent = {width, height, 1},
+                                            .mipLevels = mipLevels,
+                                            .arrayLayers = 1,
+                                            .samples = samples,
+                                            .tiling = vk::ImageTiling::eOptimal,
+                                            .usage = usage,
+                                            .sharingMode = vk::SharingMode::eExclusive};
+        constexpr vk::ImageUsageFlags kAttachmentUsage = vk::ImageUsageFlagBits::eColorAttachment |
+            vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eTransientAttachment;
+        VmaAllocationCreateInfo allocInfo{};
+        allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        // attachments demote last under memory pressure (NVIDIA memory priority best practice)
+        allocInfo.priority = (usage & kAttachmentUsage) ? 1.0f : 0.9f;
+        alocateImage(imageInfo, allocInfo, image, allocation, allocationDebugBaseName);
+    }
+
     // Non-copyable, non-movable: manages a unique VMA allocator handle.
     VkAllocator(const VkAllocator&) = delete;
     VkAllocator(VkAllocator&&) = delete;

@@ -11,7 +11,6 @@
 void transitionImageLayout(
     vk::raii::CommandBuffer* commandBuffer,
     vk::Image image,
-    uint32_t mipLevels,
     vk::ImageLayout oldLayout,
     vk::ImageLayout newLayout,
     const vk::ImageSubresourceRange& subresourceRange,
@@ -65,7 +64,6 @@ void transitionImageLayout(
     barrier.dstAccessMask = dstAccess;
     barrier.oldLayout = oldLayout;
     barrier.newLayout = newLayout;
-    barrier.subresourceRange.levelCount = mipLevels;
     vk::DependencyInfo dependencyInfo{.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier};
     commandBuffer->pipelineBarrier2(dependencyInfo);
 }
@@ -121,4 +119,44 @@ void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags2 usage, vk::MemoryPr
     const std::string uniqueName =
         std::format("{}_{}", memoryDebugBaseName.empty() ? "DeviceMemory" : memoryDebugBaseName, id);
     vmaSetAllocationName(allocator, bufferMemory, uniqueName.c_str());
+}
+
+void submitAndWait(vk::raii::CommandBuffer& commandBuffer, const vk::raii::Queue& queue)
+{
+    ZoneScopedN("submitAndWait");
+    commandBuffer.end();
+    // sync2 submit avoids WARNING-deprecation-sync2 / legacy QueueSubmit
+    const vk::CommandBufferSubmitInfo commandBufferInfo{.commandBuffer = *commandBuffer};
+    const vk::SubmitInfo2 submitInfo{.commandBufferInfoCount = 1, .pCommandBufferInfos = &commandBufferInfo};
+    queue.submit2(submitInfo, nullptr);
+    queue.waitIdle();
+}
+
+void destroyVmaBuffer(VmaAllocator allocator, vk::raii::Buffer& buffer, VmaAllocation& allocation,
+                      const char* tracyName)
+{
+    if (allocation == nullptr) {
+        return;
+    }
+    // release first: raii destructor would vkDestroyBuffer the handle VMA frees
+    VkBuffer raw = buffer.release();
+    if (tracyName != nullptr) {
+        tracyResourceFree(raw, tracyName);
+    }
+    vmaDestroyBuffer(allocator, raw, allocation);
+    allocation = nullptr;
+}
+
+void destroyVmaImage(VmaAllocator allocator, vk::raii::Image& image, VmaAllocation& allocation,
+                     const char* tracyName)
+{
+    if (allocation == nullptr) {
+        return;
+    }
+    VkImage raw = image.release();
+    if (tracyName != nullptr) {
+        tracyResourceFree(raw, tracyName);
+    }
+    vmaDestroyImage(allocator, raw, allocation);
+    allocation = nullptr;
 }

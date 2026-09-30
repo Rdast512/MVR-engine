@@ -8,7 +8,7 @@ TextureManager::TextureManager(Device& deviceWrapper, const VkAllocator& allocat
     deviceWrapper(deviceWrapper), physicalDevice(deviceWrapper.physicalDevice), device(deviceWrapper.vkdevice),
     graphicsQueue(deviceWrapper.graphicsQueue), transferQueue(deviceWrapper.transferQueue),
     graphicsQueueFamilyIndex(deviceWrapper.graphicsIndex),
-    transferQueueFamilyIndex(deviceWrapper.transferIndex), allocator(allocator), descriptorManager(descriptorManager)
+    allocator(allocator), descriptorManager(descriptorManager)
 {
     log_info("Constructor started", "TextureManager");
     vk::CommandPoolCreateInfo poolInfo{.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
@@ -58,12 +58,7 @@ TextureManager::~TextureManager()
     log_info("Destructor called", "TextureManager");
 
     for (auto& [path, asset] : loadedTextures) {
-        if (asset.textureImageMemory != nullptr) {
-            VkImage raw = asset.textureImage.release();
-            tracyResourceFree(raw, "GPU/Textures");
-            vmaDestroyImage(allocator.allocator, raw, asset.textureImageMemory);
-            asset.textureImageMemory = nullptr;
-        }
+        destroyVmaImage(allocator.allocator, asset.textureImage, asset.textureImageMemory, "GPU/Textures");
     }
     loadedTextures.clear();
     log_info("Resources destroyed", "TextureManager");
@@ -438,12 +433,11 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
     mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
 
     TextureAsset asset{};
-    createImage(static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), mipLevels, format,
-                vk::ImageTiling::eOptimal,
-                vk::ImageUsageFlagBits::eHostTransfer | vk::ImageUsageFlagBits::eTransferSrc |
-                    vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
-                vk::MemoryPropertyFlagBits::eDeviceLocal, asset.textureImage, asset.textureImageMemory,
-                "TextureImageMemory");
+    allocator.createImage2D(static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), mipLevels,
+                            vk::SampleCountFlagBits::e1, format,
+                            vk::ImageUsageFlagBits::eHostTransfer | vk::ImageUsageFlagBits::eTransferSrc |
+                                vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+                            asset.textureImage, asset.textureImageMemory, "TextureImageMemory");
     setDebugName(device, asset.textureImage, "TextureImage");
     const size_t texBytes = static_cast<size_t>(imageSize) + static_cast<size_t>(imageSize) / 3u;
     tracyResourceAlloc(static_cast<VkImage>(*asset.textureImage), texBytes, "GPU/Textures");
@@ -485,12 +479,13 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
 
     {
         auto cmdBuffer = beginSingleTimeCommands(graphicsQueue);
-        transitionImageLayout(&cmdBuffer, *asset.textureImage, mipLevels, hostDstLayout,
-                              vk::ImageLayout::eTransferDstOptimal, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        transitionImageLayout(&cmdBuffer, *asset.textureImage, hostDstLayout,
+                              vk::ImageLayout::eTransferDstOptimal,
+                              {vk::ImageAspectFlagBits::eColor, 0, mipLevels, 0, 1},
                               VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eHost,
                               vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eHostWrite,
                               vk::AccessFlagBits2::eTransferWrite);
-        endSingleTimeCommands(cmdBuffer, graphicsQueue);
+        submitAndWait(cmdBuffer, graphicsQueue);
     }
 
     generateMipmaps(asset.textureImage, format, texWidth, texHeight, mipLevels);
@@ -511,51 +506,6 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
     return loadedTextures[cacheKey].descriptorHeapIndex;
 }
 
-// Create an image with the requested properties and allocate GPU memory
-// for it via VMA. Returns the vk::ImageCreateInfo used (for callers that
-// need it).
-vk::ImageCreateInfo TextureManager::createImage(uint32_t width, uint32_t height, uint32_t mipLevelsIn, vk::Format format,
-                                 vk::ImageTiling tiling, vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties,
-                                 vk::raii::Image& image, VmaAllocation& imageMemory,
-                                 std::string_view memoryDebugBaseName)
-{
-    ZoneScopedN("TextureManager::createImage");
-    log_info("createImage() started", "TextureManager");
-    const bool needsConcurrent =
-        (usage & vk::ImageUsageFlagBits::eTransferSrc || usage & vk::ImageUsageFlagBits::eTransferDst) &&
-        transferQueueFamilyIndex != UINT32_MAX && transferQueueFamilyIndex != graphicsQueueFamilyIndex;
-
-    uint32_t families[2] = {graphicsQueueFamilyIndex, transferQueueFamilyIndex};
-
-    vk::ImageCreateInfo const imageInfo{.imageType = vk::ImageType::e2D,
-                                  .format = format,
-                                  .extent = {width, height, 1},
-                                  .mipLevels = mipLevelsIn,
-                                  .arrayLayers = 1,
-                                  .samples = vk::SampleCountFlagBits::e1,
-                                  .tiling = tiling,
-                                  .usage = usage,
-                                  .sharingMode =
-                                      needsConcurrent ? vk::SharingMode::eConcurrent : vk::SharingMode::eExclusive,
-                                  .queueFamilyIndexCount = needsConcurrent ? 2u : 0u,
-                                  .pQueueFamilyIndices = needsConcurrent ? families : nullptr};
-    VmaAllocationCreateInfo allocInfo{};
-    allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    if (properties & vk::MemoryPropertyFlagBits::eHostVisible)
-    {
-        allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-        allocInfo.priority = 0.25f;
-    }
-    else
-    {
-        // Sampled textures / GPU images: high keep priority under memory pressure.
-        allocInfo.priority = 0.9f;
-    }
-
-    allocator.alocateImage(imageInfo, allocInfo, image, imageMemory, memoryDebugBaseName);
-    return imageInfo;
-}
-
 // Allocate and begin a short-lived command buffer for immediate-submit
 // operations (one-time use), returned in recording state.
 vk::raii::CommandBuffer TextureManager::beginSingleTimeCommands(const vk::raii::Queue& queue)
@@ -569,20 +519,6 @@ vk::raii::CommandBuffer TextureManager::beginSingleTimeCommands(const vk::raii::
     vk::CommandBufferBeginInfo beginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit};
     commandBuffer.begin(beginInfo);
     return commandBuffer;
-}
-
-// End the one-time command buffer, submit it to the provided queue and
-// wait for completion (synchronous helper).
-void TextureManager::endSingleTimeCommands(vk::raii::CommandBuffer& commandBuffer, const vk::raii::Queue& queue)
-{
-    ZoneScopedN("TextureManager::endSingleTimeCommands");
-    log_info("endSingleTimeCommands() started", "TextureManager");
-    commandBuffer.end();
-    // Prefer synchronization2 submit (avoids WARNING-deprecation-sync2 / legacy QueueSubmit).
-    const vk::CommandBufferSubmitInfo commandBufferInfo{.commandBuffer = *commandBuffer};
-    const vk::SubmitInfo2 submitInfo{.commandBufferInfoCount = 1, .pCommandBufferInfos = &commandBufferInfo};
-    queue.submit2(submitInfo, nullptr);
-    queue.waitIdle();
 }
 
 
@@ -695,5 +631,5 @@ void TextureManager::generateMipmaps(vk::raii::Image& image, vk::Format imageFor
         commandBuffer.pipelineBarrier2(dep);
     }
 
-    endSingleTimeCommands(commandBuffer, graphicsQueue);
+    submitAndWait(commandBuffer, graphicsQueue);
 }

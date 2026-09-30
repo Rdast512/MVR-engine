@@ -234,21 +234,13 @@ void DeviceGeneratedCommands::destroyFrameResources(uint32_t frameSlot)
         vmaUnmapMemory(resourceManager.allocator.allocator, sequenceMemory[frameSlot]);
         sequenceMapped[frameSlot] = nullptr;
     }
-    if (sequenceMemory[frameSlot] != nullptr) {
-        VkBuffer raw = sequenceBuffers[frameSlot].release();
-        tracyResourceFree(raw, "GPU/DgcSequences");
-        vmaDestroyBuffer(resourceManager.allocator.allocator, raw, sequenceMemory[frameSlot]);
-        sequenceMemory[frameSlot] = nullptr;
-    }
+    destroyVmaBuffer(resourceManager.allocator.allocator, sequenceBuffers[frameSlot], sequenceMemory[frameSlot],
+                     "GPU/DgcSequences");
     sequenceAddresses[frameSlot] = 0;
     sequenceCapacity[frameSlot] = 0;
 
-    if (preprocessMemory[frameSlot] != nullptr) {
-        VkBuffer raw = preprocessBuffers[frameSlot].release();
-        tracyResourceFree(raw, "GPU/DgcPreprocess");
-        vmaDestroyBuffer(resourceManager.allocator.allocator, raw, preprocessMemory[frameSlot]);
-        preprocessMemory[frameSlot] = nullptr;
-    }
+    destroyVmaBuffer(resourceManager.allocator.allocator, preprocessBuffers[frameSlot], preprocessMemory[frameSlot],
+                     "GPU/DgcPreprocess");
     preprocessAddresses[frameSlot] = 0;
     preprocessSizes[frameSlot] = 0;
 }
@@ -258,8 +250,10 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
     ZoneScopedN("DeviceGeneratedCommands::updateSequences");
     sequenceCount = 0;
     recordedFrame = frameSlot;
-    if (resourceManager.vertexBufferAddress == 0 || resourceManager.meshletBufferAddress == 0 ||
-        resourceManager.meshletVertexBufferAddress == 0 || resourceManager.meshletTriangleBufferAddress == 0) {
+    if (resourceManager.asset(AssetBuffer::Vertices).address == 0 ||
+        resourceManager.asset(AssetBuffer::Meshlets).address == 0 ||
+        resourceManager.asset(AssetBuffer::MeshletVertices).address == 0 ||
+        resourceManager.asset(AssetBuffer::MeshletTriangles).address == 0) {
         return;
     }
 
@@ -303,10 +297,10 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
             MeshDgcSequence& sequence = sequences[sequenceCount];
             sequence.pushData.cameraAddress = camera.cameraBufferAddresses[frameSlot];
             sequence.pushData.objectUbAddress = resourceManager.instanceUboAddress(frameSlot, id);
-            sequence.pushData.vertices = resourceManager.vertexBufferAddress;
-            sequence.pushData.meshlets = resourceManager.meshletBufferAddress;
-            sequence.pushData.meshletVertices = resourceManager.meshletVertexBufferAddress;
-            sequence.pushData.meshletTriangles = resourceManager.meshletTriangleBufferAddress;
+            sequence.pushData.vertices = resourceManager.asset(AssetBuffer::Vertices).address;
+            sequence.pushData.meshlets = resourceManager.asset(AssetBuffer::Meshlets).address;
+            sequence.pushData.meshletVertices = resourceManager.asset(AssetBuffer::MeshletVertices).address;
+            sequence.pushData.meshletTriangles = resourceManager.asset(AssetBuffer::MeshletTriangles).address;
             sequence.pushData.firstMeshlet = firstMeshlet;
             sequence.pushData.meshletCount = batch;
             sequence.pushData.texture = {

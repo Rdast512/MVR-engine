@@ -1,10 +1,11 @@
 #pragma once
-#include <optional>
+#include <array>
+#include <span>
 #include <string_view>
+#include <utility>
 #include <vulkan/vulkan_raii.hpp>
 #include "../core/types.hpp"
 #include "Constants.h"
-#include "fmt/chrono.h"
 #include "geometry_store.hpp"
 #include "light_store.hpp"
 #include "material_store.hpp"
@@ -13,218 +14,159 @@
 #include "vk_allocator.hpp"
 #include "vk_device.hpp"
 
+// Device-local SSBOs appended by flushGpuAssets, read by shaders via BDA (loaded once / rarely).
+// Order defines upload order and the kAssetBufferInfo table rows.
+enum class AssetBuffer : uint8_t {
+    Vertices,
+    Meshlets,         // GpuMeshletDesc[]
+    MeshletVertices,  // uint32_t[] remap
+    MeshletTriangles, // uint8_t[] local corners
+    Normals,
+    Tangents,
+    Uv1,
+    Joints,
+    Weights,
+    Indices,
+    MorphPos,
+    MorphNrm,
+    MorphTan,
+    Materials,
+    PbrExt,
+    Lights,
+    Count
+};
+inline constexpr size_t kAssetBufferCount = std::to_underlying(AssetBuffer::Count);
+
+// Growable device-local buffer; capacity may exceed used after grow-with-headroom
+struct DeviceBuffer {
+    vk::raii::Buffer buffer = nullptr;
+    VmaAllocation memory = nullptr;
+    vk::DeviceAddress address = 0;
+    vk::DeviceSize usedBytes = 0;
+    vk::DeviceSize capacityBytes = 0;
+};
+
+// Persistently mapped host-visible buffer (VMA_ALLOCATION_CREATE_MAPPED_BIT)
+struct HostBuffer {
+    vk::raii::Buffer buffer = nullptr;
+    VmaAllocation memory = nullptr;
+    void* mapped = nullptr;
+    vk::DeviceAddress address = 0;
+};
+
+// Swapchain-sized render target, recreated on resize
+struct AttachmentImage {
+    vk::raii::Image image = nullptr;
+    VmaAllocation memory = nullptr;
+    vk::raii::ImageView view = nullptr;
+};
+
 // Manages GPU resources (buffers, images, command pools) using Device + Assets data.
 // Instance GpuObjectUB data lives in a single host-visible buffer per frame slot (SoA-friendly).
 // Geometry is mesh-shader only: vertex SSBO + meshlet tables via BDA (no index buffer).
 class ResourceManager {
 public:
-	ResourceManager(const Device &deviceWrapper,
-			   const VkAllocator &allocator,
-			   GeometryStore &geometryStore,
-			   MaterialStore &materialStore,
-			   LightStore &lightStore,
-			   ObjectStorage &objectStorage);
-	~ResourceManager();
+    ResourceManager(const Device &deviceWrapper,
+                    const VkAllocator &allocator,
+                    GeometryStore &geometryStore,
+                    MaterialStore &materialStore,
+                    LightStore &lightStore,
+                    ObjectStorage &objectStorage);
+    ~ResourceManager();
 
-	void init();
-	void createSyncObjects();
+    void init();
+    void createSyncObjects();
     void updateUniformBuffers(uint32_t currentImage);
     void createCommandPool();
-	void createCommandBuffers();
-	void createDepthResources();
-    void createIndirectBuffer();
+    void createCommandBuffers();
+    void createDepthResources();
     // Grow/recreate the per-frame GpuObjectUB arrays so they fit at least entityCount entries.
     void ensureInstanceCapacity(uint32_t entityCount);
     void createUniformBuffers();
-	void createColorResources();
+    void createColorResources();
     // append load scratch to device-local SSBOs, then drop CPU bulk arrays
     void flushGpuAssets();
     void createCameraBuffers(Camera& camera);
-	void setSwapChainImageCount(uint32_t count) { swapChainImageCount = count; createSyncObjects(); }
+    void setSwapChainImageCount(uint32_t count) { swapChainImageCount = count; createSyncObjects(); }
 
-	// Per-frame Tracy plots for geometry / mesh / entity resource usage.
-	void tracyPlotResources() const;
+    // Per-frame Tracy plots for geometry / mesh / entity resource usage.
+    void tracyPlotResources() const;
 
     [[nodiscard]] vk::DeviceAddress instanceUboAddress(uint32_t frameSlot, EntityId entityId) const noexcept;
+    [[nodiscard]] const DeviceBuffer& asset(AssetBuffer id) const noexcept
+    {
+        return assetBuffers[std::to_underlying(id)];
+    }
+    // appends are exact, so used bytes / stride is the uploaded element count
+    [[nodiscard]] uint32_t uploadedCount(AssetBuffer id) const noexcept;
 
+    vk::raii::ImageView createImageView(vk::raii::Image &image, vk::Format format, vk::ImageAspectFlags aspectFlags,
+                                        uint32_t mipLevels);
+    vk::Format findSupportedFormat(const std::vector<vk::Format> &candidates, vk::ImageTiling tiling,
+                                   vk::FormatFeatureFlags features);
+    vk::Format findDepthFormat();
+    static bool hasStencilComponent(vk::Format format);
+    void updateSwapChainExtent(vk::Extent2D newExtent);
+    void updateSwapChainImageFormat(vk::Format newFormat) { swapChainImageFormat = newFormat; }
 
-	void createImage(uint32_t width, uint32_t height, uint32_t mipLevels, vk::SampleCountFlagBits samples,
-					 vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage,
-					 vk::MemoryPropertyFlags properties, vk::raii::Image &image, VmaAllocation &imageMemory,
-					 std::string_view memoryDebugBaseName = "ResourceImageMemory");
-	vk::raii::ImageView createImageView(vk::raii::Image &image, vk::Format format, vk::ImageAspectFlags aspectFlags,
-										uint32_t mipLevels);
-	void copyBuffer(vk::raii::Buffer &srcBuffer, vk::raii::Buffer &dstBuffer, vk::DeviceSize size);
-	uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties);
-
-	vk::Format findSupportedFormat(const std::vector<vk::Format> &candidates, vk::ImageTiling tiling,
-								   vk::FormatFeatureFlags features);
-	vk::Format findDepthFormat();
-	void copyBufferToImage(const vk::raii::Buffer &buffer, vk::raii::Image &image, uint32_t width, uint32_t height);
-	static bool hasStencilComponent(vk::Format format);
-	void generateMipmaps(vk::raii::Image &image, vk::Format imageFormat, int32_t texWidth, int32_t texHeight,
-						 uint32_t mipLevels);
-static void endCommandBuffer(vk::raii::CommandBuffer &commandBuffer, const vk::raii::Queue &queue);
-	void updateSwapChainExtent(vk::Extent2D newExtent);
-	void updateSwapChainImageFormat(vk::Format newFormat) { swapChainImageFormat = newFormat; }
-
-	const Device &deviceWrapper;
-	const VkAllocator &allocator;
-	const vk::raii::PhysicalDevice &physicalDevice;
-	const vk::raii::Device &device;
-	const std::vector<uint32_t> &queueFamilyIndices;
-	const vk::raii::Queue &graphicsQueue;
-	const vk::raii::Queue &transferQueue;
-    const HardwareCapabilities hardwareCapabilities;
+    const Device &deviceWrapper;
+    const VkAllocator &allocator;
+    const vk::raii::PhysicalDevice &physicalDevice;
+    const vk::raii::Device &device;
+    const std::vector<uint32_t> &queueFamilyIndices;
+    const vk::raii::Queue &graphicsQueue;
+    const vk::raii::Queue &transferQueue;
     ObjectStorage &objectStorage;
     GeometryStore &geometryStore;
     MaterialStore &materialStore;
     LightStore &lightStore;
-	uint32_t graphicsIndex;
-	uint32_t transferIndex;
-	vk::SampleCountFlagBits msaaSamples;
-	vk::Extent2D swapChainExtent{};
-	uint32_t swapChainImageCount = 0;
-	vk::Format swapChainImageFormat = vk::Format::eUndefined;
+    uint32_t graphicsIndex;
+    uint32_t transferIndex;
+    vk::SampleCountFlagBits msaaSamples;
+    vk::Extent2D swapChainExtent{};
+    uint32_t swapChainImageCount = 0;
+    vk::Format swapChainImageFormat = vk::Format::eUndefined;
 
-	// Acquire: one per frame-in-flight. Present signal: one per swapchain image.
-	std::vector<vk::raii::Semaphore> presentCompleteSemaphore;
-	std::vector<vk::raii::Semaphore> renderFinishedSemaphore;
-	std::vector<vk::raii::Fence> inFlightFences;
-	vk::raii::Image depthImage = nullptr;
-	VmaAllocation depthImageMemory = nullptr;
-	vk::raii::ImageView depthImageView = nullptr;
-	vk::raii::CommandPool commandPool = nullptr;
-	vk::raii::CommandPool transferCommandPool = nullptr;
-	std::vector<vk::raii::CommandBuffer> commandBuffers;
-	std::vector<vk::raii::CommandBuffer> transferCommandBuffer;
-	vk::raii::Buffer vertexBuffer = nullptr;
-	VmaAllocation vertexBufferMemory = nullptr;
-	vk::raii::Buffer stagingBuffer = nullptr;
-	VmaAllocation stagingBufferMemory = nullptr;
-    vk::raii::Buffer indirectBuffer = nullptr;
-    VmaAllocation indirectBufferMemory = nullptr;
-	vk::raii::Image colorImage = nullptr;
-	VmaAllocation colorImageMemory = nullptr;
-	vk::raii::ImageView colorImageView = nullptr;
+    // Acquire: one per frame-in-flight. Present signal: one per swapchain image.
+    std::vector<vk::raii::Semaphore> presentCompleteSemaphore;
+    std::vector<vk::raii::Semaphore> renderFinishedSemaphore;
+    std::vector<vk::raii::Fence> inFlightFences;
+    vk::raii::CommandPool commandPool = nullptr;
+    vk::raii::CommandPool transferCommandPool = nullptr;
+    std::vector<vk::raii::CommandBuffer> commandBuffers;
+    std::vector<vk::raii::CommandBuffer> transferCommandBuffer;
+    AttachmentImage colorAttachment;
+    AttachmentImage depthAttachment;
 
-    // Update frequency	                | Buffering	            | Addresses
-    // Every frame (CPU write)          | MAX_FRAMES_IN_FLIGHT	| array of that size
-    // Once / rare (load, level swap)	| single device-local	| one DeviceAddress
-    // Meshlet GPU buffers (device-local, read by mesh shaders via BDA)
-    vk::raii::Buffer meshletBuffer = nullptr;           // GpuMeshletDesc[]
-    VmaAllocation    meshletBufferMemory = nullptr;
-    vk::raii::Buffer meshletVertexBuffer = nullptr;     // uint32_t[] remap
-    VmaAllocation    meshletVertexBufferMemory = nullptr;
-    vk::raii::Buffer meshletTriangleBuffer = nullptr;   // uint8_t[] local corners
-    VmaAllocation    meshletTriangleBufferMemory = nullptr;
+    std::array<DeviceBuffer, kAssetBufferCount> assetBuffers;
 
-    vk::raii::Buffer materialBuffer = nullptr;
-    VmaAllocation materialBufferMemory = nullptr;
-    vk::raii::Buffer pbrExtBuffer = nullptr;
-    VmaAllocation pbrExtBufferMemory = nullptr;
-    vk::raii::Buffer lightBuffer = nullptr;
-    VmaAllocation lightBufferMemory = nullptr;
-    vk::raii::Buffer normalBuffer = nullptr;
-    VmaAllocation normalBufferMemory = nullptr;
-    vk::raii::Buffer tangentBuffer = nullptr;
-    VmaAllocation tangentBufferMemory = nullptr;
-    vk::raii::Buffer uv1Buffer = nullptr;
-    VmaAllocation uv1BufferMemory = nullptr;
-    vk::raii::Buffer jointBuffer = nullptr;
-    VmaAllocation jointBufferMemory = nullptr;
-    vk::raii::Buffer weightBuffer = nullptr;
-    VmaAllocation weightBufferMemory = nullptr;
-    vk::raii::Buffer indexBuffer = nullptr;
-    VmaAllocation indexBufferMemory = nullptr;
-    vk::raii::Buffer morphPosBuffer = nullptr;
-    VmaAllocation morphPosBufferMemory = nullptr;
-    vk::raii::Buffer morphNrmBuffer = nullptr;
-    VmaAllocation morphNrmBufferMemory = nullptr;
-    vk::raii::Buffer morphTanBuffer = nullptr;
-    VmaAllocation morphTanBufferMemory = nullptr;
-
-    // Cached device addresses (fill after create, like cameraBufferAddresses)
-    vk::DeviceAddress vertexBufferAddress = 0;
-    vk::DeviceAddress meshletBufferAddress = 0;
-    vk::DeviceAddress meshletVertexBufferAddress = 0;
-    vk::DeviceAddress meshletTriangleBufferAddress = 0;
-    vk::DeviceAddress materialBufferAddress = 0;
-    vk::DeviceAddress pbrExtBufferAddress = 0;
-    vk::DeviceAddress lightBufferAddress = 0;
-    vk::DeviceAddress normalBufferAddress = 0;
-    vk::DeviceAddress tangentBufferAddress = 0;
-    vk::DeviceAddress uv1BufferAddress = 0;
-    vk::DeviceAddress jointBufferAddress = 0;
-    vk::DeviceAddress weightBufferAddress = 0;
-    vk::DeviceAddress indexBufferAddress = 0;
-    vk::DeviceAddress morphPosBufferAddress = 0;
-    vk::DeviceAddress morphNrmBufferAddress = 0;
-    vk::DeviceAddress morphTanBufferAddress = 0;
-    vk::DeviceAddress indirectBufferAddress = 0;
-
-    uint32_t uploadedVertexCount = 0;
-    uint32_t uploadedMeshletCount = 0;
-    uint32_t uploadedMeshletVertexCount = 0;
-    uint32_t uploadedMeshletTriangleCount = 0;
-    uint32_t uploadedIndexCount = 0;
-    uint32_t uploadedMorphPosCount = 0;
-    uint32_t uploadedMorphNrmCount = 0;
-    uint32_t uploadedMorphTanCount = 0;
-
-    // One GpuObjectUB[capacity] buffer per frame-in-flight (host-visible).
-    std::array<vk::raii::Buffer, MAX_FRAMES_IN_FLIGHT> instanceUboBuffers = {nullptr, nullptr};
-    std::array<VmaAllocation, MAX_FRAMES_IN_FLIGHT> instanceUboMemory = {nullptr, nullptr};
-    std::array<void*, MAX_FRAMES_IN_FLIGHT> instanceUboMapped = {nullptr, nullptr};
-    std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> instanceUboBaseAddresses = {0, 0};
+    // One GpuObjectUB[capacity] buffer per frame-in-flight, rewritten by the CPU every frame.
+    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> instanceUbos;
     // Allocated instance GpuObjectUB slots per frame buffer (may be > entity count).
     uint32_t instanceCapacity = 0;
 
 private:
+    struct AttachmentDesc {
+        vk::Format format;
+        vk::ImageUsageFlags usage;
+        vk::ImageAspectFlags viewAspect;
+        // packed depth/stencil barriers need both aspects (VUID-VkImageMemoryBarrier2-image-03320)
+        vk::ImageAspectFlags barrierAspect;
+        vk::ImageLayout layout;
+        const char* debugName;
+        const char* tracyName;
+    };
+
     void destroyInstanceUboBuffers();
-    void destroyDeviceBuffer(vk::raii::Buffer& buffer, VmaAllocation& memory, vk::DeviceAddress& address,
-                             vk::DeviceSize& usedBytes, vk::DeviceSize& capacityBytes, const char* tracyName);
-    void appendDeviceLocal(vk::raii::Buffer& dst, VmaAllocation& dstMemory, vk::DeviceAddress& dstAddress,
-                           vk::DeviceSize& usedBytes, vk::DeviceSize& capacityBytes, const void* src,
-                           vk::DeviceSize srcBytes, std::string_view debugName, const char* tracyName);
+    void destroyAssetBuffer(AssetBuffer id);
+    void appendDeviceLocal(AssetBuffer id, std::span<const std::byte> src);
+    [[nodiscard]] std::span<const std::byte> scratchBytes(AssetBuffer id, std::span<const GpuLight> lights) const;
+    // {used, capacity} summed over all asset buffers
+    [[nodiscard]] std::pair<vk::DeviceSize, vk::DeviceSize> assetTotals() const noexcept;
+    void createAttachment(AttachmentImage& target, const AttachmentDesc& desc);
+    void destroyAttachment(AttachmentImage& target, const char* tracyName);
     void remapScratchOffsets();
     [[nodiscard]] std::vector<GpuLight> packScratchLights() const;
     [[nodiscard]] vk::raii::CommandBuffer& oneTimeTransferCmd();
     [[nodiscard]] const vk::raii::Queue& oneTimeTransferQueue() const noexcept;
-    // used vs allocated (capacity may be > used after grow-with-headroom).
-    vk::DeviceSize trackedVertexBytes = 0;
-    vk::DeviceSize capacityVertexBytes = 0;
-    vk::DeviceSize trackedMeshletBytes = 0;
-    vk::DeviceSize capacityMeshletBytes = 0;
-    vk::DeviceSize trackedMeshletVertexBytes = 0;
-    vk::DeviceSize capacityMeshletVertexBytes = 0;
-    vk::DeviceSize trackedMeshletTriangleBytes = 0;
-    vk::DeviceSize capacityMeshletTriangleBytes = 0;
-    vk::DeviceSize trackedMaterialBytes = 0;
-    vk::DeviceSize capacityMaterialBytes = 0;
-    vk::DeviceSize trackedPbrExtBytes = 0;
-    vk::DeviceSize capacityPbrExtBytes = 0;
-    vk::DeviceSize trackedLightBytes = 0;
-    vk::DeviceSize capacityLightBytes = 0;
-    vk::DeviceSize trackedNormalBytes = 0;
-    vk::DeviceSize capacityNormalBytes = 0;
-    vk::DeviceSize trackedTangentBytes = 0;
-    vk::DeviceSize capacityTangentBytes = 0;
-    vk::DeviceSize trackedUv1Bytes = 0;
-    vk::DeviceSize capacityUv1Bytes = 0;
-    vk::DeviceSize trackedJointBytes = 0;
-    vk::DeviceSize capacityJointBytes = 0;
-    vk::DeviceSize trackedWeightBytes = 0;
-    vk::DeviceSize capacityWeightBytes = 0;
-    vk::DeviceSize trackedIndexBytes = 0;
-    vk::DeviceSize capacityIndexBytes = 0;
-    vk::DeviceSize trackedMorphPosBytes = 0;
-    vk::DeviceSize capacityMorphPosBytes = 0;
-    vk::DeviceSize trackedMorphNrmBytes = 0;
-    vk::DeviceSize capacityMorphNrmBytes = 0;
-    vk::DeviceSize trackedMorphTanBytes = 0;
-    vk::DeviceSize capacityMorphTanBytes = 0;
-    vk::DeviceSize trackedColorBytes = 0;
-    vk::DeviceSize trackedDepthBytes = 0;
-    std::array<vk::DeviceSize, MAX_FRAMES_IN_FLIGHT> trackedInstanceUboBytes = {0, 0};
 };

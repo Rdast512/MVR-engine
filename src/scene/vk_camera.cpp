@@ -1,5 +1,6 @@
 #include "vk_camera.hpp"
 #include "util/vk_tracy.hpp"
+#include "util/vk_utils.hpp"
 
 #include <glm/gtc/constants.hpp>
 
@@ -47,15 +48,7 @@ Camera::~Camera()
             vmaUnmapMemory(allocator, cameraBuffersMemory[i]);
             cameraBuffersMapped[i] = nullptr;
         }
-
-        VkBuffer rawBuf = VK_NULL_HANDLE;
-        if (*cameraBuffers[i] != VK_NULL_HANDLE) {
-            rawBuf = cameraBuffers[i].release();
-            tracyResourceFree(rawBuf, "GPU/CameraUBO");
-        }
-
-        vmaDestroyBuffer(allocator, rawBuf, cameraBuffersMemory[i]);
-        cameraBuffersMemory[i] = nullptr;
+        destroyVmaBuffer(allocator, cameraBuffers[i], cameraBuffersMemory[i], "GPU/CameraUBO");
     }
 }
 
