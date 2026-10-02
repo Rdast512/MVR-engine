@@ -12,13 +12,66 @@
  *   - Queue family resolution with fallback strategies for transfer and compute
  */
 #include "vk_device.hpp"
+#include <array>
 #include <format>
+#include <string_view>
 #include "../static_headers/logger.hpp"
 #include "../util/debug.hpp"
 #include "util/vk_tracy.hpp"
 #include "vulkan/vulkan.hpp"
 /// Validation layer requested when enableValidationLayers is true.
 const std::vector validationLayers = {"VK_LAYER_KHRONOS_validation"};
+
+namespace
+{
+// Promoted-to-core extensions are enabled through Vulkan1xFeatures and must not be listed here,
+// see docs/vulkan_extensions_reference.md "Promoted-to-Core Features".
+// Optional extensions (NV) are appended in createLogicalDevice when supported.
+constexpr std::array kRequiredDeviceExtensions = {
+    // KHR
+    vk::KHRSwapchainExtensionName,
+    vk::KHRMaintenance7ExtensionName,
+    vk::KHRMaintenance8ExtensionName,
+    vk::KHRMaintenance9ExtensionName,
+    vk::KHRMaintenance10ExtensionName,
+    vk::KHRDeferredHostOperationsExtensionName, // required by KHR_acceleration_structure
+    vk::KHRAccelerationStructureExtensionName,
+    vk::KHRRayTracingPipelineExtensionName,
+    // vk::KHRPipelineBinaryExtensionName,
+    vk::KHRFragmentShadingRateExtensionName,
+    vk::KHRRayQueryExtensionName,
+    vk::KHRSwapchainMaintenance1ExtensionName,
+    vk::KHRRayTracingMaintenance1ExtensionName,
+    vk::KHRPresentId2ExtensionName, // required by EXT_present_timing
+    vk::KHRCalibratedTimestampsExtensionName, // required by EXT_present_timing
+    // vk::KHRPipelineLibraryExtensionName,       // required by EXT_graphics_pipeline_library
+    vk::KHRPresentModeFifoLatestReadyExtensionName,
+    vk::KHRCopyMemoryIndirectExtensionName,
+    vk::KHRShaderUntypedPointersExtensionName,
+    vk::KHRDeviceAddressCommandsExtensionName,
+    // EXT
+    vk::EXTOpacityMicromapExtensionName,
+    vk::EXTMemoryBudgetExtensionName,
+    vk::EXTMemoryPriorityExtensionName,
+    vk::EXTMemoryDecompressionExtensionName,
+    vk::EXTDescriptorHeapExtensionName,
+    vk::EXTBlendOperationAdvancedExtensionName,
+    vk::EXTMeshShaderExtensionName,
+    vk::EXTDeviceGeneratedCommandsExtensionName,
+    vk::EXTPageableDeviceLocalMemoryExtensionName,
+    vk::EXTShaderObjectExtensionName,
+    // vk::EXTGraphicsPipelineLibraryExtensionName,
+    vk::EXTPresentTimingExtensionName,
+    vk::EXTRayTracingInvocationReorderExtensionName,
+    vk::EXTExtendedDynamicState3ExtensionName,
+};
+
+[[nodiscard]] bool isExtensionSupported(const std::vector<vk::ExtensionProperties>& available, std::string_view name)
+{
+    return std::ranges::any_of(available, [name](const vk::ExtensionProperties& extension)
+                               { return name == extension.extensionName.data(); });
+}
+} // namespace
 
 
 Device::Device(SDL_Window* window, bool enableValidationLayers) :
@@ -404,7 +457,18 @@ void Device::createLogicalDevice()
         log_info(out, "Device");
     }
 
-    auto propertiesChain = physicalDevice.getProperties2<
+    const std::vector<vk::ExtensionProperties> availableExtensions =
+        physicalDevice.enumerateDeviceExtensionProperties();
+    capabilities.hasClusterAccelerationStructure =
+        isExtensionSupported(availableExtensions, vk::NVClusterAccelerationStructureExtensionName);
+    capabilities.hasPartitionedAccelerationStructure =
+        isExtensionSupported(availableExtensions, vk::NVPartitionedAccelerationStructureExtensionName);
+    log_info(std::format("Optional NV extensions: clusterAS={} partitionedAS={}",
+                         capabilities.hasClusterAccelerationStructure,
+                         capabilities.hasPartitionedAccelerationStructure),
+             "Device");
+
+    vk::StructureChain<
         vk::PhysicalDeviceProperties2, vk::PhysicalDeviceVulkan11Properties, vk::PhysicalDeviceVulkan12Properties,
         vk::PhysicalDeviceVulkan13Properties,
         vk::PhysicalDeviceVulkan14Properties, // after that comes things that may or may not be ext or promoted to khr
@@ -415,7 +479,7 @@ void Device::createLogicalDevice()
         vk::PhysicalDeviceHostImageCopyPropertiesEXT, // Maybe not ext
         vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT, // Maybe not ext + after that comes only khr when baseline
                                                              // 2060
-        vk::PhysicalDeviceDescriptorBufferPropertiesEXT, vk::PhysicalDeviceFragmentShadingRatePropertiesKHR,
+        vk::PhysicalDeviceFragmentShadingRatePropertiesKHR,
         vk::PhysicalDeviceAccelerationStructurePropertiesKHR, vk::PhysicalDeviceOpacityMicromapPropertiesEXT,
         vk::PhysicalDeviceDepthStencilResolveProperties, vk::PhysicalDeviceDriverProperties,
         vk::PhysicalDeviceMaintenance3Properties, vk::PhysicalDeviceMaintenance4Properties,
@@ -424,7 +488,16 @@ void Device::createLogicalDevice()
         vk::PhysicalDeviceMaintenance10PropertiesKHR, vk::PhysicalDevicePipelineBinaryPropertiesKHR,
         vk::PhysicalDeviceRayTracingPipelinePropertiesKHR,
         vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV,
-        vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV>();
+        vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV>
+        propertiesChain;
+    // structs of unsupported extensions must not be in the query chain
+    if (!capabilities.hasPartitionedAccelerationStructure) {
+        propertiesChain.unlink<vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV>();
+    }
+    if (!capabilities.hasClusterAccelerationStructure) {
+        propertiesChain.unlink<vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV>();
+    }
+    physicalDevice.getProperties2(&propertiesChain.get<vk::PhysicalDeviceProperties2>());
     capabilities.properties2 = propertiesChain.get<vk::PhysicalDeviceProperties2>();
     capabilities.vulkan11 = propertiesChain.get<vk::PhysicalDeviceVulkan11Properties>();
     capabilities.vulkan12 = propertiesChain.get<vk::PhysicalDeviceVulkan12Properties>();
@@ -491,7 +564,6 @@ void Device::createLogicalDevice()
                  "Device");
     }
     capabilities.texelBufferAlignment = propertiesChain.get<vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT>();
-    capabilities.descriptorBuffer = propertiesChain.get<vk::PhysicalDeviceDescriptorBufferPropertiesEXT>();
     capabilities.fragmentShadingRate = propertiesChain.get<vk::PhysicalDeviceFragmentShadingRatePropertiesKHR>();
     capabilities.accelerationStructure = propertiesChain.get<vk::PhysicalDeviceAccelerationStructurePropertiesKHR>();
     capabilities.depthStencilResolve = propertiesChain.get<vk::PhysicalDeviceDepthStencilResolveProperties>();
@@ -540,7 +612,7 @@ void Device::createLogicalDevice()
         vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceVulkan14Features,
         // EXT
         vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, vk::PhysicalDeviceDescriptorHeapFeaturesEXT,
-        vk::PhysicalDeviceDescriptorBufferFeaturesEXT, vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT,
+        vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT,
         vk::PhysicalDeviceMeshShaderFeaturesEXT, vk::PhysicalDeviceDeviceGeneratedCommandsFeaturesEXT,
         vk::PhysicalDeviceMemoryPriorityFeaturesEXT,
         vk::PhysicalDeviceMemoryDecompressionFeaturesEXT, vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT,
@@ -601,8 +673,6 @@ void Device::createLogicalDevice()
                         {.extendedDynamicState = true},
                         // vk::PhysicalDeviceDescriptorHeapFeaturesEXT
                         {.descriptorHeap = descriptorHeapFeatureSupported},
-                        // vk::PhysicalDeviceDescriptorBufferFeaturesEXT
-                        {.descriptorBuffer = true},
                         // vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT
                         {.advancedBlendCoherentOperations = false},
                         // vk::PhysicalDeviceMeshShaderFeaturesEXT
@@ -617,7 +687,7 @@ void Device::createLogicalDevice()
                         {.pageableDeviceLocalMemory = true},
                         // vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT (disabled: extension not enabled)
                         {},
-                        // vk::PhysicalDevicePresentTimingFeaturesEXT (disabled: extension not enabled)
+                        // vk::PhysicalDevicePresentTimingFeaturesEXT (extension enabled, feature not requested yet)
                         {},
                         // vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT
                         {.rayTracingInvocationReorder = true},
@@ -673,6 +743,20 @@ void Device::createLogicalDevice()
                         {.clusterAccelerationStructure = true},
                         // vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV
                         {.partitionedAccelerationStructure = true}};
+    if (!capabilities.hasClusterAccelerationStructure) {
+        featureChain.unlink<vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV>();
+    }
+    if (!capabilities.hasPartitionedAccelerationStructure) {
+        featureChain.unlink<vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV>();
+    }
+
+    std::vector<const char*> enabledExtensions(kRequiredDeviceExtensions.begin(), kRequiredDeviceExtensions.end());
+    if (capabilities.hasClusterAccelerationStructure) {
+        enabledExtensions.push_back(vk::NVClusterAccelerationStructureExtensionName);
+    }
+    if (capabilities.hasPartitionedAccelerationStructure) {
+        enabledExtensions.push_back(vk::NVPartitionedAccelerationStructureExtensionName);
+    }
 
     // Each unique queue family needs exactly one VkDeviceQueueCreateInfo entry.
     // Requesting the same family index twice is a validation error, so we gate each
@@ -706,9 +790,8 @@ void Device::createLogicalDevice()
     vk::DeviceCreateInfo deviceCreateInfo{.pNext = &featureChain.get<vk::PhysicalDeviceFeatures2>(),
                                           .queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size()),
                                           .pQueueCreateInfos = queueCreateInfos.data(),
-                                          .enabledExtensionCount =
-                                              static_cast<uint32_t>(requiredDeviceExtension.size()),
-                                          .ppEnabledExtensionNames = requiredDeviceExtension.data()};
+                                          .enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size()),
+                                          .ppEnabledExtensionNames = enabledExtensions.data()};
 
     vkdevice = vk::raii::Device(physicalDevice, deviceCreateInfo);
 

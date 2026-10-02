@@ -1763,7 +1763,8 @@ bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
         .materials = materialStore,
         .lights = lightStore,
         .textures = textureManager,
-        .defaultSamplerHeap = textureManager.getOrCreateSampler(-1, -1, 10497, 10497),
+        .defaultSamplerHeap =
+            textureManager.getOrCreateSampler(-1, -1, TG3_TEXTURE_WRAP_REPEAT, TG3_TEXTURE_WRAP_REPEAT),
     };
 
     const uint32_t firstPrimitive = static_cast<uint32_t>(geometryStore.primitiveDraws.size());
@@ -1857,7 +1858,7 @@ bool AssetsLoader::loadObjModel(const std::string& modelPath, glm::vec3 xyz)
     GpuMaterial gpu{};
     const auto objTexture = (std::filesystem::path(modelPath).parent_path() / TEXTURE_PATH.filename()).string();
     gpu.baseColorTex = textureManager.loadTexture(objTexture);
-    gpu.baseColorSamp = textureManager.getOrCreateSampler(-1, -1, 10497, 10497);
+    gpu.baseColorSamp = textureManager.getOrCreateSampler(-1, -1, TG3_TEXTURE_WRAP_REPEAT, TG3_TEXTURE_WRAP_REPEAT);
     const uint32_t materialId = materialStore.add(gpu);
 
     PrimitiveDraw draw{};

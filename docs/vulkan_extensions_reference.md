@@ -36,7 +36,7 @@ Canonical terminology references:
 
 ## Repository Integration Anchors
 
-- Extension list source: [src/core/vk_device.hpp](../src/core/vk_device.hpp)
+- Extension list source: `kRequiredDeviceExtensions` in [src/core/vk_device.cpp](../src/core/vk_device.cpp); optional NV extensions are appended at device creation when supported
 - Instance/device setup and feature chain: [src/core/vk_device.cpp](../src/core/vk_device.cpp)
 - Capability cache: [src/core/types.hpp](../src/core/types.hpp)
 - Descriptor integration: [src/core/vk_descriptors.cpp](../src/core/vk_descriptors.cpp)
@@ -103,12 +103,14 @@ Canonical terminology references:
 
 ---
 
-## Device Extensions — Enabled (NV)
+## Device Extensions — Optional (NV)
+
+Enabled only when the GPU reports them. Support is cached in `HardwareCapabilities::hasClusterAccelerationStructure` / `hasPartitionedAccelerationStructure`; when unsupported, the feature and property structs are unlinked from their chains and device creation proceeds without them. Check the flag before using either extension.
 
 | Extension | Official | Impl | Feature struct + flags | Property struct | Usage |
 | --- | --- | --- | --- | --- | --- |
-| `VK_NV_cluster_acceleration_structure` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_cluster_acceleration_structure.html) | [impl](../spec/VkExtensionsSpecs/VK_NV_cluster_acceleration_structure.md) | `PhysicalDeviceClusterAccelerationStructureFeaturesNV::clusterAccelerationStructure` | `PhysicalDeviceClusterAccelerationStructurePropertiesNV` | Enabled; not consumed (vendor) |
-| `VK_NV_partitioned_acceleration_structure` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_partitioned_acceleration_structure.html) | [impl](../spec/VkExtensionsSpecs/VK_NV_partitioned_acceleration_structure.md) | `PhysicalDevicePartitionedAccelerationStructureFeaturesNV::partitionedAccelerationStructure` | `PhysicalDevicePartitionedAccelerationStructurePropertiesNV` | Enabled; not consumed (vendor) |
+| `VK_NV_cluster_acceleration_structure` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_cluster_acceleration_structure.html) | [impl](../spec/VkExtensionsSpecs/VK_NV_cluster_acceleration_structure.md) | `PhysicalDeviceClusterAccelerationStructureFeaturesNV::clusterAccelerationStructure` | `PhysicalDeviceClusterAccelerationStructurePropertiesNV` | Optional; not consumed (vendor) |
+| `VK_NV_partitioned_acceleration_structure` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_partitioned_acceleration_structure.html) | [impl](../spec/VkExtensionsSpecs/VK_NV_partitioned_acceleration_structure.md) | `PhysicalDevicePartitionedAccelerationStructureFeaturesNV::partitionedAccelerationStructure` | `PhysicalDevicePartitionedAccelerationStructurePropertiesNV` | Optional; not consumed (vendor) |
 
 ---
 
@@ -189,7 +191,7 @@ These appear commented-out in the extension list or are probe-only rows in the c
 | `VK_EXT_graphics_pipeline_library` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_graphics_pipeline_library.html) | Commented out; feature struct in chain (`{}` init)                         |
 | `VK_EXT_extended_dynamic_state`    | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_extended_dynamic_state.html)    | Promoted to 1.3; feature struct in chain (`{}` init, no-op)                |
 | `VK_EXT_texel_buffer_alignment`    | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_texel_buffer_alignment.html)    | Feature struct in chain (`{}` init — not enabled); properties queried      |
-| `VK_EXT_descriptor_buffer`         | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_descriptor_buffer.html)         | Probe-only; properties cached in `types.hpp`, feature path not enabled yet |
+| `VK_EXT_descriptor_buffer`         | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_descriptor_buffer.html)         | Removed: superseded by `VK_EXT_descriptor_heap` (Khronos proposal: full replacement, no dependency) |
 | `VK_EXT_multi_draw`                | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_multi_draw.html)                | Not listed; mesh + DGC only                                                |
 | `VK_EXT_shader_object`             | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_EXT_shader_object.html)             | Not listed; `VkPipeline` + DGC only                                        |
 | `VK_KHR_shader_draw_parameters`    | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_KHR_shader_draw_parameters.html)    | Core 1.1; `shaderDrawParameters` left false                                |

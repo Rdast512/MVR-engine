@@ -227,15 +227,6 @@ struct MaterialPbrExtension
     bool operator==(const MaterialPbrExtension&) const = default;
 };
 
-struct SamplerDesc
-{
-    int32_t minFilter = -1;
-    int32_t magFilter = -1;
-    int32_t wrapS = 10497;
-    int32_t wrapT = 10497;
-    uint32_t heapIndex = 0;
-};
-
 struct LightDef
 {
     uint8_t type = 1;
@@ -383,7 +374,6 @@ struct HardwareCapabilities
     std::vector<vk::ImageLayout> hostImageCopySrcLayouts;
     std::vector<vk::ImageLayout> hostImageCopyDstLayouts;
     vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT texelBufferAlignment;
-    vk::PhysicalDeviceDescriptorBufferPropertiesEXT descriptorBuffer;
 
     // KHR / other properties
     vk::PhysicalDeviceFragmentShadingRatePropertiesKHR fragmentShadingRate;
@@ -401,6 +391,10 @@ struct HardwareCapabilities
     vk::PhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingPipeline;
     vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV clusterAccelerationStructure;
     vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV partitionedAccelerationStructure;
+
+    // optional NV extensions: enabled only when supported; property structs above stay zeroed otherwise
+    bool hasClusterAccelerationStructure = false;
+    bool hasPartitionedAccelerationStructure = false;
 };
 
 struct EngineContext

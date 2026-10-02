@@ -3,12 +3,11 @@
 
 
 // Construct a TextureManager which holds Vulkan device/queue handles and
-// creates a command pool for short-lived transfer/graphics commands.
+// creates a command pool for short-lived graphics commands.
 TextureManager::TextureManager(Device& deviceWrapper, const VkAllocator& allocator, DescriptorManager &descriptorManager) :
-    deviceWrapper(deviceWrapper), physicalDevice(deviceWrapper.physicalDevice), device(deviceWrapper.vkdevice),
-    graphicsQueue(deviceWrapper.graphicsQueue), transferQueue(deviceWrapper.transferQueue),
-    graphicsQueueFamilyIndex(deviceWrapper.graphicsIndex),
-    allocator(allocator), descriptorManager(descriptorManager)
+    deviceWrapper(deviceWrapper), allocator(allocator), descriptorManager(descriptorManager),
+    physicalDevice(deviceWrapper.physicalDevice), device(deviceWrapper.vkdevice),
+    graphicsQueue(deviceWrapper.graphicsQueue), graphicsQueueFamilyIndex(deviceWrapper.graphicsIndex)
 {
     log_info("Constructor started", "TextureManager");
     vk::CommandPoolCreateInfo poolInfo{.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
@@ -16,8 +15,6 @@ TextureManager::TextureManager(Device& deviceWrapper, const VkAllocator& allocat
     commandPool = vk::raii::CommandPool(device, poolInfo);
 }
 
-// Resolve a relative path relative to the executable directory.
-// If the path is already absolute, return it unchanged.
 std::string TextureManager::resolvePath(std::string_view path)
 {
     std::filesystem::path fsPath(path);
@@ -27,16 +24,7 @@ std::string TextureManager::resolvePath(std::string_view path)
         return fsPath.string();
     }
 
-    // Get the executable path and resolve the relative path from it
-    // Note: std::filesystem::current_path() gets the CWD,
-    // but we resolve relative to the executable location instead
-    // This requires getting the module/executable path from the OS
-
-    // For Windows, we can use GetModuleFileNameA or look for a runtime-cached path
-    // For cross-platform, assume current_path for now, or store exe path during init
-
-    // Fallback: try current_path first, then if not found and relative,
-    // we resolve relative to where we'd expect assets (../textures from build dir)
+    // CWD, not the exe dir: assets are addressed relative to the launch directory
     std::filesystem::path resolved = std::filesystem::current_path() / fsPath;
 
     if (std::filesystem::exists(resolved)) {
@@ -50,17 +38,23 @@ std::string TextureManager::resolvePath(std::string_view path)
     return std::string(path);
 }
 
-// Destructor — intended to release or schedule release of texture-related
-// resources (images, buffers). Actual VMA cleanup may be handled elsewhere.
+// Views go before their images; KTX images are owned by libktx, the rest by VMA.
 TextureManager::~TextureManager()
 {
     ZoneScopedN("TextureManager::~TextureManager");
     log_info("Destructor called", "TextureManager");
 
-    for (auto& [path, asset] : loadedTextures) {
+    for (auto& [key, asset] : loadedTextures) {
+        asset.textureImageView = nullptr;
         destroyVmaImage(allocator.allocator, asset.textureImage, asset.textureImageMemory, "GPU/Textures");
     }
     loadedTextures.clear();
+    for (ktxVulkanTexture& texture : ktxTextures) {
+        ktxVulkanTexture_Destruct(&texture, *device, nullptr);
+    }
+    if (ktxDeviceInfo) {
+        ktxVulkanDeviceInfo_Destruct(&*ktxDeviceInfo);
+    }
     log_info("Resources destroyed", "TextureManager");
 }
 
@@ -149,9 +143,9 @@ uint64_t packSamplerKey(int32_t minFilter, int32_t magFilter, int32_t wrapS, int
 vk::SamplerAddressMode wrapToVk(int32_t wrap)
 {
     switch (wrap) {
-    case 33071:
+    case TG3_TEXTURE_WRAP_CLAMP_TO_EDGE:
         return vk::SamplerAddressMode::eClampToEdge;
-    case 33648:
+    case TG3_TEXTURE_WRAP_MIRRORED_REPEAT:
         return vk::SamplerAddressMode::eMirroredRepeat;
     default:
         return vk::SamplerAddressMode::eRepeat;
@@ -161,30 +155,30 @@ vk::SamplerAddressMode wrapToVk(int32_t wrap)
 vk::SamplerCreateInfo samplerInfoFromGltf(int32_t minFilter, int32_t magFilter, int32_t wrapS, int32_t wrapT,
                                           float maxSamplerAnisotropy)
 {
-    const vk::Filter mag = magFilter == 9728 ? vk::Filter::eNearest : vk::Filter::eLinear;
+    const vk::Filter mag = magFilter == TG3_TEXTURE_FILTER_NEAREST ? vk::Filter::eNearest : vk::Filter::eLinear;
     vk::Filter min = vk::Filter::eLinear;
     vk::SamplerMipmapMode mip = vk::SamplerMipmapMode::eLinear;
     float maxLod = vk::LodClampNone;
     switch (minFilter) {
-    case 9728:
+    case TG3_TEXTURE_FILTER_NEAREST:
         min = vk::Filter::eNearest;
         mip = vk::SamplerMipmapMode::eNearest;
         maxLod = 0.25f;
         break;
-    case 9729:
+    case TG3_TEXTURE_FILTER_LINEAR:
         min = vk::Filter::eLinear;
         mip = vk::SamplerMipmapMode::eNearest;
         maxLod = 0.25f;
         break;
-    case 9984:
+    case TG3_TEXTURE_FILTER_NEAREST_MIPMAP_NEAREST:
         min = vk::Filter::eNearest;
         mip = vk::SamplerMipmapMode::eNearest;
         break;
-    case 9985:
+    case TG3_TEXTURE_FILTER_LINEAR_MIPMAP_NEAREST:
         min = vk::Filter::eLinear;
         mip = vk::SamplerMipmapMode::eNearest;
         break;
-    case 9986:
+    case TG3_TEXTURE_FILTER_NEAREST_MIPMAP_LINEAR:
         min = vk::Filter::eNearest;
         mip = vk::SamplerMipmapMode::eLinear;
         break;
@@ -222,130 +216,55 @@ void TextureManager::init()
 {
     ZoneScopedN("TextureManager::init");
     log_info("init() started", "TextureManager");
-    const SamplerDesc def{
-        .minFilter = 9987,
-        .magFilter = 9729,
-        .wrapS = 10497,
-        .wrapT = 10497,
-        .heapIndex = descriptorManager.getSamplerDescriptorIndex(),
-    };
-    samplers.push_back(def);
-    samplerKeyToIndex[packSamplerKey(def.minFilter, def.magFilter, def.wrapS, def.wrapT)] = def.heapIndex;
+    // descriptor manager's default sampler serves the glTF default (trilinear, repeat)
+    samplerKeyToIndex[packSamplerKey(TG3_TEXTURE_FILTER_LINEAR_MIPMAP_LINEAR, TG3_TEXTURE_FILTER_LINEAR,
+                                     TG3_TEXTURE_WRAP_REPEAT, TG3_TEXTURE_WRAP_REPEAT)] =
+        descriptorManager.getSamplerDescriptorIndex();
+
+    ktxDeviceInfo.emplace();
+    if (ktxVulkanDeviceInfo_Construct(&*ktxDeviceInfo, *physicalDevice, *device, *graphicsQueue, *commandPool,
+                                      nullptr) != KTX_SUCCESS) {
+        ktxDeviceInfo.reset();
+        throw std::runtime_error("ktxVulkanDeviceInfo_Construct failed");
+    }
     log_info("Initialized", "TextureManager");
+}
+
+std::optional<uint32_t> TextureManager::cachedHeapIndex(const std::string& key) const
+{
+    const auto it = loadedTextures.find(key);
+    if (it == loadedTextures.end()) {
+        return std::nullopt;
+    }
+    return it->second.descriptorHeapIndex;
 }
 
 // High-level texture loader that chooses between KTX (fast GPU upload)
 // and a PNG/STB fallback. Caches loaded textures and returns a descriptor.
-uint32_t TextureManager::loadTexture(std::string texturePath)
-{
-    return loadTexture(std::move(texturePath), TextureColorSpace::Srgb);
-}
-
 uint32_t TextureManager::loadTexture(std::string texturePath, TextureColorSpace colorSpace)
 {
     ZoneScopedN("TextureManager::loadTexture");
     const std::string path = resolvePath(texturePath);
-    const std::string cacheKey = path + colorSpaceSuffix(colorSpace);
-    log_info(std::format("loadTexture() started for {}", path), "TextureManager");
-    if (loadedTextures.find(cacheKey) != loadedTextures.end()) {
-        log_info(std::format("Texture already loaded: {}", cacheKey), "TextureManager");
-        return loadedTextures[cacheKey].descriptorHeapIndex;
-    }
-    if (loadedTextures.find(path) != loadedTextures.end() && detectFormat(path) == TextureFormat::Ktx) {
-        return loadedTextures[path].descriptorHeapIndex;
-    }
-
     const TextureFormat fmt = detectFormat(path);
+    // KTX carries its own format, so both color spaces share one entry
+    const std::string cacheKey = fmt == TextureFormat::Ktx ? path : path + colorSpaceSuffix(colorSpace);
+    if (const auto cached = cachedHeapIndex(cacheKey)) {
+        log_info(std::format("Texture already loaded: {}", cacheKey), "TextureManager");
+        return *cached;
+    }
     log_info(std::format("loadTexture: {} → {}", path,
                          fmt == TextureFormat::Ktx ? "KTX/KTX2" :
                          fmt == TextureFormat::Png ? "PNG/STB" : "Unknown"), "TextureManager");
 
-    // ── KTX / KTX2 path ──────────────────────────────────
     if (fmt == TextureFormat::Ktx) {
-        // 1. Initialise KTX device-info block with raw Vulkan handles
-        ktxVulkanDeviceInfo vdi{};
-        const KTX_error_code ctorRes = ktxVulkanDeviceInfo_Construct(
-            &vdi,
-            *physicalDevice,
-            *device,
-            *graphicsQueue,
-            *commandPool,
-            nullptr);   // VkAllocationCallbacks
-
-        if (ctorRes != KTX_SUCCESS) {
-            throw std::runtime_error("ktxVulkanDeviceInfo_Construct failed");
-        }
-
-        // 2. Load the KTX file (auto-detects KTX1 vs KTX2)
-        ktxTexture* kTexture = nullptr;
-        KTX_error_code result = ktxTexture_CreateFromNamedFile(
-            path.c_str(),
-            KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
-            &kTexture);
-
-        if (result != KTX_SUCCESS || !kTexture) {
-            ktxVulkanDeviceInfo_Destruct(&vdi);
-            throw std::runtime_error("Failed to load KTX texture: " + path);
-        }
-
-        // 3. Upload to the GPU — ktx creates the VkImage + VkDeviceMemory
-        ktxVulkanTexture vkTex{};
-        result = ktxTexture_VkUpload(kTexture, &vdi, &vkTex);
-
-        // CPU-side KTX data no longer needed after upload
-        ktxTexture_Destroy(kTexture);
-        ktxVulkanDeviceInfo_Destruct(&vdi);
-
-        if (result != KTX_SUCCESS) {
-            throw std::runtime_error("Failed to upload KTX texture to GPU: " + path);
-        }
-
-        const VkFormat vkFormat  = vkTex.imageFormat;
-        const uint32_t width     = vkTex.width;
-        const uint32_t height    = vkTex.height;
-        const uint32_t levels    = vkTex.levelCount;
-
-        log_info(std::format("KTX texture uploaded: {}×{}, {} mips, format={}",
-                             width, height, levels, static_cast<uint32_t>(vkFormat)), "TextureManager");
-
-        // 4. Build a Vulkan-Hpp ImageView from the raw VkImage.
-        //    The ImageView does NOT own the image — ownership stays with
-        //    ktxVulkanTexture (cleanup via ktxVulkanTexture_Destruct).
-        TextureAsset asset{};
-        vk::ImageViewCreateInfo const viewInfo{
-            .image       = vk::Image(vkTex.image),   // non-owning wrapper
-            .viewType    = static_cast<vk::ImageViewType>(vkTex.viewType),
-            .format      = static_cast<vk::Format>(vkFormat),
-            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, levels, 0, 1}};
-        asset.textureImageView = vk::raii::ImageView(device, viewInfo);
-
-        descriptorManager.writeImageDescriptor(asset, viewInfo);
-
-        // 5. Cache: store the ktxVulkanTexture so we can destroy it later.
-        //    A production integration would likely keep a dedicated map of
-        //    raw Vulkan resources keyed by path.
-        //
-        //    TODO(integration): extend TextureAsset (or add a side-map) so
-        //    that the destructor calls ktxVulkanTexture_Destruct on the
-        //    stored ktxVulkanTexture handles.
-        loadedTextures[path] = std::move(asset);
-        return loadedTextures[path].descriptorHeapIndex;
+        return uploadKtx(path);
     }
 
-    // ── PNG / STB ────────────────────────────────────────
-    {
-        int texWidth = 0;
-        int texHeight = 0;
-        int texChannels = 0;
-        stbi_uc const* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-        if (!pixels) {
-            throw std::runtime_error("Failed to load texture via stb: " + path);
-        }
-        const uint32_t heapIndex =
-            uploadRgba8(cacheKey, pixels, texWidth, texHeight, rgbaFormat(colorSpace));
-        stbi_image_free(const_cast<stbi_uc*>(pixels));
-        return heapIndex;
-    }
+    int texWidth = 0;
+    int texHeight = 0;
+    int texChannels = 0;
+    StbPixels pixels(stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha), &stbi_image_free);
+    return uploadDecoded(cacheKey, std::move(pixels), texWidth, texHeight, colorSpace, "file");
 }
 
 uint32_t TextureManager::loadTextureFromMemory(std::string cacheKey, std::span<const uint8_t> bytes,
@@ -353,8 +272,8 @@ uint32_t TextureManager::loadTextureFromMemory(std::string cacheKey, std::span<c
 {
     ZoneScopedN("TextureManager::loadTextureFromMemory");
     cacheKey += colorSpaceSuffix(colorSpace);
-    if (loadedTextures.find(cacheKey) != loadedTextures.end()) {
-        return loadedTextures[cacheKey].descriptorHeapIndex;
+    if (const auto cached = cachedHeapIndex(cacheKey)) {
+        return *cached;
     }
     if (bytes.empty()) {
         throw std::runtime_error("Empty texture blob: " + cacheKey);
@@ -363,14 +282,10 @@ uint32_t TextureManager::loadTextureFromMemory(std::string cacheKey, std::span<c
     int texWidth = 0;
     int texHeight = 0;
     int texChannels = 0;
-    stbi_uc const* pixels = stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &texWidth, &texHeight,
-                                                  &texChannels, STBI_rgb_alpha);
-    if (!pixels) {
-        throw std::runtime_error(std::format("Failed to decode texture blob '{}' mime='{}'", cacheKey, mime));
-    }
-    const uint32_t heapIndex = uploadRgba8(cacheKey, pixels, texWidth, texHeight, rgbaFormat(colorSpace));
-    stbi_image_free(const_cast<stbi_uc*>(pixels));
-    return heapIndex;
+    StbPixels pixels(stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &texWidth, &texHeight,
+                                           &texChannels, STBI_rgb_alpha),
+                     &stbi_image_free);
+    return uploadDecoded(cacheKey, std::move(pixels), texWidth, texHeight, colorSpace, mime);
 }
 
 uint32_t TextureManager::loadTextureFromPixels(std::string cacheKey, std::span<const uint8_t> rgba, uint32_t width,
@@ -378,8 +293,8 @@ uint32_t TextureManager::loadTextureFromPixels(std::string cacheKey, std::span<c
 {
     ZoneScopedN("TextureManager::loadTextureFromPixels");
     cacheKey += colorSpaceSuffix(colorSpace);
-    if (loadedTextures.find(cacheKey) != loadedTextures.end()) {
-        return loadedTextures[cacheKey].descriptorHeapIndex;
+    if (const auto cached = cachedHeapIndex(cacheKey)) {
+        return *cached;
     }
     const size_t expected = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
     if (rgba.size() < expected) {
@@ -391,17 +306,18 @@ uint32_t TextureManager::loadTextureFromPixels(std::string cacheKey, std::span<c
 
 uint32_t TextureManager::getOrCreateSampler(int32_t minFilter, int32_t magFilter, int32_t wrapS, int32_t wrapT)
 {
+    // glTF: undefined filters are implementation-defined, undefined wrap is REPEAT
     if (minFilter < 0) {
-        minFilter = 9987;
+        minFilter = TG3_TEXTURE_FILTER_LINEAR_MIPMAP_LINEAR;
     }
     if (magFilter < 0) {
-        magFilter = 9729;
+        magFilter = TG3_TEXTURE_FILTER_LINEAR;
     }
     if (wrapS == 0) {
-        wrapS = 10497;
+        wrapS = TG3_TEXTURE_WRAP_REPEAT;
     }
     if (wrapT == 0) {
-        wrapT = 10497;
+        wrapT = TG3_TEXTURE_WRAP_REPEAT;
     }
 
     const uint64_t key = packSamplerKey(minFilter, magFilter, wrapS, wrapT);
@@ -412,15 +328,56 @@ uint32_t TextureManager::getOrCreateSampler(int32_t minFilter, int32_t magFilter
     const auto maxAniso = descriptorManager.capabilities.properties2.properties.limits.maxSamplerAnisotropy;
     const vk::SamplerCreateInfo samplerInfo = samplerInfoFromGltf(minFilter, magFilter, wrapS, wrapT, maxAniso);
     const uint32_t heapIndex = descriptorManager.writeSamplerDescriptor(samplerInfo);
-    samplers.push_back(SamplerDesc{
-        .minFilter = minFilter,
-        .magFilter = magFilter,
-        .wrapS = wrapS,
-        .wrapT = wrapT,
-        .heapIndex = heapIndex,
-    });
     samplerKeyToIndex[key] = heapIndex;
     return heapIndex;
+}
+
+uint32_t TextureManager::uploadKtx(const std::string& path)
+{
+    ZoneScopedN("TextureManager::uploadKtx");
+    // KTX1 vs KTX2 detected from the file header
+    ktxTexture* kTexture = nullptr;
+    KTX_error_code result =
+        ktxTexture_CreateFromNamedFile(path.c_str(), KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &kTexture);
+    if (result != KTX_SUCCESS || !kTexture) {
+        throw std::runtime_error("Failed to load KTX texture: " + path);
+    }
+
+    // libktx creates the VkImage + VkDeviceMemory; the CPU copy is no longer needed after upload
+    ktxVulkanTexture vkTex{};
+    result = ktxTexture_VkUpload(kTexture, &*ktxDeviceInfo, &vkTex);
+    ktxTexture_Destroy(kTexture);
+    if (result != KTX_SUCCESS) {
+        throw std::runtime_error("Failed to upload KTX texture to GPU: " + path);
+    }
+    ktxTextures.push_back(vkTex);
+
+    log_info(std::format("KTX texture uploaded: {}×{}, {} mips, format={}", vkTex.width, vkTex.height,
+                         vkTex.levelCount, static_cast<uint32_t>(vkTex.imageFormat)),
+             "TextureManager");
+
+    // non-owning view: the image stays with ktxTextures
+    TextureAsset asset{};
+    vk::ImageViewCreateInfo const viewInfo{
+        .image       = vk::Image(vkTex.image),
+        .viewType    = static_cast<vk::ImageViewType>(vkTex.viewType),
+        .format      = static_cast<vk::Format>(vkTex.imageFormat),
+        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, vkTex.levelCount, 0, 1}};
+    asset.textureImageView = vk::raii::ImageView(device, viewInfo);
+
+    descriptorManager.writeImageDescriptor(asset, viewInfo);
+    const uint32_t heapIndex = asset.descriptorHeapIndex;
+    loadedTextures.insert_or_assign(path, std::move(asset));
+    return heapIndex;
+}
+
+uint32_t TextureManager::uploadDecoded(const std::string& cacheKey, StbPixels pixels, int texWidth, int texHeight,
+                                       TextureColorSpace colorSpace, std::string_view origin)
+{
+    if (!pixels) {
+        throw std::runtime_error(std::format("Failed to decode texture '{}' from {}", cacheKey, origin));
+    }
+    return uploadRgba8(cacheKey, pixels.get(), texWidth, texHeight, rgbaFormat(colorSpace));
 }
 
 uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pixels, int texWidth, int texHeight,
@@ -430,7 +387,7 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
 
     vk::DeviceSize imageSize =
         static_cast<vk::DeviceSize>(texWidth) * static_cast<vk::DeviceSize>(texHeight) * 4;
-    mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
+    const uint32_t mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
 
     TextureAsset asset{};
     allocator.createImage2D(static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), mipLevels,
@@ -477,18 +434,15 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
         device.copyMemoryToImage(copyInfo);
     }
 
-    {
-        auto cmdBuffer = beginSingleTimeCommands(graphicsQueue);
-        transitionImageLayout(&cmdBuffer, *asset.textureImage, hostDstLayout,
-                              vk::ImageLayout::eTransferDstOptimal,
-                              {vk::ImageAspectFlagBits::eColor, 0, mipLevels, 0, 1},
-                              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eHost,
-                              vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eHostWrite,
-                              vk::AccessFlagBits2::eTransferWrite);
-        submitAndWait(cmdBuffer, graphicsQueue);
-    }
-
-    generateMipmaps(asset.textureImage, format, texWidth, texHeight, mipLevels);
+    // host-written level 0 → TransferDst, then the blit chain: one submit per texture
+    auto commandBuffer = beginSingleTimeCommands();
+    transitionImageLayout(&commandBuffer, *asset.textureImage, hostDstLayout, vk::ImageLayout::eTransferDstOptimal,
+                          {vk::ImageAspectFlagBits::eColor, 0, mipLevels, 0, 1}, VK_QUEUE_FAMILY_IGNORED,
+                          VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eHost,
+                          vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eHostWrite,
+                          vk::AccessFlagBits2::eTransferWrite);
+    generateMipmaps(commandBuffer, asset.textureImage, format, texWidth, texHeight, mipLevels);
+    submitAndWait(commandBuffer, graphicsQueue);
 
     vk::ImageViewCreateInfo viewInfo{
         .image = asset.textureImage,
@@ -498,20 +452,20 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
     asset.textureImageView = vk::raii::ImageView(device, viewInfo);
 
     descriptorManager.writeImageDescriptor(asset, viewInfo);
-    loadedTextures[cacheKey] = std::move(asset);
+    const uint32_t heapIndex = asset.descriptorHeapIndex;
+    loadedTextures.insert_or_assign(cacheKey, std::move(asset));
 
     log_info(std::format("STB texture loaded: {}×{}, {} mips (hostImageCopy) key={}", texWidth, texHeight, mipLevels,
                          cacheKey),
              "TextureManager");
-    return loadedTextures[cacheKey].descriptorHeapIndex;
+    return heapIndex;
 }
 
-// Allocate and begin a short-lived command buffer for immediate-submit
+// Allocate and begin a short-lived graphics command buffer for immediate-submit
 // operations (one-time use), returned in recording state.
-vk::raii::CommandBuffer TextureManager::beginSingleTimeCommands(const vk::raii::Queue& queue)
+vk::raii::CommandBuffer TextureManager::beginSingleTimeCommands()
 {
     ZoneScopedN("TextureManager::beginSingleTimeCommands");
-    log_info("beginSingleTimeCommands() started", "TextureManager");
     vk::CommandBufferAllocateInfo allocInfo{
         .commandPool = commandPool, .level = vk::CommandBufferLevel::ePrimary, .commandBufferCount = 1};
     auto commandBuffers = device.allocateCommandBuffers(allocInfo);
@@ -523,6 +477,7 @@ vk::raii::CommandBuffer TextureManager::beginSingleTimeCommands(const vk::raii::
 
 
 // Generate mipmaps on the GPU by successively blitting between mip levels.
+// Records into commandBuffer; all levels must be in TransferDst on entry.
 // Layout strategy (avoids BestPractices-PipelineBarrier-readToReadBarrier):
 //   - Each level is written as TransferDst (base copy or blit destination).
 //   - Only promote TransferDst → TransferSrc when that level is about to be a blit source
@@ -532,18 +487,16 @@ vk::raii::CommandBuffer TextureManager::beginSingleTimeCommands(const vk::raii::
 //     already-read levels, one barrier covers TransferSrc → ShaderReadOnly (layout change;
 //     availability of the original TransferWrite was established by the earlier Dst→Src
 //     barriers + transfer execution dependency). No per-mip TransferSrc→ShaderRead in the loop.
-void TextureManager::generateMipmaps(vk::raii::Image& image, vk::Format imageFormat, int32_t texWidth,
-                                     int32_t texHeight, uint32_t mipLevelsIn)
+void TextureManager::generateMipmaps(vk::raii::CommandBuffer& commandBuffer, vk::raii::Image& image,
+                                     vk::Format imageFormat, int32_t texWidth, int32_t texHeight,
+                                     uint32_t mipLevelsIn)
 {
     ZoneScopedN("TextureManager::generateMipmaps");
-    log_info("generateMipmaps() started", "TextureManager");
     vk::FormatProperties formatProperties = physicalDevice.getFormatProperties2(imageFormat).formatProperties;
     if (!(formatProperties.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImageFilterLinear))
     {
         throw std::runtime_error("Texture image format does not support linear blitting!");
     }
-
-    auto commandBuffer = beginSingleTimeCommands(graphicsQueue);
 
     int32_t mipWidth = texWidth;
     int32_t mipHeight = texHeight;
@@ -630,6 +583,4 @@ void TextureManager::generateMipmaps(vk::raii::Image& image, vk::Format imageFor
         const vk::DependencyInfo dep{.imageMemoryBarrierCount = 2, .pImageMemoryBarriers = barriers};
         commandBuffer.pipelineBarrier2(dep);
     }
-
-    submitAndWait(commandBuffer, graphicsQueue);
 }

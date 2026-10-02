@@ -12,6 +12,8 @@
 #include "vk_descriptors.hpp"
 #include "ktxvulkan.h"
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -35,8 +37,7 @@ public:
     // Format-detecting texture loader.
     // Inspects the file extension and routes to the KTX or
     // stb (PNG/etc.) pipeline accordingly.
-    [[nodiscard]] uint32_t loadTexture(std::string texturePath);
-    [[nodiscard]] uint32_t loadTexture(std::string texturePath, TextureColorSpace colorSpace);
+    [[nodiscard]] uint32_t loadTexture(std::string texturePath, TextureColorSpace colorSpace = TextureColorSpace::Srgb);
     [[nodiscard]] uint32_t loadTextureFromMemory(std::string cacheKey, std::span<const uint8_t> bytes,
                                                  std::string_view mime, TextureColorSpace colorSpace);
     [[nodiscard]] uint32_t loadTextureFromPixels(std::string cacheKey, std::span<const uint8_t> rgba, uint32_t width,
@@ -50,24 +51,32 @@ public:
     const vk::raii::PhysicalDevice &physicalDevice;
     const vk::raii::Device &device;
     const vk::raii::Queue &graphicsQueue;
-    const vk::raii::Queue &transferQueue;
     uint32_t graphicsQueueFamilyIndex;
 
     std::unordered_map<std::string, TextureAsset> loadedTextures;
-    std::vector<SamplerDesc> samplers;
     vk::raii::CommandPool commandPool = nullptr;
-    vk::ImageViewCreateInfo textureImageViewCreateInfo;
-    uint32_t mipLevels = 0;
 
 private:
-    // Resolve a path relative to the executable directory if it's a relative path
+    // stb RGBA8 pixels, freed on scope exit even when the upload throws
+    using StbPixels = std::unique_ptr<unsigned char, void (*)(void*)>;
+
+    // Resolve a relative path against the current working directory
     [[nodiscard]] std::string resolvePath(std::string_view path);
+    [[nodiscard]] std::optional<uint32_t> cachedHeapIndex(const std::string &key) const;
 
-    auto beginSingleTimeCommands(const vk::raii::Queue &queue) -> vk::raii::CommandBuffer;
-    void generateMipmaps(vk::raii::Image &image, vk::Format imageFormat, int32_t texWidth, int32_t texHeight,
-                         uint32_t mipLevels);
+    auto beginSingleTimeCommands() -> vk::raii::CommandBuffer;
+    void generateMipmaps(vk::raii::CommandBuffer &commandBuffer, vk::raii::Image &image, vk::Format imageFormat,
+                         int32_t texWidth, int32_t texHeight, uint32_t mipLevels);
 
+    [[nodiscard]] uint32_t uploadKtx(const std::string &path);
+    // origin names the source in the decode error (file / mime type)
+    [[nodiscard]] uint32_t uploadDecoded(const std::string &cacheKey, StbPixels pixels, int texWidth, int texHeight,
+                                         TextureColorSpace colorSpace, std::string_view origin);
     [[nodiscard]] uint32_t uploadRgba8(const std::string& cacheKey, const void* pixels, int texWidth, int texHeight,
                                        vk::Format format);
     std::unordered_map<uint64_t, uint32_t> samplerKeyToIndex;
+
+    // libktx owns these images and their device memory (not VMA); destructed after the views
+    std::vector<ktxVulkanTexture> ktxTextures;
+    std::optional<ktxVulkanDeviceInfo> ktxDeviceInfo;
 };
