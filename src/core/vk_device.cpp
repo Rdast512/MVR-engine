@@ -6,24 +6,28 @@
  *   - Vulkan instance creation with SDL3 WSI extensions and optional validation
  *   - VK_EXT_debug_utils messenger registration for validation layer output
  *   - Window-surface creation via SDL3
- *   - Physical-device scoring and selection
+ *   - Physical-device selection: required extensions/features, then scoring
  *   - Logical-device creation with an exhaustive feature chain (Vulkan 1.1–1.4 +
  *     ray-tracing, mesh shaders, shader objects, present-timing, etc.)
  *   - Queue family resolution with fallback strategies for transfer and compute
  */
 #include "vk_device.hpp"
 #include <array>
+#include <bit>
 #include <format>
+#include <optional>
+#include <span>
 #include <string_view>
 #include "../static_headers/logger.hpp"
 #include "../util/debug.hpp"
 #include "util/vk_tracy.hpp"
 #include "vulkan/vulkan.hpp"
-/// Validation layer requested when enableValidationLayers is true.
-const std::vector validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
 namespace
 {
+// Requested when enableValidationLayers is true.
+constexpr std::array kValidationLayers = {"VK_LAYER_KHRONOS_validation"};
+
 // Promoted-to-core extensions are enabled through Vulkan1xFeatures and must not be listed here,
 // see docs/vulkan_extensions_reference.md "Promoted-to-Core Features".
 // Optional extensions (NV) are appended in createLogicalDevice when supported.
@@ -66,10 +70,79 @@ constexpr std::array kRequiredDeviceExtensions = {
     vk::EXTExtendedDynamicState3ExtensionName,
 };
 
+using QueueFamilyChain = vk::StructureChain<vk::QueueFamilyProperties2, vk::QueueFamilyOwnershipTransferPropertiesKHR>;
+
 [[nodiscard]] bool isExtensionSupported(const std::vector<vk::ExtensionProperties>& available, std::string_view name)
 {
     return std::ranges::any_of(available, [name](const vk::ExtensionProperties& extension)
                                { return name == extension.extensionName.data(); });
+}
+
+// Comma-separated list of unmet requirements; empty when the GPU is usable.
+// Other feature bits are still enforced by vkCreateDevice.
+[[nodiscard]] std::string missingRequirements(const vk::raii::PhysicalDevice& device)
+{
+    std::string missing;
+    const auto append = [&missing](std::string_view requirement)
+    { missing += std::format("{}{}", missing.empty() ? "" : ", ", requirement); };
+
+    const std::vector<vk::ExtensionProperties> available = device.enumerateDeviceExtensionProperties();
+    for (const char* extension : kRequiredDeviceExtensions) {
+        if (!isExtensionSupported(available, extension)) {
+            append(extension);
+        }
+    }
+    if (!device.getFeatures2().features.geometryShader) {
+        append("geometryShader");
+    }
+    // the descriptor heap feature struct may only be queried when its extension exists
+    if (isExtensionSupported(available, vk::EXTDescriptorHeapExtensionName) &&
+        !device.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceDescriptorHeapFeaturesEXT>()
+             .get<vk::PhysicalDeviceDescriptorHeapFeaturesEXT>()
+             .descriptorHeap) {
+        append("descriptorHeap");
+    }
+    return missing;
+}
+
+// First family accepted by the predicate (index, flags).
+template <typename Predicate>
+[[nodiscard]] std::optional<uint32_t> findFamilyIf(std::span<const vk::QueueFamilyProperties> families,
+                                                   Predicate accept)
+{
+    for (uint32_t family = 0; family < families.size(); ++family) {
+        if (accept(family, families[family].queueFlags)) {
+            return family;
+        }
+    }
+    return std::nullopt;
+}
+
+// First family with all required flags and none of the excluded ones.
+[[nodiscard]] std::optional<uint32_t> findFamily(std::span<const vk::QueueFamilyProperties> families,
+                                                 vk::QueueFlags required, vk::QueueFlags excluded = {})
+{
+    return findFamilyIf(families, [=](uint32_t, vk::QueueFlags flags)
+                        { return (flags & required) == required && !(flags & excluded); });
+}
+
+void logQueueFamilies(std::span<const QueueFamilyChain> chains)
+{
+    for (uint32_t family = 0; family < chains.size(); ++family) {
+        const vk::QueueFamilyProperties& properties =
+            chains[family].get<vk::QueueFamilyProperties2>().queueFamilyProperties;
+        const uint32_t transferTargets =
+            chains[family].get<vk::QueueFamilyOwnershipTransferPropertiesKHR>().optimalImageTransferToQueueFamilies;
+        std::string targets;
+        for (uint32_t target = 0; target < 32; ++target) {
+            if (transferTargets & (1u << target)) {
+                targets += std::format("{}{}", targets.empty() ? "" : ",", target);
+            }
+        }
+        log_info(std::format("Queue family {}: count={} flags={} optimalImageTransferTo=[{}]", family,
+                             properties.queueCount, vk::to_string(properties.queueFlags), targets),
+                 "Device");
+    }
 }
 } // namespace
 
@@ -101,48 +174,41 @@ void Device::createInstance()
                                           .engineVersion = VK_MAKE_VERSION(1, 0, 0),
                                           .apiVersion = vk::ApiVersion14};
 
+    // WSI extensions required by SDL3 (e.g. VK_KHR_surface, VK_KHR_win32_surface)
+    Uint32 sdlExtensionCount = 0;
+    const char* const* sdlExtensions = SDL_Vulkan_GetInstanceExtensions(&sdlExtensionCount);
 
-    // Retrieve the WSI extensions required by SDL3 (e.g. VK_KHR_surface, VK_KHR_win32_surface).
-    Uint32 count_instance_extensions;
-    const char* const* instance_extensions = SDL_Vulkan_GetInstanceExtensions(&count_instance_extensions);
-
-    auto extensionProperties = context.enumerateInstanceExtensionProperties();
-
-    // Verify every SDL3-required extension is advertised by the Vulkan loader before
-    // attempting to enable it; fail early with a descriptive message if one is missing.
-    for (uint32_t i = 0; i < count_instance_extensions; ++i) {
-        if (std::ranges::none_of(extensionProperties,
-                                 [glfwExtension = instance_extensions[i]](auto const& extensionProperty) -> auto
-                                 { return strcmp(extensionProperty.extensionName, glfwExtension) == 0; })) {
-            throw std::runtime_error("Required SDL3 extension not supported: " + std::string(instance_extensions[i]));
+    // fail early with the missing name instead of a generic instance-creation error
+    const std::vector<vk::ExtensionProperties> extensionProperties = context.enumerateInstanceExtensionProperties();
+    for (uint32_t i = 0; i < sdlExtensionCount; ++i) {
+        if (!isExtensionSupported(extensionProperties, sdlExtensions[i])) {
+            throw std::runtime_error("Required SDL3 extension not supported: " + std::string(sdlExtensions[i]));
         }
     }
-    std::cout << "available Instance extensions:\n";
-    for (const auto& extension : extensionProperties) {
-        std::cout << "  " << extension.extensionName << std::endl;
-    }
-    // Seed the extension list with the SDL3-required surface extensions, then append
-    // engine-specific ones.  EXT_debug_utils is always enabled (not just for validation
-    // mode) so that debug labels and object names work in RenderDoc / NVIDIA Nsight.
-    std::vector extensions(instance_extensions, instance_extensions + count_instance_extensions);
-    extensions.push_back(vk::EXTDebugUtilsExtensionName);
-    // The following instance extensions are required by KHR_swapchain_maintenance1 and
-    // must be promoted to instance scope before the logical device is created.
-    extensions.push_back(vk::KHRDisplayExtensionName);
-    extensions.push_back(vk::KHRSurfaceMaintenance1ExtensionName);
-    extensions.push_back(vk::KHRGetDisplayProperties2ExtensionName);
-    extensions.push_back(vk::KHRGetSurfaceCapabilities2ExtensionName);
 
-    std::cout << "enabled Instance extensions:\n";
-    for (const auto& extension : extensions) {
-        std::cout << "  " << extension << std::endl;
+    std::vector<const char*> extensions(sdlExtensions, sdlExtensions + sdlExtensionCount);
+    extensions.insert(extensions.end(),
+                      {
+                          // always on, not only with validation: object names and labels for RenderDoc / Nsight
+                          vk::EXTDebugUtilsExtensionName,
+                          // instance side of KHR_swapchain_maintenance1
+                          vk::KHRDisplayExtensionName,
+                          vk::KHRSurfaceMaintenance1ExtensionName,
+                          vk::KHRGetDisplayProperties2ExtensionName,
+                          vk::KHRGetSurfaceCapabilities2ExtensionName,
+                      });
+    std::string enabledNames;
+    for (const char* extension : extensions) {
+        enabledNames += std::format("{}{}", enabledNames.empty() ? "" : ", ", extension);
     }
+    log_info(std::format("Enabled instance extensions: {}", enabledNames), "Device");
+
     // Conditionally request the Khronos validation layer.  Enumerate available layers
     // first and bail out immediately if any requested layer is not present, rather than
     // letting the driver produce a cryptic error later.
     std::vector<char const*> requiredLayers;
     if (enableValidationLayers) {
-        requiredLayers.assign(validationLayers.begin(), validationLayers.end());
+        requiredLayers.assign(kValidationLayers.begin(), kValidationLayers.end());
     }
     auto layerProperties = context.enumerateInstanceLayerProperties();
     if (std::ranges::any_of(requiredLayers,
@@ -225,34 +291,12 @@ void Device::createSurface()
     surface = vk::raii::SurfaceKHR(instance, _surface);
 }
 
-vk::SampleCountFlagBits Device::getMaxUsableSampleCount()
+vk::SampleCountFlagBits Device::getMaxUsableSampleCount() const
 {
-    vk::PhysicalDeviceProperties physicalDeviceProperties = physicalDevice.getProperties2().properties;
-
-    // Intersect colour and depth sample-count bitmasks: only counts supported by
-    // both attachment types are usable for combined colour+depth MSAA render passes.
-    vk::SampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts &
-        physicalDeviceProperties.limits.framebufferDepthSampleCounts;
-    if (counts & vk::SampleCountFlagBits::e64) {
-        return vk::SampleCountFlagBits::e64;
-    }
-    if (counts & vk::SampleCountFlagBits::e32) {
-        return vk::SampleCountFlagBits::e32;
-    }
-    if (counts & vk::SampleCountFlagBits::e16) {
-        return vk::SampleCountFlagBits::e16;
-    }
-    if (counts & vk::SampleCountFlagBits::e8) {
-        return vk::SampleCountFlagBits::e8;
-    }
-    if (counts & vk::SampleCountFlagBits::e4) {
-        return vk::SampleCountFlagBits::e4;
-    }
-    if (counts & vk::SampleCountFlagBits::e2) {
-        return vk::SampleCountFlagBits::e2;
-    }
-
-    return vk::SampleCountFlagBits::e1;
+    const vk::PhysicalDeviceLimits& limits = capabilities.properties2.properties.limits;
+    // only counts usable by both attachment types; e1 is always set, so bit_floor is never 0
+    const vk::SampleCountFlags counts = limits.framebufferColorSampleCounts & limits.framebufferDepthSampleCounts;
+    return static_cast<vk::SampleCountFlagBits>(std::bit_floor(static_cast<uint32_t>(counts)));
 }
 
 
@@ -260,203 +304,66 @@ void Device::pickPhysicalDevice()
 {
     ZoneScopedN("Device::pickPhysicalDevice");
     auto devices = instance.enumeratePhysicalDevices();
-    if (devices.empty()) {
-        throw std::runtime_error("failed to find GPUs with Vulkan support!");
-    }
 
-    // Score every enumerated device and keep them sorted in a multimap so the
-    // highest-scoring one can be retrieved with a single rbegin() call.
-    std::multimap<int, vk::raii::PhysicalDevice> candidates;
-    for (const auto& device : devices) {
-        auto props2 = device.getProperties2();
-        auto deviceProperties = props2.properties;
-        auto features2 = device.getFeatures2();
-        deviceFeatures = features2.features;
-        uint32_t score = 0;
-
-        // Discrete GPUs have a significant performance advantage over integrated ones.
-        if (deviceProperties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu) {
-            score += 1000;
-        }
-
-        // Higher max texture dimension generally correlates with a more capable GPU.
-        score += deviceProperties.limits.maxImageDimension2D;
-
-        // Geometry shaders are required by the engine's rendering pipeline.
-        if (!deviceFeatures.geometryShader) {
+    std::optional<size_t> bestIndex;
+    uint32_t bestScore = 0;
+    for (size_t i = 0; i < devices.size(); ++i) {
+        const vk::PhysicalDeviceProperties properties = devices[i].getProperties2().properties;
+        const std::string_view name = properties.deviceName.data();
+        if (const std::string missing = missingRequirements(devices[i]); !missing.empty()) {
+            log_info(std::format("Skipping GPU {}: missing {}", name, missing), "Device");
             continue;
         }
-        candidates.insert(std::make_pair(score, device));
+        // discrete first; max texture size as a rough capability tiebreak
+        const uint32_t score = (properties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu ? 1000u : 0u) +
+            properties.limits.maxImageDimension2D;
+        if (!bestIndex || score > bestScore) {
+            bestIndex = i;
+            bestScore = score;
+        }
     }
-    if (candidates.rbegin()->first > 0) {
-        physicalDevice = candidates.rbegin()->second;
-    } else {
-        throw std::runtime_error("failed to find a suitable GPU!");
+    if (!bestIndex) {
+        throw std::runtime_error("No GPU supports the required Vulkan extensions and features (see log)");
     }
-    auto ret = physicalDevice.getQueueFamilyProperties2();
-
+    physicalDevice = devices[*bestIndex];
     log_info(std::format("Using physical device: {}",
                          std::string_view(physicalDevice.getProperties2().properties.deviceName.data())),
              "Device");
-    log_info(std::format("Queue amount: {}", ret.size()), "Device");
-    for (const auto& qfp : ret) {
-        const bool graphics =
-            (qfp.queueFamilyProperties.queueFlags & vk::QueueFlagBits::eGraphics) != static_cast<vk::QueueFlags>(0);
-        const bool compute =
-            (qfp.queueFamilyProperties.queueFlags & vk::QueueFlagBits::eCompute) != static_cast<vk::QueueFlags>(0);
-        const bool transfer =
-            (qfp.queueFamilyProperties.queueFlags & vk::QueueFlagBits::eTransfer) != static_cast<vk::QueueFlags>(0);
-        log_info(std::format("Queue family count: {} graphics: {} compute: {} transfer: {}",
-                             qfp.queueFamilyProperties.queueCount, graphics, compute, transfer),
-                 "Device");
-    }
 }
 
-void Device::findQueueFamilies(const std::vector<vk::QueueFamilyProperties2>& queueFamilyProperties2)
+void Device::findQueueFamilies(std::span<const vk::QueueFamilyProperties> families)
 {
-    // --- Graphics queue -------------------------------------------------
-    // Pick the first queue family that advertises graphics support.  On virtually
-    // every desktop GPU this will be family 0.
-    auto graphicsQueueFamilyProperty =
-        std::ranges::find_if(queueFamilyProperties2,
-                             [](auto const& qfp)
-                             {
-                                 return (qfp.queueFamilyProperties.queueFlags & vk::QueueFlagBits::eGraphics) !=
-                                     static_cast<vk::QueueFlags>(0);
-                             });
-    graphicsIndex = static_cast<uint32_t>(std::distance(queueFamilyProperties2.begin(), graphicsQueueFamilyProperty));
+    const auto supportsPresent = [this](uint32_t family)
+    { return physicalDevice.getSurfaceSupportKHR(family, *surface) == vk::True; };
 
-    // --- Present queue --------------------------------------------------
-    // Prefer sharing the graphics queue for present to avoid unnecessary ownership
-    // transfers; fall back to any family that supports present if needed.
-    presentIndex = physicalDevice.getSurfaceSupportKHR(graphicsIndex, *surface)
-        ? graphicsIndex
-        : static_cast<uint32_t>(queueFamilyProperties2.size());
-    if (presentIndex == queueFamilyProperties2.size()) {
-        for (size_t i = 0; i < queueFamilyProperties2.size(); i++) {
-            if ((queueFamilyProperties2[i].queueFamilyProperties.queueFlags & vk::QueueFlagBits::eGraphics) &&
-                physicalDevice.getSurfaceSupportKHR(static_cast<uint32_t>(i), *surface)) {
-                graphicsIndex = static_cast<uint32_t>(i);
-                presentIndex = graphicsIndex;
-                break;
-            }
-        }
-        if (presentIndex == queueFamilyProperties2.size()) {
-            for (size_t i = 0; i < queueFamilyProperties2.size(); i++) {
-                if (physicalDevice.getSurfaceSupportKHR(static_cast<uint32_t>(i), *surface)) {
-                    presentIndex = static_cast<uint32_t>(i);
-                    break;
-                }
-            }
-        }
+    // one family for graphics + present avoids an ownership transfer before present
+    const std::optional<uint32_t> graphicsPresent =
+        findFamilyIf(families, [&](uint32_t family, vk::QueueFlags flags)
+                     { return (flags & vk::QueueFlagBits::eGraphics) && supportsPresent(family); });
+    const std::optional<uint32_t> graphics =
+        graphicsPresent ? graphicsPresent : findFamily(families, vk::QueueFlagBits::eGraphics);
+    const std::optional<uint32_t> present =
+        graphicsPresent ? graphicsPresent
+                        : findFamilyIf(families, [&](uint32_t family, vk::QueueFlags) { return supportsPresent(family); });
+    if (!graphics || !present) {
+        throw std::runtime_error("Could not find a queue family for graphics or present");
     }
-    if ((graphicsIndex == queueFamilyProperties2.size()) || (presentIndex == queueFamilyProperties2.size())) {
-        throw std::runtime_error("Could not find a queue for graphics or present -> terminating");
-    }
+    graphicsIndex = *graphics;
+    presentIndex = *present;
 
-    // --- Transfer queue -------------------------------------------------
-    // Prefer a dedicated DMA queue (transfer-only family) for async uploads and
-    // buffer copies; these bypass graphics pipeline scheduling on AMD/NVIDIA.
-    transferIndex = static_cast<uint32_t>(queueFamilyProperties2.size()); // sentinel = "not found"
-    for (size_t i = 0; i < queueFamilyProperties2.size(); i++) {
-        if ((queueFamilyProperties2[i].queueFamilyProperties.queueFlags & vk::QueueFlagBits::eTransfer) &&
-            !(queueFamilyProperties2[i].queueFamilyProperties.queueFlags & vk::QueueFlagBits::eGraphics)) {
-            transferIndex = static_cast<uint32_t>(i);
-            break;
-        }
-    }
-
-    // --- Compute queue --------------------------------------------------
-    // Prefer a dedicated async-compute family (no graphics flag) to allow compute
-    // work to overlap with in-flight graphics frames on supporting hardware.
-    computeIndex = static_cast<uint32_t>(queueFamilyProperties2.size()); // sentinel = "not found"
-    for (size_t i = 0; i < queueFamilyProperties2.size(); i++) {
-        const auto flags = queueFamilyProperties2[i].queueFamilyProperties.queueFlags;
-        if ((flags & vk::QueueFlagBits::eCompute) && !(flags & vk::QueueFlagBits::eGraphics)) {
-            computeIndex = static_cast<uint32_t>(i);
-            break;
-        }
-    }
-
-    // --- Fallback: shared transfer+compute ---------------------------------
-    // If either a dedicated transfer or compute family was not found, attempt to
-    // find a non-graphics family that supports both operations together (common on
-    // Qualcomm / Intel integrated).  If that also fails, fall all the way back to
-    // the graphics queue so the indices are always valid.
-    if (transferIndex == static_cast<uint32_t>(queueFamilyProperties2.size()) ||
-        computeIndex == static_cast<uint32_t>(queueFamilyProperties2.size())) {
-        uint32_t sharedTransferComputeIndex = static_cast<uint32_t>(queueFamilyProperties2.size());
-
-        // Pass 1: non-graphics family that can do both transfer and compute.
-        for (size_t i = 0; i < queueFamilyProperties2.size(); i++) {
-            const auto flags = queueFamilyProperties2[i].queueFamilyProperties.queueFlags;
-            const bool supportsTransfer = (flags & vk::QueueFlagBits::eTransfer) != static_cast<vk::QueueFlags>(0);
-            const bool supportsCompute = (flags & vk::QueueFlagBits::eCompute) != static_cast<vk::QueueFlags>(0);
-            const bool supportsGraphics = (flags & vk::QueueFlagBits::eGraphics) != static_cast<vk::QueueFlags>(0);
-            if (supportsTransfer && supportsCompute && !supportsGraphics) {
-                sharedTransferComputeIndex = static_cast<uint32_t>(i);
-                break;
-            }
-        }
-
-        // Pass 2: any family (including graphics) that supports both.
-        if (sharedTransferComputeIndex == static_cast<uint32_t>(queueFamilyProperties2.size())) {
-            for (size_t i = 0; i < queueFamilyProperties2.size(); i++) {
-                const auto flags = queueFamilyProperties2[i].queueFamilyProperties.queueFlags;
-                const bool supportsTransfer = (flags & vk::QueueFlagBits::eTransfer) != static_cast<vk::QueueFlags>(0);
-                const bool supportsCompute = (flags & vk::QueueFlagBits::eCompute) != static_cast<vk::QueueFlags>(0);
-                if (supportsTransfer && supportsCompute) {
-                    sharedTransferComputeIndex = static_cast<uint32_t>(i);
-                    break;
-                }
-            }
-        }
-
-        // Pass 3: last resort – share the graphics queue.
-        if (sharedTransferComputeIndex == static_cast<uint32_t>(queueFamilyProperties2.size())) {
-            sharedTransferComputeIndex = graphicsIndex;
-        }
-
-        transferIndex = sharedTransferComputeIndex;
-        computeIndex = sharedTransferComputeIndex;
-    }
+    // Dedicated (non-graphics) families let uploads and async compute overlap the frame.
+    // Only a missing one falls back: shared non-graphics transfer+compute, any transfer+compute, graphics.
+    const vk::QueueFlags transferCompute = vk::QueueFlagBits::eTransfer | vk::QueueFlagBits::eCompute;
+    const uint32_t shared = findFamily(families, transferCompute, vk::QueueFlagBits::eGraphics)
+                                .or_else([&] { return findFamily(families, transferCompute); })
+                                .value_or(graphicsIndex);
+    transferIndex = findFamily(families, vk::QueueFlagBits::eTransfer, vk::QueueFlagBits::eGraphics).value_or(shared);
+    computeIndex = findFamily(families, vk::QueueFlagBits::eCompute, vk::QueueFlagBits::eGraphics).value_or(shared);
 }
 
-void Device::createLogicalDevice()
+void Device::queryCapabilities()
 {
-    ZoneScopedN("Device::createLogicalDevice");
-    auto queueFamilyProperties2 = physicalDevice.getQueueFamilyProperties2();
-    using PropsChain = vk::StructureChain<vk::QueueFamilyProperties2, vk::QueueFamilyOwnershipTransferPropertiesKHR>;
-    // One-liner query
-    std::vector<PropsChain> queueFamilyProps = physicalDevice.getQueueFamilyProperties2<PropsChain>();
-    findQueueFamilies(queueFamilyProperties2);
-
-    for (size_t i = 0; i < queueFamilyProps.size(); ++i) {
-        const auto& props = queueFamilyProps[i].get<vk::QueueFamilyOwnershipTransferPropertiesKHR>();
-        log_info(std::format("Queue family {} ownership properties:", i), "Device");
-        auto mask = props.optimalImageTransferToQueueFamilies;
-        std::string out = std::format("optimalImageTransferToQueueFamilies: 0x{:x} (dec {}) binary {}\n", mask, mask,
-                                      std::bitset<32>(mask).to_string());
-        // Collect set indices (portable)
-        std::vector<uint32_t> setIndices;
-        for (uint32_t i = 0; i < queueFamilyProperties2.size() && i < 32; ++i) {
-            if (mask & (1u << i))
-                setIndices.push_back(i);
-        }
-
-        if (setIndices.empty()) {
-            out += "  -> no queue families set\n";
-        } else {
-            out += "  -> queue family indices: ";
-            for (size_t j = 0; j < setIndices.size(); ++j) {
-                if (j)
-                    out += ", ";
-                out += std::format("{}", setIndices[j]);
-            }
-        }
-        log_info(out, "Device");
-    }
-
+    ZoneScopedN("Device::queryCapabilities");
     const std::vector<vk::ExtensionProperties> availableExtensions =
         physicalDevice.enumerateDeviceExtensionProperties();
     capabilities.hasClusterAccelerationStructure =
@@ -594,19 +501,26 @@ void Device::createLogicalDevice()
         propertiesChain.get<vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV>();
     capabilities.clusterAccelerationStructure =
         propertiesChain.get<vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV>();
+}
 
-    const auto descriptorHeapFeatureQuery =
-        physicalDevice.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceDescriptorHeapFeaturesEXT>();
-    const bool descriptorHeapFeatureSupported =
-        descriptorHeapFeatureQuery.get<vk::PhysicalDeviceDescriptorHeapFeaturesEXT>().descriptorHeap == vk::True;
-    descriptorBindingMode =
-        descriptorHeapFeatureSupported ? DescriptorBindingMode::DescriptorHeaps : DescriptorBindingMode::LegacySets;
+void Device::createLogicalDevice()
+{
+    ZoneScopedN("Device::createLogicalDevice");
+    const std::vector<QueueFamilyChain> queueFamilyChains =
+        physicalDevice.getQueueFamilyProperties2<QueueFamilyChain>();
+    logQueueFamilies(queueFamilyChains);
+    std::vector<vk::QueueFamilyProperties> families;
+    families.reserve(queueFamilyChains.size());
+    for (const QueueFamilyChain& chain : queueFamilyChains) {
+        families.push_back(chain.get<vk::QueueFamilyProperties2>().queueFamilyProperties);
+    }
+    findQueueFamilies(families);
+
+    queryCapabilities();
 
     // Build a pNext feature chain covering every extension the engine depends on.
     // Each structure is zero-initialised by default; only fields set to `true` here
     // are required – the driver will reject device creation if any are unsupported.
-    // query for Vulkan features
-
     vk::StructureChain<
         vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features, vk::PhysicalDeviceVulkan12Features,
         vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceVulkan14Features,
@@ -616,14 +530,13 @@ void Device::createLogicalDevice()
         vk::PhysicalDeviceMeshShaderFeaturesEXT, vk::PhysicalDeviceDeviceGeneratedCommandsFeaturesEXT,
         vk::PhysicalDeviceMemoryPriorityFeaturesEXT,
         vk::PhysicalDeviceMemoryDecompressionFeaturesEXT, vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT,
-        vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT,
         vk::PhysicalDevicePresentTimingFeaturesEXT, vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT,
-        vk::PhysicalDeviceTexelBufferAlignmentFeaturesEXT, vk::PhysicalDeviceOpacityMicromapFeaturesEXT, vk::PhysicalDeviceShaderObjectFeaturesEXT,
+        vk::PhysicalDeviceOpacityMicromapFeaturesEXT, vk::PhysicalDeviceShaderObjectFeaturesEXT,
         // KHR
         vk::PhysicalDeviceFragmentShadingRateFeaturesKHR, vk::PhysicalDeviceDeviceAddressCommandsFeaturesKHR,
         vk::PhysicalDeviceAccelerationStructureFeaturesKHR, vk::PhysicalDeviceRayTracingPipelineFeaturesKHR,
         vk::PhysicalDeviceRayQueryFeaturesKHR, vk::PhysicalDeviceRayTracingMaintenance1FeaturesKHR,
-        vk::PhysicalDevicePipelineBinaryFeaturesKHR, vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR,
+        vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR,
         vk::PhysicalDeviceMaintenance7FeaturesKHR, vk::PhysicalDeviceMaintenance8FeaturesKHR,
         vk::PhysicalDeviceMaintenance9FeaturesKHR, vk::PhysicalDeviceMaintenance10FeaturesKHR,
         vk::PhysicalDeviceCopyMemoryIndirectFeaturesKHR, vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR,
@@ -671,8 +584,8 @@ void Device::createLogicalDevice()
                          .hostImageCopy = true},
                         // vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
                         {.extendedDynamicState = true},
-                        // vk::PhysicalDeviceDescriptorHeapFeaturesEXT
-                        {.descriptorHeap = descriptorHeapFeatureSupported},
+                        // vk::PhysicalDeviceDescriptorHeapFeaturesEXT (required, checked in pickPhysicalDevice)
+                        {.descriptorHeap = true},
                         // vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT
                         {.advancedBlendCoherentOperations = false},
                         // vk::PhysicalDeviceMeshShaderFeaturesEXT
@@ -685,14 +598,10 @@ void Device::createLogicalDevice()
                         {.memoryDecompression = true},
                         // vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT
                         {.pageableDeviceLocalMemory = true},
-                        // vk::PhysicalDeviceGraphicsPipelineLibraryFeaturesEXT (disabled: extension not enabled)
-                        {},
                         // vk::PhysicalDevicePresentTimingFeaturesEXT (extension enabled, feature not requested yet)
                         {},
                         // vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT
                         {.rayTracingInvocationReorder = true},
-                        // vk::PhysicalDeviceTexelBufferAlignmentFeaturesEXT (disabled: extension not enabled)
-                        {},
                         // vk::PhysicalDeviceOpacityMicromapFeaturesEXT
                         {.micromap = true},
                         // vk::PhysicalDeviceShaderObjectFeaturesEXT
@@ -713,8 +622,6 @@ void Device::createLogicalDevice()
                         {.rayQuery = true},
                         // vk::PhysicalDeviceRayTracingMaintenance1FeaturesKHR
                         {.rayTracingMaintenance1 = true, .rayTracingPipelineTraceRaysIndirect2 = true},
-                        // vk::PhysicalDevicePipelineBinaryFeaturesKHR (disabled: extension not enabled)
-                        {},
                         // vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR
                         {.swapchainMaintenance1 = true},
                         // vk::PhysicalDeviceMaintenance7FeaturesKHR
@@ -758,35 +665,20 @@ void Device::createLogicalDevice()
         enabledExtensions.push_back(vk::NVPartitionedAccelerationStructureExtensionName);
     }
 
-    // Each unique queue family needs exactly one VkDeviceQueueCreateInfo entry.
-    // Requesting the same family index twice is a validation error, so we gate each
-    // additional queue on it being distinct from all previously added families.
-    float queuePriority = 0.0f;
+    // one create info per distinct family; duplicates are a validation error.
+    // the same set feeds concurrent sharing, where order does not matter
+    queueFamilyIndices = {graphicsIndex, presentIndex, transferIndex, computeIndex};
+    std::ranges::sort(queueFamilyIndices);
+    const auto duplicates = std::ranges::unique(queueFamilyIndices);
+    queueFamilyIndices.erase(duplicates.begin(), duplicates.end());
+
+    const float queuePriority = 0.0f;
     std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
-
-    // Graphics queue – always required.
-    queueCreateInfos.push_back(
-        {.queueFamilyIndex = graphicsIndex, .queueCount = 1, .pQueuePriorities = &queuePriority});
-
-    // Present queue – only add if it lives in a different family from graphics.
-    if (presentIndex != graphicsIndex) {
-        queueCreateInfos.push_back(
-            {.queueFamilyIndex = presentIndex, .queueCount = 1, .pQueuePriorities = &queuePriority});
+    queueCreateInfos.reserve(queueFamilyIndices.size());
+    for (const uint32_t family : queueFamilyIndices) {
+        queueCreateInfos.push_back({.queueFamilyIndex = family, .queueCount = 1, .pQueuePriorities = &queuePriority});
     }
 
-    // Transfer queue – only add if dedicated (not shared with graphics or present).
-    if (transferIndex != graphicsIndex && transferIndex != presentIndex) {
-        queueCreateInfos.push_back(
-            {.queueFamilyIndex = transferIndex, .queueCount = 1, .pQueuePriorities = &queuePriority});
-    }
-
-    // Compute queue – only add if it is a fully distinct family from all others.
-    if (computeIndex != graphicsIndex && computeIndex != presentIndex && computeIndex != transferIndex) {
-        queueCreateInfos.push_back(
-            {.queueFamilyIndex = computeIndex, .queueCount = 1, .pQueuePriorities = &queuePriority});
-    }
-
-    // create a Device
     vk::DeviceCreateInfo deviceCreateInfo{.pNext = &featureChain.get<vk::PhysicalDeviceFeatures2>(),
                                           .queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size()),
                                           .pQueueCreateInfos = queueCreateInfos.data(),
@@ -794,12 +686,6 @@ void Device::createLogicalDevice()
                                           .ppEnabledExtensionNames = enabledExtensions.data()};
 
     vkdevice = vk::raii::Device(physicalDevice, deviceCreateInfo);
-
-    if (descriptorBindingMode == DescriptorBindingMode::DescriptorHeaps) {
-        log_info("Descriptor binding mode: DescriptorHeaps (descriptor heap feature supported)", "Device");
-    } else {
-        log_info("Descriptor binding mode: LegacySets (descriptor heap feature unsupported on this GPU)", "Device");
-    }
 
     setDebugName(vkdevice, instance, "Instance");
     setDebugName(vkdevice, physicalDevice, "PhysicalDevice");
@@ -809,62 +695,24 @@ void Device::createLogicalDevice()
     // Cache supported MSAA sample count for downstream components (e.g., pipelines, resources).
     msaaSamples = getMaxUsableSampleCount();
 
-    // Print queue family usage
-    if (graphicsIndex == presentIndex) {
-        log_info(std::format("Using single queue for graphics and present: {}", graphicsIndex), "Device");
-    } else {
-        log_info("Using separate queues for graphics and present", "Device");
-    }
+    createQueues();
+}
 
-    if (transferIndex != graphicsIndex && transferIndex != presentIndex) {
-        log_info(std::format("Using transfer queue family {}", transferIndex), "Device");
-    } else {
-        log_info("No separate transfer queue found, sharing with graphics/present queue", "Device");
-    }
-
-    if (computeIndex != graphicsIndex && computeIndex != presentIndex && computeIndex != transferIndex) {
-        log_info(std::format("Using dedicated compute queue family {}", computeIndex), "Device");
-    } else if (computeIndex == transferIndex) {
-        log_info(std::format("Using shared transfer+compute queue family {}", computeIndex), "Device");
-    } else {
-        log_info("No separate compute queue found, sharing with graphics/present queue", "Device");
-    }
-
-    if (transferIndex != UINT32_MAX) {
-        transferQueue = vk::raii::Queue(vkdevice, transferIndex, 0);
-    }
-    if (computeIndex != UINT32_MAX) {
-        computeQueue = vk::raii::Queue(vkdevice, computeIndex, 0);
-    }
+void Device::createQueues()
+{
     graphicsQueue = vk::raii::Queue(vkdevice, graphicsIndex, 0);
     presentQueue = vk::raii::Queue(vkdevice, presentIndex, 0);
+    transferQueue = vk::raii::Queue(vkdevice, transferIndex, 0);
+    computeQueue = vk::raii::Queue(vkdevice, computeIndex, 0);
 
     setDebugName(vkdevice, graphicsQueue, "GraphicsQueue");
     setDebugName(vkdevice, presentQueue, "PresentQueue");
-    if (transferIndex != UINT32_MAX) {
-        setDebugName(vkdevice, transferQueue, "TransferQueue");
-    }
-    if (computeIndex != UINT32_MAX) {
-        setDebugName(vkdevice, computeQueue, "ComputeQueue");
-    }
-    log_info(std::format("Using graphics queue: {} | present queue: {} | transfer queue: {} | compute queue: {}",
-                         graphicsIndex, presentIndex,
-                         (transferIndex != UINT32_MAX ? std::to_string(transferIndex) : "N/A"),
-                         (computeIndex != UINT32_MAX ? std::to_string(computeIndex) : "N/A")),
+    setDebugName(vkdevice, transferQueue, "TransferQueue");
+    setDebugName(vkdevice, computeQueue, "ComputeQueue");
+
+    log_info(std::format("Queue families: graphics={} present={} transfer={}{} compute={}{} (distinct {})",
+                         graphicsIndex, presentIndex, transferIndex,
+                         hasDedicatedTransferQueue() ? " (dedicated)" : " (shared)", computeIndex,
+                         computeIndex != graphicsIndex ? " (async)" : " (shared)", queueFamilyIndices.size()),
              "Device");
-
-    queueFamilyIndices.push_back(graphicsIndex);
-
-    if (presentIndex != graphicsIndex) {
-        queueFamilyIndices.push_back(presentIndex);
-    }
-
-    if (transferIndex != UINT32_MAX && transferIndex != graphicsIndex && transferIndex != presentIndex) {
-        queueFamilyIndices.push_back(transferIndex);
-    }
-
-    if (computeIndex != UINT32_MAX && computeIndex != graphicsIndex && computeIndex != presentIndex &&
-        computeIndex != transferIndex) {
-        queueFamilyIndices.push_back(computeIndex);
-    }
 }

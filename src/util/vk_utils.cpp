@@ -78,11 +78,14 @@ void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags2 usage, vk::MemoryPr
 
     // maintenance5: usage lives in BufferUsageFlags2CreateInfo; VkBufferCreateInfo::usage is ignored.
     const vk::BufferUsageFlags2CreateInfo usage2{.usage = usage};
-    vk::BufferCreateInfo bufferInfo{.pNext = &usage2,
-                                    .size = size,
-                                    .sharingMode = vk::SharingMode::eConcurrent,
-                                    .queueFamilyIndexCount = static_cast<uint32_t>(queueFamilyIndices.size()),
-                                    .pQueueFamilyIndices = queueFamilyIndices.data()};
+    // concurrent sharing needs at least two distinct families (VUID-VkBufferCreateInfo-sharingMode-00914)
+    const bool isShared = queueFamilyIndices.size() > 1;
+    vk::BufferCreateInfo bufferInfo{
+        .pNext = &usage2,
+        .size = size,
+        .sharingMode = isShared ? vk::SharingMode::eConcurrent : vk::SharingMode::eExclusive,
+        .queueFamilyIndexCount = isShared ? static_cast<uint32_t>(queueFamilyIndices.size()) : 0u,
+        .pQueueFamilyIndices = isShared ? queueFamilyIndices.data() : nullptr};
 
     VmaAllocationCreateInfo allocInfo{};
     allocInfo.preferredFlags = static_cast<VkMemoryPropertyFlags>(properties);
