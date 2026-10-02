@@ -266,6 +266,15 @@ set(_tp_fetch_names glm SDL3 fmt spdlog ImGui taskflow KTXSoftware mimalloc mesh
 message(STATUS "Fetching ThirdParty dependencies: ${_tp_fetch_names}")
 FetchContent_MakeAvailable(${_tp_fetch_names})
 
+# SDL3-shared passes -Wl,--no-undefined. Instrumented objects reference ASan/UBSan
+# helpers that live in the runtime DSO loaded by the executable; Clang links only
+# libclang_rt.asan_static into shared libraries. --no-undefined then fails the link
+# (undefined __asan_report_* / __ubsan_handle_*). -z undefs is applied after that
+# flag and disables the check for Debug, the only config that gets -fsanitize.
+if (ENABLE_SANITIZERS AND TARGET SDL3-shared)
+    target_link_options(SDL3-shared PRIVATE "$<$<CONFIG:Debug>:-Wl,-z,undefs>")
+endif ()
+
 
 
 if (TARGET ktx)
@@ -376,7 +385,8 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug")
         set(TRACY_NO_EXIT     ON CACHE BOOL "Tracy: keep client alive on exit"  FORCE)
         set(TRACY_FIBERS      ON CACHE BOOL "Tracy: fiber support"              FORCE)
         set(TRACY_VERBOSE     ON CACHE BOOL "Tracy: verbose output"             FORCE)
-        set(TRACY_DEMANGLE    ON CACHE BOOL "Tracy: demangle symbol names"      FORCE)
+        # OFF uses Tracy's abi::__cxa_demangle. ON means "we supply ___tracy_demangle".
+        set(TRACY_DEMANGLE    OFF CACHE BOOL "Tracy: custom demangler instead of the default" FORCE)
         set(TRACY_NO_SYSTEM_TRACING ON CACHE BOOL "Tracy: disable system tracing" FORCE)
 else ()
         # Lower overhead profile for Release/RelWithDebInfo/MinSizeRel.
@@ -385,7 +395,7 @@ else ()
         set(TRACY_NO_EXIT     OFF CACHE BOOL "Tracy: keep client alive on exit" FORCE)
         set(TRACY_FIBERS      OFF CACHE BOOL "Tracy: fiber support"             FORCE)
         set(TRACY_VERBOSE     OFF CACHE BOOL "Tracy: verbose output"            FORCE)
-        set(TRACY_DEMANGLE    OFF CACHE BOOL "Tracy: demangle symbol names"     FORCE)
+        set(TRACY_DEMANGLE    OFF CACHE BOOL "Tracy: custom demangler instead of the default" FORCE)
         set(TRACY_NO_SYSTEM_TRACING ON CACHE BOOL "Tracy: disable system tracing" FORCE)
 endif ()
 
@@ -398,6 +408,8 @@ engine_fetch_declare(tracy
 message(STATUS "Downloading Tracy...")
 FetchContent_MakeAvailable(tracy)
 
+# Static client is archived into shared engine libraries.
+set_target_properties(TracyClient PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if (WIN32)
         # Keep Windows target compatibility and required system libs for Tracy.
