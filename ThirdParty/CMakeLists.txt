@@ -261,8 +261,43 @@ engine_fetch_declare(meshoptimizer
         GIT_SHALLOW TRUE
 )
 
+# RTX SDKs are pinned by commit (main); GIT_SHALLOW needs a branch or tag, so full clones
+
+# 15. RTXDI (ReSTIR DI host lib + HLSL headers)
+engine_fetch_declare(rtxdi
+        GIT_REPOSITORY https://github.com/NVIDIA-RTX/RTXDI-Library.git
+        GIT_TAG f12037fa8e97ebc08e9e3edfd2de528ed1772a4b
+)
+
+# 16. SHaRC (header-only shader lib)
+engine_fetch_declare(sharc
+        GIT_REPOSITORY https://github.com/NVIDIA-RTX/SHARC.git
+        GIT_TAG 4e21b585c33c83d723ca9a1e11bbb1090d145793
+        SOURCE_SUBDIR skip-add-subdirectory
+)
+
+# 17. OMM SDK. Root CMake pulls donut/ShaderMake/its own glm; only omm-lib deps are fetched
+engine_fetch_declare(omm
+        GIT_REPOSITORY https://github.com/NVIDIA-RTX/OMM.git
+        GIT_TAG 9abacd0f187d0efca491946a29ba7df8c5345264
+        GIT_SUBMODULES external/lz4 external/xxHash external/stb
+        SOURCE_SUBDIR skip-add-subdirectory
+)
+
+set(_tp_rtx_names rtxdi sharc omm)
+
+# 18. NRC: prebuilt x64 Windows binaries only (git-lfs, ~230 MB)
+if (WIN32)
+    engine_fetch_declare(nrc
+            GIT_REPOSITORY https://github.com/NVIDIA-RTX/NRC.git
+            GIT_TAG 7de30e4eb2a1a27118eb9a6acf5f715d757240c0
+            SOURCE_SUBDIR skip-add-subdirectory
+    )
+    list(APPEND _tp_rtx_names nrc)
+endif ()
+
 # fmt before spdlog: spdlog's CMake uses TARGET fmt::fmt when SPDLOG_FMT_EXTERNAL=ON.
-set(_tp_fetch_names glm SDL3 fmt spdlog ImGui taskflow KTXSoftware mimalloc meshoptimizer)
+set(_tp_fetch_names glm SDL3 fmt spdlog ImGui taskflow KTXSoftware mimalloc meshoptimizer ${_tp_rtx_names})
 message(STATUS "Fetching ThirdParty dependencies: ${_tp_fetch_names}")
 FetchContent_MakeAvailable(${_tp_fetch_names})
 
@@ -271,7 +306,7 @@ FetchContent_MakeAvailable(${_tp_fetch_names})
 # libclang_rt.asan_static into shared libraries. --no-undefined then fails the link
 # (undefined __asan_report_* / __ubsan_handle_*). -z undefs is applied after that
 # flag and disables the check for Debug, the only config that gets -fsanitize.
-if (ENABLE_SANITIZERS AND TARGET SDL3-shared)
+if (UNIX AND NOT APPLE AND ENABLE_SANITIZERS AND TARGET SDL3-shared)
     target_link_options(SDL3-shared PRIVATE "$<$<CONFIG:Debug>:-Wl,-z,undefs>")
 endif ()
 
@@ -331,6 +366,66 @@ else ()
         message(FATAL_ERROR "meshoptimizer target not found after FetchContent_MakeAvailable(meshoptimizer).")
 endif ()
 
+# --- RTXDI ---
+set_target_properties(Rtxdi PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(ThirdParty::rtxdi ALIAS Rtxdi)
+
+# --- SHaRC (shader headers; slang -I via INTERFACE_INCLUDE_DIRECTORIES) ---
+add_library(sharc INTERFACE)
+target_include_directories(sharc INTERFACE "${sharc_SOURCE_DIR}/include")
+add_library(ThirdParty::sharc ALIAS sharc)
+
+# --- OMM: CPU baker only ---
+# xxHash's min version predates CMP0077; without NEW its option() ignores the overrides below
+set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+block()
+        set(BUILD_SHARED_LIBS OFF)
+        set(BUILD_STATIC_LIBS ON)
+        set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+        set(LZ4_BUILD_CLI OFF)
+        set(LZ4_BUILD_LEGACY_LZ4C OFF)
+        set(XXHASH_BUILD_XXHSUM OFF)
+        add_subdirectory("${omm_SOURCE_DIR}/external/lz4/build/cmake" "${ENGINE_TP_BIN}/omm-lz4" EXCLUDE_FROM_ALL)
+        add_subdirectory("${omm_SOURCE_DIR}/external/xxHash/build/cmake" "${ENGINE_TP_BIN}/omm-xxhash"
+                EXCLUDE_FROM_ALL)
+        add_library(stb_lib INTERFACE)
+        target_include_directories(stb_lib INTERFACE "${omm_SOURCE_DIR}/external/stb")
+
+        # normally set by the skipped OMM root project
+        set(OMM_LIB_TARGET_NAME omm-lib)
+        set(OMM_PROJECT_FOLDER "Libraries")
+        file(STRINGS "${omm_SOURCE_DIR}/libraries/omm-lib/src/version.h" _ommVersion
+                REGEX "#define VERSION_(MAJOR|MINOR|BUILD) ")
+        string(REGEX REPLACE ".*MAJOR ([0-9]+).*MINOR ([0-9]+).*BUILD ([0-9]+).*" "\\1.\\2.\\3"
+                PROJECT_VERSION "${_ommVersion}")
+        # shared: omm-lib compiles its own stb impl, which would clash with ThirdPartyImpl if static
+        set(OMM_STATIC_LIBRARY OFF)
+        set(OMM_ENABLE_OPENMP OFF)
+        set(OMM_ENABLE_PRECOMPILED_SHADERS_DXIL OFF)
+        set(OMM_ENABLE_PRECOMPILED_SHADERS_SPIRV OFF)
+        set(OMM_LIB_INSTALL OFF)
+        # non-empty, or upstream evaluates `if (NOT STREQUAL "")`; overridden below
+        set(OMM_OUTPUT_BIN_PATH "${CMAKE_BINARY_DIR}")
+        add_subdirectory("${omm_SOURCE_DIR}/libraries/omm-lib" "${ENGINE_TP_BIN}/omm-lib")
+        # version-info resource only; llvm-rc rejects its UTF-8 copyright sign
+        set_source_files_properties("${omm_SOURCE_DIR}/libraries/omm-lib/src/bake.rc"
+                DIRECTORY "${omm_SOURCE_DIR}/libraries/omm-lib"
+                PROPERTIES HEADER_FILE_ONLY ON)
+endblock()
+set_target_properties(omm-lib PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+        ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+add_library(ThirdParty::omm ALIAS omm-lib)
+
+# --- NRC: headers only. Bin/Lib export MSVC-mangled C++; the windows-gnu/libc++ toolchain cannot link them ---
+if (WIN32)
+        add_library(nrc INTERFACE)
+        target_include_directories(nrc INTERFACE "${nrc_SOURCE_DIR}/Include")
+        add_library(ThirdParty::nrc ALIAS nrc)
+endif ()
+
 # ------------------------------------------------------------------------------
 set(IMGUI_SOURCES
         ${imgui_SOURCE_DIR}/imgui.cpp
@@ -385,8 +480,12 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug")
         set(TRACY_NO_EXIT     ON CACHE BOOL "Tracy: keep client alive on exit"  FORCE)
         set(TRACY_FIBERS      ON CACHE BOOL "Tracy: fiber support"              FORCE)
         set(TRACY_VERBOSE     ON CACHE BOOL "Tracy: verbose output"             FORCE)
-        # OFF uses Tracy's abi::__cxa_demangle. ON means "we supply ___tracy_demangle".
-        set(TRACY_DEMANGLE    OFF CACHE BOOL "Tracy: custom demangler instead of the default" FORCE)
+        if (UNIX AND NOT APPLE)
+                # OFF uses Tracy's abi::__cxa_demangle. ON means "we supply ___tracy_demangle".
+                set(TRACY_DEMANGLE OFF CACHE BOOL "Tracy: custom demangler instead of the default" FORCE)
+        else ()
+                set(TRACY_DEMANGLE ON CACHE BOOL "Tracy: demangle symbol names" FORCE)
+        endif ()
         set(TRACY_NO_SYSTEM_TRACING ON CACHE BOOL "Tracy: disable system tracing" FORCE)
 else ()
         # Lower overhead profile for Release/RelWithDebInfo/MinSizeRel.
@@ -395,7 +494,7 @@ else ()
         set(TRACY_NO_EXIT     OFF CACHE BOOL "Tracy: keep client alive on exit" FORCE)
         set(TRACY_FIBERS      OFF CACHE BOOL "Tracy: fiber support"             FORCE)
         set(TRACY_VERBOSE     OFF CACHE BOOL "Tracy: verbose output"            FORCE)
-        set(TRACY_DEMANGLE    OFF CACHE BOOL "Tracy: custom demangler instead of the default" FORCE)
+        set(TRACY_DEMANGLE OFF CACHE BOOL "Tracy: demangle symbol names" FORCE)
         set(TRACY_NO_SYSTEM_TRACING ON CACHE BOOL "Tracy: disable system tracing" FORCE)
 endif ()
 
@@ -477,6 +576,8 @@ target_link_libraries(ThirdPartyLibs INTERFACE
         $<$<BOOL:${ENGINE_USE_MIMALLOC}>:ThirdParty::mimalloc>
         ThirdParty::meshoptimizer
         Taskflow::Taskflow
+        ThirdParty::rtxdi
+        ThirdParty::omm
 )
 
 # Link it to your interface so it gets the includes
