@@ -20,6 +20,7 @@ EntityId ObjectStorage::create(const Transform& transform, const MeshletDraw& me
     names.emplace_back(name);
     firstPrimitives.push_back(firstPrimitive);
     primitiveCounts.push_back(primitiveCount);
+    textureRefs.emplace_back();
 
 #ifdef TRACY_ENABLE
     const std::string msg = std::format(
@@ -42,6 +43,23 @@ void ObjectStorage::clear() noexcept
     names.clear();
     firstPrimitives.clear();
     primitiveCounts.clear();
+    textureRefs.clear();
+}
+
+void ObjectStorage::erase(EntityId id)
+{
+    assert(id < size());
+    const auto eraseAt = [id](auto& column) { column.erase(column.begin() + id); };
+    eraseAt(transforms);
+    eraseAt(modelMatrices);
+    eraseAt(prevModelMatrices);
+    eraseAt(meshletDraws);
+    eraseAt(materials);
+    eraseAt(flags);
+    eraseAt(names);
+    eraseAt(firstPrimitives);
+    eraseAt(primitiveCounts);
+    eraseAt(textureRefs);
 }
 
 glm::mat4 computeModelMatrix(const Transform& transform)

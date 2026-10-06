@@ -101,7 +101,13 @@ void DescriptorManager::writeImageDescriptor(TextureAsset& textureAsset, const v
 
     // Pack sampled-image descriptors with size as array stride (untyped heap indexing).
     // Spec: imageDescriptorAlignment <= imageDescriptorSize, so consecutive slots stay aligned.
-    const vk::DeviceSize currentResOffset = alignUp(textureDescriptorOffset, imageDescriptorAlignment);
+    const bool reuseSlot = !freeImageSlots.empty();
+    const vk::DeviceSize currentResOffset = reuseSlot
+        ? static_cast<vk::DeviceSize>(freeImageSlots.back()) * imageDescriptorSize
+        : alignUp(textureDescriptorOffset, imageDescriptorAlignment);
+    if (reuseSlot) {
+        freeImageSlots.pop_back();
+    }
     const auto descriptorImageInfo = vk::ImageDescriptorInfoEXT{
         .sType = vk::StructureType::eImageDescriptorInfoEXT,
         .pNext = nullptr,
@@ -128,8 +134,10 @@ void DescriptorManager::writeImageDescriptor(TextureAsset& textureAsset, const v
 
     // Advance cursor so the next texture gets a new heap slot (was missing — every
     // load overwrote slot 0 and both models shared the last texture).
-    textureDescriptorOffset = currentResOffset + imageDescriptorSize;
-    textureDescriptorOffset = alignUp(textureDescriptorOffset, imageDescriptorAlignment);
+    if (!reuseSlot) {
+        textureDescriptorOffset = currentResOffset + imageDescriptorSize;
+        textureDescriptorOffset = alignUp(textureDescriptorOffset, imageDescriptorAlignment);
+    }
 
     const uint32_t heapIndex = static_cast<uint32_t>(currentResOffset / imageDescriptorSize);
     textureAsset.descriptorHeapIndex = heapIndex;
@@ -140,6 +148,11 @@ void DescriptorManager::writeImageDescriptor(TextureAsset& textureAsset, const v
              "DescriptorHeap");
 }
 
+
+void DescriptorManager::freeImageDescriptor(uint32_t heapIndex)
+{
+    freeImageSlots.push_back(heapIndex);
+}
 
 // Default linear/anisotropic sampler into the sampler heap only.
 // No VkSampler object — writeSamplerDescriptorsEXT takes SamplerCreateInfo.

@@ -1,5 +1,7 @@
 #include "texture_manager.hpp"
 
+#include <array>
+
 
 
 // Construct a TextureManager which holds Vulkan device/queue handles and
@@ -38,20 +40,17 @@ std::string TextureManager::resolvePath(std::string_view path)
     return std::string(path);
 }
 
-// Views go before their images; KTX images are owned by libktx, the rest by VMA.
+// heap slots are not freed: the DescriptorManager is destroyed first
 TextureManager::~TextureManager()
 {
     ZoneScopedN("TextureManager::~TextureManager");
     log_info("Destructor called", "TextureManager");
 
-    for (auto& [key, asset] : loadedTextures) {
-        asset.textureImageView = nullptr;
-        destroyVmaImage(allocator.allocator, asset.textureImage, asset.textureImageMemory, "GPU/Textures");
+    for (auto& [heapIndex, entry] : heapEntries) {
+        destroyImage(loadedTextures.at(entry.cacheKey), entry.ktx);
     }
+    heapEntries.clear();
     loadedTextures.clear();
-    for (ktxVulkanTexture& texture : ktxTextures) {
-        ktxVulkanTexture_Destruct(&texture, *device, nullptr);
-    }
     if (ktxDeviceInfo) {
         ktxVulkanDeviceInfo_Destruct(&*ktxDeviceInfo);
     }
@@ -233,6 +232,10 @@ void TextureManager::init()
         ktxDeviceInfo.reset();
         throw std::runtime_error("ktxVulkanDeviceInfo_Construct failed");
     }
+
+    constexpr std::array<uint8_t, 4> kWhite{255, 255, 255, 255};
+    defaultTextureIndex = loadTextureFromPixels("engine:default-white", kWhite, 1, 1, TextureColorSpace::Srgb);
+    retain(std::span(&defaultTextureIndex, 1));
     log_info("Initialized", "TextureManager");
 }
 
@@ -405,13 +408,11 @@ uint32_t TextureManager::uploadKtx(const std::string& path)
     if (result != KTX_SUCCESS) {
         throw std::runtime_error("Failed to upload KTX texture to GPU: " + path);
     }
-    ktxTextures.push_back(vkTex);
-
     log_debug(std::format("KTX texture uploaded: {}×{}, {} mips, format={}", vkTex.width, vkTex.height,
                           vkTex.levelCount, static_cast<uint32_t>(vkTex.imageFormat)),
               "TextureManager");
 
-    // non-owning view: the image stays with ktxTextures
+    // non-owning view: the image stays with the libktx texture
     TextureAsset asset{};
     vk::ImageViewCreateInfo const viewInfo{
         .image       = vk::Image(vkTex.image),
@@ -421,9 +422,7 @@ uint32_t TextureManager::uploadKtx(const std::string& path)
     asset.textureImageView = vk::raii::ImageView(device, viewInfo);
 
     descriptorManager.writeImageDescriptor(asset, viewInfo);
-    const uint32_t heapIndex = asset.descriptorHeapIndex;
-    loadedTextures.insert_or_assign(path, std::move(asset));
-    return heapIndex;
+    return registerTexture(path, std::move(asset), vkTex);
 }
 
 uint32_t TextureManager::uploadDecoded(const std::string& cacheKey, StbPixels pixels, int texWidth, int texHeight,
@@ -513,13 +512,79 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
     asset.textureImageView = vk::raii::ImageView(device, viewInfo);
 
     descriptorManager.writeImageDescriptor(asset, viewInfo);
-    const uint32_t heapIndex = asset.descriptorHeapIndex;
-    loadedTextures.insert_or_assign(cacheKey, std::move(asset));
 
     log_debug(std::format("STB texture loaded: {}×{}, {} mips (hostImageCopy) key={}", texWidth, texHeight, mipLevels,
                           cacheKey),
               "TextureManager");
+    return registerTexture(cacheKey, std::move(asset));
+}
+
+uint32_t TextureManager::registerTexture(const std::string& cacheKey, TextureAsset&& asset,
+                                         std::optional<ktxVulkanTexture> ktx)
+{
+    const uint32_t heapIndex = asset.descriptorHeapIndex;
+    loadedTextures.insert_or_assign(cacheKey, std::move(asset));
+    heapEntries.insert_or_assign(heapIndex, HeapEntry{.cacheKey = cacheKey, .refCount = 0, .ktx = ktx});
     return heapIndex;
+}
+
+void TextureManager::destroyImage(TextureAsset& asset, std::optional<ktxVulkanTexture>& ktx) const
+{
+    // view before its image
+    asset.textureImageView = nullptr;
+    if (ktx) {
+        ktxVulkanTexture_Destruct(&*ktx, *device, nullptr);
+        ktx.reset();
+    } else {
+        destroyVmaImage(allocator.allocator, asset.textureImage, asset.textureImageMemory, "GPU/Textures");
+    }
+}
+
+void TextureManager::destroyTexture(uint32_t heapIndex)
+{
+    const auto entry = heapEntries.find(heapIndex);
+    if (entry == heapEntries.end()) {
+        return;
+    }
+    const auto asset = loadedTextures.find(entry->second.cacheKey);
+    destroyImage(asset->second, entry->second.ktx);
+    descriptorManager.freeImageDescriptor(heapIndex);
+    log_debug(std::format("Texture freed: heap={} key={}", heapIndex, entry->second.cacheKey), "TextureManager");
+    loadedTextures.erase(asset);
+    heapEntries.erase(entry);
+}
+
+void TextureManager::retain(std::span<const uint32_t> heapIndices)
+{
+    for (const uint32_t heapIndex : heapIndices) {
+        if (const auto entry = heapEntries.find(heapIndex); entry != heapEntries.end()) {
+            ++entry->second.refCount;
+        }
+    }
+}
+
+void TextureManager::release(std::span<const uint32_t> heapIndices)
+{
+    ZoneScopedN("TextureManager::release");
+    for (const uint32_t heapIndex : heapIndices) {
+        const auto entry = heapEntries.find(heapIndex);
+        if (entry == heapEntries.end() || entry->second.refCount == 0) {
+            continue;
+        }
+        if (--entry->second.refCount == 0) {
+            destroyTexture(heapIndex);
+        }
+    }
+}
+
+void TextureManager::releaseUnreferenced(std::span<const uint32_t> heapIndices)
+{
+    for (const uint32_t heapIndex : heapIndices) {
+        if (const auto entry = heapEntries.find(heapIndex);
+            entry != heapEntries.end() && entry->second.refCount == 0) {
+            destroyTexture(heapIndex);
+        }
+    }
 }
 
 void TextureManager::beginUploadBatch()

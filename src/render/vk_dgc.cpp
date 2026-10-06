@@ -258,7 +258,9 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
     }
 
     const auto& storage = resourceManager.objectStorage;
-    const uint32_t entityCount = storage.size();
+    // entities not flushed yet have no GPU slice
+    const auto entityCount =
+        std::min(storage.size(), static_cast<uint32_t>(resourceManager.modelAllocations.size()));
     if (entityCount == 0) {
         return;
     }
@@ -297,10 +299,11 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
             MeshDgcSequence& sequence = sequences[sequenceCount];
             sequence.pushData.cameraAddress = camera.cameraBufferAddresses[frameSlot];
             sequence.pushData.objectUbAddress = resourceManager.instanceUboAddress(frameSlot, id);
-            sequence.pushData.vertices = resourceManager.asset(AssetBuffer::Vertices).address;
+            // meshlet data is model-relative; firstMeshlet is absolute
+            sequence.pushData.vertices = resourceManager.modelAssetAddress(AssetBuffer::Vertices, id);
             sequence.pushData.meshlets = resourceManager.asset(AssetBuffer::Meshlets).address;
-            sequence.pushData.meshletVertices = resourceManager.asset(AssetBuffer::MeshletVertices).address;
-            sequence.pushData.meshletTriangles = resourceManager.asset(AssetBuffer::MeshletTriangles).address;
+            sequence.pushData.meshletVertices = resourceManager.modelAssetAddress(AssetBuffer::MeshletVertices, id);
+            sequence.pushData.meshletTriangles = resourceManager.modelAssetAddress(AssetBuffer::MeshletTriangles, id);
             sequence.pushData.firstMeshlet = firstMeshlet;
             sequence.pushData.meshletCount = batch;
             sequence.pushData.texture = {

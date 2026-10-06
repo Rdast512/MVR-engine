@@ -49,6 +49,8 @@ public:
     // catalog watermarks: primitiveDraws/morphTargets below these are GPU-absolute
     uint32_t flushedPrimitiveCount = 0;
     uint32_t flushedMorphTargetCount = 0;
+    uint32_t flushedMorphWeightCount = 0;
+    uint32_t flushedAuxBlobCount = 0;
 
     // grow SoA + packed GpuVertex to newCount; new verts get default attrs
     void resizeVertices(uint32_t newCount);
@@ -69,4 +71,6 @@ public:
 
     // drop load scratch after GPU append; catalog (primitiveDraws, morphTargets, weights, aux) stays
     void clearScratch();
+    // failed load: catalog entries past the watermarks go too
+    void discardScratch();
 };

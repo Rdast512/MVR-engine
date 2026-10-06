@@ -37,6 +37,26 @@ enum class AssetBuffer : uint8_t {
 };
 inline constexpr size_t kAssetBufferCount = std::to_underlying(AssetBuffer::Count);
 
+// [first, first + count) in elements
+struct ElementRange {
+    uint32_t first = 0;
+    uint32_t count = 0;
+
+    [[nodiscard]] uint32_t end() const noexcept { return first + count; }
+};
+
+// One model's contiguous slice of every asset buffer and catalog array; unload erases the slices
+// and shifts everything after them (docs/model_unload_ui_spec.md).
+// GPU data that points into other GPU data (meshlet vertex ids, meshlet offsets, indices) is relative to
+// the model's slice, so compaction is a plain copy; draws add the slice base to the buffer address.
+struct ModelAllocation {
+    std::array<ElementRange, kAssetBufferCount> gpu;
+    ElementRange primitives;   // GeometryStore::primitiveDraws
+    ElementRange morphTargets; // GeometryStore::morphTargets
+    ElementRange morphWeights; // GeometryStore::morphWeights
+    ElementRange auxBlobs;     // GeometryStore::auxBlobs
+};
+
 // Growable device-local buffer; capacity may exceed used after grow-with-headroom
 struct DeviceBuffer {
     vk::raii::Buffer buffer = nullptr;
@@ -84,8 +104,12 @@ public:
     void ensureInstanceCapacity(uint32_t entityCount);
     void createUniformBuffers();
     void createColorResources();
-    // append load scratch to device-local SSBOs, then drop CPU bulk arrays
+    // append load scratch to device-local SSBOs as one model, then drop CPU bulk arrays.
+    // scratch without a new entity (failed load) is discarded
     void flushGpuAssets();
+    // drops an uploaded model: compacts every asset buffer (exact-fit realloc), rebases the catalog,
+    // erases the entity. Textures are the caller's (TextureManager::release). GPU must be idle.
+    void eraseModel(EntityId id);
     void createCameraBuffers(Camera& camera);
     void setSwapChainImageCount(uint32_t count) { swapChainImageCount = count; createSyncObjects(); }
 
@@ -99,6 +123,12 @@ public:
     }
     // appends are exact, so used bytes / stride is the uploaded element count
     [[nodiscard]] uint32_t uploadedCount(AssetBuffer id) const noexcept;
+    // address of the entity's slice of an asset buffer
+    [[nodiscard]] vk::DeviceAddress modelAssetAddress(AssetBuffer id, EntityId entityId) const noexcept;
+    // bytes the entity occupies across all asset buffers
+    [[nodiscard]] vk::DeviceSize modelGpuBytes(EntityId entityId) const noexcept;
+    // {used, capacity} summed over all asset buffers
+    [[nodiscard]] std::pair<vk::DeviceSize, vk::DeviceSize> assetTotals() const noexcept;
 
     vk::raii::ImageView createImageView(vk::raii::Image &image, vk::Format format, vk::ImageAspectFlags aspectFlags,
                                         uint32_t mipLevels);
@@ -139,6 +169,8 @@ public:
     AttachmentImage depthAttachment;
 
     std::array<DeviceBuffer, kAssetBufferCount> assetBuffers;
+    // indexed by EntityId, parallel to objectStorage
+    std::vector<ModelAllocation> modelAllocations;
 
     // One GpuObjectUB[capacity] buffer per frame-in-flight, rewritten by the CPU every frame.
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> instanceUbos;
@@ -159,10 +191,20 @@ private:
 
     void destroyInstanceUboBuffers();
     void destroyAssetBuffer(AssetBuffer id);
+    // device-local storage buffer with the asset usage flags; not yet installed
+    void createAssetBuffer(AssetBuffer id, vk::DeviceSize capacity, vk::raii::Buffer& buffer,
+                           VmaAllocation& memory) const;
+    // replaces the asset buffer (destroying the old one) with an already-filled buffer
+    void installAssetBuffer(AssetBuffer id, vk::raii::Buffer&& buffer, VmaAllocation memory, vk::DeviceSize usedBytes,
+                            vk::DeviceSize capacityBytes);
     void appendDeviceLocal(AssetBuffer id, std::span<const std::byte> src);
     [[nodiscard]] std::span<const std::byte> scratchBytes(AssetBuffer id, std::span<const GpuLight> lights) const;
-    // {used, capacity} summed over all asset buffers
-    [[nodiscard]] std::pair<vk::DeviceSize, vk::DeviceSize> assetTotals() const noexcept;
+    // removes the model's byte ranges from every asset buffer in one submit
+    void compactAssetBuffers(const ModelAllocation& removed);
+    // shifts every catalog reference past the removed slices and erases the slices
+    void rebaseCatalog(EntityId id, const ModelAllocation& removed);
+    // failed load: nothing reaches the GPU and the catalog returns to the last flush
+    void discardScratch();
     void createAttachment(AttachmentImage& target, const AttachmentDesc& desc);
     void destroyAttachment(AttachmentImage& target, const char* tracyName);
     void remapScratchOffsets();

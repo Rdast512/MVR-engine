@@ -11,6 +11,14 @@
 
 #include <algorithm>
 #include <format>
+#include <utility>
+
+#if ENGINE_ENABLE_IMGUI
+namespace
+{
+    [[nodiscard]] double toMiB(vk::DeviceSize bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); }
+} // namespace
+#endif
 
 
 Engine::~Engine() { cleanup(); }
@@ -68,7 +76,9 @@ void Engine::initialize()
                                                   scene->materialStore, scene->lightStore);
 
     const glm::vec3 initialAssetPos{0.0f, 0.0f, 0.0f};
-    assetsLoader->loadModel(MODEL_PATH.string(), initialAssetPos);
+    if (!assetsLoader->loadModel(MODEL_PATH.string(), initialAssetPos)) {
+        log_error(std::format("Startup model failed to load: {}", MODEL_PATH.string()), "Engine");
+    }
     // Aim free-fly camera at the only startup model so the scene is visible immediately.
     camera->focusOn(initialAssetPos);
     resourceManager = std::make_unique<ResourceManager>(*device, *allocator, scene->geometryStore, scene->materialStore,
@@ -199,9 +209,7 @@ void Engine::run()
         }
     };
     imguiUiOpen = false;
-    if (renderer) {
-        renderer->setImGuiVisible(false);
-    }
+    setImGuiInputEnabled(false);
     setGameFocus(true);
 
     while (!quit) {
@@ -210,17 +218,13 @@ void Engine::run()
         auto currentTime = std::chrono::high_resolution_clock::now();
         frameCount++;
 
-        // Update FPS every second
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - fpsTime);
+        // averaged over one second, shown by the ImGui stats overlay
+        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - fpsTime);
         if (duration.count() >= 1000) {
-            ZoneScopedN("FpsTitleUpdate");
-            fps = frameCount * 1000.0f / duration.count();
+            fps = static_cast<float>(frameCount) * 1000.0f / static_cast<float>(duration.count());
+            frameMs = static_cast<float>(duration.count()) / static_cast<float>(frameCount);
             frameCount = 0;
             fpsTime = currentTime;
-
-            // Update window title with FPS
-            std::string title = "Vulkan Triangle - FPS: " + std::to_string(static_cast<int>(fps));
-            SDL_SetWindowTitle(window, title.c_str());
         }
 
         {
@@ -243,9 +247,7 @@ void Engine::run()
                     const bool typingInImGui = enableImGui && imguiUiOpen && ImGui::GetIO().WantTextInput;
                     if (!typingInImGui && enableImGui) {
                         imguiUiOpen = !imguiUiOpen;
-                        if (renderer) {
-                            renderer->setImGuiVisible(imguiUiOpen);
-                        }
+                        setImGuiInputEnabled(imguiUiOpen);
                         // Open UI → ImGui focus. Close UI → game focus.
                         setGameFocus(!imguiUiOpen);
                     }
@@ -277,8 +279,9 @@ void Engine::run()
         }
 
 #if ENGINE_ENABLE_IMGUI
-        if (enableImGui && imguiUiOpen) {
+        if (enableImGui) {
             drawImGui();
+            applyPendingModelActions();
         }
 #endif
 
@@ -347,6 +350,23 @@ void Engine::render()
     }
 }
 
+void Engine::setImGuiInputEnabled([[maybe_unused]] bool enabled)
+{
+#if ENGINE_ENABLE_IMGUI
+    if (!enableImGui) {
+        return;
+    }
+    // the SDL3 backend shows the OS cursor every frame unless cursor changes are off
+    constexpr ImGuiConfigFlags kGameFocusFlags = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange;
+    ImGuiIO& io = ImGui::GetIO();
+    if (enabled) {
+        io.ConfigFlags &= ~kGameFocusFlags;
+    } else {
+        io.ConfigFlags |= kGameFocusFlags;
+    }
+#endif
+}
+
 void Engine::drawImGui()
 {
 #if ENGINE_ENABLE_IMGUI
@@ -355,45 +375,170 @@ void Engine::drawImGui()
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::Begin("Engine Controls");
-    ImGui::InputText("Assets Path", &assetsPathInput[0], IM_ARRAYSIZE(assetsPathInput));
-    if (ImGui::Button("Scan Folder")) {
+    drawStatsOverlay();
+    if (imguiUiOpen) {
+        if (!hasScannedAssets) {
+            scanFolder();
+        }
+        constexpr ImVec2 kWindowPos{16.0f, 16.0f};
+        constexpr ImVec2 kWindowSize{480.0f, 0.0f};
+        ImGui::SetNextWindowPos(kWindowPos, ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(kWindowSize, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Engine")) {
+            drawLoadPanel();
+            drawLoadedModelsPanel();
+        }
+        ImGui::End();
+    }
+    ImGui::Render();
+#endif
+}
+
+void Engine::drawStatsOverlay() const
+{
+#if ENGINE_ENABLE_IMGUI
+    constexpr float kMargin = 10.0f;
+    constexpr float kBackgroundAlpha = 0.35f;
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                                        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNav |
+                                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    // pivot (1, 0): anchored by its top-right corner
+    ImGui::SetNextWindowPos({viewport->WorkPos.x + viewport->WorkSize.x - kMargin, viewport->WorkPos.y + kMargin},
+                            ImGuiCond_Always, {1.0f, 0.0f});
+    ImGui::SetNextWindowBgAlpha(kBackgroundAlpha);
+    if (ImGui::Begin("##stats", nullptr, kFlags)) {
+        ImGui::Text("%.0f FPS  %.2f ms", fps, frameMs);
+    }
+    ImGui::End();
+#endif
+}
+
+void Engine::drawLoadPanel()
+{
+#if ENGINE_ENABLE_IMGUI
+    if (!ImGui::CollapsingHeader("Load model", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float rescanWidth = ImGui::CalcTextSize("Rescan").x + style.FramePadding.x * 2.0f;
+    ImGui::SetNextItemWidth(-(rescanWidth + style.ItemSpacing.x));
+    if (ImGui::InputText("##folder", &assetsPathInput[0], IM_ARRAYSIZE(assetsPathInput),
+                         ImGuiInputTextFlags_EnterReturnsTrue)) {
+        scanFolder();
+    }
+    ImGui::SetItemTooltip("Folder with one subfolder per model; Enter rescans");
+    ImGui::SameLine();
+    if (ImGui::Button("Rescan")) {
         scanFolder();
     }
 
+    constexpr float kVisibleRows = 8.0f;
     if (discoveredAssets.empty()) {
-        ImGui::TextUnformatted("No model folders with a .gltf file found yet. Scan a folder to populate the dropdown.");
-    } else {
-        if (selectedAssetIndex < 0 || static_cast<std::size_t>(selectedAssetIndex) >= discoveredAssets.size()) {
-            selectedAssetIndex = 0;
-        }
-
-        const std::size_t selectedIndex = static_cast<std::size_t>(selectedAssetIndex);
-        const std::string preview = discoveredAssets.at(selectedIndex).filename().string();
-        if (ImGui::BeginCombo("Discovered Assets", preview.c_str())) {
-            for (std::size_t i = 0; i < discoveredAssets.size(); ++i) {
-                const bool isSelected = (selectedIndex == i);
-                const std::string itemLabel = discoveredAssets.at(i).filename().string();
-                if (ImGui::Selectable(itemLabel.c_str(), isSelected)) {
-                    selectedAssetIndex = static_cast<int>(i);
-                }
-
-                if (isSelected) {
-                    ImGui::SetItemDefaultFocus();
-                }
+        ImGui::TextDisabled("No model folders with a .gltf/.glb/.obj found");
+    } else if (ImGui::BeginListBox("##models", {-FLT_MIN, kVisibleRows * ImGui::GetTextLineHeightWithSpacing()})) {
+        for (std::size_t i = 0; i < discoveredAssets.size(); ++i) {
+            const bool isSelected = selectedAssetIndex == static_cast<int>(i);
+            const std::string label = discoveredAssets[i].filename().string();
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::Selectable(label.c_str(), isSelected, ImGuiSelectableFlags_AllowDoubleClick)) {
+                selectedAssetIndex = static_cast<int>(i);
+                hasPendingLoad = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
             }
+            ImGui::PopID();
+            if (isSelected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndListBox();
+    }
 
-            ImGui::EndCombo();
+    ImGui::InputFloat3("Position", &loadedModelPosition[0], "%.2f");
+
+    const bool hasSelection =
+        selectedAssetIndex >= 0 && static_cast<std::size_t>(selectedAssetIndex) < discoveredAssets.size();
+    ImGui::BeginDisabled(!hasSelection);
+    if (ImGui::Button("Load")) {
+        hasPendingLoad = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Double-click a model to load it directly");
+    if (!loadStatus.empty()) {
+        constexpr ImVec4 kErrorColor{1.0f, 0.4f, 0.4f, 1.0f};
+        ImGui::SameLine();
+        if (isLoadStatusError) {
+            ImGui::TextColored(kErrorColor, "%s", loadStatus.c_str());
+        } else {
+            ImGui::TextUnformatted(loadStatus.c_str());
         }
     }
-
-    ImGui::InputFloat3("Model Position", &loadedModelPosition[0]);
-    if (ImGui::Button("Load Object")) {
-        loadObject();
-    }
-    ImGui::End();
-    ImGui::Render();
 #endif
+}
+
+void Engine::drawLoadedModelsPanel()
+{
+#if ENGINE_ENABLE_IMGUI
+    const ObjectStorage& storage = scene->objectStorage;
+    // ### keeps the header id stable while the count changes
+    const std::string header = std::format("Loaded models ({})###loaded", storage.size());
+    if (!ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    const auto [gpuUsedBytes, gpuCapacityBytes] = resourceManager->assetTotals();
+    ImGui::Text("GPU geometry %.1f MiB, %u textures", toMiB(gpuUsedBytes), textureManager->size());
+    if (storage.empty()) {
+        ImGui::TextDisabled("Nothing loaded");
+        return;
+    }
+
+    constexpr int kColumnCount = 6;
+    constexpr ImGuiTableFlags kTableFlags =
+        ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingFixedFit;
+    if (!ImGui::BeginTable("##loadedModels", kColumnCount, kTableFlags)) {
+        return;
+    }
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Prims");
+    ImGui::TableSetupColumn("Meshlets");
+    ImGui::TableSetupColumn("Textures");
+    ImGui::TableSetupColumn("Geometry");
+    ImGui::TableSetupColumn("##unload");
+    ImGui::TableHeadersRow();
+
+    for (EntityId id = 0; id < storage.size(); ++id) {
+        ImGui::PushID(static_cast<int>(id));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(std::filesystem::path(storage.names[id]).filename().string().c_str());
+        ImGui::SetItemTooltip("%s", storage.names[id].c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("%u", storage.primitiveCounts[id]);
+        ImGui::TableNextColumn();
+        ImGui::Text("%u", storage.meshletDraws[id].meshletCount);
+        ImGui::TableNextColumn();
+        ImGui::Text("%zu", storage.textureRefs[id].size());
+        ImGui::TableNextColumn();
+        ImGui::Text("%.1f MiB", toMiB(resourceManager->modelGpuBytes(id)));
+        ImGui::TableNextColumn();
+        if (ImGui::SmallButton("Unload")) {
+            pendingUnload = id;
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
+#endif
+}
+
+void Engine::applyPendingModelActions()
+{
+    if (const std::optional<EntityId> id = std::exchange(pendingUnload, std::nullopt)) {
+        unloadModel(*id);
+    }
+    if (std::exchange(hasPendingLoad, false)) {
+        loadSelectedModel();
+    }
 }
 
 
@@ -402,6 +547,7 @@ void Engine::scanFolder()
     ZoneScopedN("Engine::scanFolder");
     discoveredAssets.clear();
     selectedAssetIndex = -1;
+    hasScannedAssets = true;
 
     std::filesystem::path rootPath = std::filesystem::path(assetsPathInput).make_preferred();
     if (rootPath.empty()) {
@@ -414,7 +560,7 @@ void Engine::scanFolder()
         return;
     }
 
-    auto folderContainsGltf = [&errorCode](const std::filesystem::path& folder) -> bool {
+    auto folderContainsModel = [&errorCode](const std::filesystem::path& folder) -> bool {
         for (const auto& file : std::filesystem::directory_iterator(
                  folder, std::filesystem::directory_options::skip_permission_denied, errorCode)) {
             if (errorCode || !file.is_regular_file(errorCode)) {
@@ -423,7 +569,8 @@ void Engine::scanFolder()
             std::string extension = file.path().extension().string();
             std::ranges::transform(extension, extension.begin(), [](unsigned char character) -> char
                                    { return static_cast<char>(std::tolower(character)); });
-            if (extension == ".gltf" || extension == ".glb") {
+            // same formats AssetsLoader::loadModel picks from a folder
+            if (extension == ".gltf" || extension == ".glb" || extension == ".obj") {
                 return true;
             }
         }
@@ -440,7 +587,7 @@ void Engine::scanFolder()
         }
         auto folderPath = entry.path();
         folderPath.make_preferred();
-        if (folderContainsGltf(folderPath)) {
+        if (folderContainsModel(folderPath)) {
             discoveredAssets.emplace_back(std::move(folderPath));
         }
     }
@@ -479,26 +626,63 @@ void Engine::recreateSwapchain()
 #endif
 }
 
-void Engine::loadObject()
+void Engine::loadSelectedModel()
 {
-    ZoneScopedN("Engine::loadObject");
+    ZoneScopedN("Engine::loadSelectedModel");
     if (selectedAssetIndex < 0 || static_cast<std::size_t>(selectedAssetIndex) >= discoveredAssets.size()) {
-        log_info("Load Object: no selected asset", "Engine");
+        log_info("Load model: no selected asset", "Engine");
         return;
     }
 
-    const std::string assetPath = discoveredAssets[selectedAssetIndex].string();
-    log_info("Load Object started", "Engine");
+    const std::filesystem::path& assetPath = discoveredAssets[static_cast<std::size_t>(selectedAssetIndex)];
+    const std::string name = assetPath.filename().string();
+    log_info(std::format("Load model started: {}", assetPath.string()), "Engine");
 #ifdef TRACY_ENABLE
     {
-        const std::string msg = std::format("LoadObject {}", assetPath);
+        const std::string msg = std::format("LoadModel {}", assetPath.string());
         TracyMessage(msg.c_str(), msg.size());
     }
 #endif
     device->vkdevice.waitIdle();
-    assetsLoader->loadModel(assetPath, glm::make_vec3(loadedModelPosition));
+    const auto start = std::chrono::steady_clock::now();
+    std::optional<EntityId> id;
+    try {
+        id = assetsLoader->loadModel(assetPath.string(), glm::make_vec3(&loadedModelPosition[0]));
+    } catch (const std::exception& error) {
+        // UI boundary: a broken model must not take the engine down
+        log_error(std::format("Load model {} failed: {}", name, error.what()), "Engine");
+    }
+    // uploads the new model, or discards what a failed load left in the scratch
     resourceManager->flushGpuAssets();
+    if (!id) {
+        loadStatus = std::format("Failed to load {}", name);
+        isLoadStatusError = true;
+        return;
+    }
     resourceManager->ensureInstanceCapacity(scene->objectStorage.size());
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    loadStatus = std::format("Loaded {} in {:.2f} s", name, seconds);
+    isLoadStatusError = false;
+}
+
+void Engine::unloadModel(EntityId id)
+{
+    ZoneScopedN("Engine::unloadModel");
+    ObjectStorage& storage = scene->objectStorage;
+    if (id >= storage.size()) {
+        return;
+    }
+    const std::string name = std::filesystem::path(storage.names[id]).filename().string();
+    // frames in flight still read the buffers, textures and heap slots being freed
+    device->vkdevice.waitIdle();
+    textureManager->release(storage.textureRefs[id]);
+    resourceManager->eraseModel(id);
+#if ENGINE_USE_MIMALLOC
+    mi_collect(true);
+#endif
+    log_info(std::format("Unloaded model {}: {} textures left", name, textureManager->size()), "Engine");
+    loadStatus = std::format("Unloaded {}", name);
+    isLoadStatusError = false;
 }
 
 void Engine::shutdown() { cleanup(); }

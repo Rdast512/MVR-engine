@@ -138,6 +138,21 @@ uint32_t ResourceManager::uploadedCount(AssetBuffer id) const noexcept
     return static_cast<uint32_t>(asset(id).usedBytes / kAssetBufferInfo[std::to_underlying(id)].stride);
 }
 
+vk::DeviceAddress ResourceManager::modelAssetAddress(AssetBuffer id, EntityId entityId) const noexcept
+{
+    const vk::DeviceSize stride = kAssetBufferInfo[std::to_underlying(id)].stride;
+    return asset(id).address + modelAllocations[entityId].gpu[std::to_underlying(id)].first * stride;
+}
+
+vk::DeviceSize ResourceManager::modelGpuBytes(EntityId entityId) const noexcept
+{
+    vk::DeviceSize bytes = 0;
+    for (size_t i = 0; i < kAssetBufferCount; ++i) {
+        bytes += modelAllocations[entityId].gpu[i].count * kAssetBufferInfo[i].stride;
+    }
+    return bytes;
+}
+
 std::pair<vk::DeviceSize, vk::DeviceSize> ResourceManager::assetTotals() const noexcept
 {
     vk::DeviceSize usedBytes = 0;
@@ -263,6 +278,32 @@ void ResourceManager::createCommandBuffers()
     log_info(std::format("Transfer command buffers allocated: {}", transferCommandBuffer.size()), "ResourceManager");
 }
 
+void ResourceManager::createAssetBuffer(AssetBuffer id, vk::DeviceSize capacity, vk::raii::Buffer& buffer,
+                                        VmaAllocation& memory) const
+{
+    createBuffer(capacity,
+                 vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eTransferDst |
+                     vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal, buffer, memory, allocator.allocator, device,
+                 queueFamilyIndices, std::format("{}Memory", kAssetBufferInfo[std::to_underlying(id)].debugName));
+}
+
+void ResourceManager::installAssetBuffer(AssetBuffer id, vk::raii::Buffer&& buffer, VmaAllocation memory,
+                                         vk::DeviceSize usedBytes, vk::DeviceSize capacityBytes)
+{
+    destroyAssetBuffer(id);
+
+    DeviceBuffer& dst = assetBuffers[std::to_underlying(id)];
+    const AssetBufferInfo& info = kAssetBufferInfo[std::to_underlying(id)];
+    dst.buffer = std::move(buffer);
+    dst.memory = memory;
+    dst.usedBytes = usedBytes;
+    dst.capacityBytes = capacityBytes;
+    dst.address = device.getBufferAddress({.buffer = *dst.buffer});
+    setDebugName(device, dst.buffer, info.debugName);
+    tracyResourceAlloc(static_cast<VkBuffer>(*dst.buffer), static_cast<size_t>(capacityBytes), info.tracyName);
+}
+
 void ResourceManager::appendDeviceLocal(AssetBuffer id, std::span<const std::byte> src)
 {
     DeviceBuffer& dst = assetBuffers[std::to_underlying(id)];
@@ -310,11 +351,7 @@ void ResourceManager::appendDeviceLocal(AssetBuffer id, std::span<const std::byt
 
         vk::raii::Buffer grown({});
         VmaAllocation grownMemory = nullptr;
-        createBuffer(newCapacity,
-                     vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eTransferDst |
-                         vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                     vk::MemoryPropertyFlagBits::eDeviceLocal, grown, grownMemory, allocator.allocator, device,
-                     queueFamilyIndices, std::format("{}Memory", debugName));
+        createAssetBuffer(id, newCapacity, grown, grownMemory);
 
         cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
         if (oldUsed > 0 && dst.memory != nullptr) {
@@ -323,15 +360,7 @@ void ResourceManager::appendDeviceLocal(AssetBuffer id, std::span<const std::byt
         cmd.copyBuffer(staging, grown, vk::BufferCopy(0, oldUsed, srcBytes));
         submitAndWait(cmd, oneTimeTransferQueue());
 
-        destroyAssetBuffer(id);
-
-        dst.buffer = std::move(grown);
-        dst.memory = grownMemory;
-        dst.usedBytes = newUsed;
-        dst.capacityBytes = newCapacity;
-        dst.address = device.getBufferAddress({.buffer = *dst.buffer});
-        setDebugName(device, dst.buffer, debugName);
-        tracyResourceAlloc(static_cast<VkBuffer>(*dst.buffer), static_cast<size_t>(newCapacity), info.tracyName);
+        installAssetBuffer(id, std::move(grown), grownMemory, newUsed, newCapacity);
     }
 
     destroyVmaBuffer(allocator.allocator, staging, stagingMemory);
@@ -378,11 +407,10 @@ std::span<const std::byte> ResourceManager::scratchBytes(AssetBuffer id, std::sp
 void ResourceManager::remapScratchOffsets()
 {
     ZoneScopedN("ResourceManager::remapScratchOffsets");
+    // GPU data stays model-relative (see ModelAllocation); only the CPU catalog becomes absolute
     GeometryStore& geometry = geometryStore;
     const uint32_t vertexBase = uploadedCount(AssetBuffer::Vertices);
     const uint32_t meshletBase = uploadedCount(AssetBuffer::Meshlets);
-    const uint32_t meshletVertexBase = uploadedCount(AssetBuffer::MeshletVertices);
-    const uint32_t meshletTriangleBase = uploadedCount(AssetBuffer::MeshletTriangles);
     const uint32_t indexBase = uploadedCount(AssetBuffer::Indices);
     const uint32_t newPrimitives =
         static_cast<uint32_t>(geometry.primitiveDraws.size()) - geometry.flushedPrimitiveCount;
@@ -391,16 +419,6 @@ void ResourceManager::remapScratchOffsets()
     log_info(std::format("remap scratch: +{} prims +{} morphTargets onto gpu verts={} meshlets={} indices={}",
                          newPrimitives, newMorphTargets, vertexBase, meshletBase, indexBase),
              "ResourceManager");
-    for (uint32_t& vertexIndex : geometry.meshletVertices) {
-        vertexIndex += vertexBase;
-    }
-    for (uint32_t& index : geometry.indices) {
-        index += vertexBase;
-    }
-    for (GpuMeshletDesc& meshlet : geometry.meshlets) {
-        meshlet.vertexOffset += meshletVertexBase;
-        meshlet.triangleOffset += meshletTriangleBase;
-    }
     for (uint32_t p = geometry.flushedPrimitiveCount; p < geometry.primitiveDraws.size(); ++p) {
         PrimitiveDraw& draw = geometry.primitiveDraws[p];
         draw.firstVertex += vertexBase;
@@ -540,6 +558,30 @@ void ResourceManager::flushGpuAssets()
                          geometryStore.flushedPrimitiveCount),
              "ResourceManager");
 
+    // one model per flush keeps every slice contiguous and its GPU data model-relative
+    const auto pendingEntities = static_cast<uint32_t>(objectStorage.size() - modelAllocations.size());
+    if (pendingEntities > 1) {
+        throw std::logic_error(std::format("flushGpuAssets: {} models pending, expected at most 1", pendingEntities));
+    }
+    if (pendingEntities == 0) {
+        discardScratch();
+        return;
+    }
+
+    ModelAllocation allocation{
+        .gpu = {},
+        .primitives = {geometryStore.flushedPrimitiveCount,
+                       static_cast<uint32_t>(geometryStore.primitiveDraws.size()) - geometryStore.flushedPrimitiveCount},
+        .morphTargets = {geometryStore.flushedMorphTargetCount,
+                         static_cast<uint32_t>(geometryStore.morphTargets.size()) -
+                             geometryStore.flushedMorphTargetCount},
+        .morphWeights = {geometryStore.flushedMorphWeightCount,
+                         static_cast<uint32_t>(geometryStore.morphWeights.size()) -
+                             geometryStore.flushedMorphWeightCount},
+        .auxBlobs = {geometryStore.flushedAuxBlobCount,
+                     static_cast<uint32_t>(geometryStore.auxBlobs.size()) - geometryStore.flushedAuxBlobCount},
+    };
+
     remapScratchOffsets();
 
     log_info(std::format("material cache: total={} uploaded={} pending={} hits={} misses={}", materialStore.size(),
@@ -550,8 +592,13 @@ void ResourceManager::flushGpuAssets()
     const std::vector<GpuLight> packedLights = packScratchLights();
     for (size_t i = 0; i < kAssetBufferCount; ++i) {
         const auto id = static_cast<AssetBuffer>(i);
+        // the default material row rides along with the first flush but belongs to no model
+        const bool isMaterialRow = id == AssetBuffer::Materials || id == AssetBuffer::PbrExt;
+        const uint32_t first = std::max(uploadedCount(id), isMaterialRow ? materialStore.defaultMaterialId() + 1 : 0u);
         appendDeviceLocal(id, scratchBytes(id, packedLights));
+        allocation.gpu[i] = {first, uploadedCount(id) - first};
     }
+    modelAllocations.push_back(allocation);
 
     materialStore.markUploaded();
     lightStore.uploadedCount += static_cast<uint32_t>(packedLights.size());
@@ -588,6 +635,157 @@ void ResourceManager::flushGpuAssets()
     TracyMessage(tracyMsg.c_str(), tracyMsg.size());
 #endif
     tracyPlotResources();
+}
+
+void ResourceManager::discardScratch()
+{
+    log_info("flushGpuAssets: no new model, discarding load scratch", "ResourceManager");
+    geometryStore.discardScratch();
+    lightStore.clearScratch();
+    materialStore.discardPending();
+#if ENGINE_USE_MIMALLOC
+    mi_collect(true);
+#endif
+}
+
+void ResourceManager::eraseModel(EntityId id)
+{
+    ZoneScopedN("ResourceManager::eraseModel");
+    if (id >= modelAllocations.size()) {
+        throw std::out_of_range(std::format("eraseModel: entity {} has no GPU allocation", id));
+    }
+    const ModelAllocation removed = modelAllocations[id];
+    log_info(std::format("erase model entity {} '{}': {} on GPU, {} primitives", id, objectStorage.names[id],
+                         formatBytes(modelGpuBytes(id)), removed.primitives.count),
+             "ResourceManager");
+
+    compactAssetBuffers(removed);
+    rebaseCatalog(id, removed);
+
+    const ElementRange materials = removed.gpu[std::to_underlying(AssetBuffer::Materials)];
+    if (materials.count > 0) {
+        materialStore.erase(materials.first, materials.count);
+    }
+    lightStore.uploadedCount -= removed.gpu[std::to_underlying(AssetBuffer::Lights)].count;
+    if (objectStorage.empty()) {
+        geometryStore.extensionsUsed.clear();
+        geometryStore.extensionsRequired.clear();
+    }
+
+    const auto [gpuAssetBytes, gpuAssetCapacity] = assetTotals();
+    log_info(std::format("gpu ssbo total after erase: used {} / cap {}", formatBytes(gpuAssetBytes),
+                         formatBytes(gpuAssetCapacity)),
+             "ResourceManager");
+    tracyPlotResources();
+}
+
+void ResourceManager::compactAssetBuffers(const ModelAllocation& removed)
+{
+    ZoneScopedN("ResourceManager::compactAssetBuffers");
+    struct Compacted {
+        AssetBuffer id;
+        vk::raii::Buffer buffer;
+        VmaAllocation memory;
+        vk::DeviceSize usedBytes;
+    };
+    std::vector<Compacted> compacted;
+    vk::raii::CommandBuffer& cmd = oneTimeTransferCmd();
+    bool isRecording = false;
+
+    for (size_t i = 0; i < kAssetBufferCount; ++i) {
+        const auto id = static_cast<AssetBuffer>(i);
+        const ElementRange range = removed.gpu[i];
+        if (range.count == 0) {
+            continue;
+        }
+        const DeviceBuffer& src = assetBuffers[i];
+        const vk::DeviceSize stride = kAssetBufferInfo[i].stride;
+        const vk::DeviceSize cutFirst = range.first * stride;
+        const vk::DeviceSize cutEnd = range.end() * stride;
+        const vk::DeviceSize remaining = src.usedBytes - (cutEnd - cutFirst);
+        if (remaining == 0) {
+            destroyAssetBuffer(id);
+            continue;
+        }
+
+        // exact fit: the point of unloading is returning the memory
+        Compacted& next = compacted.emplace_back(Compacted{.id = id, .buffer = nullptr, .memory = nullptr,
+                                                           .usedBytes = remaining});
+        createAssetBuffer(id, remaining, next.buffer, next.memory);
+        if (!isRecording) {
+            cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+            isRecording = true;
+        }
+        if (cutFirst > 0) {
+            cmd.copyBuffer(src.buffer, next.buffer, vk::BufferCopy(0, 0, cutFirst));
+        }
+        if (cutEnd < src.usedBytes) {
+            cmd.copyBuffer(src.buffer, next.buffer, vk::BufferCopy(cutEnd, cutFirst, src.usedBytes - cutEnd));
+        }
+    }
+
+    if (isRecording) {
+        submitAndWait(cmd, oneTimeTransferQueue());
+    }
+    for (Compacted& next : compacted) {
+        installAssetBuffer(next.id, std::move(next.buffer), next.memory, next.usedBytes, next.usedBytes);
+    }
+}
+
+void ResourceManager::rebaseCatalog(EntityId id, const ModelAllocation& removed)
+{
+    ZoneScopedN("ResourceManager::rebaseCatalog");
+    const auto gpuRange = [&removed](AssetBuffer buffer) { return removed.gpu[std::to_underlying(buffer)]; };
+    // references past a removed slice move down by its size; kNoneIndex stays
+    const auto shift = [](uint32_t& value, ElementRange cut) {
+        if (value != kNoneIndex && value >= cut.end()) {
+            value -= cut.count;
+        }
+    };
+    const auto eraseSlice = [](auto& column, ElementRange cut) {
+        column.erase(column.begin() + cut.first, column.begin() + cut.end());
+    };
+
+    GeometryStore& geometry = geometryStore;
+    eraseSlice(geometry.primitiveDraws, removed.primitives);
+    eraseSlice(geometry.morphTargets, removed.morphTargets);
+    eraseSlice(geometry.morphWeights, removed.morphWeights);
+    eraseSlice(geometry.auxBlobs, removed.auxBlobs);
+    geometry.flushedPrimitiveCount -= removed.primitives.count;
+    geometry.flushedMorphTargetCount -= removed.morphTargets.count;
+    geometry.flushedMorphWeightCount -= removed.morphWeights.count;
+    geometry.flushedAuxBlobCount -= removed.auxBlobs.count;
+
+    for (PrimitiveDraw& draw : geometry.primitiveDraws) {
+        shift(draw.meshlets.firstMeshlet, gpuRange(AssetBuffer::Meshlets));
+        shift(draw.firstVertex, gpuRange(AssetBuffer::Vertices));
+        shift(draw.firstIndex, gpuRange(AssetBuffer::Indices));
+        shift(draw.materialId, gpuRange(AssetBuffer::Materials));
+        shift(draw.morphFirst, removed.morphTargets);
+        shift(draw.morphWeightFirst, removed.morphWeights);
+    }
+    for (MorphTarget& target : geometry.morphTargets) {
+        shift(target.posOffset, gpuRange(AssetBuffer::MorphPos));
+        shift(target.nrmOffset, gpuRange(AssetBuffer::MorphNrm));
+        shift(target.tanOffset, gpuRange(AssetBuffer::MorphTan));
+    }
+
+    objectStorage.erase(id);
+    modelAllocations.erase(modelAllocations.begin() + id);
+    for (EntityId other = 0; other < objectStorage.size(); ++other) {
+        shift(objectStorage.firstPrimitives[other], removed.primitives);
+        shift(objectStorage.meshletDraws[other].firstMeshlet, gpuRange(AssetBuffer::Meshlets));
+        shift(objectStorage.materials[other].materialId, gpuRange(AssetBuffer::Materials));
+    }
+    for (ModelAllocation& allocation : modelAllocations) {
+        for (size_t i = 0; i < kAssetBufferCount; ++i) {
+            shift(allocation.gpu[i].first, removed.gpu[i]);
+        }
+        shift(allocation.primitives.first, removed.primitives);
+        shift(allocation.morphTargets.first, removed.morphTargets);
+        shift(allocation.morphWeights.first, removed.morphWeights);
+        shift(allocation.auxBlobs.first, removed.auxBlobs);
+    }
 }
 
 void ResourceManager::tracyPlotResources() const

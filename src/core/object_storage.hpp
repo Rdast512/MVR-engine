@@ -45,6 +45,8 @@ public:
     std::vector<std::string> names;
     std::vector<uint32_t> firstPrimitives;
     std::vector<uint32_t> primitiveCounts;
+    // texture heap indices this entity retains (TextureManager refcounts)
+    std::vector<std::vector<uint32_t>> textureRefs;
 
     [[nodiscard]] EntityId create(const Transform& transform, const MeshletDraw& meshletDraw,
                                   const MaterialRef& material, uint32_t firstPrimitive, uint32_t primitiveCount,
@@ -52,6 +54,9 @@ public:
 
     [[nodiscard]] uint32_t size() const noexcept { return static_cast<uint32_t>(transforms.size()); }
     [[nodiscard]] bool empty() const noexcept { return transforms.empty(); }
+
+    // order-preserving: later entities shift down by one id
+    void erase(EntityId id);
 
     void clear() noexcept;
 };

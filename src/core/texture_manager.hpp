@@ -63,6 +63,17 @@ public:
     [[nodiscard]] uint32_t getOrCreateSampler(int32_t minFilter, int32_t magFilter, int32_t wrapS, int32_t wrapT);
     [[nodiscard]] bool isCached(std::string cacheKey, TextureColorSpace colorSpace) const;
 
+    // 1x1 white, never released; sampled by primitives without an albedo texture
+    [[nodiscard]] uint32_t getDefaultTextureIndex() const noexcept { return defaultTextureIndex; }
+
+    // Load calls never change reference counts; owners retain what they keep.
+    // release destroys a texture and frees its heap slot when its count reaches 0 (GPU must be idle).
+    void retain(std::span<const uint32_t> heapIndices);
+    void release(std::span<const uint32_t> heapIndices);
+    // destroys the textures in heapIndices that nobody retained (failed load cleanup)
+    void releaseUnreferenced(std::span<const uint32_t> heapIndices);
+    [[nodiscard]] uint32_t size() const noexcept { return static_cast<uint32_t>(heapEntries.size()); }
+
     // Thread-safe decoders (no Vulkan); upload the result with loadTextureFromPixels
     [[nodiscard]] static DecodedImage decodeRgba8(std::span<const uint8_t> bytes);
     [[nodiscard]] static DecodedImage decodeRgba8File(const std::string& path);
@@ -102,12 +113,24 @@ private:
                                          TextureColorSpace colorSpace, std::string_view origin);
     [[nodiscard]] uint32_t uploadRgba8(const std::string& cacheKey, const void* pixels, int texWidth, int texHeight,
                                        vk::Format format);
+    // adds the texture to the cache and the heap-index table
+    [[nodiscard]] uint32_t registerTexture(const std::string& cacheKey, TextureAsset&& asset,
+                                           std::optional<ktxVulkanTexture> ktx = std::nullopt);
+    void destroyTexture(uint32_t heapIndex);
+    // frees the image behind asset: libktx owns KTX images, VMA the rest
+    void destroyImage(TextureAsset& asset, std::optional<ktxVulkanTexture>& ktx) const;
+
+    struct HeapEntry {
+        std::string cacheKey; // into loadedTextures
+        uint32_t refCount = 0;
+        std::optional<ktxVulkanTexture> ktx;
+    };
     std::unordered_map<uint64_t, uint32_t> samplerKeyToIndex;
     // validated once in init() for both RGBA8 formats
     vk::ImageLayout hostCopyDstLayout = vk::ImageLayout::eUndefined;
     std::optional<vk::raii::CommandBuffer> uploadBatch;
 
-    // libktx owns these images and their device memory (not VMA); destructed after the views
-    std::vector<ktxVulkanTexture> ktxTextures;
+    std::unordered_map<uint32_t, HeapEntry> heapEntries;
+    uint32_t defaultTextureIndex = 0;
     std::optional<ktxVulkanDeviceInfo> ktxDeviceInfo;
 };

@@ -13,6 +13,9 @@
 #include "scene/vk_camera.hpp"
 #include "scene/vk_scene.hpp"
 
+#include <optional>
+#include <string>
+
 
 class Engine{
     // Driven by Constants.h ENGINE_ENABLE_IMGUI. When false, no ImGui Vulkan/SDL backends.
@@ -38,6 +41,7 @@ class Engine{
     std::chrono::high_resolution_clock::time_point fpsTime;
     int frameCount = 0;
     float fps = 0.0f;
+    float frameMs = 0.0f;
 
     vk::raii::DescriptorPool imguiDescriptorPool = nullptr;
     VkFormat imguiColorFormat = VK_FORMAT_UNDEFINED;
@@ -45,11 +49,24 @@ class Engine{
     VkPipelineRenderingCreateInfoKHR imguiPipelineRenderingInfo{};
     std::vector<std::filesystem::path> discoveredAssets;
     int selectedAssetIndex = -1;
+    bool hasScannedAssets = false;
     float loadedModelPosition[3] = {0.0f, 0.0f, 0.0f};
     char assetsPathInput[260] = ENGINE_MODELS_DIR;
+    std::string loadStatus;
+    bool isLoadStatusError = false;
+    // UI actions run after the ImGui frame so no panel iterates storage that changes under it
+    bool hasPendingLoad = false;
+    std::optional<EntityId> pendingUnload;
     void createImGuiDescriptorPool();
+    // stops ImGui from reading the mouse / changing the cursor while the game has focus
+    void setImGuiInputEnabled(bool enabled);
     void drawImGui();
-    void loadObject();
+    void drawStatsOverlay() const;
+    void drawLoadPanel();
+    void drawLoadedModelsPanel();
+    void applyPendingModelActions();
+    void loadSelectedModel();
+    void unloadModel(EntityId id);
     // Full host-side swapchain recreate (waitIdle inside swapchain, color/depth/sync, ImGui).
     void recreateSwapchain();
 
@@ -60,6 +77,6 @@ public:
     void render();
     void cleanup();
     void shutdown();
-    // ImGui callback stub: invoked when the demo button is pressed. Implement later.
+    // fills discoveredAssets with the subfolders of assetsPathInput holding a .gltf/.glb/.obj
     void scanFolder();
 };

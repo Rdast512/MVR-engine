@@ -179,4 +179,15 @@ void GeometryStore::clearScratch()
     drop(morphTan);
     flushedPrimitiveCount = static_cast<uint32_t>(primitiveDraws.size());
     flushedMorphTargetCount = static_cast<uint32_t>(morphTargets.size());
+    flushedMorphWeightCount = static_cast<uint32_t>(morphWeights.size());
+    flushedAuxBlobCount = static_cast<uint32_t>(auxBlobs.size());
+}
+
+void GeometryStore::discardScratch()
+{
+    primitiveDraws.resize(flushedPrimitiveCount);
+    morphTargets.resize(flushedMorphTargetCount);
+    morphWeights.resize(flushedMorphWeightCount);
+    auxBlobs.resize(flushedAuxBlobCount);
+    clearScratch();
 }

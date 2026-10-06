@@ -208,7 +208,7 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
     }
 
 #if ENGINE_ENABLE_IMGUI
-    if (imguiEnabled && imguiVisible) {
+    if (imguiEnabled) {
         ZoneScopedN("RenderImGui");
     #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneImGui, *cmd, "GPU_ImGui", gpuTrace);

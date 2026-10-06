@@ -16,8 +16,6 @@ public:
              VkTracyContext* tracyContext = nullptr, bool imguiEnabled = false);
 
     void setTracyContext(VkTracyContext* tracyContextIn);
-    void setImGuiVisible(bool visible) noexcept { imguiVisible = visible; }
-    [[nodiscard]] bool isImGuiVisible() const noexcept { return imguiVisible; }
     void rebuildSwapchainResources() const;
     void drawFrame();
     void waitIdle() const;
@@ -35,7 +33,6 @@ private:
     Camera& camera;
     DeviceGeneratedCommands dgc;
     VkTracyContext* tracyContext = nullptr;
+    // drawn every frame: the stats overlay is always on, panels only while the UI is open
     bool imguiEnabled = false;
-    // Drawn only while the UI toggle is open (I key).
-    bool imguiVisible = false;
 };
