@@ -332,8 +332,11 @@ namespace
         std::string path;
         std::vector<uint8_t> encoded;
         std::vector<uint8_t> decodedRgba;
-        // filled by decodeGltfImages from encoded / path; released once materials are built
+        // filled by uploadGltfImages from encoded / path; released right after its group is uploaded
         TextureManager::DecodedImage predecoded;
+        // color spaces the model's materials sample this image in (collectGltfImageUses)
+        bool usedSrgb = false;
+        bool usedLinear = false;
         int width = 0;
         int height = 0;
         std::string mime;
@@ -358,6 +361,8 @@ namespace
         std::vector<GltfResolvedTexture> gltfTextures;
         std::vector<uint32_t> materialIds;
         uint32_t defaultSamplerHeap = 0;
+        // true while collectGltfImageUses walks the materials: texture lookups only record usage
+        bool collectImageUses = false;
     };
 
     static std::string extrasJsonOf(const tg3_extras_ext& ext)
@@ -555,7 +560,12 @@ namespace
         if (imageIndex < 0 || static_cast<uint32_t>(imageIndex) >= ctx.images.size()) {
             return kNoneIndex;
         }
-        return loadGltfImage(ctx, ctx.images[static_cast<uint32_t>(imageIndex)], colorSpace);
+        GltfImageSrc& image = ctx.images[static_cast<uint32_t>(imageIndex)];
+        if (ctx.collectImageUses) {
+            (colorSpace == TextureColorSpace::Srgb ? image.usedSrgb : image.usedLinear) = true;
+            return kNoneIndex;
+        }
+        return loadGltfImage(ctx, image, colorSpace);
     }
 
     static uint32_t resolveTextureSampler(const GltfLoadCtx& ctx, int32_t textureIndex)
@@ -1158,39 +1168,97 @@ namespace
         }
     }
 
-    // Decodes every image a texture references on a worker pool; upload stays on the main thread in
-    // material order, so heap indices match the serial path. A failed decode is left empty and retried
-    // (and reported) by loadGltfImage.
-    static void decodeGltfImages(GltfLoadCtx& ctx)
+    static void parseGltfMaterialPbrExtensions(GltfLoadCtx& ctx, const tg3_material& material, GpuMaterial& gpu,
+                                               MaterialPbrExtension& ext, std::string_view owner);
+
+    // Dry run of the material texture lookups (same code paths as parseGltfMaterials) that only records
+    // which images are sampled and in which color space.
+    static void collectGltfImageUses(GltfLoadCtx& ctx, const tg3_model& model)
     {
-        ZoneScopedN("AssetLoader::decodeGltfImages");
-        std::vector<bool> referenced(ctx.images.size(), false);
-        for (const GltfResolvedTexture& texture : ctx.gltfTextures) {
-            if (texture.imageIndex >= 0 && static_cast<uint32_t>(texture.imageIndex) < ctx.images.size()) {
-                referenced[static_cast<uint32_t>(texture.imageIndex)] = true;
+        ZoneScopedN("AssetLoader::collectGltfImageUses");
+        ctx.collectImageUses = true;
+        for (uint32_t i = 0; i < model.materials_count; ++i) {
+            const tg3_material& material = model.materials[i];
+            const tg3_pbr_metallic_roughness& pbr = material.pbr_metallic_roughness;
+            (void)resolveTextureImage(ctx, pbr.base_color_texture.index, TextureColorSpace::Srgb);
+            (void)resolveTextureImage(ctx, pbr.metallic_roughness_texture.index, TextureColorSpace::Linear);
+            (void)resolveTextureImage(ctx, material.normal_texture.index, TextureColorSpace::Linear);
+            (void)resolveTextureImage(ctx, material.occlusion_texture.index, TextureColorSpace::Linear);
+            (void)resolveTextureImage(ctx, material.emissive_texture.index, TextureColorSpace::Srgb);
+            GpuMaterial gpu{};
+            MaterialPbrExtension ext{};
+            parseGltfMaterialPbrExtensions(ctx, material, gpu, ext, std::format("material[{}]", i));
+        }
+        ctx.collectImageUses = false;
+    }
+
+    // Pixels decoded at once; bounds the load-time RAM peak (a larger single image forms its own group).
+    constexpr size_t kImageDecodeBudgetBytes = size_t{256} << 20;
+
+    // Decodes the used images in groups of at most kImageDecodeBudgetBytes on a worker pool, uploads each
+    // group on the main thread in image order, then frees its pixels before the next group. Images left
+    // out (KTX, already cached, failed decodes) go through loadGltfImage's own path when materials ask.
+    static void uploadGltfImages(GltfLoadCtx& ctx)
+    {
+        ZoneScopedN("AssetLoader::uploadGltfImages");
+        struct Pending
+        {
+            GltfImageSrc* image;
+            size_t bytes;
+        };
+        std::vector<Pending> pending;
+        for (GltfImageSrc& image : ctx.images) {
+            const bool used = image.usedSrgb || image.usedLinear;
+            const bool decodable =
+                !image.encoded.empty() || (!image.path.empty() && !TextureManager::isKtxPath(image.path));
+            const bool cached = (!image.usedSrgb || ctx.textures.isCached(image.cacheKey, TextureColorSpace::Srgb)) &&
+                (!image.usedLinear || ctx.textures.isCached(image.cacheKey, TextureColorSpace::Linear));
+            if (used && decodable && image.decodedRgba.empty() && !cached) {
+                const size_t bytes = image.encoded.empty() ? TextureManager::decodedRgba8FileBytes(image.path)
+                                                           : TextureManager::decodedRgba8Bytes(image.encoded);
+                pending.push_back({.image = &image, .bytes = bytes});
             }
         }
 
-        std::vector<GltfImageSrc*> pending;
-        for (uint32_t i = 0; i < ctx.images.size(); ++i) {
-            GltfImageSrc& image = ctx.images[i];
-            const bool hasSource = !image.encoded.empty() || (!image.path.empty() && !TextureManager::isKtxPath(image.path));
-            const bool cached = ctx.textures.isCached(image.cacheKey, TextureColorSpace::Srgb) ||
-                                ctx.textures.isCached(image.cacheKey, TextureColorSpace::Linear);
-            if (referenced[i] && hasSource && image.decodedRgba.empty() && !cached) {
-                pending.push_back(&image);
+        size_t groups = 0;
+        size_t threads = 0;
+        size_t peakBytes = 0;
+        for (size_t first = 0; first < pending.size();) {
+            size_t last = first;
+            size_t groupBytes = 0;
+            while (last < pending.size() &&
+                   (last == first || groupBytes + pending[last].bytes <= kImageDecodeBudgetBytes)) {
+                groupBytes += pending[last].bytes;
+                ++last;
             }
-        }
-        if (pending.empty()) {
-            return;
-        }
+            const std::span<Pending> group(pending.data() + first, last - first);
 
-        const size_t threads = parallelFor(pending.size(), [&](size_t k) {
-            GltfImageSrc& image = *pending[k];
-            image.predecoded = image.encoded.empty() ? TextureManager::decodeRgba8File(image.path)
-                                                     : TextureManager::decodeRgba8(image.encoded);
-        });
-        log_info(std::format("glTF decoded {} images on {} threads", pending.size(), threads), "AssetLoader");
+            const auto decode = [&](size_t k) {
+                GltfImageSrc& image = *group[k].image;
+                image.predecoded = image.encoded.empty() ? TextureManager::decodeRgba8File(image.path)
+                                                         : TextureManager::decodeRgba8(image.encoded);
+            };
+            threads = std::max(threads, parallelFor(group.size(), decode));
+            for (const Pending& entry : group) {
+                GltfImageSrc& image = *entry.image;
+                if (image.usedSrgb) {
+                    (void)loadGltfImage(ctx, image, TextureColorSpace::Srgb);
+                }
+                if (image.usedLinear) {
+                    (void)loadGltfImage(ctx, image, TextureColorSpace::Linear);
+                }
+                // host image copy has consumed the pixels synchronously
+                image.predecoded = {};
+            }
+            peakBytes = std::max(peakBytes, groupBytes);
+            ++groups;
+            first = last;
+        }
+        if (!pending.empty()) {
+            log_info(std::format("glTF uploaded {} images in {} groups (peak {} MiB decoded) on {} threads",
+                                 pending.size(), groups, peakBytes >> 20, threads),
+                     "AssetLoader");
+        }
     }
 
     // Keeps a texture upload batch open for a scope; flushes on exit, including when parsing throws.
@@ -1915,13 +1983,12 @@ bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
     const std::vector<uint32_t> samplerHeaps = parseGltfSamplers(ctx, model);
     parseGltfImages(ctx, model, std::filesystem::path(modelPath).parent_path());
     parseGltfTextures(ctx, model, samplerHeaps);
-    decodeGltfImages(ctx);
     {
         const TextureUploadBatch uploadBatch(textureManager);
+        collectGltfImageUses(ctx, model);
+        uploadGltfImages(ctx);
+        // every decodable image is cached now; this only picks up heap indices (and KTX / fallbacks)
         parseGltfMaterials(ctx, model);
-    }
-    for (GltfImageSrc& image : ctx.images) {
-        image.predecoded = {};
     }
     parseGltfLights(ctx, model);
     appendGltfGeometry(ctx, model);

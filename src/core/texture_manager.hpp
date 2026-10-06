@@ -66,6 +66,9 @@ public:
     // Thread-safe decoders (no Vulkan); upload the result with loadTextureFromPixels
     [[nodiscard]] static DecodedImage decodeRgba8(std::span<const uint8_t> bytes);
     [[nodiscard]] static DecodedImage decodeRgba8File(const std::string& path);
+    // RGBA8 bytes a decode would produce, read from the image header only; 0 when unreadable
+    [[nodiscard]] static size_t decodedRgba8Bytes(std::span<const uint8_t> bytes);
+    [[nodiscard]] static size_t decodedRgba8FileBytes(const std::string& path);
     [[nodiscard]] static bool isKtxPath(std::string_view path);
 
     // Uploads between begin and flush share one command buffer and one submit + fence wait.

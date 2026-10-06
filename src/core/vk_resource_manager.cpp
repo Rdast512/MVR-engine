@@ -558,6 +558,10 @@ void ResourceManager::flushGpuAssets()
 
     geometryStore.clearScratch();
     lightStore.clearScratch();
+#if ENGINE_USE_MIMALLOC
+    // load scratch (decoded images, geometry, file buffers) is freed by now; return those pages to the OS
+    mi_collect(true);
+#endif
 
     log_info(std::format("gpu catalog: verts={} meshlets={} meshletVerts={} triCorners={} indices={} "
                          "morphPos/Nrm/Tan={}/{}/{} materials={} lights={} prims={} morphTargets={}",

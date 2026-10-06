@@ -275,6 +275,28 @@ TextureManager::DecodedImage TextureManager::decodeRgba8File(const std::string& 
     return image;
 }
 
+size_t TextureManager::decodedRgba8Bytes(std::span<const uint8_t> bytes)
+{
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    if (stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()), &width, &height, &channels) == 0) {
+        return 0;
+    }
+    return static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+}
+
+size_t TextureManager::decodedRgba8FileBytes(const std::string& path)
+{
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    if (stbi_info(path.c_str(), &width, &height, &channels) == 0) {
+        return 0;
+    }
+    return static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+}
+
 bool TextureManager::isKtxPath(std::string_view path)
 {
     return detectFormat(path) == TextureFormat::Ktx;
