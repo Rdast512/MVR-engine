@@ -549,6 +549,8 @@ void Device::createLogicalDevice()
                                  .sampleRateShading = true,
                                  .multiDrawIndirect = true,
                                  .samplerAnisotropy = true,
+                                 // BC7 KTX2 textures from tools/gltf_ktx2
+                                 .textureCompressionBC = true,
                                  .shaderInt64 = true,
                              }},
                         // vk::PhysicalDeviceVulkan11Features
