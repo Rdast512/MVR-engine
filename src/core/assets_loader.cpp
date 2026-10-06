@@ -363,6 +363,8 @@ namespace
         uint32_t defaultSamplerHeap = 0;
         // true while collectGltfImageUses walks the materials: texture lookups only record usage
         bool collectImageUses = false;
+        // every heap index the model got from a texture load (may repeat)
+        std::vector<uint32_t> textureRefs;
     };
 
     static std::string extrasJsonOf(const tg3_extras_ext& ext)
@@ -547,6 +549,9 @@ namespace
         } catch (const std::runtime_error& error) {
             image.isBroken = true;
             log_error(std::format("glTF image '{}' failed to load: {}", image.cacheKey, error.what()), "AssetLoader");
+        }
+        if (heap != kNoneIndex) {
+            ctx.textureRefs.push_back(heap);
         }
         return heap;
     }
@@ -1832,6 +1837,38 @@ namespace
         return storedPrimitives;
     }
 
+    // Textures a load picked up. Until commit, a failed load frees the ones no other model retains.
+    struct ModelTextureRefs
+    {
+        TextureManager& textures;
+        std::vector<uint32_t>& heapIndices;
+        bool isCommitted = false;
+
+        ModelTextureRefs(TextureManager& texturesIn, std::vector<uint32_t>& heapIndicesIn) :
+            textures(texturesIn), heapIndices(heapIndicesIn)
+        {
+        }
+        ModelTextureRefs(const ModelTextureRefs&) = delete;
+        ModelTextureRefs& operator=(const ModelTextureRefs&) = delete;
+        ~ModelTextureRefs()
+        {
+            if (!isCommitted) {
+                textures.releaseUnreferenced(heapIndices);
+            }
+        }
+
+        // retained on behalf of the new entity; returns the deduplicated list
+        [[nodiscard]] std::vector<uint32_t> commit()
+        {
+            std::ranges::sort(heapIndices);
+            const auto [first, last] = std::ranges::unique(heapIndices);
+            heapIndices.erase(first, last);
+            textures.retain(heapIndices);
+            isCommitted = true;
+            return heapIndices;
+        }
+    };
+
     struct Tg3ParseGuard
     {
         tg3_model& model;
@@ -1870,7 +1907,7 @@ AssetsLoader::AssetsLoader(ObjectStorage& objectStorageIn, TextureManager& textu
 }
 
 
-void AssetsLoader::loadModel(std::string modelPath, glm::vec3 xyz)
+std::optional<EntityId> AssetsLoader::loadModel(std::string modelPath, glm::vec3 xyz)
 {
     ZoneScopedN("AssetsLoader::loadModel");
     // Folder packs (models/<name>/*) or a direct file. Prefer .gltf, then .glb, then .obj.
@@ -1904,7 +1941,7 @@ void AssetsLoader::loadModel(std::string modelPath, glm::vec3 xyz)
             path = std::move(obj);
         } else {
             log_error(std::format("Model folder has no .gltf/.glb/.obj: {}", path.string()), "AssetLoader");
-            return;
+            return std::nullopt;
         }
         path.make_preferred();
     }
@@ -1913,20 +1950,20 @@ void AssetsLoader::loadModel(std::string modelPath, glm::vec3 xyz)
     const bool isGltf = pathString.ends_with(".gltf") || pathString.ends_with(".glb");
     const bool isObj = pathString.ends_with(".obj");
 
+    materialStore.beginModel();
     if (isGltf) {
-        loadGltfModel(pathString, xyz);
-        return;
+        return loadGltfModel(pathString, xyz);
     }
 
     if (isObj) {
-        loadObjModel(pathString, xyz);
-        return;
+        return loadObjModel(pathString, xyz);
     }
 
     log_error(std::format("Unsupported model format: {}", pathString), "AssetLoader");
+    return std::nullopt;
 }
 
-bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
+std::optional<EntityId> AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
 {
     ZoneScopedN("AssetsLoader::loadGltfModel");
     // glTF uses forward-slash URIs internally; normalise the base path
@@ -1964,7 +2001,7 @@ bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
         } else {
             log_error(std::format("Failed to parse glTF: rc={}", static_cast<int>(rc)), "AssetLoader");
         }
-        return false;
+        return std::nullopt;
     }
 
     log_info(std::format("Loading glTF: {} meshes, {} nodes", model.meshes_count, model.nodes_count), "AssetLoader");
@@ -1977,6 +2014,7 @@ bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
         .defaultSamplerHeap =
             textureManager.getOrCreateSampler(-1, -1, TG3_TEXTURE_WRAP_REPEAT, TG3_TEXTURE_WRAP_REPEAT),
     };
+    ModelTextureRefs textureRefs(textureManager, ctx.textureRefs);
 
     const uint32_t firstPrimitive = static_cast<uint32_t>(geometryStore.primitiveDraws.size());
     parseGltfRootExtensions(ctx, model);
@@ -2002,7 +2040,7 @@ bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
         unionDraw.meshletCount = (last.meshlets.firstMeshlet + last.meshlets.meshletCount) - unionDraw.firstMeshlet;
     }
 
-    uint32_t previewTex = 0;
+    uint32_t previewTex = textureManager.getDefaultTextureIndex();
     uint32_t previewMat = materialStore.defaultMaterialId();
     if (primitiveCount > 0) {
         const PrimitiveDraw& first = geometryStore.primitiveDraws[firstPrimitive];
@@ -2015,6 +2053,7 @@ bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
     const Transform transform{.position = glm::vec3{xyz[0], xyz[1], xyz[2]}};
     const MaterialRef material{.textureIndex = previewTex, .materialId = previewMat};
     const EntityId id = objectStorage.create(transform, unionDraw, material, firstPrimitive, primitiveCount, modelPath);
+    objectStorage.textureRefs[id] = textureRefs.commit();
     log_info(std::format("Loaded model entity {} | primitives=[{}, {}) | meshlets: {} (first {})", id, firstPrimitive,
                          firstPrimitive + primitiveCount, unionDraw.meshletCount, unionDraw.firstMeshlet),
              "AssetLoader");
@@ -2022,10 +2061,10 @@ bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
     log_info(std::format("Model loaded (glTF): {} | vertices: {} | indices: {} | total meshlets: {}", modelPath,
                          geometryStore.vertices.size(), geometryStore.indices.size(), geometryStore.meshlets.size()),
              "AssetLoader");
-    return true;
+    return id;
 }
 
-bool AssetsLoader::loadObjModel(const std::string& modelPath, glm::vec3 xyz)
+std::optional<EntityId> AssetsLoader::loadObjModel(const std::string& modelPath, glm::vec3 xyz)
 {
     ZoneScopedN("AssetsLoader::loadObjModel");
     log_info(std::format("Loading OBJ: {}", modelPath), "AssetLoader");
@@ -2037,7 +2076,7 @@ bool AssetsLoader::loadObjModel(const std::string& modelPath, glm::vec3 xyz)
     // tinyobj wraps standard C file I/O — native separators are correct.
     if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &err, modelPath.c_str())) {
         log_error(std::format("Failed to load OBJ: {}", err), "AssetLoader");
-        return false;
+        return std::nullopt;
     }
 
     std::unordered_map<GpuVertex, uint32_t> uniqueVertices{};
@@ -2074,7 +2113,10 @@ bool AssetsLoader::loadObjModel(const std::string& modelPath, glm::vec3 xyz)
 
     GpuMaterial gpu{};
     const auto objTexture = (std::filesystem::path(modelPath).parent_path() / TEXTURE_PATH.filename()).string();
+    std::vector<uint32_t> heapIndices;
+    ModelTextureRefs textureRefs(textureManager, heapIndices);
     gpu.baseColorTex = textureManager.loadTexture(objTexture);
+    heapIndices.push_back(gpu.baseColorTex);
     gpu.baseColorSamp = textureManager.getOrCreateSampler(-1, -1, TG3_TEXTURE_WRAP_REPEAT, TG3_TEXTURE_WRAP_REPEAT);
     const uint32_t materialId = materialStore.add(gpu);
 
@@ -2092,11 +2134,12 @@ bool AssetsLoader::loadObjModel(const std::string& modelPath, glm::vec3 xyz)
     const Transform transform{.position = glm::vec3{xyz[0], xyz[1], xyz[2]}};
     const MaterialRef material{.textureIndex = gpu.baseColorTex, .materialId = materialId};
     const EntityId id = objectStorage.create(transform, draw.meshlets, material, firstPrimitive, 1, modelPath);
+    objectStorage.textureRefs[id] = textureRefs.commit();
     log_info(std::format("Loaded model entity {} | primitives=[{}, {}) | meshlets: {} (first {})", id, firstPrimitive,
                          firstPrimitive + 1, draw.meshlets.meshletCount, draw.meshlets.firstMeshlet),
              "AssetLoader");
     log_info(std::format("Model loaded (OBJ): {} | vertices: {} | indices: {} | total meshlets: {}", modelPath,
                          geometryStore.vertices.size(), geometryStore.indices.size(), geometryStore.meshlets.size()),
              "AssetLoader");
-    return true;
+    return id;
 }

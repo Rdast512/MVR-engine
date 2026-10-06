@@ -33,6 +33,8 @@ public:
     [[nodiscard]] auto getTextureDescriptorIndex() const -> uint32_t;
     [[nodiscard]] auto getSamplerDescriptorIndex() const -> uint32_t;
     void writeImageDescriptor(TextureAsset& textureAsset, const vk::ImageViewCreateInfo& imageViewCreateInfo);
+    // slot is reused by a later writeImageDescriptor; no in-flight frame may still sample it
+    void freeImageDescriptor(uint32_t heapIndex);
     [[nodiscard]] uint32_t writeSamplerDescriptor(const vk::SamplerCreateInfo& samplerInfo);
 
 
@@ -57,6 +59,7 @@ public:
     vk::BindHeapInfoEXT samplerHeapInfo{};
 
     vk::DeviceSize textureDescriptorOffset = 0;
+    std::vector<uint32_t> freeImageSlots;
     vk::DeviceSize samplerDescriptorOffset = 0;
     vk::DeviceSize nextSamplerDescriptorOffset = 0;
     uint32_t defaultSamplerHeapIndex = 0;

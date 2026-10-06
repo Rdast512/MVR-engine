@@ -2,6 +2,7 @@
 
 #include "types.hpp"
 
+#include <cassert>
 #include <vector>
 
 class MaterialStore
@@ -11,6 +12,8 @@ public:
     std::vector<GpuMaterial> gpuMaterials;
     std::vector<MaterialPbrExtension> pbrExtensions;
     uint32_t uploadedCount = 0;
+    // add() dedups only from here, so every row belongs to one model and unloads with it
+    uint32_t modelFirst = 1;
     uint32_t cacheHits = 0;
     uint32_t cacheMisses = 0;
 
@@ -23,9 +26,11 @@ public:
 
     [[nodiscard]] uint32_t defaultMaterialId() const noexcept { return 0; }
 
+    void beginModel() noexcept { modelFirst = size(); }
+
     uint32_t add(const GpuMaterial& material, const MaterialPbrExtension& ext = {})
     {
-        for (uint32_t i = 0; i < gpuMaterials.size(); ++i) {
+        for (uint32_t i = modelFirst; i < gpuMaterials.size(); ++i) {
             if (gpuMaterials[i] == material && pbrExtensions[i] == ext) {
                 ++cacheHits;
                 return i;
@@ -55,4 +60,22 @@ public:
     [[nodiscard]] const GpuMaterial* scratchMaterial(uint32_t id) const noexcept { return get(id); }
 
     void markUploaded() noexcept { uploadedCount = size(); }
+
+    // rows a failed load added; they never reached the GPU
+    void discardPending()
+    {
+        gpuMaterials.resize(uploadedCount);
+        pbrExtensions.resize(uploadedCount);
+        modelFirst = size();
+    }
+
+    // rows [first, first + count) of one uploaded model; the default row 0 is never erased
+    void erase(uint32_t first, uint32_t count)
+    {
+        assert(first >= 1 && first + count <= uploadedCount);
+        gpuMaterials.erase(gpuMaterials.begin() + first, gpuMaterials.begin() + first + count);
+        pbrExtensions.erase(pbrExtensions.begin() + first, pbrExtensions.begin() + first + count);
+        uploadedCount -= count;
+        modelFirst = size();
+    }
 };

@@ -1,4 +1,5 @@
 #pragma once
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,7 +19,8 @@ public:
     ~AssetsLoader() = default;
 
     // Load a model into CPU mesh vectors and create a SoA entity in objectStorage.
-    void loadModel(std::string modelPath, glm::vec3 xyz);
+    // nullopt on failure; flush the scratch to the GPU before the next load (one model per flush).
+    [[nodiscard]] std::optional<EntityId> loadModel(std::string modelPath, glm::vec3 xyz);
 
     void processVertexData(const tinyobj::attrib_t& attrib, const std::vector<tinyobj::shape_t>& shapes);
     void loadMaterials(const std::string& path, const std::vector<tinyobj::material_t>& materials);
@@ -30,6 +32,6 @@ public:
     LightStore& lightStore;
 
 private:
-    bool loadGltfModel(const std::string& modelPath, glm::vec3 xyz);
-    bool loadObjModel(const std::string& modelPath, glm::vec3 xyz);
+    [[nodiscard]] std::optional<EntityId> loadGltfModel(const std::string& modelPath, glm::vec3 xyz);
+    [[nodiscard]] std::optional<EntityId> loadObjModel(const std::string& modelPath, glm::vec3 xyz);
 };
