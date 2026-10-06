@@ -28,7 +28,7 @@ std::string TextureManager::resolvePath(std::string_view path)
     std::filesystem::path resolved = std::filesystem::current_path() / fsPath;
 
     if (std::filesystem::exists(resolved)) {
-        log_info(std::format("Resolved path: {} -> {}", path, resolved.string()), "TextureManager");
+        log_debug(std::format("Resolved path: {} -> {}", path, resolved.string()), "TextureManager");
         return resolved.string();
     }
 
@@ -290,12 +290,12 @@ uint32_t TextureManager::loadTexture(std::string texturePath, TextureColorSpace 
     // KTX carries its own format, so both color spaces share one entry
     const std::string cacheKey = fmt == TextureFormat::Ktx ? path : path + colorSpaceSuffix(colorSpace);
     if (const auto cached = cachedHeapIndex(cacheKey)) {
-        log_info(std::format("Texture already loaded: {}", cacheKey), "TextureManager");
+        log_debug(std::format("Texture already loaded: {}", cacheKey), "TextureManager");
         return *cached;
     }
-    log_info(std::format("loadTexture: {} → {}", path,
-                         fmt == TextureFormat::Ktx ? "KTX/KTX2" :
-                         fmt == TextureFormat::Png ? "PNG/STB" : "Unknown"), "TextureManager");
+    log_debug(std::format("loadTexture: {} → {}", path,
+                          fmt == TextureFormat::Ktx ? "KTX/KTX2" :
+                          fmt == TextureFormat::Png ? "PNG/STB" : "Unknown"), "TextureManager");
 
     if (fmt == TextureFormat::Ktx) {
         return uploadKtx(path);
@@ -385,9 +385,9 @@ uint32_t TextureManager::uploadKtx(const std::string& path)
     }
     ktxTextures.push_back(vkTex);
 
-    log_info(std::format("KTX texture uploaded: {}×{}, {} mips, format={}", vkTex.width, vkTex.height,
-                         vkTex.levelCount, static_cast<uint32_t>(vkTex.imageFormat)),
-             "TextureManager");
+    log_debug(std::format("KTX texture uploaded: {}×{}, {} mips, format={}", vkTex.width, vkTex.height,
+                          vkTex.levelCount, static_cast<uint32_t>(vkTex.imageFormat)),
+              "TextureManager");
 
     // non-owning view: the image stays with ktxTextures
     TextureAsset asset{};
@@ -494,9 +494,9 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
     const uint32_t heapIndex = asset.descriptorHeapIndex;
     loadedTextures.insert_or_assign(cacheKey, std::move(asset));
 
-    log_info(std::format("STB texture loaded: {}×{}, {} mips (hostImageCopy) key={}", texWidth, texHeight, mipLevels,
-                         cacheKey),
-             "TextureManager");
+    log_debug(std::format("STB texture loaded: {}×{}, {} mips (hostImageCopy) key={}", texWidth, texHeight, mipLevels,
+                          cacheKey),
+              "TextureManager");
     return heapIndex;
 }
 

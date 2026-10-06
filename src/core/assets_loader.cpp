@@ -302,6 +302,30 @@ namespace
         }
     }
 
+    // Runs body(i) for every i in [0, count) on the calling thread plus up to hardware_concurrency-1 workers.
+    // body must not throw. Returns the number of threads used.
+    template <typename Body>
+    static size_t parallelFor(size_t count, const Body& body)
+    {
+        if (count == 0) {
+            return 0;
+        }
+        std::atomic<size_t> next{0};
+        const auto loop = [&] {
+            for (size_t i = next.fetch_add(1); i < count; i = next.fetch_add(1)) {
+                body(i);
+            }
+        };
+        const size_t workerCount = std::min<size_t>(count, std::max(1u, std::thread::hardware_concurrency())) - 1;
+        std::vector<std::jthread> workers;
+        workers.reserve(workerCount);
+        for (size_t w = 0; w < workerCount; ++w) {
+            workers.emplace_back(loop);
+        }
+        loop();
+        return workerCount + 1;
+    }
+
     struct GltfImageSrc
     {
         std::string cacheKey;
@@ -546,28 +570,28 @@ namespace
                                 std::string_view owner)
     {
         if (ext.extras != nullptr) {
-            log_info(std::format("glTF extras on {}", owner), "AssetLoader");
+            log_debug(std::format("glTF extras on {}", owner), "AssetLoader");
         }
         for (uint32_t i = 0; i < ext.extensions_count; ++i) {
             const std::string_view name = strView(ext.extensions[i].name);
-            log_info(std::format("glTF extension '{}' on {}", name, owner), "AssetLoader");
+            log_debug(std::format("glTF extension '{}' on {}", name, owner), "AssetLoader");
         }
         storeAux(geometry, kind, index, ext);
     }
 
     static void parseGltfRootExtensions(GltfLoadCtx& ctx, const tg3_model& model)
     {
-        log_info(std::format("glTF extensionsUsed={} extensionsRequired={}", model.extensions_used_count,
-                             model.extensions_required_count),
-                 "AssetLoader");
+        log_debug(std::format("glTF extensionsUsed={} extensionsRequired={}", model.extensions_used_count,
+                              model.extensions_required_count),
+                  "AssetLoader");
         for (uint32_t i = 0; i < model.extensions_used_count; ++i) {
             const std::string_view name = strView(model.extensions_used[i]);
-            log_info(std::format("glTF extensionsUsed[{}]='{}'", i, name), "AssetLoader");
+            log_debug(std::format("glTF extensionsUsed[{}]='{}'", i, name), "AssetLoader");
             ctx.geometry.extensionsUsed.emplace_back(name);
         }
         for (uint32_t i = 0; i < model.extensions_required_count; ++i) {
             const std::string_view name = strView(model.extensions_required[i]);
-            log_info(std::format("glTF extensionsRequired[{}]='{}'", i, name), "AssetLoader");
+            log_debug(std::format("glTF extensionsRequired[{}]='{}'", i, name), "AssetLoader");
             ctx.geometry.extensionsRequired.emplace_back(name);
         }
         parseGltfExtras(ctx.geometry, AuxOwnerKind::Model, 0, model.ext, "model");
@@ -576,14 +600,14 @@ namespace
 
     static std::vector<uint32_t> parseGltfSamplers(GltfLoadCtx& ctx, const tg3_model& model)
     {
-        log_info(std::format("glTF samplers: {}", model.samplers_count), "AssetLoader");
+        log_debug(std::format("glTF samplers: {}", model.samplers_count), "AssetLoader");
         std::vector<uint32_t> heapIndices(model.samplers_count, ctx.defaultSamplerHeap);
         for (uint32_t i = 0; i < model.samplers_count; ++i) {
             const tg3_sampler& sampler = model.samplers[i];
-            log_info(std::format("glTF sampler[{}] name='{}' minFilter={} magFilter={} wrapS={} wrapT={}", i,
-                                 strView(sampler.name), sampler.min_filter, sampler.mag_filter, sampler.wrap_s,
-                                 sampler.wrap_t),
-                     "AssetLoader");
+            log_debug(std::format("glTF sampler[{}] name='{}' minFilter={} magFilter={} wrapS={} wrapT={}", i,
+                                  strView(sampler.name), sampler.min_filter, sampler.mag_filter, sampler.wrap_s,
+                                  sampler.wrap_t),
+                      "AssetLoader");
             heapIndices[i] =
                 ctx.textures.getOrCreateSampler(sampler.min_filter, sampler.mag_filter, sampler.wrap_s, sampler.wrap_t);
             parseGltfExtras(ctx.geometry, AuxOwnerKind::Sampler, i, sampler.ext, std::format("sampler[{}]", i));
@@ -593,13 +617,13 @@ namespace
 
     static void parseGltfTextures(GltfLoadCtx& ctx, const tg3_model& model, const std::vector<uint32_t>& samplerHeaps)
     {
-        log_info(std::format("glTF textures: {}", model.textures_count), "AssetLoader");
+        log_debug(std::format("glTF textures: {}", model.textures_count), "AssetLoader");
         ctx.gltfTextures.resize(model.textures_count);
         for (uint32_t i = 0; i < model.textures_count; ++i) {
             const tg3_texture& texture = model.textures[i];
-            log_info(std::format("glTF texture[{}] name='{}' source={} sampler={}", i, strView(texture.name),
-                                 texture.source, texture.sampler),
-                     "AssetLoader");
+            log_debug(std::format("glTF texture[{}] name='{}' source={} sampler={}", i, strView(texture.name),
+                                  texture.source, texture.sampler),
+                      "AssetLoader");
             uint32_t samplerHeap = ctx.defaultSamplerHeap;
             if (texture.sampler >= 0 && static_cast<uint32_t>(texture.sampler) < samplerHeaps.size()) {
                 samplerHeap = samplerHeaps[static_cast<uint32_t>(texture.sampler)];
@@ -611,7 +635,7 @@ namespace
 
     static void parseGltfTextureInfo(GltfLoadCtx& ctx, const tg3_texture_info& info, std::string_view slot)
     {
-        log_info(std::format("glTF {} index={} texCoord={}", slot, info.index, info.tex_coord), "AssetLoader");
+        log_debug(std::format("glTF {} index={} texCoord={}", slot, info.index, info.tex_coord), "AssetLoader");
         parseGltfExtras(ctx.geometry, AuxOwnerKind::Texture, info.index < 0 ? 0 : static_cast<uint32_t>(info.index),
                         info.ext, slot);
     }
@@ -724,8 +748,9 @@ namespace
             ref.tex = resolveTextureImage(ctx, index, colorSpace);
             ref.samp = resolveTextureSampler(ctx, index);
         }
-        log_info(std::format("glTF {} index={} texCoord={} heap={} sampler={}", slot, index, ref.uv, ref.tex, ref.samp),
-                 "AssetLoader");
+        log_debug(
+            std::format("glTF {} index={} texCoord={} heap={} sampler={}", slot, index, ref.uv, ref.tex, ref.samp),
+            "AssetLoader");
         return ref;
     }
 
@@ -748,20 +773,20 @@ namespace
             if (name == "KHR_materials_unlit") {
                 ext.flags |= MaterialExtFlag::Unlit;
                 gpu.flags |= GpuMaterialFlag::Unlit;
-                log_info(std::format("glTF {} KHR_materials_unlit", owner), "AssetLoader");
+                log_debug(std::format("glTF {} KHR_materials_unlit", owner), "AssetLoader");
             } else if (name == "KHR_materials_emissive_strength") {
                 ext.flags |= MaterialExtFlag::EmissiveStrength;
                 ext.emissiveStrength = valueAsFloat(objectField(value, "emissiveStrength"), 1.0f);
-                log_info(std::format("glTF {} KHR_materials_emissive_strength={}", owner, ext.emissiveStrength),
-                         "AssetLoader");
+                log_debug(std::format("glTF {} KHR_materials_emissive_strength={}", owner, ext.emissiveStrength),
+                          "AssetLoader");
             } else if (name == "KHR_materials_ior") {
                 ext.flags |= MaterialExtFlag::Ior;
                 ext.ior = valueAsFloat(objectField(value, "ior"), 1.5f);
-                log_info(std::format("glTF {} KHR_materials_ior={}", owner, ext.ior), "AssetLoader");
+                log_debug(std::format("glTF {} KHR_materials_ior={}", owner, ext.ior), "AssetLoader");
             } else if (name == "KHR_materials_dispersion") {
                 ext.flags |= MaterialExtFlag::Dispersion;
                 ext.dispersion = valueAsFloat(objectField(value, "dispersion"), 0.0f);
-                log_info(std::format("glTF {} KHR_materials_dispersion={}", owner, ext.dispersion), "AssetLoader");
+                log_debug(std::format("glTF {} KHR_materials_dispersion={}", owner, ext.dispersion), "AssetLoader");
             } else if (name == "KHR_materials_specular") {
                 ext.flags |= MaterialExtFlag::Specular;
                 ext.specularFactor = valueAsFloat(objectField(value, "specularFactor"), 1.0f);
@@ -770,10 +795,10 @@ namespace
                                                      slot("specularTexture"));
                 ext.specularColor = parseExtensionTexture(ctx, objectField(value, "specularColorTexture"),
                                                           TextureColorSpace::Srgb, slot("specularColorTexture"));
-                log_info(std::format("glTF {} KHR_materials_specular factor={} color=({}, {}, {})", owner,
-                                     ext.specularFactor, ext.specularColorFactor.x, ext.specularColorFactor.y,
-                                     ext.specularColorFactor.z),
-                         "AssetLoader");
+                log_debug(std::format("glTF {} KHR_materials_specular factor={} color=({}, {}, {})", owner,
+                                      ext.specularFactor, ext.specularColorFactor.x, ext.specularColorFactor.y,
+                                      ext.specularColorFactor.z),
+                          "AssetLoader");
             } else if (name == "KHR_materials_clearcoat") {
                 ext.flags |= MaterialExtFlag::Clearcoat;
                 ext.clearcoatFactor = valueAsFloat(objectField(value, "clearcoatFactor"), 0.0f);
@@ -785,9 +810,9 @@ namespace
                                           slot("clearcoatRoughnessTexture"));
                 ext.clearcoatNormal = parseExtensionTexture(ctx, objectField(value, "clearcoatNormalTexture"),
                                                             TextureColorSpace::Linear, slot("clearcoatNormalTexture"));
-                log_info(std::format("glTF {} KHR_materials_clearcoat factor={} roughness={}", owner, ext.clearcoatFactor,
-                                     ext.clearcoatRoughnessFactor),
-                         "AssetLoader");
+                log_debug(std::format("glTF {} KHR_materials_clearcoat factor={} roughness={}", owner,
+                                      ext.clearcoatFactor, ext.clearcoatRoughnessFactor),
+                          "AssetLoader");
             } else if (name == "KHR_materials_sheen") {
                 ext.flags |= MaterialExtFlag::Sheen;
                 ext.sheenColorFactor = valueAsVec3(objectField(value, "sheenColorFactor"), glm::vec3{0.0f});
@@ -796,17 +821,17 @@ namespace
                                                        slot("sheenColorTexture"));
                 ext.sheenRoughness = parseExtensionTexture(ctx, objectField(value, "sheenRoughnessTexture"),
                                                            TextureColorSpace::Linear, slot("sheenRoughnessTexture"));
-                log_info(std::format("glTF {} KHR_materials_sheen color=({}, {}, {}) roughness={}", owner,
-                                     ext.sheenColorFactor.x, ext.sheenColorFactor.y, ext.sheenColorFactor.z,
-                                     ext.sheenRoughnessFactor),
-                         "AssetLoader");
+                log_debug(std::format("glTF {} KHR_materials_sheen color=({}, {}, {}) roughness={}", owner,
+                                      ext.sheenColorFactor.x, ext.sheenColorFactor.y, ext.sheenColorFactor.z,
+                                      ext.sheenRoughnessFactor),
+                          "AssetLoader");
             } else if (name == "KHR_materials_transmission") {
                 ext.flags |= MaterialExtFlag::Transmission;
                 ext.transmissionFactor = valueAsFloat(objectField(value, "transmissionFactor"), 0.0f);
                 ext.transmission = parseExtensionTexture(ctx, objectField(value, "transmissionTexture"),
                                                          TextureColorSpace::Linear, slot("transmissionTexture"));
-                log_info(std::format("glTF {} KHR_materials_transmission={}", owner, ext.transmissionFactor),
-                         "AssetLoader");
+                log_debug(std::format("glTF {} KHR_materials_transmission={}", owner, ext.transmissionFactor),
+                          "AssetLoader");
             } else if (name == "KHR_materials_volume") {
                 ext.flags |= MaterialExtFlag::Volume;
                 ext.thicknessFactor = valueAsFloat(objectField(value, "thicknessFactor"), 0.0f);
@@ -814,10 +839,10 @@ namespace
                 ext.attenuationColor = valueAsVec3(objectField(value, "attenuationColor"), glm::vec3{1.0f});
                 ext.thickness = parseExtensionTexture(ctx, objectField(value, "thicknessTexture"), TextureColorSpace::Linear,
                                                       slot("thicknessTexture"));
-                log_info(std::format("glTF {} KHR_materials_volume thickness={} attenDist={} color=({}, {}, {})", owner,
-                                     ext.thicknessFactor, ext.attenuationDistance, ext.attenuationColor.x,
-                                     ext.attenuationColor.y, ext.attenuationColor.z),
-                         "AssetLoader");
+                log_debug(std::format("glTF {} KHR_materials_volume thickness={} attenDist={} color=({}, {}, {})",
+                                      owner, ext.thicknessFactor, ext.attenuationDistance, ext.attenuationColor.x,
+                                      ext.attenuationColor.y, ext.attenuationColor.z),
+                          "AssetLoader");
             } else if (name == "KHR_materials_iridescence") {
                 ext.flags |= MaterialExtFlag::Iridescence;
                 ext.iridescenceFactor = valueAsFloat(objectField(value, "iridescenceFactor"), 0.0f);
@@ -829,19 +854,19 @@ namespace
                 ext.iridescenceThickness =
                     parseExtensionTexture(ctx, objectField(value, "iridescenceThicknessTexture"), TextureColorSpace::Linear,
                                           slot("iridescenceThicknessTexture"));
-                log_info(std::format("glTF {} KHR_materials_iridescence factor={} ior={} thickness=[{}, {}]", owner,
-                                     ext.iridescenceFactor, ext.iridescenceIor, ext.iridescenceThicknessMin,
-                                     ext.iridescenceThicknessMax),
-                         "AssetLoader");
+                log_debug(std::format("glTF {} KHR_materials_iridescence factor={} ior={} thickness=[{}, {}]", owner,
+                                      ext.iridescenceFactor, ext.iridescenceIor, ext.iridescenceThicknessMin,
+                                      ext.iridescenceThicknessMax),
+                          "AssetLoader");
             } else if (name == "KHR_materials_anisotropy") {
                 ext.flags |= MaterialExtFlag::Anisotropy;
                 ext.anisotropyStrength = valueAsFloat(objectField(value, "anisotropyStrength"), 0.0f);
                 ext.anisotropyRotation = valueAsFloat(objectField(value, "anisotropyRotation"), 0.0f);
                 ext.anisotropy = parseExtensionTexture(ctx, objectField(value, "anisotropyTexture"),
                                                        TextureColorSpace::Linear, slot("anisotropyTexture"));
-                log_info(std::format("glTF {} KHR_materials_anisotropy strength={} rotation={}", owner,
-                                     ext.anisotropyStrength, ext.anisotropyRotation),
-                         "AssetLoader");
+                log_debug(std::format("glTF {} KHR_materials_anisotropy strength={} rotation={}", owner,
+                                      ext.anisotropyStrength, ext.anisotropyRotation),
+                          "AssetLoader");
             } else if (name == "KHR_materials_diffuse_transmission") {
                 ext.flags |= MaterialExtFlag::DiffuseTransmission;
                 ext.diffuseTransmissionFactor = valueAsFloat(objectField(value, "diffuseTransmissionFactor"), 0.0f);
@@ -853,12 +878,12 @@ namespace
                 ext.diffuseTransmissionColor =
                     parseExtensionTexture(ctx, objectField(value, "diffuseTransmissionColorTexture"), TextureColorSpace::Srgb,
                                           slot("diffuseTransmissionColorTexture"));
-                log_info(std::format("glTF {} KHR_materials_diffuse_transmission factor={} color=({}, {}, {})", owner,
-                                     ext.diffuseTransmissionFactor, ext.diffuseTransmissionColorFactor.x,
-                                     ext.diffuseTransmissionColorFactor.y, ext.diffuseTransmissionColorFactor.z),
-                         "AssetLoader");
+                log_debug(std::format("glTF {} KHR_materials_diffuse_transmission factor={} color=({}, {}, {})", owner,
+                                      ext.diffuseTransmissionFactor, ext.diffuseTransmissionColorFactor.x,
+                                      ext.diffuseTransmissionColorFactor.y, ext.diffuseTransmissionColorFactor.z),
+                          "AssetLoader");
             } else {
-                log_info(std::format("glTF {} skipped non-PBR extension '{}'", owner, name), "AssetLoader");
+                log_debug(std::format("glTF {} skipped non-PBR extension '{}'", owner, name), "AssetLoader");
             }
         }
     }
@@ -879,20 +904,20 @@ namespace
 
     static void parseGltfMaterials(GltfLoadCtx& ctx, const tg3_model& model)
     {
-        log_info(std::format("glTF materials: {}", model.materials_count), "AssetLoader");
+        log_debug(std::format("glTF materials: {}", model.materials_count), "AssetLoader");
         ctx.materialIds.resize(model.materials_count);
         for (uint32_t i = 0; i < model.materials_count; ++i) {
             const tg3_material& material = model.materials[i];
             const tg3_pbr_metallic_roughness& pbr = material.pbr_metallic_roughness;
             const std::string owner = std::format("material[{}]", i);
-            log_info(std::format("glTF {} name='{}' baseColor=({}, {}, {}, {}) metallic={} roughness={} "
-                                 "emissive=({}, {}, {}) alphaMode='{}' alphaCutoff={} doubleSided={}",
-                                 owner, strView(material.name), pbr.base_color_factor[0], pbr.base_color_factor[1],
-                                 pbr.base_color_factor[2], pbr.base_color_factor[3], pbr.metallic_factor,
-                                 pbr.roughness_factor, material.emissive_factor[0], material.emissive_factor[1],
-                                 material.emissive_factor[2], strView(material.alpha_mode), material.alpha_cutoff,
-                                 material.double_sided),
-                     "AssetLoader");
+            log_debug(std::format("glTF {} name='{}' baseColor=({}, {}, {}, {}) metallic={} roughness={} "
+                                  "emissive=({}, {}, {}) alphaMode='{}' alphaCutoff={} doubleSided={}",
+                                  owner, strView(material.name), pbr.base_color_factor[0], pbr.base_color_factor[1],
+                                  pbr.base_color_factor[2], pbr.base_color_factor[3], pbr.metallic_factor,
+                                  pbr.roughness_factor, material.emissive_factor[0], material.emissive_factor[1],
+                                  material.emissive_factor[2], strView(material.alpha_mode), material.alpha_cutoff,
+                                  material.double_sided),
+                      "AssetLoader");
 
             GpuMaterial gpu{};
             gpu.baseColorFactor = {static_cast<float>(pbr.base_color_factor[0]),
@@ -932,16 +957,16 @@ namespace
 
             parseGltfTextureInfo(ctx, pbr.base_color_texture, owner + ".baseColorTexture");
             parseGltfTextureInfo(ctx, pbr.metallic_roughness_texture, owner + ".metallicRoughnessTexture");
-            log_info(std::format("glTF {}.normalTexture index={} texCoord={} scale={}", owner,
-                                 material.normal_texture.index, material.normal_texture.tex_coord,
-                                 material.normal_texture.scale),
-                     "AssetLoader");
+            log_debug(std::format("glTF {}.normalTexture index={} texCoord={} scale={}", owner,
+                                  material.normal_texture.index, material.normal_texture.tex_coord,
+                                  material.normal_texture.scale),
+                      "AssetLoader");
             parseGltfExtras(ctx.geometry, AuxOwnerKind::Material, i, material.normal_texture.ext,
                             owner + ".normalTexture");
-            log_info(std::format("glTF {}.occlusionTexture index={} texCoord={} strength={}", owner,
-                                 material.occlusion_texture.index, material.occlusion_texture.tex_coord,
-                                 material.occlusion_texture.strength),
-                     "AssetLoader");
+            log_debug(std::format("glTF {}.occlusionTexture index={} texCoord={} strength={}", owner,
+                                  material.occlusion_texture.index, material.occlusion_texture.tex_coord,
+                                  material.occlusion_texture.strength),
+                      "AssetLoader");
             parseGltfExtras(ctx.geometry, AuxOwnerKind::Material, i, material.occlusion_texture.ext,
                             owner + ".occlusionTexture");
             parseGltfTextureInfo(ctx, material.emissive_texture, owner + ".emissiveTexture");
@@ -1022,16 +1047,16 @@ namespace
 
     static void parseGltfLights(GltfLoadCtx& ctx, const tg3_model& model)
     {
-        log_info(std::format("glTF lights: {}", model.lights_count), "AssetLoader");
+        log_debug(std::format("glTF lights: {}", model.lights_count), "AssetLoader");
         const uint32_t defBase = static_cast<uint32_t>(ctx.lights.defs.size());
         for (uint32_t i = 0; i < model.lights_count; ++i) {
             const tg3_light& light = model.lights[i];
-            log_info(std::format("glTF light[{}] name='{}' type='{}' color=({}, {}, {}) intensity={} range={} "
-                                 "spotInner={} spotOuter={}",
-                                 i, strView(light.name), strView(light.type), light.color[0], light.color[1],
-                                 light.color[2], light.intensity, light.range, light.spot.inner_cone_angle,
-                                 light.spot.outer_cone_angle),
-                     "AssetLoader");
+            log_debug(std::format("glTF light[{}] name='{}' type='{}' color=({}, {}, {}) intensity={} range={} "
+                                  "spotInner={} spotOuter={}",
+                                  i, strView(light.name), strView(light.type), light.color[0], light.color[1],
+                                  light.color[2], light.intensity, light.range, light.spot.inner_cone_angle,
+                                  light.spot.outer_cone_angle),
+                      "AssetLoader");
             LightDef def{};
             def.type = lightTypeFromName(strView(light.type));
             def.color = {static_cast<float>(light.color[0]), static_cast<float>(light.color[1]),
@@ -1052,8 +1077,8 @@ namespace
             if (lightIndex < 0) {
                 continue;
             }
-            log_info(std::format("glTF node[{}] name='{}' light={}", ni, strView(model.nodes[ni].name), lightIndex),
-                     "AssetLoader");
+            log_debug(std::format("glTF node[{}] name='{}' light={}", ni, strView(model.nodes[ni].name), lightIndex),
+                      "AssetLoader");
             if (static_cast<uint32_t>(lightIndex) >= model.lights_count) {
                 continue;
             }
@@ -1069,7 +1094,7 @@ namespace
 
     static void parseGltfImages(GltfLoadCtx& ctx, const tg3_model& model, const std::filesystem::path& modelDir)
     {
-        log_info(std::format("glTF images: {}", model.images_count), "AssetLoader");
+        log_debug(std::format("glTF images: {}", model.images_count), "AssetLoader");
         ctx.images.resize(model.images_count);
 
         for (uint32_t i = 0; i < model.images_count; ++i) {
@@ -1124,10 +1149,10 @@ namespace
                 }
             }
 
-            log_info(std::format("glTF image[{}] name='{}' source={} uri='{}' mime='{}' {}x{} bufferView={} bytes={}",
-                                 i, strView(image.name), source, uri, mime, image.width, image.height,
-                                 image.buffer_view, embeddedBytes),
-                     "AssetLoader");
+            log_debug(std::format("glTF image[{}] name='{}' source={} uri='{}' mime='{}' {}x{} bufferView={} bytes={}",
+                                  i, strView(image.name), source, uri, mime, image.width, image.height,
+                                  image.buffer_view, embeddedBytes),
+                      "AssetLoader");
             parseGltfExtras(ctx.geometry, AuxOwnerKind::Image, i, image.ext, std::format("image[{}]", i));
             ctx.images[i] = std::move(src);
         }
@@ -1160,25 +1185,12 @@ namespace
             return;
         }
 
-        std::atomic<size_t> next{0};
-        const auto decodeLoop = [&] {
-            for (size_t k = next.fetch_add(1); k < pending.size(); k = next.fetch_add(1)) {
-                GltfImageSrc& image = *pending[k];
-                image.predecoded = image.encoded.empty() ? TextureManager::decodeRgba8File(image.path)
-                                                         : TextureManager::decodeRgba8(image.encoded);
-            }
-        };
-        const size_t workerCount =
-            std::min<size_t>(pending.size(), std::max(1u, std::thread::hardware_concurrency())) - 1;
-        {
-            std::vector<std::jthread> workers;
-            workers.reserve(workerCount);
-            for (size_t w = 0; w < workerCount; ++w) {
-                workers.emplace_back(decodeLoop);
-            }
-            decodeLoop();
-        }
-        log_info(std::format("glTF decoded {} images on {} threads", pending.size(), workerCount + 1), "AssetLoader");
+        const size_t threads = parallelFor(pending.size(), [&](size_t k) {
+            GltfImageSrc& image = *pending[k];
+            image.predecoded = image.encoded.empty() ? TextureManager::decodeRgba8File(image.path)
+                                                     : TextureManager::decodeRgba8(image.encoded);
+        });
+        log_info(std::format("glTF decoded {} images on {} threads", pending.size(), threads), "AssetLoader");
     }
 
     // Keeps a texture upload batch open for a scope; flushes on exit, including when parsing throws.
@@ -1348,7 +1360,7 @@ namespace
         if (prim.targets_count == 0) {
             return;
         }
-        log_info(std::format("glTF morph targets: {}", prim.targets_count), "AssetLoader");
+        log_debug(std::format("glTF morph targets: {}", prim.targets_count), "AssetLoader");
         for (uint32_t t = 0; t < prim.targets_count; ++t) {
             if (prim.targets == nullptr || prim.target_attribute_counts == nullptr) {
                 break;
@@ -1363,9 +1375,9 @@ namespace
                 const std::string_view key = strView(attrs[a].key);
                 const std::vector<float> delta = readAccessorFloats(model, attrs[a].value);
                 const uint32_t comps = accessorCompCount(model, attrs[a].value);
-                log_info(std::format("glTF morph[{}] attr='{}' accessor={} floats={}", t, key, attrs[a].value,
-                                     delta.size()),
-                         "AssetLoader");
+                log_debug(std::format("glTF morph[{}] attr='{}' accessor={} floats={}", t, key, attrs[a].value,
+                                      delta.size()),
+                          "AssetLoader");
                 // deltas are directions: linear part only, no translation, no renormalize
                 if (key == "POSITION") {
                     target.posOffset = static_cast<uint32_t>(geometry.morphPos.size());
@@ -1400,46 +1412,46 @@ namespace
     {
         if (name == "NORMAL") {
             const std::vector<float> normals = readAccessorFloats(model, accessorIdx);
-            log_info(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, normals.size()),
-                     "AssetLoader");
+            log_debug(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, normals.size()),
+                      "AssetLoader");
             fillVec3Range(geometry.normals, firstVertex, vertexCount, normals, accessorCompCount(model, accessorIdx));
             return;
         }
         if (name == "TANGENT") {
             const std::vector<float> tangents = readAccessorFloats(model, accessorIdx);
-            log_info(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, tangents.size()),
-                     "AssetLoader");
+            log_debug(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, tangents.size()),
+                      "AssetLoader");
             fillVec4Range(geometry.tangents, firstVertex, vertexCount, tangents, accessorCompCount(model, accessorIdx),
                           glm::vec4{0.0f, 0.0f, 0.0f, 1.0f});
             return;
         }
         if (name == "COLOR_0") {
             const std::vector<float> colors = readAccessorFloats(model, accessorIdx);
-            log_info(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, colors.size()),
-                     "AssetLoader");
+            log_debug(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, colors.size()),
+                      "AssetLoader");
             fillVec4Range(geometry.colors, firstVertex, vertexCount, colors, accessorCompCount(model, accessorIdx),
                           glm::vec4{1.0f});
             return;
         }
         if (name == "TEXCOORD_1") {
             const std::vector<float> uvs = readAccessorFloats(model, accessorIdx);
-            log_info(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, uvs.size()),
-                     "AssetLoader");
+            log_debug(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, uvs.size()),
+                      "AssetLoader");
             fillUvRange(geometry.uv1, firstVertex, vertexCount, uvs, accessorCompCount(model, accessorIdx), true);
             return;
         }
         if (name.starts_with("TEXCOORD_") && name != "TEXCOORD_0") {
-            log_info(std::format("glTF attr '{}' accessor={} skipped (uv2+)", name, accessorIdx), "AssetLoader");
+            log_debug(std::format("glTF attr '{}' accessor={} skipped (uv2+)", name, accessorIdx), "AssetLoader");
             return;
         }
         if (name.starts_with("COLOR_")) {
-            log_info(std::format("glTF attr '{}' accessor={} skipped (COLOR_n>0)", name, accessorIdx), "AssetLoader");
+            log_debug(std::format("glTF attr '{}' accessor={} skipped (COLOR_n>0)", name, accessorIdx), "AssetLoader");
             return;
         }
         if (name == "JOINTS_0") {
             const std::vector<uint32_t> joints = readAccessorU32(model, accessorIdx);
-            log_info(std::format("glTF attr '{}' accessor={} u32={}", name, accessorIdx, joints.size()),
-                     "AssetLoader");
+            log_debug(std::format("glTF attr '{}' accessor={} u32={}", name, accessorIdx, joints.size()),
+                      "AssetLoader");
             const uint32_t comps = accessorCompCount(model, accessorIdx);
             for (uint32_t i = 0; i < vertexCount && comps > 0; ++i) {
                 const uint32_t base = i * comps;
@@ -1453,17 +1465,17 @@ namespace
         }
         if (name == "WEIGHTS_0") {
             const std::vector<float> weights = readAccessorFloats(model, accessorIdx);
-            log_info(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, weights.size()),
-                     "AssetLoader");
+            log_debug(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, weights.size()),
+                      "AssetLoader");
             fillVec4Range(geometry.weights0, firstVertex, vertexCount, weights, accessorCompCount(model, accessorIdx),
                           glm::vec4{0.0f});
             return;
         }
         if (name.starts_with("JOINTS_") || name.starts_with("WEIGHTS_")) {
-            log_info(std::format("glTF attr '{}' accessor={} skipped (set > 0)", name, accessorIdx), "AssetLoader");
+            log_debug(std::format("glTF attr '{}' accessor={} skipped (set > 0)", name, accessorIdx), "AssetLoader");
             return;
         }
-        log_info(std::format("glTF attr '{}' accessor={} skipped", name, accessorIdx), "AssetLoader");
+        log_debug(std::format("glTF attr '{}' accessor={} skipped", name, accessorIdx), "AssetLoader");
     }
 
     struct GltfMeshInstance
@@ -1537,10 +1549,10 @@ namespace
         for (uint32_t pi = 0; pi < mesh.primitives_count; ++pi) {
             const tg3_primitive& prim = mesh.primitives[pi];
             const int32_t mode = prim.mode < 0 ? TG3_MODE_TRIANGLES : prim.mode;
-            log_info(std::format("glTF mesh[{}].prim[{}] mode={} material={} attrs={} morphTargets={} indicesAcc={}",
-                                 mi, pi, primitiveModeName(mode), prim.material, prim.attributes_count,
-                                 prim.targets_count, prim.indices),
-                     "AssetLoader");
+            log_debug(std::format("glTF mesh[{}].prim[{}] mode={} material={} attrs={} morphTargets={} indicesAcc={}",
+                                  mi, pi, primitiveModeName(mode), prim.material, prim.attributes_count,
+                                  prim.targets_count, prim.indices),
+                      "AssetLoader");
 
             if (mode != TG3_MODE_TRIANGLES && mode != TG3_MODE_TRIANGLE_STRIP && mode != TG3_MODE_TRIANGLE_FAN) {
                 log_info(std::format("glTF mesh[{}].prim[{}] skipped: non-triangle mode", mi, pi), "AssetLoader");
@@ -1628,7 +1640,6 @@ namespace
             }
 
             const uint32_t firstIndex = static_cast<uint32_t>(geometry.indices.size());
-            geometry.indices.reserve(firstIndex + triIndices.size());
             for (const uint32_t local : triIndices) {
                 geometry.indices.push_back(firstVertex + local);
             }
@@ -1656,38 +1667,96 @@ namespace
             draw.morphFirst = morphCount > 0 ? morphFirst : 0;
             draw.morphCount = morphCount;
             draw.morphWeightFirst = mesh.weights_count > 0 ? morphWeightFirst : 0;
-            draw.meshlets = geometry.buildMeshletsForRange(firstIndex, indexCount, firstVertex, vertexCount);
+            // draw.meshlets is filled by buildGltfMeshlets once every primitive is appended
             parseGltfExtras(geometry, AuxOwnerKind::Primitive, static_cast<uint32_t>(geometry.primitiveDraws.size()),
                             prim.ext, std::format("mesh[{}].prim[{}]", mi, pi));
             geometry.primitiveDraws.push_back(draw);
             ++storedPrimitives;
 
-            log_info(std::format("glTF mesh[{}].prim[{}] POSITION verts={} TEXCOORD_0 floats={} indices={} stored={}",
-                                 mi, pi, vertexCount, texcoords.size(), indexCount, indexCount),
-                     "AssetLoader");
+            log_debug(std::format("glTF mesh[{}].prim[{}] POSITION verts={} TEXCOORD_0 floats={} indices={} stored={}",
+                                  mi, pi, vertexCount, texcoords.size(), indexCount, indexCount),
+                      "AssetLoader");
         }
         return storedPrimitives;
     }
 
+    static uint64_t accessorCount(const tg3_model& model, int32_t accessorIdx)
+    {
+        if (accessorIdx < 0 || static_cast<uint32_t>(accessorIdx) >= model.accessors_count) {
+            return 0;
+        }
+        return model.accessors[accessorIdx].count;
+    }
+
+    // Upper bound from accessor counts, so the per-vertex arrays and indices allocate once per model.
+    static void reserveGltfGeometry(GeometryStore& geometry, const tg3_model& model,
+                                    const std::vector<GltfMeshInstance>& instances)
+    {
+        uint64_t vertexCount = 0;
+        uint64_t indexCount = 0;
+        for (const GltfMeshInstance& instance : instances) {
+            const tg3_mesh& mesh = model.meshes[instance.mesh];
+            for (uint32_t pi = 0; pi < mesh.primitives_count; ++pi) {
+                const tg3_primitive& prim = mesh.primitives[pi];
+                int32_t posAcc = -1;
+                for (uint32_t ai = 0; ai < prim.attributes_count; ++ai) {
+                    if (strView(prim.attributes[ai].key) == "POSITION") {
+                        posAcc = prim.attributes[ai].value;
+                    }
+                }
+                const uint64_t verts = accessorCount(model, posAcc);
+                const uint64_t srcIndices = prim.indices >= 0 ? accessorCount(model, prim.indices) : verts;
+                vertexCount += verts;
+                // strips and fans expand to at most 3 corners per source index
+                const int32_t mode = prim.mode < 0 ? TG3_MODE_TRIANGLES : prim.mode;
+                indexCount += mode == TG3_MODE_TRIANGLES ? srcIndices : srcIndices * 3;
+            }
+        }
+        geometry.reserveGeometry(static_cast<size_t>(vertexCount), static_cast<size_t>(indexCount));
+    }
+
+    // Primitives are independent: build each on a worker, then append in primitive order so offsets
+    // match a serial build exactly.
+    static void buildGltfMeshlets(GeometryStore& geometry, uint32_t firstPrimitive)
+    {
+        ZoneScopedN("AssetLoader::buildGltfMeshlets");
+        const size_t count = geometry.primitiveDraws.size() - firstPrimitive;
+        const size_t firstMeshlet = geometry.meshlets.size();
+        std::vector<MeshletBuild> builds(count);
+        const size_t threads = parallelFor(count, [&](size_t i) {
+            const PrimitiveDraw& draw = geometry.primitiveDraws[firstPrimitive + i];
+            builds[i] = geometry.buildMeshlets(draw.firstIndex, draw.indexCount, draw.firstVertex, draw.vertexCount);
+        });
+        for (size_t i = 0; i < count; ++i) {
+            geometry.primitiveDraws[firstPrimitive + i].meshlets = geometry.appendMeshlets(std::move(builds[i]));
+        }
+        log_info(std::format("glTF built {} meshlets for {} primitives on {} threads",
+                             geometry.meshlets.size() - firstMeshlet, count, threads),
+                 "AssetLoader");
+    }
+
     static uint32_t appendGltfGeometry(GltfLoadCtx& ctx, const tg3_model& model)
     {
-        log_info(std::format("glTF meshes: {}", model.meshes_count), "AssetLoader");
+        log_debug(std::format("glTF meshes: {}", model.meshes_count), "AssetLoader");
         GeometryStore& geometry = ctx.geometry;
         for (uint32_t mi = 0; mi < model.meshes_count; ++mi) {
             const tg3_mesh& mesh = model.meshes[mi];
-            log_info(std::format("glTF mesh[{}] name='{}' primitives={} morphWeights={}", mi, strView(mesh.name),
-                                 mesh.primitives_count, mesh.weights_count),
-                     "AssetLoader");
+            log_debug(std::format("glTF mesh[{}] name='{}' primitives={} morphWeights={}", mi, strView(mesh.name),
+                                  mesh.primitives_count, mesh.weights_count),
+                      "AssetLoader");
             parseGltfExtras(geometry, AuxOwnerKind::Mesh, mi, mesh.ext, std::format("mesh[{}]", mi));
         }
 
         const std::vector<GltfMeshInstance> instances = collectMeshInstances(model);
-        log_info(std::format("glTF mesh instances: {}", instances.size()), "AssetLoader");
+        log_debug(std::format("glTF mesh instances: {}", instances.size()), "AssetLoader");
+        reserveGltfGeometry(geometry, model, instances);
 
+        const uint32_t firstPrimitive = static_cast<uint32_t>(geometry.primitiveDraws.size());
         uint32_t storedPrimitives = 0;
         for (const GltfMeshInstance& instance : instances) {
             storedPrimitives += appendGltfMesh(ctx, model, instance.mesh, makeNodeXform(instance.world));
         }
+        buildGltfMeshlets(geometry, firstPrimitive);
 
         log_info(std::format("glTF geometry appended: verts={} indices={} primitives={}", geometry.vertices.size(),
                              geometry.indices.size(), storedPrimitives),

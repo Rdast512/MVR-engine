@@ -6,6 +6,15 @@
 #include <string>
 #include <vector>
 
+// One primitive's meshlets before they are appended to the store: offsets are local to this build,
+// vertex ids are already scratch-absolute.
+struct MeshletBuild
+{
+    std::vector<GpuMeshletDesc> meshlets;
+    std::vector<uint32_t> vertices;
+    std::vector<uint8_t> triangles;
+};
+
 class GeometryStore
 {
 public:
@@ -43,11 +52,18 @@ public:
 
     // grow SoA + packed GpuVertex to newCount; new verts get default attrs
     void resizeVertices(uint32_t newCount);
+    // capacity for extraVertices more in all nine per-vertex arrays, and extraIndices more indices
+    void reserveGeometry(size_t extraVertices, size_t extraIndices);
 
     // pack vertices[v] from positions/colors/uv0
     void packVertex(uint32_t v);
 
+    // Pure: only reads indices/vertices, so ranges may be built concurrently.
     // indices in [firstIndex, +indexCount) must reference vertices in [firstVertex, +vertexCount)
+    [[nodiscard]] MeshletBuild buildMeshlets(uint32_t firstIndex, uint32_t indexCount, uint32_t firstVertex,
+                                             uint32_t vertexCount) const;
+    // rebases a build onto the meshlet arrays; call in primitive order for deterministic offsets
+    [[nodiscard]] MeshletDraw appendMeshlets(MeshletBuild&& build);
     [[nodiscard]] MeshletDraw buildMeshletsForRange(uint32_t firstIndex, uint32_t indexCount, uint32_t firstVertex,
                                                     uint32_t vertexCount);
 

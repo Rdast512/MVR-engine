@@ -32,6 +32,21 @@ void GeometryStore::resizeVertices(uint32_t newCount)
     vertices.resize(newCount);
 }
 
+void GeometryStore::reserveGeometry(size_t extraVertices, size_t extraIndices)
+{
+    const size_t vertexTarget = positions.size() + extraVertices;
+    positions.reserve(vertexTarget);
+    normals.reserve(vertexTarget);
+    tangents.reserve(vertexTarget);
+    uv0.reserve(vertexTarget);
+    uv1.reserve(vertexTarget);
+    colors.reserve(vertexTarget);
+    joints0.reserve(vertexTarget);
+    weights0.reserve(vertexTarget);
+    vertices.reserve(vertexTarget);
+    indices.reserve(indices.size() + extraIndices);
+}
+
 void GeometryStore::packVertex(uint32_t v)
 {
     GpuVertex packed{};
@@ -41,10 +56,10 @@ void GeometryStore::packVertex(uint32_t v)
     vertices[v] = packed;
 }
 
-MeshletDraw GeometryStore::buildMeshletsForRange(uint32_t firstIndex, uint32_t indexCount, uint32_t firstVertex,
-                                                 uint32_t vertexCount)
+MeshletBuild GeometryStore::buildMeshlets(uint32_t firstIndex, uint32_t indexCount, uint32_t firstVertex,
+                                          uint32_t vertexCount) const
 {
-    ZoneScopedN("GeometryStore::buildMeshletsForRange");
+    ZoneScopedN("GeometryStore::buildMeshlets");
     if (indexCount == 0 || vertexCount == 0 || firstIndex + indexCount > indices.size() ||
         firstVertex + vertexCount > vertices.size()) {
         return {};
@@ -78,31 +93,22 @@ MeshletDraw GeometryStore::buildMeshletsForRange(uint32_t firstIndex, uint32_t i
     const meshopt_Meshlet& last = built[meshletCount - 1];
     localVertices.resize(last.vertex_offset + last.vertex_count);
     localTriangles.resize(last.triangle_offset + last.triangle_count * 3);
-    built.resize(meshletCount);
 
-    const uint32_t baseVertexOffset = static_cast<uint32_t>(meshletVertices.size());
-    const uint32_t baseTriangleOffset = static_cast<uint32_t>(meshletTriangles.size());
-    const uint32_t baseMeshlet = static_cast<uint32_t>(meshlets.size());
-
-    meshletVertices.insert(meshletVertices.end(), localVertices.begin(), localVertices.end());
-    meshletTriangles.insert(meshletTriangles.end(), localTriangles.begin(), localTriangles.end());
-    meshlets.reserve(meshlets.size() + meshletCount);
+    MeshletBuild build{.meshlets = {}, .vertices = std::move(localVertices), .triangles = std::move(localTriangles)};
+    build.meshlets.reserve(meshletCount);
 
     for (size_t i = 0; i < meshletCount; ++i) {
         const meshopt_Meshlet& m = built[i];
-        const uint32_t vertexOffset = baseVertexOffset + m.vertex_offset;
-        const uint32_t triangleOffset = baseTriangleOffset + m.triangle_offset;
-
-        meshopt_optimizeMeshlet(meshletVertices.data() + vertexOffset, meshletTriangles.data() + triangleOffset,
+        meshopt_optimizeMeshlet(build.vertices.data() + m.vertex_offset, build.triangles.data() + m.triangle_offset,
                                 m.triangle_count, m.vertex_count);
 
         const meshopt_Bounds bounds = meshopt_computeMeshletBounds(
-            meshletVertices.data() + vertexOffset, meshletTriangles.data() + triangleOffset, m.triangle_count,
+            build.vertices.data() + m.vertex_offset, build.triangles.data() + m.triangle_offset, m.triangle_count,
             rangePositions, vertexCount, sizeof(GpuVertex));
 
-        meshlets.push_back(GpuMeshletDesc{
-            .vertexOffset = vertexOffset,
-            .triangleOffset = triangleOffset,
+        build.meshlets.push_back(GpuMeshletDesc{
+            .vertexOffset = m.vertex_offset,
+            .triangleOffset = m.triangle_offset,
             .vertexCount = m.vertex_count,
             .triangleCount = m.triangle_count,
             .boundingSphere = glm::vec4{bounds.center[0], bounds.center[1], bounds.center[2], bounds.radius},
@@ -110,21 +116,43 @@ MeshletDraw GeometryStore::buildMeshletsForRange(uint32_t firstIndex, uint32_t i
     }
 
     // rebase range-local vertex ids to scratch-absolute after optimize/bounds used them
-    for (size_t i = baseVertexOffset; i < meshletVertices.size(); ++i) {
-        meshletVertices[i] += firstVertex;
+    for (uint32_t& vertex : build.vertices) {
+        vertex += firstVertex;
     }
 
+    log_debug(std::format("Built {} meshlets for index range [{}, {}) ({} meshlet verts, {} local tri corners)",
+                          build.meshlets.size(), firstIndex, firstIndex + indexCount, build.vertices.size(),
+                          build.triangles.size()),
+              "AssetLoader");
+    return build;
+}
+
+MeshletDraw GeometryStore::appendMeshlets(MeshletBuild&& build)
+{
+    if (build.meshlets.empty()) {
+        return {};
+    }
+    const uint32_t baseVertexOffset = static_cast<uint32_t>(meshletVertices.size());
+    const uint32_t baseTriangleOffset = static_cast<uint32_t>(meshletTriangles.size());
     const MeshletDraw draw{
-        .firstMeshlet = baseMeshlet,
-        .meshletCount = static_cast<uint32_t>(meshletCount),
+        .firstMeshlet = static_cast<uint32_t>(meshlets.size()),
+        .meshletCount = static_cast<uint32_t>(build.meshlets.size()),
     };
 
-    log_info(std::format("Built {} meshlets for index range [{}, {}) ({} meshlet verts, {} local tri corners)",
-                         draw.meshletCount, firstIndex, firstIndex + indexCount, localVertices.size(),
-                         localTriangles.size()),
-             "AssetLoader");
-
+    meshletVertices.insert(meshletVertices.end(), build.vertices.begin(), build.vertices.end());
+    meshletTriangles.insert(meshletTriangles.end(), build.triangles.begin(), build.triangles.end());
+    for (GpuMeshletDesc& meshlet : build.meshlets) {
+        meshlet.vertexOffset += baseVertexOffset;
+        meshlet.triangleOffset += baseTriangleOffset;
+    }
+    meshlets.insert(meshlets.end(), build.meshlets.begin(), build.meshlets.end());
     return draw;
+}
+
+MeshletDraw GeometryStore::buildMeshletsForRange(uint32_t firstIndex, uint32_t indexCount, uint32_t firstVertex,
+                                                 uint32_t vertexCount)
+{
+    return appendMeshlets(buildMeshlets(firstIndex, indexCount, firstVertex, vertexCount));
 }
 
 void GeometryStore::clearScratch()

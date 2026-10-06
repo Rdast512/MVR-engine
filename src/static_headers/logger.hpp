@@ -3,12 +3,19 @@
 #include <string_view>
 
 // dll is injected from ENGINE_LOG_DLL (compile def per shared lib / exe).
+void log_debug_at(std::string_view message, std::string_view subsystem, std::string_view dll);
 void log_info_at(std::string_view message, std::string_view subsystem, std::string_view dll);
 void log_error_at(std::string_view message, std::string_view subsystem, std::string_view dll);
 
 #ifndef ENGINE_LOG_DLL
 #define ENGINE_LOG_DLL "app"
 #endif
+
+// per-item detail; hidden unless ENGINE_LOG_DEBUG is set in the environment
+inline void log_debug(std::string_view message, std::string_view subsystem = "core")
+{
+    log_debug_at(message, subsystem, ENGINE_LOG_DLL);
+}
 
 inline void log_info(std::string_view message, std::string_view subsystem = "core")
 {

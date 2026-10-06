@@ -1,6 +1,7 @@
 #include "logger.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -81,12 +82,18 @@ namespace
             sink->set_color(spdlog::level::err, kRed);
             sink->set_color(spdlog::level::critical, kBrightRed);
             logger = std::make_shared<spdlog::logger>(key, sink);
-            logger->set_level(spdlog::level::info);
+            static const bool debugEnabled = std::getenv("ENGINE_LOG_DEBUG") != nullptr;
+            logger->set_level(debugEnabled ? spdlog::level::debug : spdlog::level::info);
             logger->set_pattern("%^[%T] [%n] %v%$");
         }
         return *logger;
     }
 } // namespace
+
+void log_debug_at(std::string_view message, std::string_view subsystem, std::string_view dll)
+{
+    loggerFor(dll).debug("[{}] {}", subsystem, message);
+}
 
 void log_info_at(std::string_view message, std::string_view subsystem, std::string_view dll)
 {
