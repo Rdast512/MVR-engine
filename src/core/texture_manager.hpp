@@ -29,6 +29,24 @@ enum class TextureColorSpace : uint8_t
 // (not a VkSampler object).
 class TextureManager {
 public:
+    struct StbFree {
+        void operator()(unsigned char* pixels) const;
+    };
+    // stb RGBA8 pixels, freed on scope exit even when the upload throws
+    using StbPixels = std::unique_ptr<unsigned char, StbFree>;
+
+    // CPU-only decode result; pixels is null when decoding failed
+    struct DecodedImage {
+        StbPixels pixels;
+        int width = 0;
+        int height = 0;
+
+        [[nodiscard]] std::span<const uint8_t> rgba() const
+        {
+            return {pixels.get(), static_cast<size_t>(width) * static_cast<size_t>(height) * 4u};
+        }
+    };
+
     explicit TextureManager(Device &deviceWrapper, const VkAllocator &allocator, DescriptorManager &descriptorManager);
     ~TextureManager();
 
@@ -43,6 +61,17 @@ public:
     [[nodiscard]] uint32_t loadTextureFromPixels(std::string cacheKey, std::span<const uint8_t> rgba, uint32_t width,
                                                  uint32_t height, TextureColorSpace colorSpace);
     [[nodiscard]] uint32_t getOrCreateSampler(int32_t minFilter, int32_t magFilter, int32_t wrapS, int32_t wrapT);
+    [[nodiscard]] bool isCached(std::string cacheKey, TextureColorSpace colorSpace) const;
+
+    // Thread-safe decoders (no Vulkan); upload the result with loadTextureFromPixels
+    [[nodiscard]] static DecodedImage decodeRgba8(std::span<const uint8_t> bytes);
+    [[nodiscard]] static DecodedImage decodeRgba8File(const std::string& path);
+    [[nodiscard]] static bool isKtxPath(std::string_view path);
+
+    // Uploads between begin and flush share one command buffer and one submit + fence wait.
+    // Heap indices returned in between are valid, but the images are not sampleable until flush.
+    void beginUploadBatch();
+    void flushUploadBatch();
 
     // Stable handles / cached data — direct access
     Device &deviceWrapper;
@@ -57,16 +86,12 @@ public:
     vk::raii::CommandPool commandPool = nullptr;
 
 private:
-    // stb RGBA8 pixels, freed on scope exit even when the upload throws
-    using StbPixels = std::unique_ptr<unsigned char, void (*)(void*)>;
-
     // Resolve a relative path against the current working directory
     [[nodiscard]] std::string resolvePath(std::string_view path);
     [[nodiscard]] std::optional<uint32_t> cachedHeapIndex(const std::string &key) const;
 
-    auto beginSingleTimeCommands() -> vk::raii::CommandBuffer;
-    void generateMipmaps(vk::raii::CommandBuffer &commandBuffer, vk::raii::Image &image, vk::Format imageFormat,
-                         int32_t texWidth, int32_t texHeight, uint32_t mipLevels);
+    void generateMipmaps(vk::raii::CommandBuffer &commandBuffer, vk::raii::Image &image, int32_t texWidth,
+                         int32_t texHeight, uint32_t mipLevels);
 
     [[nodiscard]] uint32_t uploadKtx(const std::string &path);
     // origin names the source in the decode error (file / mime type)
@@ -75,6 +100,9 @@ private:
     [[nodiscard]] uint32_t uploadRgba8(const std::string& cacheKey, const void* pixels, int texWidth, int texHeight,
                                        vk::Format format);
     std::unordered_map<uint64_t, uint32_t> samplerKeyToIndex;
+    // validated once in init() for both RGBA8 formats
+    vk::ImageLayout hostCopyDstLayout = vk::ImageLayout::eUndefined;
+    std::optional<vk::raii::CommandBuffer> uploadBatch;
 
     // libktx owns these images and their device memory (not VMA); destructed after the views
     std::vector<ktxVulkanTexture> ktxTextures;

@@ -4,11 +4,13 @@
 #include "../util/vk_tracy.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <thread>
 #include <glm/gtc/quaternion.hpp>
 
 // ── glTF external-reference detection ───────────────────────
@@ -306,6 +308,8 @@ namespace
         std::string path;
         std::vector<uint8_t> encoded;
         std::vector<uint8_t> decodedRgba;
+        // filled by decodeGltfImages from encoded / path; released once materials are built
+        TextureManager::DecodedImage predecoded;
         int width = 0;
         int height = 0;
         std::string mime;
@@ -498,7 +502,11 @@ namespace
         }
         // one undecodable image must not abort the model; material falls back to no texture
         try {
-            if (!image.decodedRgba.empty() && image.width > 0 && image.height > 0) {
+            if (image.predecoded.pixels) {
+                heap = ctx.textures.loadTextureFromPixels(image.cacheKey, image.predecoded.rgba(),
+                                                          static_cast<uint32_t>(image.predecoded.width),
+                                                          static_cast<uint32_t>(image.predecoded.height), colorSpace);
+            } else if (!image.decodedRgba.empty() && image.width > 0 && image.height > 0) {
                 heap = ctx.textures.loadTextureFromPixels(image.cacheKey, image.decodedRgba,
                                                           static_cast<uint32_t>(image.width),
                                                           static_cast<uint32_t>(image.height), colorSpace);
@@ -1124,6 +1132,72 @@ namespace
             ctx.images[i] = std::move(src);
         }
     }
+
+    // Decodes every image a texture references on a worker pool; upload stays on the main thread in
+    // material order, so heap indices match the serial path. A failed decode is left empty and retried
+    // (and reported) by loadGltfImage.
+    static void decodeGltfImages(GltfLoadCtx& ctx)
+    {
+        ZoneScopedN("AssetLoader::decodeGltfImages");
+        std::vector<bool> referenced(ctx.images.size(), false);
+        for (const GltfResolvedTexture& texture : ctx.gltfTextures) {
+            if (texture.imageIndex >= 0 && static_cast<uint32_t>(texture.imageIndex) < ctx.images.size()) {
+                referenced[static_cast<uint32_t>(texture.imageIndex)] = true;
+            }
+        }
+
+        std::vector<GltfImageSrc*> pending;
+        for (uint32_t i = 0; i < ctx.images.size(); ++i) {
+            GltfImageSrc& image = ctx.images[i];
+            const bool hasSource = !image.encoded.empty() || (!image.path.empty() && !TextureManager::isKtxPath(image.path));
+            const bool cached = ctx.textures.isCached(image.cacheKey, TextureColorSpace::Srgb) ||
+                                ctx.textures.isCached(image.cacheKey, TextureColorSpace::Linear);
+            if (referenced[i] && hasSource && image.decodedRgba.empty() && !cached) {
+                pending.push_back(&image);
+            }
+        }
+        if (pending.empty()) {
+            return;
+        }
+
+        std::atomic<size_t> next{0};
+        const auto decodeLoop = [&] {
+            for (size_t k = next.fetch_add(1); k < pending.size(); k = next.fetch_add(1)) {
+                GltfImageSrc& image = *pending[k];
+                image.predecoded = image.encoded.empty() ? TextureManager::decodeRgba8File(image.path)
+                                                         : TextureManager::decodeRgba8(image.encoded);
+            }
+        };
+        const size_t workerCount =
+            std::min<size_t>(pending.size(), std::max(1u, std::thread::hardware_concurrency())) - 1;
+        {
+            std::vector<std::jthread> workers;
+            workers.reserve(workerCount);
+            for (size_t w = 0; w < workerCount; ++w) {
+                workers.emplace_back(decodeLoop);
+            }
+            decodeLoop();
+        }
+        log_info(std::format("glTF decoded {} images on {} threads", pending.size(), workerCount + 1), "AssetLoader");
+    }
+
+    // Keeps a texture upload batch open for a scope; flushes on exit, including when parsing throws.
+    struct TextureUploadBatch
+    {
+        TextureManager& textures;
+
+        explicit TextureUploadBatch(TextureManager& texturesIn) : textures(texturesIn) { textures.beginUploadBatch(); }
+        TextureUploadBatch(const TextureUploadBatch&) = delete;
+        TextureUploadBatch& operator=(const TextureUploadBatch&) = delete;
+        ~TextureUploadBatch()
+        {
+            try {
+                textures.flushUploadBatch();
+            } catch (const std::exception& error) {
+                log_error(std::format("Texture upload batch failed: {}", error.what()), "AssetLoader");
+            }
+        }
+    };
 
     static uint32_t accessorCompCount(const tg3_model& model, int32_t accessorIdx)
     {
@@ -1772,7 +1846,14 @@ bool AssetsLoader::loadGltfModel(const std::string& modelPath, glm::vec3 xyz)
     const std::vector<uint32_t> samplerHeaps = parseGltfSamplers(ctx, model);
     parseGltfImages(ctx, model, std::filesystem::path(modelPath).parent_path());
     parseGltfTextures(ctx, model, samplerHeaps);
-    parseGltfMaterials(ctx, model);
+    decodeGltfImages(ctx);
+    {
+        const TextureUploadBatch uploadBatch(textureManager);
+        parseGltfMaterials(ctx, model);
+    }
+    for (GltfImageSrc& image : ctx.images) {
+        image.predecoded = {};
+    }
     parseGltfLights(ctx, model);
     appendGltfGeometry(ctx, model);
     const uint32_t primitiveCount = static_cast<uint32_t>(geometryStore.primitiveDraws.size()) - firstPrimitive;

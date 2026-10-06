@@ -108,16 +108,18 @@ vk::ImageLayout stbHostCopyDstLayout(const vk::raii::PhysicalDevice& physicalDev
         physicalDevice.getImageFormatProperties2<vk::ImageFormatProperties2,
                                                  vk::HostImageCopyDevicePerformanceQuery>(formatInfo);
     const auto& perf = perfChain.get<vk::HostImageCopyDevicePerformanceQuery>();
-    static bool loggedPerf = false;
-    if (!loggedPerf) {
-        log_info(std::format("hostImageCopy perf: optimalDeviceAccess={} identicalMemoryLayout={}",
-                             static_cast<bool>(perf.optimalDeviceAccess),
-                             static_cast<bool>(perf.identicalMemoryLayout)),
-                 "TextureManager");
-        if (!perf.optimalDeviceAccess) {
-            log_info("HOST_TRANSFER may be slower to sample than a non-host-transfer image", "TextureManager");
-        }
-        loggedPerf = true;
+    log_info(std::format("hostImageCopy perf ({}): optimalDeviceAccess={} identicalMemoryLayout={}",
+                         vk::to_string(format), static_cast<bool>(perf.optimalDeviceAccess),
+                         static_cast<bool>(perf.identicalMemoryLayout)),
+             "TextureManager");
+    if (!perf.optimalDeviceAccess) {
+        log_info("HOST_TRANSFER may be slower to sample than a non-host-transfer image", "TextureManager");
+    }
+
+    // mip chain is built with linear blits
+    const vk::FormatProperties formatProperties = physicalDevice.getFormatProperties2(format).formatProperties;
+    if (!(formatProperties.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImageFilterLinear)) {
+        throw std::runtime_error("Texture image format does not support linear blitting!");
     }
 
     return vk::ImageLayout::eGeneral;
@@ -221,6 +223,10 @@ void TextureManager::init()
                                      TG3_TEXTURE_WRAP_REPEAT, TG3_TEXTURE_WRAP_REPEAT)] =
         descriptorManager.getSamplerDescriptorIndex();
 
+    for (const TextureColorSpace colorSpace : {TextureColorSpace::Srgb, TextureColorSpace::Linear}) {
+        hostCopyDstLayout = stbHostCopyDstLayout(physicalDevice, deviceWrapper.capabilities, rgbaFormat(colorSpace));
+    }
+
     ktxDeviceInfo.emplace();
     if (ktxVulkanDeviceInfo_Construct(&*ktxDeviceInfo, *physicalDevice, *device, *graphicsQueue, *commandPool,
                                       nullptr) != KTX_SUCCESS) {
@@ -237,6 +243,41 @@ std::optional<uint32_t> TextureManager::cachedHeapIndex(const std::string& key) 
         return std::nullopt;
     }
     return it->second.descriptorHeapIndex;
+}
+
+bool TextureManager::isCached(std::string cacheKey, TextureColorSpace colorSpace) const
+{
+    cacheKey += colorSpaceSuffix(colorSpace);
+    return loadedTextures.contains(cacheKey);
+}
+
+void TextureManager::StbFree::operator()(unsigned char* pixels) const
+{
+    stbi_image_free(pixels);
+}
+
+TextureManager::DecodedImage TextureManager::decodeRgba8(std::span<const uint8_t> bytes)
+{
+    ZoneScopedN("TextureManager::decodeRgba8");
+    DecodedImage image{};
+    int channels = 0;
+    image.pixels.reset(stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &image.width,
+                                             &image.height, &channels, STBI_rgb_alpha));
+    return image;
+}
+
+TextureManager::DecodedImage TextureManager::decodeRgba8File(const std::string& path)
+{
+    ZoneScopedN("TextureManager::decodeRgba8File");
+    DecodedImage image{};
+    int channels = 0;
+    image.pixels.reset(stbi_load(path.c_str(), &image.width, &image.height, &channels, STBI_rgb_alpha));
+    return image;
+}
+
+bool TextureManager::isKtxPath(std::string_view path)
+{
+    return detectFormat(path) == TextureFormat::Ktx;
 }
 
 // High-level texture loader that chooses between KTX (fast GPU upload)
@@ -260,11 +301,8 @@ uint32_t TextureManager::loadTexture(std::string texturePath, TextureColorSpace 
         return uploadKtx(path);
     }
 
-    int texWidth = 0;
-    int texHeight = 0;
-    int texChannels = 0;
-    StbPixels pixels(stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha), &stbi_image_free);
-    return uploadDecoded(cacheKey, std::move(pixels), texWidth, texHeight, colorSpace, "file");
+    DecodedImage image = decodeRgba8File(path);
+    return uploadDecoded(cacheKey, std::move(image.pixels), image.width, image.height, colorSpace, "file");
 }
 
 uint32_t TextureManager::loadTextureFromMemory(std::string cacheKey, std::span<const uint8_t> bytes,
@@ -279,13 +317,8 @@ uint32_t TextureManager::loadTextureFromMemory(std::string cacheKey, std::span<c
         throw std::runtime_error("Empty texture blob: " + cacheKey);
     }
 
-    int texWidth = 0;
-    int texHeight = 0;
-    int texChannels = 0;
-    StbPixels pixels(stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &texWidth, &texHeight,
-                                           &texChannels, STBI_rgb_alpha),
-                     &stbi_image_free);
-    return uploadDecoded(cacheKey, std::move(pixels), texWidth, texHeight, colorSpace, mime);
+    DecodedImage image = decodeRgba8(bytes);
+    return uploadDecoded(cacheKey, std::move(image.pixels), image.width, image.height, colorSpace, mime);
 }
 
 uint32_t TextureManager::loadTextureFromPixels(std::string cacheKey, std::span<const uint8_t> rgba, uint32_t width,
@@ -383,7 +416,7 @@ uint32_t TextureManager::uploadDecoded(const std::string& cacheKey, StbPixels pi
 uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pixels, int texWidth, int texHeight,
                                      vk::Format format)
 {
-    const vk::ImageLayout hostDstLayout = stbHostCopyDstLayout(physicalDevice, deviceWrapper.capabilities, format);
+    const vk::ImageLayout hostDstLayout = hostCopyDstLayout;
 
     vk::DeviceSize imageSize =
         static_cast<vk::DeviceSize>(texWidth) * static_cast<vk::DeviceSize>(texHeight) * 4;
@@ -434,15 +467,21 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
         device.copyMemoryToImage(copyInfo);
     }
 
-    // host-written level 0 → TransferDst, then the blit chain: one submit per texture
-    auto commandBuffer = beginSingleTimeCommands();
+    // host-written level 0 → TransferDst, then the blit chain; outside a batch this texture is its own batch
+    const bool ownsBatch = !uploadBatch;
+    if (ownsBatch) {
+        beginUploadBatch();
+    }
+    vk::raii::CommandBuffer& commandBuffer = *uploadBatch;
     transitionImageLayout(&commandBuffer, *asset.textureImage, hostDstLayout, vk::ImageLayout::eTransferDstOptimal,
                           {vk::ImageAspectFlagBits::eColor, 0, mipLevels, 0, 1}, VK_QUEUE_FAMILY_IGNORED,
                           VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eHost,
                           vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eHostWrite,
                           vk::AccessFlagBits2::eTransferWrite);
-    generateMipmaps(commandBuffer, asset.textureImage, format, texWidth, texHeight, mipLevels);
-    submitAndWait(commandBuffer, graphicsQueue);
+    generateMipmaps(commandBuffer, asset.textureImage, texWidth, texHeight, mipLevels);
+    if (ownsBatch) {
+        flushUploadBatch();
+    }
 
     vk::ImageViewCreateInfo viewInfo{
         .image = asset.textureImage,
@@ -461,18 +500,38 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
     return heapIndex;
 }
 
-// Allocate and begin a short-lived graphics command buffer for immediate-submit
-// operations (one-time use), returned in recording state.
-vk::raii::CommandBuffer TextureManager::beginSingleTimeCommands()
+void TextureManager::beginUploadBatch()
 {
-    ZoneScopedN("TextureManager::beginSingleTimeCommands");
-    vk::CommandBufferAllocateInfo allocInfo{
+    ZoneScopedN("TextureManager::beginUploadBatch");
+    if (uploadBatch) {
+        throw std::runtime_error("Texture upload batch already open");
+    }
+    const vk::CommandBufferAllocateInfo allocInfo{
         .commandPool = commandPool, .level = vk::CommandBufferLevel::ePrimary, .commandBufferCount = 1};
     auto commandBuffers = device.allocateCommandBuffers(allocInfo);
-    vk::raii::CommandBuffer commandBuffer = std::move(commandBuffers[0]);
-    vk::CommandBufferBeginInfo beginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit};
-    commandBuffer.begin(beginInfo);
-    return commandBuffer;
+    uploadBatch.emplace(std::move(commandBuffers[0]));
+    uploadBatch->begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+}
+
+// One submit for every texture recorded since beginUploadBatch; waits on a fence, not the whole queue.
+void TextureManager::flushUploadBatch()
+{
+    ZoneScopedN("TextureManager::flushUploadBatch");
+    if (!uploadBatch) {
+        return;
+    }
+    // close the batch first so a failed submit cannot leave it half-open
+    vk::raii::CommandBuffer commandBuffer = std::move(*uploadBatch);
+    uploadBatch.reset();
+    commandBuffer.end();
+
+    const vk::raii::Fence fence(device, vk::FenceCreateInfo{});
+    const vk::CommandBufferSubmitInfo commandBufferInfo{.commandBuffer = *commandBuffer};
+    const vk::SubmitInfo2 submitInfo{.commandBufferInfoCount = 1, .pCommandBufferInfos = &commandBufferInfo};
+    graphicsQueue.submit2(submitInfo, *fence);
+    if (device.waitForFences({*fence}, vk::True, std::numeric_limits<uint64_t>::max()) != vk::Result::eSuccess) {
+        throw std::runtime_error("Texture upload fence wait failed");
+    }
 }
 
 
@@ -487,16 +546,11 @@ vk::raii::CommandBuffer TextureManager::beginSingleTimeCommands()
 //     already-read levels, one barrier covers TransferSrc → ShaderReadOnly (layout change;
 //     availability of the original TransferWrite was established by the earlier Dst→Src
 //     barriers + transfer execution dependency). No per-mip TransferSrc→ShaderRead in the loop.
+// Linear-blit support for both RGBA8 formats is checked once in init().
 void TextureManager::generateMipmaps(vk::raii::CommandBuffer& commandBuffer, vk::raii::Image& image,
-                                     vk::Format imageFormat, int32_t texWidth, int32_t texHeight,
-                                     uint32_t mipLevelsIn)
+                                     int32_t texWidth, int32_t texHeight, uint32_t mipLevelsIn)
 {
     ZoneScopedN("TextureManager::generateMipmaps");
-    vk::FormatProperties formatProperties = physicalDevice.getFormatProperties2(imageFormat).formatProperties;
-    if (!(formatProperties.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImageFilterLinear))
-    {
-        throw std::runtime_error("Texture image format does not support linear blitting!");
-    }
 
     int32_t mipWidth = texWidth;
     int32_t mipHeight = texHeight;
