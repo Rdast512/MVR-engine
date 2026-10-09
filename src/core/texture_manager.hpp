@@ -114,16 +114,13 @@ private:
     [[nodiscard]] uint32_t uploadRgba8(const std::string& cacheKey, const void* pixels, int texWidth, int texHeight,
                                        vk::Format format);
     // adds the texture to the cache and the heap-index table
-    [[nodiscard]] uint32_t registerTexture(const std::string& cacheKey, TextureAsset&& asset,
-                                           std::optional<ktxVulkanTexture> ktx = std::nullopt);
+    [[nodiscard]] uint32_t registerTexture(const std::string& cacheKey, TextureAsset&& asset);
     void destroyTexture(uint32_t heapIndex);
-    // frees the image behind asset: libktx owns KTX images, VMA the rest
-    void destroyImage(TextureAsset& asset, std::optional<ktxVulkanTexture>& ktx) const;
+    void destroyImage(TextureAsset& asset) const;
 
     struct HeapEntry {
         std::string cacheKey; // into loadedTextures
         uint32_t refCount = 0;
-        std::optional<ktxVulkanTexture> ktx;
     };
     std::unordered_map<uint64_t, uint32_t> samplerKeyToIndex;
     // validated once in init() for both RGBA8 formats
@@ -132,5 +129,4 @@ private:
 
     std::unordered_map<uint32_t, HeapEntry> heapEntries;
     uint32_t defaultTextureIndex = 0;
-    std::optional<ktxVulkanDeviceInfo> ktxDeviceInfo;
 };
