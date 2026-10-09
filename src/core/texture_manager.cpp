@@ -47,13 +47,10 @@ TextureManager::~TextureManager()
     log_info("Destructor called", "TextureManager");
 
     for (auto& [heapIndex, entry] : heapEntries) {
-        destroyImage(loadedTextures.at(entry.cacheKey), entry.ktx);
+        destroyImage(loadedTextures.at(entry.cacheKey));
     }
     heapEntries.clear();
     loadedTextures.clear();
-    if (ktxDeviceInfo) {
-        ktxVulkanDeviceInfo_Destruct(&*ktxDeviceInfo);
-    }
     log_info("Resources destroyed", "TextureManager");
 }
 
@@ -62,6 +59,9 @@ TextureManager::~TextureManager()
 namespace {
 
 enum class TextureFormat { Ktx, Png, Unknown };
+
+// KTX images are host-copied straight into the layout their heap descriptor declares
+constexpr vk::ImageLayout kKtxSampledLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
 // Detect a texture file format from its filename extension (KTX vs PNG/etc).
 TextureFormat detectFormat(std::string_view path)
@@ -226,11 +226,8 @@ void TextureManager::init()
         hostCopyDstLayout = stbHostCopyDstLayout(physicalDevice, deviceWrapper.capabilities, rgbaFormat(colorSpace));
     }
 
-    ktxDeviceInfo.emplace();
-    if (ktxVulkanDeviceInfo_Construct(&*ktxDeviceInfo, *physicalDevice, *device, *graphicsQueue, *commandPool,
-                                      nullptr) != KTX_SUCCESS) {
-        ktxDeviceInfo.reset();
-        throw std::runtime_error("ktxVulkanDeviceInfo_Construct failed");
+    if (!containsImageLayout(deviceWrapper.capabilities.hostImageCopyDstLayouts, kKtxSampledLayout)) {
+        throw std::runtime_error("host image copy dest layouts missing SHADER_READ_ONLY_OPTIMAL");
     }
 
     constexpr std::array<uint8_t, 4> kWhite{255, 255, 255, 255};
@@ -393,36 +390,81 @@ uint32_t TextureManager::getOrCreateSampler(int32_t minFilter, int32_t magFilter
 uint32_t TextureManager::uploadKtx(const std::string& path)
 {
     ZoneScopedN("TextureManager::uploadKtx");
-    // KTX1 vs KTX2 detected from the file header
-    ktxTexture* kTexture = nullptr;
-    KTX_error_code result =
-        ktxTexture_CreateFromNamedFile(path.c_str(), KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &kTexture);
-    if (result != KTX_SUCCESS || !kTexture) {
-        throw std::runtime_error("Failed to load KTX texture: " + path);
+    // typed ktxTexture2 API: the generic ktxTexture_* vtable calls trip UBSan function-type checks
+    // zstd levels are inflated on load
+    ktxTexture2* rawTexture = nullptr;
+    if (ktxTexture2_CreateFromNamedFile(path.c_str(), KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &rawTexture) !=
+            KTX_SUCCESS ||
+        !rawTexture) {
+        throw std::runtime_error("Failed to load KTX2 texture: " + path);
+    }
+    const std::unique_ptr<ktxTexture2, decltype(&ktxTexture2_Destroy)> kTexture(rawTexture, &ktxTexture2_Destroy);
+
+    if (kTexture->numDimensions != 2 || kTexture->numLayers != 1 || kTexture->numFaces != 1 ||
+        ktxTexture2_NeedsTranscoding(kTexture.get())) {
+        throw std::runtime_error("Unsupported KTX2 texture (expected 2D, single layer, not Basis): " + path);
+    }
+    const auto format = static_cast<vk::Format>(kTexture->vkFormat);
+    const auto formatChain = physicalDevice.getFormatProperties2<vk::FormatProperties2, vk::FormatProperties3>(format);
+    if (!(formatChain.get<vk::FormatProperties3>().optimalTilingFeatures &
+          vk::FormatFeatureFlagBits2::eHostImageTransfer)) {
+        throw std::runtime_error(std::format("KTX format {} lacks HOST_IMAGE_TRANSFER: {}", vk::to_string(format), path));
     }
 
-    // libktx creates the VkImage + VkDeviceMemory; the CPU copy is no longer needed after upload
-    ktxVulkanTexture vkTex{};
-    result = ktxTexture_VkUpload(kTexture, &*ktxDeviceInfo, &vkTex);
-    ktxTexture_Destroy(kTexture);
-    if (result != KTX_SUCCESS) {
-        throw std::runtime_error("Failed to upload KTX texture to GPU: " + path);
+    const uint32_t width = kTexture->baseWidth;
+    const uint32_t height = kTexture->baseHeight;
+    const uint32_t mipLevels = kTexture->numLevels;
+    TextureAsset asset{};
+    allocator.createImage2D(width, height, mipLevels, vk::SampleCountFlagBits::e1, format,
+                            vk::ImageUsageFlagBits::eHostTransfer | vk::ImageUsageFlagBits::eSampled,
+                            asset.textureImage, asset.textureImageMemory, "KtxTextureImageMemory");
+    setDebugName(device, asset.textureImage, "KtxTextureImage");
+    tracyResourceAlloc(static_cast<VkImage>(*asset.textureImage), kTexture->dataSize, "GPU/Textures");
+
+    // host image copy: no command buffer or queue submit per texture
+    const vk::ImageSubresourceRange allLevels{vk::ImageAspectFlagBits::eColor, 0, mipLevels, 0, 1};
+    {
+        ZoneScopedN("TextureManager::copyMemoryToImage");
+        const vk::HostImageLayoutTransitionInfo hostTransition{
+            .image = *asset.textureImage,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = kKtxSampledLayout,
+            .subresourceRange = allLevels,
+        };
+        device.transitionImageLayout({hostTransition});
+
+        const ktx_uint8_t* data = ktxTexture_GetData(ktxTexture(kTexture.get()));
+        std::vector<vk::MemoryToImageCopy> regions;
+        regions.reserve(mipLevels);
+        for (uint32_t level = 0; level < mipLevels; ++level) {
+            ktx_size_t offset = 0;
+            ktxTexture2_GetImageOffset(kTexture.get(), level, 0, 0, &offset);
+            regions.push_back({
+                .pHostPointer = data + offset,
+                .imageSubresource = {vk::ImageAspectFlagBits::eColor, level, 0, 1},
+                .imageExtent = {std::max(1u, width >> level), std::max(1u, height >> level), 1},
+            });
+        }
+        device.copyMemoryToImage({
+            .dstImage = *asset.textureImage,
+            .dstImageLayout = kKtxSampledLayout,
+            .regionCount = static_cast<uint32_t>(regions.size()),
+            .pRegions = regions.data(),
+        });
     }
-    log_debug(std::format("KTX texture uploaded: {}×{}, {} mips, format={}", vkTex.width, vkTex.height,
-                          vkTex.levelCount, static_cast<uint32_t>(vkTex.imageFormat)),
+    log_debug(std::format("KTX texture uploaded: {}×{}, {} mips, format={}", width, height, mipLevels,
+                          vk::to_string(format)),
               "TextureManager");
 
-    // non-owning view: the image stays with the libktx texture
-    TextureAsset asset{};
-    vk::ImageViewCreateInfo const viewInfo{
-        .image       = vk::Image(vkTex.image),
-        .viewType    = static_cast<vk::ImageViewType>(vkTex.viewType),
-        .format      = static_cast<vk::Format>(vkTex.imageFormat),
-        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, vkTex.levelCount, 0, 1}};
+    const vk::ImageViewCreateInfo viewInfo{
+        .image = asset.textureImage,
+        .viewType = vk::ImageViewType::e2D,
+        .format = format,
+        .subresourceRange = allLevels};
     asset.textureImageView = vk::raii::ImageView(device, viewInfo);
 
     descriptorManager.writeImageDescriptor(asset, viewInfo);
-    return registerTexture(path, std::move(asset), vkTex);
+    return registerTexture(path, std::move(asset));
 }
 
 uint32_t TextureManager::uploadDecoded(const std::string& cacheKey, StbPixels pixels, int texWidth, int texHeight,
@@ -519,25 +561,19 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
     return registerTexture(cacheKey, std::move(asset));
 }
 
-uint32_t TextureManager::registerTexture(const std::string& cacheKey, TextureAsset&& asset,
-                                         std::optional<ktxVulkanTexture> ktx)
+uint32_t TextureManager::registerTexture(const std::string& cacheKey, TextureAsset&& asset)
 {
     const uint32_t heapIndex = asset.descriptorHeapIndex;
     loadedTextures.insert_or_assign(cacheKey, std::move(asset));
-    heapEntries.insert_or_assign(heapIndex, HeapEntry{.cacheKey = cacheKey, .refCount = 0, .ktx = ktx});
+    heapEntries.insert_or_assign(heapIndex, HeapEntry{.cacheKey = cacheKey, .refCount = 0});
     return heapIndex;
 }
 
-void TextureManager::destroyImage(TextureAsset& asset, std::optional<ktxVulkanTexture>& ktx) const
+void TextureManager::destroyImage(TextureAsset& asset) const
 {
     // view before its image
     asset.textureImageView = nullptr;
-    if (ktx) {
-        ktxVulkanTexture_Destruct(&*ktx, *device, nullptr);
-        ktx.reset();
-    } else {
-        destroyVmaImage(allocator.allocator, asset.textureImage, asset.textureImageMemory, "GPU/Textures");
-    }
+    destroyVmaImage(allocator.allocator, asset.textureImage, asset.textureImageMemory, "GPU/Textures");
 }
 
 void TextureManager::destroyTexture(uint32_t heapIndex)
@@ -547,7 +583,7 @@ void TextureManager::destroyTexture(uint32_t heapIndex)
         return;
     }
     const auto asset = loadedTextures.find(entry->second.cacheKey);
-    destroyImage(asset->second, entry->second.ktx);
+    destroyImage(asset->second);
     descriptorManager.freeImageDescriptor(heapIndex);
     log_debug(std::format("Texture freed: heap={} key={}", heapIndex, entry->second.cacheKey), "TextureManager");
     loadedTextures.erase(asset);
