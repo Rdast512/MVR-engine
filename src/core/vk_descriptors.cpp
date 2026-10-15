@@ -7,7 +7,7 @@
 #include "../util/vk_utils.hpp"
 #include "logger.hpp"
 
-static constexpr vk::DeviceSize alignUp(vk::DeviceSize size, vk::DeviceSize alignment)
+[[nodiscard]] static constexpr vk::DeviceSize alignUp(vk::DeviceSize size, vk::DeviceSize alignment)
 {
     return (size + alignment - 1) & ~(alignment - 1);
 }
@@ -46,7 +46,6 @@ DescriptorManager::~DescriptorManager()
     destroyVmaBuffer(allocator, samplerHeapBuffer, samplerHeapMemory);
 }
 
-// New: perform descriptor-related initialization after construction
 void DescriptorManager::init()
 {
     ZoneScopedN("DescriptorManager::init");
@@ -64,28 +63,15 @@ void DescriptorManager::createHeaps()
         throw std::runtime_error("Descriptor heap properties are invalid for heap mode");
     }
 
-    const vk::DeviceSize resourceReservedOffsetAlignment = imageDescriptorAlignment;
-
-    vk::DeviceSize resourceHeapSize = capabilities.descriptorHeap.maxResourceHeapSize;
-    // resourceHeapSize = alignUp(resourceHeapSize, imageDescriptorAlignment);
-    // resourceHeapSize += imageDescriptorSize;
-    // resourceHeapSize = alignUp(resourceHeapSize, resourceReservedOffsetAlignment);
-    // resourceHeapSize += minResourceHeapReservedRange;
-
-    log_info(std::format("Creating resource descriptor heap: size={} ({:.1f} MiB) imageDesc={} reserve={}  "
+    const vk::DeviceSize resourceHeapSize = capabilities.descriptorHeap.maxResourceHeapSize;
+    logInfo(std::format("Creating resource descriptor heap: size={} ({:.1f} MiB) imageDesc={} reserve={}  "
                          "[host-visible mapped — counts as process RAM]",
                          resourceHeapSize, static_cast<double>(resourceHeapSize) / (1024.0 * 1024.0),
                          imageDescriptorSize, minResourceHeapReservedRange),
              "DescriptorManager");
 
-    vk::DeviceSize samplerHeapSize = capabilities.descriptorHeap.maxSamplerHeapSize;
-
-    // samplerHeapSize = alignUp(samplerHeapSize, samplerDescriptorAlignment);
-    // samplerHeapSize += samplerDescriptorSize;
-    // samplerHeapSize = alignUp(samplerHeapSize, samplerDescriptorAlignment);
-    // samplerHeapSize += minSamplerHeapReservedRange;
-
-    log_info(std::format("Creating sampler descriptor heap: size={} ({:.1f} MiB) samplerDesc={} reserve={}  "
+    const vk::DeviceSize samplerHeapSize = capabilities.descriptorHeap.maxSamplerHeapSize;
+    logInfo(std::format("Creating sampler descriptor heap: size={} ({:.1f} MiB) samplerDesc={} reserve={}  "
                          "[host-visible mapped — counts as process RAM]",
                          samplerHeapSize, static_cast<double>(samplerHeapSize) / (1024.0 * 1024.0),
                          samplerDescriptorSize, minSamplerHeapReservedRange),
@@ -96,11 +82,7 @@ void DescriptorManager::createHeaps()
 
 void DescriptorManager::writeImageDescriptor(TextureAsset& textureAsset, const vk::ImageViewCreateInfo& imageViewCreateInfo)
 {
-    auto resources = std::vector<vk::ResourceDescriptorInfoEXT>();
-    auto descriptors = std::vector<vk::HostAddressRangeEXT>();
-
-    // Pack sampled-image descriptors with size as array stride (untyped heap indexing).
-    // Spec: imageDescriptorAlignment <= imageDescriptorSize, so consecutive slots stay aligned.
+    // size is the array stride; spec guarantees imageDescriptorAlignment <= imageDescriptorSize
     const bool reuseSlot = !freeImageSlots.empty();
     const vk::DeviceSize currentResOffset = reuseSlot
         ? static_cast<vk::DeviceSize>(freeImageSlots.back()) * imageDescriptorSize
@@ -108,41 +90,33 @@ void DescriptorManager::writeImageDescriptor(TextureAsset& textureAsset, const v
     if (reuseSlot) {
         freeImageSlots.pop_back();
     }
-    const auto descriptorImageInfo = vk::ImageDescriptorInfoEXT{
-        .sType = vk::StructureType::eImageDescriptorInfoEXT,
-        .pNext = nullptr,
+    const vk::ImageDescriptorInfoEXT descriptorImageInfo{
         .pView = &imageViewCreateInfo,
         .layout = vk::ImageLayout::eShaderReadOnlyOptimal,
     };
-    const auto imageInfo = vk::ResourceDescriptorInfoEXT{
-        .sType = vk::StructureType::eResourceDescriptorInfoEXT,
-        .pNext = nullptr,
+    const vk::ResourceDescriptorInfoEXT imageInfo{
         .type = vk::DescriptorType::eSampledImage,
         .data = vk::ResourceDescriptorDataEXT{&descriptorImageInfo},
     };
-    const auto imageWrite = vk::HostAddressRangeEXT{
+    const vk::HostAddressRangeEXT imageWrite{
         .address = static_cast<uint8_t*>(mappedResourceHeapPtr) + currentResOffset,
         .size = imageDescriptorSize,
     };
-    resources.push_back(imageInfo);
-    descriptors.push_back(imageWrite);
 
     {
         ZoneScopedN("DescriptorManager::createHeapDescriptors::writeResourceDescriptorsEXT");
-        device.writeResourceDescriptorsEXT(resources, descriptors);
+        device.writeResourceDescriptorsEXT(imageInfo, imageWrite);
     }
 
-    // Advance cursor so the next texture gets a new heap slot (was missing — every
-    // load overwrote slot 0 and both models shared the last texture).
+    // next texture needs a fresh slot
     if (!reuseSlot) {
-        textureDescriptorOffset = currentResOffset + imageDescriptorSize;
-        textureDescriptorOffset = alignUp(textureDescriptorOffset, imageDescriptorAlignment);
+        textureDescriptorOffset = alignUp(currentResOffset + imageDescriptorSize, imageDescriptorAlignment);
     }
 
     const uint32_t heapIndex = static_cast<uint32_t>(currentResOffset / imageDescriptorSize);
     textureAsset.descriptorHeapIndex = heapIndex;
 
-    log_info(std::format("Descriptor heap image write: offset={} size={} align={} index={} nextOffset={}",
+    logInfo(std::format("Descriptor heap image write: offset={} size={} align={} index={} nextOffset={}",
                          currentResOffset, imageDescriptorSize, imageDescriptorAlignment, heapIndex,
                          textureDescriptorOffset),
              "DescriptorHeap");
@@ -154,8 +128,7 @@ void DescriptorManager::freeImageDescriptor(uint32_t heapIndex)
     freeImageSlots.push_back(heapIndex);
 }
 
-// Default linear/anisotropic sampler into the sampler heap only.
-// No VkSampler object — writeSamplerDescriptorsEXT takes SamplerCreateInfo.
+// default linear/anisotropic sampler, written straight into the sampler heap
 void DescriptorManager::createHeapDescriptors()
 {
     ZoneScopedN("DescriptorManager::createHeapDescriptors");
@@ -165,7 +138,7 @@ void DescriptorManager::createHeapDescriptors()
 
     const auto maxSamplerAnisotropy = capabilities.properties2.properties.limits.maxSamplerAnisotropy;
 
-    // maxLod large enough for full mip chains (textures write SampledImage separately).
+    // maxLod unclamped for full mip chains
     const vk::SamplerCreateInfo samplerInfo{.magFilter = vk::Filter::eLinear,
                                             .minFilter = vk::Filter::eLinear,
                                             .mipmapMode = vk::SamplerMipmapMode::eLinear,
@@ -189,11 +162,9 @@ void DescriptorManager::createHeapDescriptors()
     }
 
     defaultSamplerHeapIndex = static_cast<uint32_t>(currentSampOffset / samplerDescriptorSize);
-    nextSamplerDescriptorOffset = currentSampOffset + samplerDescriptorSize;
-    nextSamplerDescriptorOffset = alignUp(nextSamplerDescriptorOffset, samplerDescriptorAlignment);
-    samplerDescriptorOffset = currentSampOffset;
+    nextSamplerDescriptorOffset = alignUp(currentSampOffset + samplerDescriptorSize, samplerDescriptorAlignment);
 
-    log_info(std::format("Descriptor heap sampler layout samplerDescSize={} "
+    logInfo(std::format("Descriptor heap sampler layout samplerDescSize={} "
                          "samplerAlign={} samplerIndex={}",
                          samplerDescriptorSize,
                          samplerDescriptorAlignment, getSamplerDescriptorIndex()), "DescriptorHeap");
@@ -211,11 +182,10 @@ uint32_t DescriptorManager::writeSamplerDescriptor(const vk::SamplerCreateInfo& 
         device.writeSamplerDescriptorsEXT(samplerInfo, samplerWrite);
     }
 
-    nextSamplerDescriptorOffset = currentSampOffset + samplerDescriptorSize;
-    nextSamplerDescriptorOffset = alignUp(nextSamplerDescriptorOffset, samplerDescriptorAlignment);
+    nextSamplerDescriptorOffset = alignUp(currentSampOffset + samplerDescriptorSize, samplerDescriptorAlignment);
 
     const uint32_t heapIndex = static_cast<uint32_t>(currentSampOffset / samplerDescriptorSize);
-    log_info(std::format("Descriptor heap sampler write: offset={} index={}", currentSampOffset, heapIndex),
+    logInfo(std::format("Descriptor heap sampler write: offset={} index={}", currentSampOffset, heapIndex),
              "DescriptorHeap");
     return heapIndex;
 }
@@ -239,20 +209,18 @@ void DescriptorManager::createHeapBuffers(vk::DeviceSize resourceHeapSize, vk::D
     }
     setDebugName(device, resourceHeapBuffer, "DescriptorHeap_Resource");
 
-    VkBufferDeviceAddressInfo resourceHeapAddressInfo = {
+    const VkBufferDeviceAddressInfo resourceHeapAddressInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
         .pNext = nullptr,
         .buffer = *resourceHeapBuffer,
     };
-    VkDeviceAddress resourceHeapAddress = vkGetBufferDeviceAddress(*device, &resourceHeapAddressInfo);
+    const VkDeviceAddress resourceHeapAddress = vkGetBufferDeviceAddress(*device, &resourceHeapAddressInfo);
     resourceHeapInfo = vk::BindHeapInfoEXT{
-        .sType = vk::StructureType::eBindHeapInfoEXT,
-        .pNext = nullptr,
         .heapRange = vk::DeviceAddressRangeEXT{.address = resourceHeapAddress, .size = resourceHeapSize},
         .reservedRangeOffset = resourceHeapSize - minResourceHeapReservedRange,
         .reservedRangeSize = minResourceHeapReservedRange,
     };
-    log_info(std::format("Resource heap GPU address=0x{:016x}, reservedOffset={}, reservedSize={}", resourceHeapAddress,
+    logInfo(std::format("Resource heap GPU address=0x{:016x}, reservedOffset={}, reservedSize={}", resourceHeapAddress,
                          resourceHeapInfo.reservedRangeOffset, resourceHeapInfo.reservedRangeSize), "DescriptorManager");
 
     createBuffer(
@@ -271,34 +239,21 @@ void DescriptorManager::createHeapBuffers(vk::DeviceSize resourceHeapSize, vk::D
     }
     setDebugName(device, samplerHeapBuffer, "DescriptorHeap_Sampler");
 
-    VkBufferDeviceAddressInfo const samplerHeapAddressInfo = {
+    const VkBufferDeviceAddressInfo samplerHeapAddressInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
         .pNext = nullptr,
         .buffer = *samplerHeapBuffer,
     };
-    VkDeviceAddress samplerHeapAddress = vkGetBufferDeviceAddress(*device, &samplerHeapAddressInfo);
+    const VkDeviceAddress samplerHeapAddress = vkGetBufferDeviceAddress(*device, &samplerHeapAddressInfo);
     samplerHeapInfo = vk::BindHeapInfoEXT{
-        .sType = vk::StructureType::eBindHeapInfoEXT,
-        .pNext = nullptr,
         .heapRange = vk::DeviceAddressRangeEXT{.address = samplerHeapAddress, .size = samplerHeapSize},
         .reservedRangeOffset = samplerHeapSize - minSamplerHeapReservedRange,
         .reservedRangeSize = minSamplerHeapReservedRange,
     };
-    log_info(std::format("Sampler heap GPU address=0x{:016x}, reservedOffset={}, reservedSize={}", samplerHeapAddress,
+    logInfo(std::format("Sampler heap GPU address=0x{:016x}, reservedOffset={}, reservedSize={}", samplerHeapAddress,
                          samplerHeapInfo.reservedRangeOffset, samplerHeapInfo.reservedRangeSize), "DescriptorManager");
 }
 
-
-
-
-
-// uint32_t DescriptorManager::getUboDescriptorIndex(uint32_t frameIndex) const
-// {
-//     if (frameIndex >= uboDescriptorOffsets.size() || bufferDescriptorSize == 0) {
-//         return 0;
-//     }
-//     return static_cast<uint32_t>(uboDescriptorOffsets[frameIndex] / bufferDescriptorSize);
-// }
 
 uint32_t DescriptorManager::getTextureDescriptorIndex() const
 {

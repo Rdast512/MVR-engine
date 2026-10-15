@@ -1,17 +1,18 @@
 #include "texture_manager.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <format>
+#include <limits>
+#include <stdexcept>
 
-
-
-// Construct a TextureManager which holds Vulkan device/queue handles and
-// creates a command pool for short-lived graphics commands.
 TextureManager::TextureManager(Device& deviceWrapper, const VkAllocator& allocator, DescriptorManager &descriptorManager) :
     deviceWrapper(deviceWrapper), allocator(allocator), descriptorManager(descriptorManager),
     physicalDevice(deviceWrapper.physicalDevice), device(deviceWrapper.vkdevice),
     graphicsQueue(deviceWrapper.graphicsQueue), graphicsQueueFamilyIndex(deviceWrapper.graphicsIndex)
 {
-    log_info("Constructor started", "TextureManager");
+    logInfo("Constructor started", "TextureManager");
     vk::CommandPoolCreateInfo poolInfo{.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
                                        .queueFamilyIndex = graphicsQueueFamilyIndex};
     commandPool = vk::raii::CommandPool(device, poolInfo);
@@ -21,22 +22,20 @@ std::string TextureManager::resolvePath(std::string_view path)
 {
     std::filesystem::path fsPath(path);
 
-    // If the path is already absolute, return it as-is
     if (fsPath.is_absolute()) {
         return fsPath.string();
     }
 
     // CWD, not the exe dir: assets are addressed relative to the launch directory
-    std::filesystem::path resolved = std::filesystem::current_path() / fsPath;
+    const std::filesystem::path resolved = std::filesystem::current_path() / fsPath;
 
     if (std::filesystem::exists(resolved)) {
-        log_debug(std::format("Resolved path: {} -> {}", path, resolved.string()), "TextureManager");
+        logDebug(std::format("Resolved path: {} -> {}", path, resolved.string()), "TextureManager");
         return resolved.string();
     }
 
-    // If not found relative to CWD, log warning and return original
-    // (let the loader try and fail with a more informative error)
-    log_info(std::format("Path not found relative to CWD: {}; trying original", path), "TextureManager");
+    // let the loader fail with a more informative error
+    logInfo(std::format("Path not found relative to CWD: {}; trying original", path), "TextureManager");
     return std::string(path);
 }
 
@@ -44,14 +43,14 @@ std::string TextureManager::resolvePath(std::string_view path)
 TextureManager::~TextureManager()
 {
     ZoneScopedN("TextureManager::~TextureManager");
-    log_info("Destructor called", "TextureManager");
+    logInfo("Destructor called", "TextureManager");
 
     for (auto& [heapIndex, entry] : heapEntries) {
         destroyImage(loadedTextures.at(entry.cacheKey));
     }
     heapEntries.clear();
     loadedTextures.clear();
-    log_info("Resources destroyed", "TextureManager");
+    logInfo("Resources destroyed", "TextureManager");
 }
 
 // ── format-detecting texture loader ─────────────────────────
@@ -63,15 +62,23 @@ enum class TextureFormat { Ktx, Png, Unknown };
 // KTX images are host-copied straight into the layout their heap descriptor declares
 constexpr vk::ImageLayout kKtxSampledLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-// Detect a texture file format from its filename extension (KTX vs PNG/etc).
+// clamps sampling to level 0 for non-mipmapped min filters
+constexpr float kNoMipMaxLod = 0.25f;
+
 TextureFormat detectFormat(std::string_view path)
 {
     const auto dot = path.rfind('.');
-    if (dot == std::string_view::npos) return TextureFormat::Unknown;
+    if (dot == std::string_view::npos) {
+        return TextureFormat::Unknown;
+    }
 
     const std::string_view ext = path.substr(dot);
-    if (ext == ".ktx" || ext == ".ktx2") return TextureFormat::Ktx;
-    if (ext == ".png"  || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp") return TextureFormat::Png;
+    if (ext == ".ktx" || ext == ".ktx2") {
+        return TextureFormat::Ktx;
+    }
+    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp") {
+        return TextureFormat::Png;
+    }
     return TextureFormat::Unknown;
 }
 
@@ -107,12 +114,12 @@ vk::ImageLayout stbHostCopyDstLayout(const vk::raii::PhysicalDevice& physicalDev
         physicalDevice.getImageFormatProperties2<vk::ImageFormatProperties2,
                                                  vk::HostImageCopyDevicePerformanceQuery>(formatInfo);
     const auto& perf = perfChain.get<vk::HostImageCopyDevicePerformanceQuery>();
-    log_info(std::format("hostImageCopy perf ({}): optimalDeviceAccess={} identicalMemoryLayout={}",
+    logInfo(std::format("hostImageCopy perf ({}): optimalDeviceAccess={} identicalMemoryLayout={}",
                          vk::to_string(format), static_cast<bool>(perf.optimalDeviceAccess),
                          static_cast<bool>(perf.identicalMemoryLayout)),
              "TextureManager");
     if (!perf.optimalDeviceAccess) {
-        log_info("HOST_TRANSFER may be slower to sample than a non-host-transfer image", "TextureManager");
+        logInfo("HOST_TRANSFER may be slower to sample than a non-host-transfer image", "TextureManager");
     }
 
     // mip chain is built with linear blits
@@ -164,19 +171,17 @@ vk::SamplerCreateInfo samplerInfoFromGltf(int32_t minFilter, int32_t magFilter, 
     case TG3_TEXTURE_FILTER_NEAREST:
         min = vk::Filter::eNearest;
         mip = vk::SamplerMipmapMode::eNearest;
-        maxLod = 0.25f;
+        maxLod = kNoMipMaxLod;
         break;
     case TG3_TEXTURE_FILTER_LINEAR:
-        min = vk::Filter::eLinear;
         mip = vk::SamplerMipmapMode::eNearest;
-        maxLod = 0.25f;
+        maxLod = kNoMipMaxLod;
         break;
     case TG3_TEXTURE_FILTER_NEAREST_MIPMAP_NEAREST:
         min = vk::Filter::eNearest;
         mip = vk::SamplerMipmapMode::eNearest;
         break;
     case TG3_TEXTURE_FILTER_LINEAR_MIPMAP_NEAREST:
-        min = vk::Filter::eLinear;
         mip = vk::SamplerMipmapMode::eNearest;
         break;
     case TG3_TEXTURE_FILTER_NEAREST_MIPMAP_LINEAR:
@@ -184,8 +189,6 @@ vk::SamplerCreateInfo samplerInfoFromGltf(int32_t minFilter, int32_t magFilter, 
         mip = vk::SamplerMipmapMode::eLinear;
         break;
     default:
-        min = vk::Filter::eLinear;
-        mip = vk::SamplerMipmapMode::eLinear;
         break;
     }
 
@@ -216,7 +219,7 @@ vk::SamplerCreateInfo samplerInfoFromGltf(int32_t minFilter, int32_t magFilter, 
 void TextureManager::init()
 {
     ZoneScopedN("TextureManager::init");
-    log_info("init() started", "TextureManager");
+    logInfo("init() started", "TextureManager");
     // descriptor manager's default sampler serves the glTF default (trilinear, repeat)
     samplerKeyToIndex[packSamplerKey(TG3_TEXTURE_FILTER_LINEAR_MIPMAP_LINEAR, TG3_TEXTURE_FILTER_LINEAR,
                                      TG3_TEXTURE_WRAP_REPEAT, TG3_TEXTURE_WRAP_REPEAT)] =
@@ -233,7 +236,7 @@ void TextureManager::init()
     constexpr std::array<uint8_t, 4> kWhite{255, 255, 255, 255};
     defaultTextureIndex = loadTextureFromPixels("engine:default-white", kWhite, 1, 1, TextureColorSpace::Srgb);
     retain(std::span(&defaultTextureIndex, 1));
-    log_info("Initialized", "TextureManager");
+    logInfo("Initialized", "TextureManager");
 }
 
 std::optional<uint32_t> TextureManager::cachedHeapIndex(const std::string& key) const
@@ -302,8 +305,6 @@ bool TextureManager::isKtxPath(std::string_view path)
     return detectFormat(path) == TextureFormat::Ktx;
 }
 
-// High-level texture loader that chooses between KTX (fast GPU upload)
-// and a PNG/STB fallback. Caches loaded textures and returns a descriptor.
 uint32_t TextureManager::loadTexture(std::string texturePath, TextureColorSpace colorSpace)
 {
     ZoneScopedN("TextureManager::loadTexture");
@@ -312,10 +313,10 @@ uint32_t TextureManager::loadTexture(std::string texturePath, TextureColorSpace 
     // KTX carries its own format, so both color spaces share one entry
     const std::string cacheKey = fmt == TextureFormat::Ktx ? path : path + colorSpaceSuffix(colorSpace);
     if (const auto cached = cachedHeapIndex(cacheKey)) {
-        log_debug(std::format("Texture already loaded: {}", cacheKey), "TextureManager");
+        logDebug(std::format("Texture already loaded: {}", cacheKey), "TextureManager");
         return *cached;
     }
-    log_debug(std::format("loadTexture: {} → {}", path,
+    logDebug(std::format("loadTexture: {} → {}", path,
                           fmt == TextureFormat::Ktx ? "KTX/KTX2" :
                           fmt == TextureFormat::Png ? "PNG/STB" : "Unknown"), "TextureManager");
 
@@ -452,7 +453,7 @@ uint32_t TextureManager::uploadKtx(const std::string& path)
             .pRegions = regions.data(),
         });
     }
-    log_debug(std::format("KTX texture uploaded: {}×{}, {} mips, format={}", width, height, mipLevels,
+    logDebug(std::format("KTX texture uploaded: {}×{}, {} mips, format={}", width, height, mipLevels,
                           vk::to_string(format)),
               "TextureManager");
 
@@ -479,10 +480,7 @@ uint32_t TextureManager::uploadDecoded(const std::string& cacheKey, StbPixels pi
 uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pixels, int texWidth, int texHeight,
                                      vk::Format format)
 {
-    const vk::ImageLayout hostDstLayout = hostCopyDstLayout;
-
-    vk::DeviceSize imageSize =
-        static_cast<vk::DeviceSize>(texWidth) * static_cast<vk::DeviceSize>(texHeight) * 4;
+    const vk::DeviceSize imageSize = static_cast<vk::DeviceSize>(texWidth) * static_cast<vk::DeviceSize>(texHeight) * 4;
     const uint32_t mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
 
     TextureAsset asset{};
@@ -508,7 +506,7 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
         const vk::HostImageLayoutTransitionInfo hostTransition{
             .image = *asset.textureImage,
             .oldLayout = vk::ImageLayout::eUndefined,
-            .newLayout = hostDstLayout,
+            .newLayout = hostCopyDstLayout,
             .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, mipLevels, 0, 1},
         };
         device.transitionImageLayout({hostTransition});
@@ -523,7 +521,7 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
         };
         const vk::CopyMemoryToImageInfo copyInfo{
             .dstImage = *asset.textureImage,
-            .dstImageLayout = hostDstLayout,
+            .dstImageLayout = hostCopyDstLayout,
             .regionCount = 1,
             .pRegions = &region,
         };
@@ -536,7 +534,7 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
         beginUploadBatch();
     }
     vk::raii::CommandBuffer& commandBuffer = *uploadBatch;
-    transitionImageLayout(&commandBuffer, *asset.textureImage, hostDstLayout, vk::ImageLayout::eTransferDstOptimal,
+    transitionImageLayout(&commandBuffer, *asset.textureImage, hostCopyDstLayout, vk::ImageLayout::eTransferDstOptimal,
                           {vk::ImageAspectFlagBits::eColor, 0, mipLevels, 0, 1}, VK_QUEUE_FAMILY_IGNORED,
                           VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eHost,
                           vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eHostWrite,
@@ -546,7 +544,7 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
         flushUploadBatch();
     }
 
-    vk::ImageViewCreateInfo viewInfo{
+    const vk::ImageViewCreateInfo viewInfo{
         .image = asset.textureImage,
         .viewType = vk::ImageViewType::e2D,
         .format = format,
@@ -555,7 +553,7 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
 
     descriptorManager.writeImageDescriptor(asset, viewInfo);
 
-    log_debug(std::format("STB texture loaded: {}×{}, {} mips (hostImageCopy) key={}", texWidth, texHeight, mipLevels,
+    logDebug(std::format("STB texture loaded: {}×{}, {} mips (hostImageCopy) key={}", texWidth, texHeight, mipLevels,
                           cacheKey),
               "TextureManager");
     return registerTexture(cacheKey, std::move(asset));
@@ -585,7 +583,7 @@ void TextureManager::destroyTexture(uint32_t heapIndex)
     const auto asset = loadedTextures.find(entry->second.cacheKey);
     destroyImage(asset->second);
     descriptorManager.freeImageDescriptor(heapIndex);
-    log_debug(std::format("Texture freed: heap={} key={}", heapIndex, entry->second.cacheKey), "TextureManager");
+    logDebug(std::format("Texture freed: heap={} key={}", heapIndex, entry->second.cacheKey), "TextureManager");
     loadedTextures.erase(asset);
     heapEntries.erase(entry);
 }
@@ -657,19 +655,9 @@ void TextureManager::flushUploadBatch()
     }
 }
 
-
-// Generate mipmaps on the GPU by successively blitting between mip levels.
-// Records into commandBuffer; all levels must be in TransferDst on entry.
-// Layout strategy (avoids BestPractices-PipelineBarrier-readToReadBarrier):
-//   - Each level is written as TransferDst (base copy or blit destination).
-//   - Only promote TransferDst → TransferSrc when that level is about to be a blit source
-//     (write→read — required and not a BP read-to-read).
-//   - After the chain finishes, levels [0, last) sit in TransferSrc; the last level stays
-//     TransferDst. Transition last with TransferDst → ShaderReadOnly (write→read). For the
-//     already-read levels, one barrier covers TransferSrc → ShaderReadOnly (layout change;
-//     availability of the original TransferWrite was established by the earlier Dst→Src
-//     barriers + transfer execution dependency). No per-mip TransferSrc→ShaderRead in the loop.
-// Linear-blit support for both RGBA8 formats is checked once in init().
+// Blit chain; all levels must be in TransferDst on entry, all end in ShaderReadOnly.
+// A level is promoted to TransferSrc only right before it is blitted from (avoids
+// BestPractices-PipelineBarrier-readToReadBarrier). Linear-blit support is checked in init().
 void TextureManager::generateMipmaps(vk::raii::CommandBuffer& commandBuffer, vk::raii::Image& image,
                                      int32_t texWidth, int32_t texHeight, uint32_t mipLevelsIn)
 {
@@ -678,9 +666,7 @@ void TextureManager::generateMipmaps(vk::raii::CommandBuffer& commandBuffer, vk:
     int32_t mipWidth = texWidth;
     int32_t mipHeight = texHeight;
 
-    for (uint32_t i = 1; i < mipLevelsIn; i++)
-    {
-        // Previous level: last write was TransferWrite in TransferDst — make it a blit source.
+    for (uint32_t i = 1; i < mipLevelsIn; ++i) {
         const vk::ImageMemoryBarrier2 toSrc{
             .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
             .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
@@ -701,23 +687,16 @@ void TextureManager::generateMipmaps(vk::raii::CommandBuffer& commandBuffer, vk:
         blit.srcOffsets[1] = vk::Offset3D(mipWidth, mipHeight, 1);
         blit.dstSubresource = {vk::ImageAspectFlagBits::eColor, i, 0, 1};
         blit.dstOffsets[0] = vk::Offset3D(0, 0, 0);
-        blit.dstOffsets[1] = vk::Offset3D(mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1);
+        blit.dstOffsets[1] = vk::Offset3D(std::max(mipWidth / 2, 1), std::max(mipHeight / 2, 1), 1);
 
         commandBuffer.blitImage(image, vk::ImageLayout::eTransferSrcOptimal, image,
                                 vk::ImageLayout::eTransferDstOptimal, {blit}, vk::Filter::eLinear);
 
-        // Leave level i-1 in TransferSrc; level i remains TransferDst for the next iteration
-        // (or for the final write→shader-read barrier when i is last).
-
-        if (mipWidth > 1)
-            mipWidth /= 2;
-        if (mipHeight > 1)
-            mipHeight /= 2;
+        mipWidth = std::max(mipWidth / 2, 1);
+        mipHeight = std::max(mipHeight / 2, 1);
     }
 
-    // Final layout: all mips → ShaderReadOnlyOptimal.
-    // - Levels that were blit sources: TransferSrc (read layout) → ShaderReadOnly.
-    // - Last level never needed as a source: TransferDst (write) → ShaderReadOnly.
+    // blit sources leave TransferSrc, the last level leaves TransferDst
     if (mipLevelsIn == 1) {
         const vk::ImageMemoryBarrier2 toSampled{
             .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
@@ -733,8 +712,8 @@ void TextureManager::generateMipmaps(vk::raii::CommandBuffer& commandBuffer, vk:
         const vk::DependencyInfo dep{.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &toSampled};
         commandBuffer.pipelineBarrier2(dep);
     } else {
-        const vk::ImageMemoryBarrier2 barriers[2] = {
-            // Already-used blit sources [0, last).
+        const std::array<vk::ImageMemoryBarrier2, 2> barriers{{
+            // blit sources [0, last)
             {.srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
              .srcAccessMask = vk::AccessFlagBits2::eTransferRead,
              .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
@@ -745,7 +724,7 @@ void TextureManager::generateMipmaps(vk::raii::CommandBuffer& commandBuffer, vk:
              .dstQueueFamilyIndex = vk::QueueFamilyIgnored,
              .image = image,
              .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, mipLevelsIn - 1, 0, 1}},
-            // Last mip: still TransferDst after final blit destination write.
+            // last mip is still TransferDst
             {.srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
              .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
              .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
@@ -756,8 +735,8 @@ void TextureManager::generateMipmaps(vk::raii::CommandBuffer& commandBuffer, vk:
              .dstQueueFamilyIndex = vk::QueueFamilyIgnored,
              .image = image,
              .subresourceRange = {vk::ImageAspectFlagBits::eColor, mipLevelsIn - 1, 1, 0, 1}},
-        };
-        const vk::DependencyInfo dep{.imageMemoryBarrierCount = 2, .pImageMemoryBarriers = barriers};
+        }};
+        const vk::DependencyInfo dep{.imageMemoryBarrierCount = 2, .pImageMemoryBarriers = barriers.data()};
         commandBuffer.pipelineBarrier2(dep);
     }
 }

@@ -34,6 +34,4 @@ public:
 
     void recreateSwapChain();
     void cleanupSwapChain();
-
-
 };

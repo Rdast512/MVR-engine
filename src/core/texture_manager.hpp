@@ -11,10 +11,13 @@
 #include "../static_headers/logger.hpp"
 #include "vk_descriptors.hpp"
 #include "ktxvulkan.h"
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -52,9 +55,7 @@ public:
 
     void init();
 
-    // Format-detecting texture loader.
-    // Inspects the file extension and routes to the KTX or
-    // stb (PNG/etc.) pipeline accordingly.
+    // routes by file extension to the KTX or stb pipeline
     [[nodiscard]] uint32_t loadTexture(std::string texturePath, TextureColorSpace colorSpace = TextureColorSpace::Srgb);
     [[nodiscard]] uint32_t loadTextureFromMemory(std::string cacheKey, std::span<const uint8_t> bytes,
                                                  std::string_view mime, TextureColorSpace colorSpace);

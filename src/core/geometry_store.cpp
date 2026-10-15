@@ -120,7 +120,7 @@ MeshletBuild GeometryStore::buildMeshlets(uint32_t firstIndex, uint32_t indexCou
         vertex += firstVertex;
     }
 
-    log_debug(std::format("Built {} meshlets for index range [{}, {}) ({} meshlet verts, {} local tri corners)",
+    logDebug(std::format("Built {} meshlets for index range [{}, {}) ({} meshlet verts, {} local tri corners)",
                           build.meshlets.size(), firstIndex, firstIndex + indexCount, build.vertices.size(),
                           build.triangles.size()),
               "AssetLoader");

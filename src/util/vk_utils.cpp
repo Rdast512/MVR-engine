@@ -5,8 +5,8 @@
 
 #include <atomic>
 #include <format>
+#include <string>
 #include <stdexcept>
-
 
 void transitionImageLayout(
     vk::raii::CommandBuffer* commandBuffer,
@@ -42,21 +42,21 @@ void transitionImageLayout(
             dstStage = vk::PipelineStageFlagBits2::eFragmentShader;
             srcAccess = vk::AccessFlagBits2::eTransferWrite;
             dstAccess = vk::AccessFlagBits2::eShaderRead;
-                   } else if (oldLayout == vk::ImageLayout::eUndefined &&
-                              newLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
-                       srcStage = vk::PipelineStageFlagBits2::eTopOfPipe;
-                       dstStage = vk::PipelineStageFlagBits2::eEarlyFragmentTests;
-                       srcAccess = vk::AccessFlagBits2::eNone;
-                       dstAccess =
-                           vk::AccessFlagBits2::eDepthStencilAttachmentWrite | vk::AccessFlagBits2::eDepthStencilAttachmentRead;
-                              } else if (oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::eColorAttachmentOptimal) {
-                                  srcStage = vk::PipelineStageFlagBits2::eTopOfPipe;
-                                  dstStage = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
-                                  srcAccess = vk::AccessFlagBits2::eNone;
-                                  dstAccess = vk::AccessFlagBits2::eColorAttachmentWrite;
-                              } else {
-                                  throw std::invalid_argument("unsupported layout transition");
-                              }
+        } else if (oldLayout == vk::ImageLayout::eUndefined &&
+                   newLayout == vk::ImageLayout::eDepthStencilAttachmentOptimal) {
+            srcStage = vk::PipelineStageFlagBits2::eTopOfPipe;
+            dstStage = vk::PipelineStageFlagBits2::eEarlyFragmentTests;
+            srcAccess = vk::AccessFlagBits2::eNone;
+            dstAccess =
+                vk::AccessFlagBits2::eDepthStencilAttachmentWrite | vk::AccessFlagBits2::eDepthStencilAttachmentRead;
+        } else if (oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::eColorAttachmentOptimal) {
+            srcStage = vk::PipelineStageFlagBits2::eTopOfPipe;
+            dstStage = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+            srcAccess = vk::AccessFlagBits2::eNone;
+            dstAccess = vk::AccessFlagBits2::eColorAttachmentWrite;
+        } else {
+            throw std::invalid_argument("unsupported layout transition");
+        }
     }
     barrier.srcStageMask = srcStage;
     barrier.dstStageMask = dstStage;
@@ -64,7 +64,7 @@ void transitionImageLayout(
     barrier.dstAccessMask = dstAccess;
     barrier.oldLayout = oldLayout;
     barrier.newLayout = newLayout;
-    vk::DependencyInfo dependencyInfo{.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier};
+    const vk::DependencyInfo dependencyInfo{.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier};
     commandBuffer->pipelineBarrier2(dependencyInfo);
 }
 
@@ -74,9 +74,9 @@ void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags2 usage, vk::MemoryPr
                   std::string_view memoryDebugBaseName, VmaAllocationCreateFlags extraAllocationFlags)
 {
     ZoneScopedN("createBuffer");
-    log_info("createBuffer() started", "Utils");
+    logInfo("createBuffer() started", "Utils");
 
-    // maintenance5: usage lives in BufferUsageFlags2CreateInfo; VkBufferCreateInfo::usage is ignored.
+    // maintenance5: usage lives in BufferUsageFlags2CreateInfo
     const vk::BufferUsageFlags2CreateInfo usage2{.usage = usage};
     // concurrent sharing needs at least two distinct families (VUID-VkBufferCreateInfo-sharingMode-00914)
     const bool isShared = queueFamilyIndices.size() > 1;

@@ -7,7 +7,7 @@
     #include "imgui_impl_vulkan.h"
 #endif
 
-#include <format>
+#include <stdexcept>
 
 Renderer::Renderer(Device& device, SwapChain& swapChain, ResourceManager& resourceManager,
                    DescriptorManager& descriptorManager, Pipeline& pipeline, Camera& camera,
@@ -29,7 +29,7 @@ void Renderer::rebuildSwapchainResources() const
     resourceManager.setSwapChainImageCount(static_cast<uint32_t>(swapChain.swapChainImages.size()));
     resourceManager.createColorResources();
     resourceManager.createDepthResources();
-    // Aspect / render-target size changed (resize and out-of-date paths).
+    // aspect ratio follows the new extent
     camera.setFov(camera.getFovDegrees());
     TracyPlot("Vulkan/SwapchainWidth", static_cast<double>(swapChain.swapChainExtent.width));
     TracyPlot("Vulkan/SwapchainHeight", static_cast<double>(swapChain.swapChainExtent.height));
@@ -56,8 +56,8 @@ void Renderer::drawFrame()
             ;
     }
 
-    vk::Result result;
-    uint32_t imageIndex;
+    vk::Result result{};
+    uint32_t imageIndex{0};
     {
         ZoneScopedN("AcquireImage");
         auto acquired = swapChainKHR.acquireNextImage(UINT64_MAX, presentSemaphore, nullptr);
@@ -83,14 +83,14 @@ void Renderer::drawFrame()
         recordCommandBuffer(imageIndex);
     }
 
-    vk::SemaphoreSubmitInfo waitSemaphoreInfo = {.semaphore = presentSemaphore,
-                                                 .stageMask = vk::PipelineStageFlagBits2::eTopOfPipe};
+    const vk::SemaphoreSubmitInfo waitSemaphoreInfo = {.semaphore = presentSemaphore,
+                                                       .stageMask = vk::PipelineStageFlagBits2::eTopOfPipe};
 
-    vk::CommandBufferSubmitInfo commandBufferInfo = {.commandBuffer = *commandBuffer};
+    const vk::CommandBufferSubmitInfo commandBufferInfo = {.commandBuffer = *commandBuffer};
 
     auto& renderSemaphore = *resourceManager.renderFinishedSemaphore[imageIndex];
-    vk::SemaphoreSubmitInfo signalSemaphoreInfo = {.semaphore = renderSemaphore,
-                                                   .stageMask = vk::PipelineStageFlagBits2::eBottomOfPipe};
+    const vk::SemaphoreSubmitInfo signalSemaphoreInfo = {.semaphore = renderSemaphore,
+                                                         .stageMask = vk::PipelineStageFlagBits2::eBottomOfPipe};
 
     {
         ZoneScopedN("UpdateUBO");
@@ -136,8 +136,8 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
     auto& cmd = commandBuffers[currentFrame];
 
 #ifdef TRACY_ENABLE
-    const bool gpuTrace = tracyContext != nullptr && tracyContext->active();
-    TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->handle() : nullptr;
+    const bool gpuTrace = tracyContext != nullptr && tracyContext->isActive();
+    TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
 #endif
 
     cmd.begin({});
@@ -155,29 +155,30 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
                               vk::AccessFlagBits2::eColorAttachmentWrite);
     }
 
-    // NVIDIA compressed clear requires all-0 or all-1 components for sRGB targets
-    // (BestPractices-NVIDIA-ClearColor-NotCompressed). Alpha 1.0 blocked compression.
+    // nvidia compressed clear needs all-0 or all-1 components (BestPractices-NVIDIA-ClearColor-NotCompressed)
     const vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 0.0f);
     const vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
-    vk::RenderingAttachmentInfo colorAttachmentInfo = {.imageView = resourceManager.colorAttachment.view,
-                                                       .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-                                                       .resolveMode = vk::ResolveModeFlagBits::eAverage,
-                                                       .resolveImageView = swapChain.swapChainImageViews[imageIndex],
-                                                       .resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-                                                       .loadOp = vk::AttachmentLoadOp::eClear,
-                                                       .storeOp = vk::AttachmentStoreOp::eStore,
-                                                       .clearValue = clearColor};
-    vk::RenderingAttachmentInfo depthAttachmentInfo = {.imageView = resourceManager.depthAttachment.view,
-                                                       .imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
-                                                       .loadOp = vk::AttachmentLoadOp::eClear,
-                                                       .storeOp = vk::AttachmentStoreOp::eDontCare,
-                                                       .clearValue = clearDepth};
+    const vk::RenderingAttachmentInfo colorAttachmentInfo = {
+        .imageView = resourceManager.colorAttachment.view,
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .resolveMode = vk::ResolveModeFlagBits::eAverage,
+        .resolveImageView = swapChain.swapChainImageViews[imageIndex],
+        .resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eClear,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+        .clearValue = clearColor};
+    const vk::RenderingAttachmentInfo depthAttachmentInfo = {.imageView = resourceManager.depthAttachment.view,
+                                                             .imageLayout =
+                                                                 vk::ImageLayout::eDepthStencilAttachmentOptimal,
+                                                             .loadOp = vk::AttachmentLoadOp::eClear,
+                                                             .storeOp = vk::AttachmentStoreOp::eDontCare,
+                                                             .clearValue = clearDepth};
 
-    vk::RenderingInfo renderingInfo = {.renderArea = {.offset = {0, 0}, .extent = swapChain.swapChainExtent},
-                                       .layerCount = 1,
-                                       .colorAttachmentCount = 1,
-                                       .pColorAttachments = &colorAttachmentInfo,
-                                       .pDepthAttachment = &depthAttachmentInfo};
+    const vk::RenderingInfo renderingInfo = {.renderArea = {.offset = {0, 0}, .extent = swapChain.swapChainExtent},
+                                             .layerCount = 1,
+                                             .colorAttachmentCount = 1,
+                                             .pColorAttachments = &colorAttachmentInfo,
+                                             .pDepthAttachment = &depthAttachmentInfo};
 
     dgc.updateSequences(currentFrame, camera);
 

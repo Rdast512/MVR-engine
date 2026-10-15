@@ -87,8 +87,11 @@ void writeObjectUbs(ObjectStorage& storage, std::span<GpuObjectUB> mappedUbs, co
         mappedUbs[i] = GpuObjectUB{
             .modelMatrix = model,
             .prevModelMatrix = storage.prevModelMatrices[i],
+            .boundingSphere = glm::vec4{0.0f},
             .materialID = storage.materials[i].materialId,
             .instanceFlags = storage.flags[i],
+            .baseVertex = 0,
+            .baseIndex = 0,
         };
         storage.prevModelMatrices[i] = model;
         storage.modelMatrices[i] = model;

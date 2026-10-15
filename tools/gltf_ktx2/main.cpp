@@ -30,7 +30,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -40,7 +40,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
-#include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -52,13 +52,17 @@ using Json = nlohmann::ordered_json;
 
 namespace
 {
+    constexpr uint32_t kDefaultZstdLevel = 18;
+    constexpr uint32_t kMaxZstdLevel = 22;
+    constexpr double kMiB = 1048576.0;
+
     struct Options
     {
         fs::path input;
         bool force = false;
         uint32_t jobs = 0;
         uint32_t uastcLevel = KTX_PACK_UASTC_LEVEL_DEFAULT;
-        uint32_t zstdLevel = 18;
+        uint32_t zstdLevel = kDefaultZstdLevel;
     };
 
     // ── URI helpers ──────────────────────────────────────────────
@@ -480,7 +484,7 @@ namespace
         Json& images = gltf["images"];
         Json& textures = gltf["textures"];
         if (!images.is_array() || !textures.is_array()) {
-            std::cout << "no images/textures in " << modelPath.string() << "\n";
+            std::cout << "no images/textures in " << modelPath.string() << '\n';
             return 0;
         }
 
@@ -499,7 +503,7 @@ namespace
             if (!texture.contains("source") || !texture["source"].is_number_integer()) {
                 return std::nullopt;
             }
-            const int64_t source = texture["source"];
+            const auto source = texture["source"].get<int64_t>();
             if (source < 0 || static_cast<size_t>(source) >= images.size()) {
                 return std::nullopt;
             }
@@ -577,9 +581,9 @@ namespace
                     continue;
                 }
                 const Json& view = gltf.at("bufferViews").at(image["bufferView"].get<size_t>());
-                const std::vector<uint8_t>& buffer = bufferBytes(gltf, view.at("buffer"), modelDir, buffers);
+                const std::vector<uint8_t>& buffer = bufferBytes(gltf, view.at("buffer").get<uint32_t>(), modelDir, buffers);
                 const size_t offset = view.value("byteOffset", size_t{0});
-                const size_t length = view.at("byteLength");
+                const auto length = view.at("byteLength").get<size_t>();
                 if (offset + length > buffer.size()) {
                     throw std::runtime_error(std::format("image[{}] bufferView out of range", i));
                 }
@@ -728,9 +732,9 @@ namespace
                                  jobs.size(), jobs.size() - skipped - failed, skipped, failed, seconds, threadCount);
         if (sourceBytes > 0) {
             std::cout << std::format("GPU memory for converted textures: RGBA8 {:.1f} MiB -> BC7 {:.1f} MiB\n",
-                                     sourceBytes / 1048576.0, gpuBytes / 1048576.0);
+                                     sourceBytes / kMiB, gpuBytes / kMiB);
         }
-        std::cout << std::format("KTX2 files: {:.1f} MiB\n{} {}\n", fileBytes / 1048576.0,
+        std::cout << std::format("KTX2 files: {:.1f} MiB\n{} {}\n", fileBytes / kMiB,
                                  changed ? "updated" : "unchanged", modelPath.string());
         return failed > 0 ? 1 : 0;
     }
@@ -768,7 +772,7 @@ int main(int argc, char** argv)
             } else if (arg == "--uastc-level") {
                 options.uastcLevel = std::min<uint32_t>(nextValue(), KTX_PACK_UASTC_MAX_LEVEL);
             } else if (arg == "--zstd") {
-                options.zstdLevel = std::min<uint32_t>(nextValue(), 22);
+                options.zstdLevel = std::min<uint32_t>(nextValue(), kMaxZstdLevel);
             } else if (arg == "-h" || arg == "--help") {
                 printUsage();
                 return 0;
@@ -778,7 +782,7 @@ int main(int argc, char** argv)
                 throw std::runtime_error(std::format("unexpected argument '{}'", arg));
             }
         } catch (const std::exception& error) {
-            std::cerr << error.what() << "\n";
+            std::cerr << error.what() << '\n';
             printUsage();
             return 2;
         }
@@ -790,7 +794,7 @@ int main(int argc, char** argv)
     try {
         return run(options);
     } catch (const std::exception& error) {
-        std::cerr << "error: " << error.what() << "\n";
+        std::cerr << "error: " << error.what() << '\n';
         return 1;
     }
 }

@@ -1,9 +1,15 @@
 #pragma once
 
+#include <algorithm>
+#include <atomic>
+#include <format>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_set>
 #include "../util/debug.hpp"
 #include "vk_device.hpp"
-
-
 
 class VkAllocator
 {
@@ -17,8 +23,6 @@ public:
         physicalDevice(deviceWrapper.physicalDevice), device(deviceWrapper.vkdevice),
         instance(deviceWrapper.instance)
     {
-
-        // Get the dynamic dispatcher for proper Vulkan function access
         VmaVulkanFunctions vulkanFunctions = {};
         vulkanFunctions.vkGetInstanceProcAddr = &vkGetInstanceProcAddr;
         vulkanFunctions.vkGetDeviceProcAddr = &vkGetDeviceProcAddr;
@@ -44,31 +48,17 @@ public:
 
     ~VkAllocator() { vmaDestroyAllocator(allocator); }
 
-    // Best-practices threshold: dedicated allocs below this size trigger
-    // BestPractices-vkBindBufferMemory-small-dedicated-allocation (typically 1 MiB).
+    // dedicated allocs below this trigger BestPractices-vkBindBufferMemory-small-dedicated-allocation
     static constexpr vk::DeviceSize kMinDedicatedAllocationBytes = 1024 * 1024;
 
-    void alocateBuffer(const vk::BufferCreateInfo& bufferInfo, const VmaAllocationCreateInfo& allocInfo,
-                       vk::raii::Buffer& buffer, VmaAllocation& allocation,
-                       std::string_view allocationDebugBaseName = "BufferMemory") const
+    void allocateImage(const vk::ImageCreateInfo& imageInfo, const VmaAllocationCreateInfo& allocInfo,
+                       vk::raii::Image& image, VmaAllocation& allocation,
+                       std::string_view allocationDebugBaseName = "ImageMemory") const
     {
-        VmaAllocationCreateInfo resolved = resolveAllocationCreateInfo(allocInfo, bufferInfo.size, false);
-        VkBuffer rawBuffer{};
-        if (vmaCreateBuffer(allocator, bufferInfo, &resolved, &rawBuffer, &allocation, nullptr) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to allocate buffer with VMA");
-        }
-        buffer = vk::raii::Buffer(device, rawBuffer);
-        nameAllocation(allocation, allocationDebugBaseName);
-    }
-
-    void alocateImage(const vk::ImageCreateInfo& imageInfo, const VmaAllocationCreateInfo& allocInfo,
-                      vk::raii::Image& image, VmaAllocation& allocation,
-                      std::string_view allocationDebugBaseName = "ImageMemory") const
-    {
-        // Approximate image size for dedicated-threshold policy (mip 0 only; conservative).
+        // mip 0 only, conservative bytes per texel
+        constexpr vk::DeviceSize kApproxBytesPerTexel = 16;
         const vk::DeviceSize approxBytes = static_cast<vk::DeviceSize>(imageInfo.extent.width) *
-            static_cast<vk::DeviceSize>(imageInfo.extent.height) *
-            static_cast<vk::DeviceSize>(std::max(imageInfo.arrayLayers, 1u)) * 16u;
+            imageInfo.extent.height * std::max(imageInfo.arrayLayers, 1u) * kApproxBytesPerTexel;
         VmaAllocationCreateInfo resolved = resolveAllocationCreateInfo(allocInfo, approxBytes, true);
         VkImage rawImage{};
         if (vmaCreateImage(allocator, imageInfo, &resolved, &rawImage, &allocation, nullptr) != VK_SUCCESS) {
@@ -78,7 +68,7 @@ public:
         nameAllocation(allocation, allocationDebugBaseName);
     }
 
-    // Optimal-tiling single-layer 2D image with exclusive sharing (only the graphics queue touches images)
+    // optimal-tiling single-layer 2D image, exclusive sharing (only the graphics queue touches images)
     void createImage2D(uint32_t width, uint32_t height, uint32_t mipLevels, vk::SampleCountFlagBits samples,
                        vk::Format format, vk::ImageUsageFlags usage, vk::raii::Image& image,
                        VmaAllocation& allocation, std::string_view allocationDebugBaseName) const
@@ -98,18 +88,16 @@ public:
         allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         // attachments demote last under memory pressure (NVIDIA memory priority best practice)
         allocInfo.priority = (usage & kAttachmentUsage) ? 1.0f : 0.9f;
-        alocateImage(imageInfo, allocInfo, image, allocation, allocationDebugBaseName);
+        allocateImage(imageInfo, allocInfo, image, allocation, allocationDebugBaseName);
     }
 
-    // Non-copyable, non-movable: manages a unique VMA allocator handle.
     VkAllocator(const VkAllocator&) = delete;
     VkAllocator(VkAllocator&&) = delete;
     VkAllocator& operator=(const VkAllocator&) = delete;
     VkAllocator& operator=(VkAllocator&&) = delete;
 
 private:
-    // Drop tiny dedicated requests (sub-allocate instead) and ensure a priority is set
-    // so VK_EXT_memory_priority / NVIDIA best practices are satisfied.
+    // tiny dedicated requests sub-allocate instead; always set a priority for VK_EXT_memory_priority
     static VmaAllocationCreateInfo resolveAllocationCreateInfo(const VmaAllocationCreateInfo& in,
                                                                vk::DeviceSize sizeBytes,
                                                                bool isImage)
@@ -119,8 +107,7 @@ private:
             sizeBytes < kMinDedicatedAllocationBytes) {
             out.flags &= ~VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
         }
-        // VMA default priority is 0.5; still set explicitly so priorities are intentional.
-        // Attachments / GPU-written images keep highest priority for OS demotion order.
+        // images demote last under memory pressure
         if (out.priority <= 0.0f) {
             if (isImage) {
                 out.priority = 1.0f;
@@ -145,7 +132,6 @@ private:
         const std::string uniqueName = std::format("{}_{}", baseName.empty() ? "DeviceMemory" : baseName, id);
 
         vmaSetAllocationName(allocator, allocation, uniqueName.c_str());
-
 
         VmaAllocationInfo allocInfo{};
         vmaGetAllocationInfo(allocator, allocation, &allocInfo);

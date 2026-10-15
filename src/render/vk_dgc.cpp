@@ -97,7 +97,7 @@ void DeviceGeneratedCommands::init()
         ensureFrameCapacity(frame, initialCapacity);
     }
 
-    log_info(std::format("DGC ready: stride={} explicitPreprocess={} initialSequences={}", sizeof(MeshDgcSequence),
+    logInfo(std::format("DGC ready: stride={} explicitPreprocess={} initialSequences={}", sizeof(MeshDgcSequence),
                          explicitPreprocess, initialCapacity),
              "DGC");
 }
@@ -113,13 +113,13 @@ void DeviceGeneratedCommands::createLayout()
             },
     };
 
-    const vk::IndirectCommandsLayoutTokenEXT tokens[] = {
-        {
+    const std::array tokens = {
+        vk::IndirectCommandsLayoutTokenEXT{
             .type = vk::IndirectCommandsTokenTypeEXT::ePushData,
             .data = vk::IndirectCommandsTokenDataEXT{&pushToken},
             .offset = 0,
         },
-        {
+        vk::IndirectCommandsLayoutTokenEXT{
             .type = vk::IndirectCommandsTokenTypeEXT::eDrawMeshTasks,
             .offset = static_cast<uint32_t>(offsetof(MeshDgcSequence, draw)),
         },
@@ -131,8 +131,8 @@ void DeviceGeneratedCommands::createLayout()
         .shaderStages = shaderStages,
         .indirectStride = static_cast<uint32_t>(sizeof(MeshDgcSequence)),
         .pipelineLayout = nullptr,
-        .tokenCount = 2,
-        .pTokens = tokens,
+        .tokenCount = static_cast<uint32_t>(tokens.size()),
+        .pTokens = tokens.data(),
     };
 
     layout = vk::raii::IndirectCommandsLayoutEXT(device.vkdevice, createInfo);
@@ -170,7 +170,7 @@ void DeviceGeneratedCommands::ensureFrameCapacity(uint32_t frameSlot, uint32_t m
         throw std::runtime_error("DGC sequence count exceeds maxIndirectSequenceCount");
     }
 
-    log_info(std::format("DGC frame {} capacity {} -> {} (need {}, stride={})", frameSlot,
+    logInfo(std::format("DGC frame {} capacity {} -> {} (need {}, stride={})", frameSlot,
                          sequenceCapacity[frameSlot], newCapacity, minSequences, sizeof(MeshDgcSequence)),
              "DGC");
     destroyFrameResources(frameSlot);
@@ -268,22 +268,46 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
     const auto& geometry = resourceManager.geometryStore;
     const uint32_t maxGroupsX = maxMeshGroupsX(device.capabilities);
 
-    uint32_t needed = 0;
-    for (EntityId id = 0; id < entityCount; ++id) {
-        if ((storage.flags[id] & EntityFlag::Active) == 0) {
-            continue;
-        }
-        const uint32_t primCount = storage.primitiveCounts[id];
-        if (primCount > 0) {
-            const uint32_t primFirst = storage.firstPrimitives[id];
-            for (uint32_t p = 0; p < primCount; ++p) {
-                needed += sequenceCountForMeshlets(geometry.primitiveDraws[primFirst + p].meshlets.meshletCount,
-                                                   maxGroupsX);
+    // visits every non-empty meshlet range with its resolved texture and sampler
+    auto forEachMeshletDraw = [&](auto&& visit) {
+        for (EntityId id = 0; id < entityCount; ++id) {
+            if ((storage.flags[id] & EntityFlag::Active) == 0) {
+                continue;
             }
-        } else {
-            needed += sequenceCountForMeshlets(storage.meshletDraws[id].meshletCount, maxGroupsX);
+
+            const uint32_t primCount = storage.primitiveCounts[id];
+            const uint32_t primFirst = storage.firstPrimitives[id];
+            if (primCount > 0) {
+                for (uint32_t p = 0; p < primCount; ++p) {
+                    const PrimitiveDraw& prim = geometry.primitiveDraws[primFirst + p];
+                    if (prim.meshlets.meshletCount == 0) {
+                        continue;
+                    }
+                    uint32_t textureIndex = storage.materials[id].textureIndex;
+                    uint32_t samplerIndex = descriptorManager.getSamplerDescriptorIndex();
+                    if (prim.albedoTex != kNoneIndex) {
+                        textureIndex = prim.albedoTex;
+                    }
+                    if (prim.albedoSamp != kNoneIndex) {
+                        samplerIndex = prim.albedoSamp;
+                    }
+                    visit(id, prim.meshlets, textureIndex, samplerIndex);
+                }
+                continue;
+            }
+
+            const MeshletDraw& meshletDraw = storage.meshletDraws[id];
+            if (meshletDraw.meshletCount == 0) {
+                continue;
+            }
+            visit(id, meshletDraw, storage.materials[id].textureIndex, descriptorManager.getSamplerDescriptorIndex());
         }
-    }
+    };
+
+    uint32_t needed = 0;
+    forEachMeshletDraw([&](EntityId, const MeshletDraw& meshletDraw, uint32_t, uint32_t) {
+        needed += sequenceCountForMeshlets(meshletDraw.meshletCount, maxGroupsX);
+    });
     if (needed == 0) {
         return;
     }
@@ -323,38 +347,7 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot, const Camera& 
         }
     };
 
-    for (EntityId id = 0; id < entityCount; ++id) {
-        if ((storage.flags[id] & EntityFlag::Active) == 0) {
-            continue;
-        }
-
-        const uint32_t primCount = storage.primitiveCounts[id];
-        const uint32_t primFirst = storage.firstPrimitives[id];
-        if (primCount > 0) {
-            for (uint32_t p = 0; p < primCount; ++p) {
-                const PrimitiveDraw& prim = geometry.primitiveDraws[primFirst + p];
-                if (prim.meshlets.meshletCount == 0) {
-                    continue;
-                }
-                uint32_t textureIndex = storage.materials[id].textureIndex;
-                uint32_t samplerIndex = descriptorManager.getSamplerDescriptorIndex();
-                if (prim.albedoTex != kNoneIndex) {
-                    textureIndex = prim.albedoTex;
-                }
-                if (prim.albedoSamp != kNoneIndex) {
-                    samplerIndex = prim.albedoSamp;
-                }
-                fillSequence(id, prim.meshlets, textureIndex, samplerIndex);
-            }
-            continue;
-        }
-
-        const MeshletDraw& meshletDraw = storage.meshletDraws[id];
-        if (meshletDraw.meshletCount == 0) {
-            continue;
-        }
-        fillSequence(id, meshletDraw, storage.materials[id].textureIndex, descriptorManager.getSamplerDescriptorIndex());
-    }
+    forEachMeshletDraw(fillSequence);
 
     TracyPlot("Vulkan/DgcSequenceCount", static_cast<double>(sequenceCount));
 }
@@ -363,7 +356,6 @@ void DeviceGeneratedCommands::fillGeneratedCommandsInfo(vk::GeneratedCommandsInf
                                                         vk::GeneratedCommandsPipelineInfoEXT& pipelineInfo,
                                                         uint32_t frameSlot) const
 {
-    // log_info(std::format("DGC fillGeneratedCommandsInfo frame {} sequenceCount={}", frameSlot, sequenceCount), "DGC");
     pipelineInfo.pipeline = *pipeline.pipeline;
     info.pNext = &pipelineInfo;
     info.shaderStages = shaderStages;

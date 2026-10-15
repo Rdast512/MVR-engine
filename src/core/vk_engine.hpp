@@ -13,17 +13,18 @@
 #include "scene/vk_camera.hpp"
 #include "scene/vk_scene.hpp"
 
+#include <array>
 #include <optional>
 #include <string>
 
-
-class Engine{
-    // Driven by Constants.h ENGINE_ENABLE_IMGUI. When false, no ImGui Vulkan/SDL backends.
+class Engine
+{
+    // from the ENGINE_ENABLE_IMGUI CMake option; false means no ImGui backends
     bool enableImGui = (ENGINE_ENABLE_IMGUI != 0);
-    // Runtime UI visibility (I key). Hidden + game-focused until toggled open. No-op if !enableImGui.
+    // toggled by the I key; hidden and game-focused until opened
     bool imguiUiOpen = false;
 
-    SDL_Window *window = nullptr;
+    SDL_Window* window = nullptr;
     std::unique_ptr<Device> device;
     std::unique_ptr<VkAllocator> allocator;
     std::unique_ptr<SwapChain> swapChain;
@@ -50,7 +51,7 @@ class Engine{
     std::vector<std::filesystem::path> discoveredAssets;
     int selectedAssetIndex = -1;
     bool hasScannedAssets = false;
-    float loadedModelPosition[3] = {0.0f, 0.0f, 0.0f};
+    std::array<float, 3> loadedModelPosition{};
     char assetsPathInput[260] = ENGINE_MODELS_DIR;
     std::string loadStatus;
     bool isLoadStatusError = false;
@@ -67,16 +68,14 @@ class Engine{
     void applyPendingModelActions();
     void loadSelectedModel();
     void unloadModel(EntityId id);
-    // Full host-side swapchain recreate (waitIdle inside swapchain, color/depth/sync, ImGui).
+    // waits idle, rebuilds swapchain-sized resources and the ImGui image count
     void recreateSwapchain();
 
 public:
     ~Engine();
     void initialize();
     void run();
-    void render();
     void cleanup();
-    void shutdown();
     // fills discoveredAssets with the subfolders of assetsPathInput holding a .gltf/.glb/.obj
     void scanFolder();
 };

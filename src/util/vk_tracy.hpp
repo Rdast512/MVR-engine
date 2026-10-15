@@ -30,10 +30,10 @@ public:
 	void collect(const vk::raii::CommandBuffer& commandBuffer) const;
 	void shutdown();
 
-	[[nodiscard]] bool active() const noexcept;
+	[[nodiscard]] bool isActive() const noexcept;
 
 #ifdef TRACY_ENABLE
-	[[nodiscard]] TracyVkCtx handle() const noexcept { return context; }
+	[[nodiscard]] TracyVkCtx getHandle() const noexcept { return context; }
 #endif
 
 private:

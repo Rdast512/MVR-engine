@@ -55,13 +55,15 @@ namespace
 
     [[nodiscard]] std::string formatBytes(vk::DeviceSize bytes)
     {
-        if (bytes < 1024) {
+        constexpr vk::DeviceSize kKiB = 1024;
+        constexpr vk::DeviceSize kMiB = kKiB * 1024;
+        if (bytes < kKiB) {
             return std::format("{} B", bytes);
         }
-        if (bytes < 1024ull * 1024ull) {
-            return std::format("{:.1f} KiB", static_cast<double>(bytes) / 1024.0);
+        if (bytes < kMiB) {
+            return std::format("{:.1f} KiB", static_cast<double>(bytes) / static_cast<double>(kKiB));
         }
-        return std::format("{:.2f} MiB", static_cast<double>(bytes) / (1024.0 * 1024.0));
+        return std::format("{:.2f} MiB", static_cast<double>(bytes) / static_cast<double>(kMiB));
     }
 
     [[nodiscard]] vk::DeviceSize nextCapacity(vk::DeviceSize current, vk::DeviceSize needed)
@@ -101,7 +103,7 @@ ResourceManager::ResourceManager(const Device &deviceWrapper,
       transferIndex(deviceWrapper.transferIndex),
       msaaSamples(deviceWrapper.msaaSamples)
 {
-    log_info("Initialized", "ResourceManager");
+    logInfo("Initialized", "ResourceManager");
 }
 
 void ResourceManager::destroyInstanceUboBuffers()
@@ -124,7 +126,7 @@ void ResourceManager::destroyAssetBuffer(AssetBuffer id)
         return;
     }
     const AssetBufferInfo& info = kAssetBufferInfo[std::to_underlying(id)];
-    log_info(std::format("destroy {} (used {} / cap {} bda=0x{:x})", info.tracyName, formatBytes(target.usedBytes),
+    logInfo(std::format("destroy {} (used {} / cap {} bda=0x{:x})", info.tracyName, formatBytes(target.usedBytes),
                          formatBytes(target.capacityBytes), static_cast<uint64_t>(target.address)),
              "ResourceManager");
     destroyVmaBuffer(allocator.allocator, target.buffer, target.memory, info.tracyName);
@@ -177,7 +179,7 @@ const vk::raii::Queue& ResourceManager::oneTimeTransferQueue() const noexcept
 ResourceManager::~ResourceManager()
 {
     ZoneScopedN("ResourceManager::~ResourceManager");
-    log_info("Destructor called", "ResourceManager");
+    logInfo("Destructor called", "ResourceManager");
     destroyInstanceUboBuffers();
     for (size_t i = 0; i < kAssetBufferCount; ++i) {
         destroyAssetBuffer(static_cast<AssetBuffer>(i));
@@ -189,7 +191,7 @@ ResourceManager::~ResourceManager()
 void ResourceManager::init()
 {
     ZoneScopedN("ResourceManager::init");
-    log_info("init() started", "ResourceManager");
+    logInfo("init() started", "ResourceManager");
     createCommandPool();
     createCommandBuffers();
     createUniformBuffers();
@@ -199,17 +201,17 @@ void ResourceManager::init()
 void ResourceManager::createSyncObjects()
 {
     ZoneScopedN("ResourceManager::createSyncObjects");
-    log_info("createSyncObjects() started", "ResourceManager");
+    logInfo("createSyncObjects() started", "ResourceManager");
     presentCompleteSemaphore.clear();
     renderFinishedSemaphore.clear();
     inFlightFences.clear();
 
-    // Acquire semaphore: one per frame-in-flight (indexed by currentFrame).
+    // acquire semaphore and fence per frame-in-flight
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         presentCompleteSemaphore.emplace_back(device, vk::SemaphoreCreateInfo());
         inFlightFences.emplace_back(device, vk::FenceCreateInfo{.flags = vk::FenceCreateFlagBits::eSignaled});
     }
-    // Present-complete signal: one per swapchain image (indexed by imageIndex).
+    // present signal per swapchain image
     for (size_t i = 0; i < swapChainImageCount; i++) {
         renderFinishedSemaphore.emplace_back(device, vk::SemaphoreCreateInfo());
     }
@@ -240,7 +242,7 @@ vk::DeviceAddress ResourceManager::instanceUboAddress(uint32_t frameSlot, Entity
 void ResourceManager::createCommandPool()
 {
     ZoneScopedN("ResourceManager::createCommandPool");
-    log_info("createCommandPool() started", "ResourceManager");
+    logInfo("createCommandPool() started", "ResourceManager");
     vk::CommandPoolCreateInfo poolInfo{.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
                                        .queueFamilyIndex = graphicsIndex};
     commandPool = vk::raii::CommandPool(device, poolInfo);
@@ -256,7 +258,7 @@ void ResourceManager::createCommandPool()
 void ResourceManager::createCommandBuffers()
 {
     ZoneScopedN("ResourceManager::createCommandBuffers");
-    log_info("createCommandBuffers() started", "ResourceManager");
+    logInfo("createCommandBuffers() started", "ResourceManager");
     commandBuffers.clear();
     vk::CommandBufferAllocateInfo allocInfo{.commandPool = commandPool,
                                             .level = vk::CommandBufferLevel::ePrimary,
@@ -274,8 +276,8 @@ void ResourceManager::createCommandBuffers()
             setDebugName(device, transferCommandBuffer[i], std::format("TransferCommandBuffer_{}", i));
         }
     }
-    log_info(std::format("Command buffers allocated: {}", commandBuffers.size()), "ResourceManager");
-    log_info(std::format("Transfer command buffers allocated: {}", transferCommandBuffer.size()), "ResourceManager");
+    logInfo(std::format("Command buffers allocated: {}", commandBuffers.size()), "ResourceManager");
+    logInfo(std::format("Transfer command buffers allocated: {}", transferCommandBuffer.size()), "ResourceManager");
 }
 
 void ResourceManager::createAssetBuffer(AssetBuffer id, vk::DeviceSize capacity, vk::raii::Buffer& buffer,
@@ -310,7 +312,7 @@ void ResourceManager::appendDeviceLocal(AssetBuffer id, std::span<const std::byt
     const AssetBufferInfo& info = kAssetBufferInfo[std::to_underlying(id)];
     const std::string_view debugName = info.debugName;
     if (src.empty()) {
-        log_info(std::format("skip {}: empty scratch (used {} / cap {})", debugName, formatBytes(dst.usedBytes),
+        logInfo(std::format("skip {}: empty scratch (used {} / cap {})", debugName, formatBytes(dst.usedBytes),
                              formatBytes(dst.capacityBytes)),
                  "ResourceManager");
         return;
@@ -335,7 +337,7 @@ void ResourceManager::appendDeviceLocal(AssetBuffer id, std::span<const std::byt
     vk::raii::CommandBuffer& cmd = oneTimeTransferCmd();
 
     if (dst.memory != nullptr && newUsed <= dst.capacityBytes) {
-        log_info(std::format("cache-hit {} : used {} + {} -> {} (cap {})", debugName, formatBytes(oldUsed),
+        logInfo(std::format("cache-hit {} : used {} + {} -> {} (cap {})", debugName, formatBytes(oldUsed),
                              formatBytes(srcBytes), formatBytes(newUsed), formatBytes(dst.capacityBytes)),
                  "ResourceManager");
         cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
@@ -344,7 +346,7 @@ void ResourceManager::appendDeviceLocal(AssetBuffer id, std::span<const std::byt
         dst.usedBytes = newUsed;
     } else {
         const vk::DeviceSize newCapacity = nextCapacity(dst.capacityBytes, newUsed);
-        log_info(std::format("{} {}: used {} + {} -> {} (cap {} -> {})", oldUsed == 0 ? "create" : "grow", debugName,
+        logInfo(std::format("{} {}: used {} + {} -> {} (cap {} -> {})", oldUsed == 0 ? "create" : "grow", debugName,
                              formatBytes(oldUsed), formatBytes(srcBytes), formatBytes(newUsed),
                              formatBytes(dst.capacityBytes), formatBytes(newCapacity)),
                  "ResourceManager");
@@ -365,7 +367,7 @@ void ResourceManager::appendDeviceLocal(AssetBuffer id, std::span<const std::byt
 
     destroyVmaBuffer(allocator.allocator, staging, stagingMemory);
 
-    log_info(std::format("{} ready used {} / cap {} bda=0x{:x}", debugName, formatBytes(dst.usedBytes),
+    logInfo(std::format("{} ready used {} / cap {} bda=0x{:x}", debugName, formatBytes(dst.usedBytes),
                          formatBytes(dst.capacityBytes), static_cast<uint64_t>(dst.address)),
              "ResourceManager");
 #ifdef TRACY_ENABLE
@@ -416,7 +418,7 @@ void ResourceManager::remapScratchOffsets()
         static_cast<uint32_t>(geometry.primitiveDraws.size()) - geometry.flushedPrimitiveCount;
     const uint32_t newMorphTargets =
         static_cast<uint32_t>(geometry.morphTargets.size()) - geometry.flushedMorphTargetCount;
-    log_info(std::format("remap scratch: +{} prims +{} morphTargets onto gpu verts={} meshlets={} indices={}",
+    logInfo(std::format("remap scratch: +{} prims +{} morphTargets onto gpu verts={} meshlets={} indices={}",
                          newPrimitives, newMorphTargets, vertexBase, meshletBase, indexBase),
              "ResourceManager");
     for (uint32_t p = geometry.flushedPrimitiveCount; p < geometry.primitiveDraws.size(); ++p) {
@@ -451,7 +453,7 @@ std::vector<GpuLight> ResourceManager::packScratchLights() const
     ZoneScopedN("ResourceManager::packScratchLights");
     std::vector<GpuLight> packed;
     packed.reserve(lightStore.instances.size());
-    log_info(std::format("pack lights: {} defs {} instances (gpu already {})", lightStore.defs.size(),
+    logInfo(std::format("pack lights: {} defs {} instances (gpu already {})", lightStore.defs.size(),
                          lightStore.instances.size(), lightStore.uploadedCount),
              "ResourceManager");
     for (const LightInstance& instance : lightStore.instances) {
@@ -475,10 +477,10 @@ std::vector<GpuLight> ResourceManager::packScratchLights() const
 void ResourceManager::createCameraBuffers(Camera& camera)
 {
     ZoneScopedN("ResourceManager::createCameraBuffers");
-    log_info("createCameraBuffers() started", "ResourceManager");
+    logInfo("createCameraBuffers() started", "ResourceManager");
     camera.allocator = allocator.allocator;
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        vk::DeviceSize bufferSize = sizeof(GpuCameraData);
+        constexpr vk::DeviceSize bufferSize = sizeof(GpuCameraData);
         vk::raii::Buffer buffer({});
         VmaAllocation bufferMem = nullptr;
         createBuffer(bufferSize,
@@ -506,9 +508,9 @@ void ResourceManager::ensureInstanceCapacity(uint32_t entityCount)
     }
 
     ZoneScopedN("ResourceManager::ensureInstanceCapacity");
-    // Grow with headroom so interactive loads do not reallocate every time.
+    // headroom so interactive loads do not reallocate every time
     const uint32_t newCapacity = std::max(entityCount, instanceCapacity * 2);
-    log_info(std::format("Growing instance GpuObjectUB capacity {} -> {}", instanceCapacity, newCapacity),
+    logInfo(std::format("Growing instance GpuObjectUB capacity {} -> {}", instanceCapacity, newCapacity),
              "ResourceManager");
 
     destroyInstanceUboBuffers();
@@ -537,15 +539,15 @@ void ResourceManager::ensureInstanceCapacity(uint32_t entityCount)
 void ResourceManager::createUniformBuffers()
 {
     ZoneScopedN("ResourceManager::createUniformBuffers");
-    log_info("createUniformBuffers() started", "ResourceManager");
+    logInfo("createUniformBuffers() started", "ResourceManager");
     ensureInstanceCapacity(std::max(objectStorage.size(), 1u));
 }
 
 void ResourceManager::flushGpuAssets()
 {
     ZoneScopedN("ResourceManager::flushGpuAssets");
-    log_info("flushGpuAssets() started", "ResourceManager");
-    log_info(std::format("cpu scratch: verts={} meshlets={} meshletVerts={} triCorners={} indices={} "
+    logInfo("flushGpuAssets() started", "ResourceManager");
+    logInfo(std::format("cpu scratch: verts={} meshlets={} meshletVerts={} triCorners={} indices={} "
                          "normals={} tangents={} uv1={} joints={} weights={} morphPos/Nrm/Tan={}/{}/{} "
                          "materials={} pbrExt={} lights={}/{} prims={} (flushed {})",
                          geometryStore.vertices.size(), geometryStore.meshlets.size(),
@@ -584,7 +586,7 @@ void ResourceManager::flushGpuAssets()
 
     remapScratchOffsets();
 
-    log_info(std::format("material cache: total={} uploaded={} pending={} hits={} misses={}", materialStore.size(),
+    logInfo(std::format("material cache: total={} uploaded={} pending={} hits={} misses={}", materialStore.size(),
                          materialStore.uploadedCount, materialStore.pendingCount(), materialStore.cacheHits,
                          materialStore.cacheMisses),
              "ResourceManager");
@@ -610,7 +612,7 @@ void ResourceManager::flushGpuAssets()
     mi_collect(true);
 #endif
 
-    log_info(std::format("gpu catalog: verts={} meshlets={} meshletVerts={} triCorners={} indices={} "
+    logInfo(std::format("gpu catalog: verts={} meshlets={} meshletVerts={} triCorners={} indices={} "
                          "morphPos/Nrm/Tan={}/{}/{} materials={} lights={} prims={} morphTargets={}",
                          uploadedCount(AssetBuffer::Vertices), uploadedCount(AssetBuffer::Meshlets),
                          uploadedCount(AssetBuffer::MeshletVertices), uploadedCount(AssetBuffer::MeshletTriangles),
@@ -620,10 +622,10 @@ void ResourceManager::flushGpuAssets()
                          geometryStore.morphTargets.size()),
              "ResourceManager");
     const auto [gpuAssetBytes, gpuAssetCapacity] = assetTotals();
-    log_info(std::format("gpu ssbo total: used {} / cap {}", formatBytes(gpuAssetBytes),
+    logInfo(std::format("gpu ssbo total: used {} / cap {}", formatBytes(gpuAssetBytes),
                          formatBytes(gpuAssetCapacity)),
              "ResourceManager");
-    log_info(std::format("cpu after flush: scratch verts={} meshlets={} | material cache={} lights scratch={}",
+    logInfo(std::format("cpu after flush: scratch verts={} meshlets={} | material cache={} lights scratch={}",
                          geometryStore.vertices.size(), geometryStore.meshlets.size(), materialStore.size(),
                          lightStore.instances.size()),
              "ResourceManager");
@@ -639,7 +641,7 @@ void ResourceManager::flushGpuAssets()
 
 void ResourceManager::discardScratch()
 {
-    log_info("flushGpuAssets: no new model, discarding load scratch", "ResourceManager");
+    logInfo("flushGpuAssets: no new model, discarding load scratch", "ResourceManager");
     geometryStore.discardScratch();
     lightStore.clearScratch();
     materialStore.discardPending();
@@ -655,7 +657,7 @@ void ResourceManager::eraseModel(EntityId id)
         throw std::out_of_range(std::format("eraseModel: entity {} has no GPU allocation", id));
     }
     const ModelAllocation removed = modelAllocations[id];
-    log_info(std::format("erase model entity {} '{}': {} on GPU, {} primitives", id, objectStorage.names[id],
+    logInfo(std::format("erase model entity {} '{}': {} on GPU, {} primitives", id, objectStorage.names[id],
                          formatBytes(modelGpuBytes(id)), removed.primitives.count),
              "ResourceManager");
 
@@ -673,7 +675,7 @@ void ResourceManager::eraseModel(EntityId id)
     }
 
     const auto [gpuAssetBytes, gpuAssetCapacity] = assetTotals();
-    log_info(std::format("gpu ssbo total after erase: used {} / cap {}", formatBytes(gpuAssetBytes),
+    logInfo(std::format("gpu ssbo total after erase: used {} / cap {}", formatBytes(gpuAssetBytes),
                          formatBytes(gpuAssetCapacity)),
              "ResourceManager");
     tracyPlotResources();
@@ -881,7 +883,7 @@ void ResourceManager::createAttachment(AttachmentImage& target, const Attachment
     allocator.createImage2D(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, desc.format, desc.usage,
                             target.image, target.memory, std::format("{}Memory", desc.debugName));
     setDebugName(device, target.image, desc.debugName);
-    // approximate footprint: 4 B/pixel * samples
+    // approx footprint: 4 B/pixel * samples
     const vk::DeviceSize approxBytes = static_cast<vk::DeviceSize>(swapChainExtent.width) * swapChainExtent.height *
         static_cast<uint32_t>(msaaSamples) * 4u;
     tracyResourceAlloc(static_cast<VkImage>(*target.image), static_cast<size_t>(approxBytes), desc.tracyName);
@@ -901,7 +903,7 @@ void ResourceManager::createAttachment(AttachmentImage& target, const Attachment
 void ResourceManager::createColorResources()
 {
     ZoneScopedN("ResourceManager::createColorResources");
-    log_info("createColorResources() started", "ResourceManager");
+    logInfo("createColorResources() started", "ResourceManager");
     if (swapChainImageFormat == vk::Format::eUndefined) {
         return;
     }
@@ -917,9 +919,8 @@ void ResourceManager::createColorResources()
 
 vk::Format ResourceManager::findDepthFormat()
 {
-    log_info("findDepthFormat() started", "ResourceManager");
-    // Prefer D24/D16 over D32 (BestPractices-NVIDIA-CreateImage-Depth32Format).
-    // Fall back to D32 only if the preferred formats are unsupported.
+    logInfo("findDepthFormat() started", "ResourceManager");
+    // D32 last (BestPractices-NVIDIA-CreateImage-Depth32Format)
     return findSupportedFormat(
         {vk::Format::eD24UnormS8Uint, vk::Format::eD16Unorm, vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint},
         vk::ImageTiling::eOptimal, vk::FormatFeatureFlagBits::eDepthStencilAttachment);
@@ -933,9 +934,9 @@ void ResourceManager::updateSwapChainExtent(const vk::Extent2D newExtent)
 void ResourceManager::createDepthResources()
 {
     ZoneScopedN("ResourceManager::createDepthResources");
-    log_info("createDepthResources() started", "ResourceManager");
+    logInfo("createDepthResources() started", "ResourceManager");
     const vk::Format depthFormat = findDepthFormat();
-    log_info(std::format("Depth format selected: {}", vk::to_string(depthFormat)), "ResourceManager");
+    logInfo(std::format("Depth format selected: {}", vk::to_string(depthFormat)), "ResourceManager");
 
     // view stays depth-only; barriers cover stencil too when separateDepthStencilLayouts is off
     vk::ImageAspectFlags barrierAspect = vk::ImageAspectFlagBits::eDepth;

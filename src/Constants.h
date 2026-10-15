@@ -3,10 +3,8 @@
 #include <filesystem>
 
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
-const uint32_t WIDTH = 800;
-const uint32_t HEIGHT = 600;
-constexpr uint64_t FenceTimeout = 100000000;
-const uint32_t test = 42;
+constexpr uint32_t WIDTH = 800;
+constexpr uint32_t HEIGHT = 600;
 
 #ifndef ENGINE_SHADER_DIR
 #define ENGINE_SHADER_DIR "./shaders"

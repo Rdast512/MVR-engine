@@ -9,7 +9,6 @@
 #include <mimalloc.h>
 #endif
 #include <string>
-#include <string_view>
 #include <vector>
 
 bool checkMimallocHeap()
@@ -35,10 +34,10 @@ namespace {
     void setDebugNameHandle(const vk::raii::Device &device, uint64_t handle, vk::ObjectType type, std::string_view name) {
 	const auto setNameFn = device.getDispatcher()->vkSetDebugUtilsObjectNameEXT;
 	if (!setNameFn || handle == 0) {
-		return; // Debug utils extension not enabled or null handle
+		return; // extension not enabled or null handle
 	}
-	std::string nameCopy{name};
-	vk::DebugUtilsObjectNameInfoEXT info{
+	const std::string nameCopy{name};
+	const vk::DebugUtilsObjectNameInfoEXT info{
 		.objectType = type,
 		.objectHandle = handle,
 		.pObjectName = nameCopy.c_str()

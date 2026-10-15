@@ -41,14 +41,12 @@ constexpr std::array kRequiredDeviceExtensions = {
     vk::KHRDeferredHostOperationsExtensionName, // required by KHR_acceleration_structure
     vk::KHRAccelerationStructureExtensionName,
     vk::KHRRayTracingPipelineExtensionName,
-    // vk::KHRPipelineBinaryExtensionName,
     vk::KHRFragmentShadingRateExtensionName,
     vk::KHRRayQueryExtensionName,
     vk::KHRSwapchainMaintenance1ExtensionName,
     vk::KHRRayTracingMaintenance1ExtensionName,
     vk::KHRPresentId2ExtensionName, // required by EXT_present_timing
     vk::KHRCalibratedTimestampsExtensionName, // required by EXT_present_timing
-    // vk::KHRPipelineLibraryExtensionName,       // required by EXT_graphics_pipeline_library
     vk::KHRPresentModeFifoLatestReadyExtensionName,
     vk::KHRCopyMemoryIndirectExtensionName,
     vk::KHRShaderUntypedPointersExtensionName,
@@ -64,7 +62,6 @@ constexpr std::array kRequiredDeviceExtensions = {
     vk::EXTDeviceGeneratedCommandsExtensionName,
     vk::EXTPageableDeviceLocalMemoryExtensionName,
     vk::EXTShaderObjectExtensionName,
-    // vk::EXTGraphicsPipelineLibraryExtensionName,
     vk::EXTPresentTimingExtensionName,
     vk::EXTRayTracingInvocationReorderExtensionName,
     vk::EXTExtendedDynamicState3ExtensionName,
@@ -139,7 +136,7 @@ void logQueueFamilies(std::span<const QueueFamilyChain> chains)
                 targets += std::format("{}{}", targets.empty() ? "" : ",", target);
             }
         }
-        log_info(std::format("Queue family {}: count={} flags={} optimalImageTransferTo=[{}]", family,
+        logInfo(std::format("Queue family {}: count={} flags={} optimalImageTransferTo=[{}]", family,
                              properties.queueCount, vk::to_string(properties.queueFlags), targets),
                  "Device");
     }
@@ -166,15 +163,13 @@ void Device::createInstance()
 {
     ZoneScopedN("Device::createInstance");
 
-    // Describe the application to the Vulkan loader.  The version fields are
-    // informational; apiVersion selects the highest Vulkan API revision to use.
     constexpr vk::ApplicationInfo appInfo{.pApplicationName = "Hello Triangle",
                                           .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
                                           .pEngineName = "No Engine",
                                           .engineVersion = VK_MAKE_VERSION(1, 0, 0),
                                           .apiVersion = vk::ApiVersion14};
 
-    // WSI extensions required by SDL3 (e.g. VK_KHR_surface, VK_KHR_win32_surface)
+    // WSI extensions required by SDL3
     Uint32 sdlExtensionCount = 0;
     const char* const* sdlExtensions = SDL_Vulkan_GetInstanceExtensions(&sdlExtensionCount);
 
@@ -201,11 +196,9 @@ void Device::createInstance()
     for (const char* extension : extensions) {
         enabledNames += std::format("{}{}", enabledNames.empty() ? "" : ", ", extension);
     }
-    log_info(std::format("Enabled instance extensions: {}", enabledNames), "Device");
+    logInfo(std::format("Enabled instance extensions: {}", enabledNames), "Device");
 
-    // Conditionally request the Khronos validation layer.  Enumerate available layers
-    // first and bail out immediately if any requested layer is not present, rather than
-    // letting the driver produce a cryptic error later.
+    // fail early on a missing layer instead of a cryptic driver error
     std::vector<char const*> requiredLayers;
     if (enableValidationLayers) {
         requiredLayers.assign(kValidationLayers.begin(), kValidationLayers.end());
@@ -228,8 +221,6 @@ void Device::createInstance()
                                       .enabledExtensionCount = static_cast<uint32_t>(extensions.size()),
                                       .ppEnabledExtensionNames = extensions.data()};
 
-    // Attempt to create the instance; a SystemError here usually means a driver
-    // version mismatch or a missing extension, so surface the original message.
     try {
         instance = vk::raii::Instance(context, createInfo);
     } catch (const vk::SystemError& err) {
@@ -245,18 +236,16 @@ void Device::createInstance()
  * message should NOT be aborted (returning VK_TRUE would only be appropriate for
  * testing layer behaviour itself).
  *
- * @param severity  Severity bitmask (verbose / info / warning / error).
  * @param type      Message category (general / validation / performance).
  * @param pCallbackData  Structured message payload including pMessage string.
- * @param           User data pointer; unused, kept for ABI conformance.
  * @return vk::False – do not abort the triggering Vulkan call.
  */
-static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
+static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT,
                                                       vk::DebugUtilsMessageTypeFlagsEXT type,
                                                       const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData,
                                                       void*)
 {
-    std::cerr << "validation layer: type " << to_string(type) << " msg: " << pCallbackData->pMessage << std::endl;
+    std::cerr << "validation layer: type " << to_string(type) << " msg: " << pCallbackData->pMessage << '\n';
     return vk::False;
 }
 
@@ -267,28 +256,26 @@ void Device::setupDebugMessenger()
     if (!enableValidationLayers)
         return;
 
-    // Subscribe to all severity levels and all message categories so that nothing
-    // from the validation layers is silently discarded during development.
-    vk::DebugUtilsMessageSeverityFlagsEXT severityFlags(vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
-                                                        vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
-                                                        vk::DebugUtilsMessageSeverityFlagBitsEXT::eError);
-    vk::DebugUtilsMessageTypeFlagsEXT messageTypeFlags(vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
-                                                       vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance |
-                                                       vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation);
-    vk::DebugUtilsMessengerCreateInfoEXT debugUtilsMessengerCreateInfoEXT{
+    // everything but info severity, all categories
+    constexpr vk::DebugUtilsMessageSeverityFlagsEXT severityFlags =
+        vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose | vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+        vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
+    constexpr vk::DebugUtilsMessageTypeFlagsEXT messageTypeFlags = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
+        vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance | vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation;
+    const vk::DebugUtilsMessengerCreateInfoEXT createInfo{
         .messageSeverity = severityFlags, .messageType = messageTypeFlags, .pfnUserCallback = &debugCallback};
-    debugMessenger = instance.createDebugUtilsMessengerEXT(debugUtilsMessengerCreateInfoEXT);
+    debugMessenger = instance.createDebugUtilsMessengerEXT(createInfo);
 }
 
 
 void Device::createSurface()
 {
     ZoneScopedN("Device::createSurface");
-    VkSurfaceKHR _surface;
-    if (!SDL_Vulkan_CreateSurface(window, *instance, nullptr, &_surface)) {
+    VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
+    if (!SDL_Vulkan_CreateSurface(window, *instance, nullptr, &rawSurface)) {
         throw std::runtime_error("Failed to create surface");
     }
-    surface = vk::raii::SurfaceKHR(instance, _surface);
+    surface = vk::raii::SurfaceKHR(instance, rawSurface);
 }
 
 vk::SampleCountFlagBits Device::getMaxUsableSampleCount() const
@@ -303,7 +290,7 @@ vk::SampleCountFlagBits Device::getMaxUsableSampleCount() const
 void Device::pickPhysicalDevice()
 {
     ZoneScopedN("Device::pickPhysicalDevice");
-    auto devices = instance.enumeratePhysicalDevices();
+    const auto devices = instance.enumeratePhysicalDevices();
 
     std::optional<size_t> bestIndex;
     uint32_t bestScore = 0;
@@ -311,7 +298,7 @@ void Device::pickPhysicalDevice()
         const vk::PhysicalDeviceProperties properties = devices[i].getProperties2().properties;
         const std::string_view name = properties.deviceName.data();
         if (const std::string missing = missingRequirements(devices[i]); !missing.empty()) {
-            log_info(std::format("Skipping GPU {}: missing {}", name, missing), "Device");
+            logInfo(std::format("Skipping GPU {}: missing {}", name, missing), "Device");
             continue;
         }
         // discrete first; max texture size as a rough capability tiebreak
@@ -326,7 +313,7 @@ void Device::pickPhysicalDevice()
         throw std::runtime_error("No GPU supports the required Vulkan extensions and features (see log)");
     }
     physicalDevice = devices[*bestIndex];
-    log_info(std::format("Using physical device: {}",
+    logInfo(std::format("Using physical device: {}",
                          std::string_view(physicalDevice.getProperties2().properties.deviceName.data())),
              "Device");
 }
@@ -370,7 +357,7 @@ void Device::queryCapabilities()
         isExtensionSupported(availableExtensions, vk::NVClusterAccelerationStructureExtensionName);
     capabilities.hasPartitionedAccelerationStructure =
         isExtensionSupported(availableExtensions, vk::NVPartitionedAccelerationStructureExtensionName);
-    log_info(std::format("Optional NV extensions: clusterAS={} partitionedAS={}",
+    logInfo(std::format("Optional NV extensions: clusterAS={} partitionedAS={}",
                          capabilities.hasClusterAccelerationStructure,
                          capabilities.hasPartitionedAccelerationStructure),
              "Device");
@@ -418,7 +405,7 @@ void Device::queryCapabilities()
         propertiesChain.get<vk::PhysicalDeviceDeviceGeneratedCommandsPropertiesEXT>();
     {
         const auto& dgc = capabilities.deviceGeneratedCommands;
-        log_info(std::format("DGC limits: maxSeq={} maxTokens={} maxTokenOffset={} maxStride={} "
+        logInfo(std::format("DGC limits: maxSeq={} maxTokens={} maxTokenOffset={} maxStride={} "
                              "maxPipelines={} maxShaderObjects={} stages={:#x} pipelineBind={:#x} "
                              "shaderBind={:#x} xfb={} multiDrawCount={}",
                              dgc.maxIndirectSequenceCount, dgc.maxIndirectCommandsTokenCount,
@@ -464,7 +451,7 @@ void Device::queryCapabilities()
         for (const uint8_t byte : hic.optimalTilingLayoutUUID) {
             uuidHex += std::format("{:02x}", byte);
         }
-        log_info(std::format("hostImageCopy: srcLayouts={} dstLayouts={} generalSrc={} generalDst={} "
+        logInfo(std::format("hostImageCopy: srcLayouts={} dstLayouts={} generalSrc={} generalDst={} "
                              "identicalMemTypes={} uuid={}",
                              hic.copySrcLayoutCount, hic.copyDstLayoutCount, hasGeneralSrc, hasGeneralDst,
                              static_cast<bool>(hic.identicalMemoryTypeRequirements), uuidHex),
@@ -480,7 +467,7 @@ void Device::queryCapabilities()
     capabilities.maintenance5 = propertiesChain.get<vk::PhysicalDeviceMaintenance5Properties>();
     {
         const auto& m5 = capabilities.maintenance5;
-        log_info(std::format("maintenance5: earlyCoverageAfterCount={} earlySampleMaskBeforeCount={} "
+        logInfo(std::format("maintenance5: earlyCoverageAfterCount={} earlySampleMaskBeforeCount={} "
                              "depthStencilSwizzleOne={} polygonModePointSize={} "
                              "nonStrict1pxParallelogram={} nonStrictWideParallelogram={}",
                              static_cast<bool>(m5.earlyFragmentMultisampleCoverageAfterSampleCounting),
@@ -518,9 +505,7 @@ void Device::createLogicalDevice()
 
     queryCapabilities();
 
-    // Build a pNext feature chain covering every extension the engine depends on.
-    // Each structure is zero-initialised by default; only fields set to `true` here
-    // are required – the driver will reject device creation if any are unsupported.
+    // fields set to true are required; device creation fails if unsupported
     vk::StructureChain<
         vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features, vk::PhysicalDeviceVulkan12Features,
         vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceVulkan14Features,
@@ -646,7 +631,7 @@ void Device::createLogicalDevice()
                         {.indirectMemoryCopy = true, .indirectMemoryToImageCopy = true},
                         // vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR
                         {.presentModeFifoLatestReady = true},
-                        // vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR};
+                        // vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR
                         {.shaderUntypedPointers = true},
                         // vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV
                         {.clusterAccelerationStructure = true},
@@ -674,7 +659,7 @@ void Device::createLogicalDevice()
     const auto duplicates = std::ranges::unique(queueFamilyIndices);
     queueFamilyIndices.erase(duplicates.begin(), duplicates.end());
 
-    const float queuePriority = 0.0f;
+    constexpr float queuePriority = 0.0f;
     std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
     queueCreateInfos.reserve(queueFamilyIndices.size());
     for (const uint32_t family : queueFamilyIndices) {
@@ -694,7 +679,6 @@ void Device::createLogicalDevice()
     setDebugName(vkdevice, surface, "WindowSurface");
     setDebugName(vkdevice, vkdevice, "LogicalDevice");
 
-    // Cache supported MSAA sample count for downstream components (e.g., pipelines, resources).
     msaaSamples = getMaxUsableSampleCount();
 
     createQueues();
@@ -712,7 +696,7 @@ void Device::createQueues()
     setDebugName(vkdevice, transferQueue, "TransferQueue");
     setDebugName(vkdevice, computeQueue, "ComputeQueue");
 
-    log_info(std::format("Queue families: graphics={} present={} transfer={}{} compute={}{} (distinct {})",
+    logInfo(std::format("Queue families: graphics={} present={} transfer={}{} compute={}{} (distinct {})",
                          graphicsIndex, presentIndex, transferIndex,
                          hasDedicatedTransferQueue() ? " (dedicated)" : " (shared)", computeIndex,
                          computeIndex != graphicsIndex ? " (async)" : " (shared)", queueFamilyIndices.size()),

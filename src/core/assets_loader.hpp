@@ -22,9 +22,6 @@ public:
     // nullopt on failure; flush the scratch to the GPU before the next load (one model per flush).
     [[nodiscard]] std::optional<EntityId> loadModel(std::string modelPath, glm::vec3 xyz);
 
-    void processVertexData(const tinyobj::attrib_t& attrib, const std::vector<tinyobj::shape_t>& shapes);
-    void loadMaterials(const std::string& path, const std::vector<tinyobj::material_t>& materials);
-
     ObjectStorage& objectStorage;
     TextureManager& textureManager;
     GeometryStore& geometryStore;

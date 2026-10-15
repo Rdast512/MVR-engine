@@ -6,9 +6,9 @@
 
 struct TextureAsset {
     vk::raii::Image textureImage = nullptr;
-    vk::raii::ImageView textureImageView = nullptr;;
+    vk::raii::ImageView textureImageView = nullptr;
     VmaAllocation textureImageMemory = nullptr;
-    uint32_t descriptorHeapIndex;
+    uint32_t descriptorHeapIndex = 0;
 };
 
 
@@ -320,10 +320,6 @@ struct alignas(16) GpuObjectUB {
     // Transform Matrices
     glm::mat4 modelMatrix;     // World transformation matrix (64 bytes)
     glm::mat4 prevModelMatrix; // Previous frame world matrix for temporal motion vectors (64 bytes)
-
-    // // Direct BDA Geometry Pointers
-    // uint64_t vertexBufferAddress; // GPU Virtual Address of vertex array (8 bytes)
-    // uint64_t indexBufferAddress;  // GPU Virtual Address of index array (8 bytes)
 
     // Bounding Box / Sphere for GPU Culling (Frustum & Occlusion)
     glm::vec4 boundingSphere;     // xyz = center, w = radius (16 bytes)

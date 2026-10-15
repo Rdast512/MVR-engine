@@ -4,31 +4,24 @@
 #include <cstdint>
 #include <cstring>
 
-
-void tracyResourceAlloc(const void* ptr, size_t size, const char* poolName)
+void tracyResourceAlloc([[maybe_unused]] const void* ptr, [[maybe_unused]] size_t size,
+                        [[maybe_unused]] const char* poolName)
 {
 #ifdef TRACY_ENABLE
 	if (ptr == nullptr || size == 0) {
 		return;
 	}
 	TracyAllocN(ptr, size, poolName != nullptr ? poolName : "GPU/Unknown");
-#else
-	(void)ptr;
-	(void)size;
-	(void)poolName;
 #endif
 }
 
-void tracyResourceFree(const void* ptr, const char* poolName)
+void tracyResourceFree([[maybe_unused]] const void* ptr, [[maybe_unused]] const char* poolName)
 {
 #ifdef TRACY_ENABLE
 	if (ptr == nullptr) {
 		return;
 	}
 	TracyFreeN(ptr, poolName != nullptr ? poolName : "GPU/Unknown");
-#else
-	(void)ptr;
-	(void)poolName;
 #endif
 }
 
@@ -37,12 +30,12 @@ VkTracyContext::~VkTracyContext()
 	shutdown();
 }
 
-void VkTracyContext::init(const vk::raii::Instance& instance,
-						 const vk::raii::PhysicalDevice& physicalDevice,
-						 const vk::raii::Device& device,
-						 const vk::raii::Queue& queue,
-						 const vk::raii::CommandBuffer& setupCommandBuffer,
-						 const char* contextName)
+void VkTracyContext::init([[maybe_unused]] const vk::raii::Instance& instance,
+						 [[maybe_unused]] const vk::raii::PhysicalDevice& physicalDevice,
+						 [[maybe_unused]] const vk::raii::Device& device,
+						 [[maybe_unused]] const vk::raii::Queue& queue,
+						 [[maybe_unused]] const vk::raii::CommandBuffer& setupCommandBuffer,
+						 [[maybe_unused]] const char* contextName)
 {
 #ifdef TRACY_ENABLE
 	if (context)
@@ -64,17 +57,10 @@ void VkTracyContext::init(const vk::raii::Instance& instance,
 		const auto len = static_cast<uint16_t>(std::min<size_t>(std::strlen(contextName), UINT16_MAX));
 		TracyVkContextName(context, contextName, len);
 	}
-#else
-	(void)instance;
-	(void)physicalDevice;
-	(void)device;
-	(void)queue;
-	(void)setupCommandBuffer;
-	(void)contextName;
 #endif
 }
 
-void VkTracyContext::collect(const vk::raii::CommandBuffer& commandBuffer) const
+void VkTracyContext::collect([[maybe_unused]] const vk::raii::CommandBuffer& commandBuffer) const
 {
 #ifdef TRACY_ENABLE
 	if (!context)
@@ -83,8 +69,6 @@ void VkTracyContext::collect(const vk::raii::CommandBuffer& commandBuffer) const
 	}
 
 	TracyVkCollect(context, static_cast<VkCommandBuffer>(*commandBuffer));
-#else
-	(void)commandBuffer;
 #endif
 }
 
@@ -101,7 +85,7 @@ void VkTracyContext::shutdown()
 #endif
 }
 
-bool VkTracyContext::active() const noexcept
+bool VkTracyContext::isActive() const noexcept
 {
 #ifdef TRACY_ENABLE
 	return context != nullptr;

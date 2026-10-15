@@ -7,9 +7,7 @@
 
 #include <glm/glm.hpp>
 
-// ---------------------------------------------------------------------------
-// Scene - world container: object SoA storage, origin, base axes.
-// ---------------------------------------------------------------------------
+// world container: object SoA storage and start position
 class Scene
 {
 public:
@@ -29,8 +27,6 @@ public:
 
     [[nodiscard]] const glm::vec3& getStartPosition() const noexcept { return startPosition; }
     void setStartPosition(const glm::vec3& pos) noexcept { startPosition = pos; }
-
-    void setBaseAxes(const glm::vec3& right, const glm::vec3& upDir, const glm::vec3& forward) noexcept;
 
     glm::vec3 startPosition{0.0f};
 };

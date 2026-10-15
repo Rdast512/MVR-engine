@@ -2,14 +2,11 @@
 #include "../core/vk_descriptors.hpp"
 #include "../util/debug.hpp"
 #include "../util/vk_tracy.hpp"
-#include "push_data.hpp"
 
 #include <array>
 #include <fstream>
-#include <limits>
 #include <stdexcept>
 #include <vector>
-#include <vulkan/vulkan.hpp>
 
 #ifndef ENGINE_SHADER_DIR
     #define ENGINE_SHADER_DIR "./shaders"
@@ -28,8 +25,6 @@ namespace
         std::vector<char> buffer(file.tellg());
         file.seekg(0, std::ios::beg);
         file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        file.close();
-
         return buffer;
     }
 } // namespace
@@ -64,8 +59,8 @@ void Pipeline::createMeshPipeline()
     };
     const bool useDescriptorHeaps = descriptorManager.descriptorBindingMode == DescriptorBindingMode::DescriptorHeaps;
 
-    // Mesh-only: no task stage, no vertex input / input assembly.
-    // maintenance5: inline SPIR-V, no transient VkShaderModule.
+    // mesh-only: no task stage, no vertex input
+    // maintenance5 allows inline spir-v without a shader module
     const vk::PipelineShaderStageCreateInfo meshShaderStageInfo{
         .pNext = &meshModuleInfo,
         .stage = vk::ShaderStageFlagBits::eMeshEXT,
@@ -80,7 +75,7 @@ void Pipeline::createMeshPipeline()
     };
     const std::array shaderStages = {meshShaderStageInfo, fragShaderStageInfo};
 
-    const std::vector dynamicStates = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+    const std::array dynamicStates = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
     const vk::PipelineDynamicStateCreateInfo dynamicState{
         .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
         .pDynamicStates = dynamicStates.data(),
@@ -89,7 +84,7 @@ void Pipeline::createMeshPipeline()
     const vk::Viewport viewport{
         0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f,
     };
-    const vk::Rect2D scissor{vk::Offset2D{0, 0}, vk::Extent2D{swapChainExtent.width, swapChainExtent.height}};
+    const vk::Rect2D scissor{vk::Offset2D{0, 0}, swapChainExtent};
     const vk::PipelineViewportStateCreateInfo viewportState{
         .viewportCount = 1,
         .pViewports = &viewport,
@@ -112,10 +107,11 @@ void Pipeline::createMeshPipeline()
         .sampleShadingEnable = vk::True,
     };
 
-    vk::PipelineColorBlendAttachmentState colorBlendAttachment{};
-    colorBlendAttachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-        vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
-    colorBlendAttachment.blendEnable = vk::False;
+    const vk::PipelineColorBlendAttachmentState colorBlendAttachment{
+        .blendEnable = vk::False,
+        .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
+    };
     const vk::PipelineColorBlendStateCreateInfo colorBlending{
         .logicOpEnable = vk::False,
         .logicOp = vk::LogicOp::eCopy,
@@ -131,29 +127,14 @@ void Pipeline::createMeshPipeline()
         .stencilTestEnable = vk::False,
     };
 
-    // Must match MeshPushData / mesh.slang (72 B).
-    const vk::PushConstantRange pushDataRange{
-        .stageFlags = vk::ShaderStageFlagBits::eMeshEXT | vk::ShaderStageFlagBits::eFragment,
-        .offset = 0,
-        .size = static_cast<uint32_t>(sizeof(MeshPushData)),
-    };
-
-    vk::PipelineLayoutCreateInfo pipelineLayoutInfo{};
-    if (useDescriptorHeaps) {
-        pipelineLayoutInfo.setLayoutCount = 0;
-        pipelineLayoutInfo.pSetLayouts = nullptr;
-        pipelineLayoutInfo.pushConstantRangeCount = 1;
-        pipelineLayoutInfo.pPushConstantRanges = &pushDataRange;
-    } else {
-        pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = &*descriptorManager.descriptorSetLayout;
-        pipelineLayoutInfo.pushConstantRangeCount = 0;
-        pipelineLayoutInfo.pPushConstantRanges = nullptr;
-    }
-
+    // heap mode runs without a pipeline layout
     if (useDescriptorHeaps) {
         pipelineLayout = VK_NULL_HANDLE;
     } else {
+        const vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
+            .setLayoutCount = 1,
+            .pSetLayouts = &*descriptorManager.descriptorSetLayout,
+        };
         pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
     }
 
@@ -172,7 +153,7 @@ void Pipeline::createMeshPipeline()
     const void* pipelinePNext = useDescriptorHeaps ? static_cast<const void*>(&pipelineFlags2CreateInfo)
                                                    : static_cast<const void*>(&pipelineRenderingCreateInfo);
 
-    // Mesh pipelines omit vertex input + input assembly (must not mix with VS stages).
+    // mesh pipelines must not mix with vertex input state
     const vk::GraphicsPipelineCreateInfo pipelineInfo{
         .pNext = pipelinePNext,
         .stageCount = static_cast<uint32_t>(shaderStages.size()),

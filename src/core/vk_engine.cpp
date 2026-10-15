@@ -20,13 +20,12 @@ namespace
 } // namespace
 #endif
 
-
 Engine::~Engine() { cleanup(); }
 
 void Engine::initialize()
 {
     ZoneScopedN("Engine::initialize");
-    // Hard-sync runtime flag to the compile-time switch so a half-enabled path is impossible.
+    // runtime flag mirrors the compile-time switch
     enableImGui = (ENGINE_ENABLE_IMGUI != 0);
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -49,10 +48,13 @@ void Engine::initialize()
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-        log_info("ImGui enabled (ENGINE_ENABLE_IMGUI=1)", "Engine");
+        for (ImVec4& color : ImGui::GetStyle().Colors) {
+            color = srgbToLinear(color);
+        }
+        logInfo("ImGui enabled (ENGINE_ENABLE_IMGUI=1)", "Engine");
     }
 #else
-    log_info("ImGui fully disabled (ENGINE_ENABLE_IMGUI=0) — no context, backends, or GPU resources", "Engine");
+    logInfo("ImGui fully disabled (ENGINE_ENABLE_IMGUI=0) — no context, backends, or GPU resources", "Engine");
 #endif
 
     device = std::make_unique<Device>(window, false);
@@ -77,9 +79,9 @@ void Engine::initialize()
 
     const glm::vec3 initialAssetPos{0.0f, 0.0f, 0.0f};
     if (!assetsLoader->loadModel(MODEL_PATH.string(), initialAssetPos)) {
-        log_error(std::format("Startup model failed to load: {}", MODEL_PATH.string()), "Engine");
+        logError(std::format("Startup model failed to load: {}", MODEL_PATH.string()), "Engine");
     }
-    // Aim free-fly camera at the only startup model so the scene is visible immediately.
+    // scene is visible immediately
     camera->focusOn(initialAssetPos);
     resourceManager = std::make_unique<ResourceManager>(*device, *allocator, scene->geometryStore, scene->materialStore,
                                                         scene->lightStore, scene->objectStorage);
@@ -98,7 +100,6 @@ void Engine::initialize()
                            tracySetupCommandBuffers.front(), "Graphics Queue");
     }
 
-
 #if ENGINE_ENABLE_IMGUI
     if (enableImGui) {
         createImGuiDescriptorPool();
@@ -116,18 +117,18 @@ void Engine::initialize()
 #if ENGINE_ENABLE_IMGUI
     if (enableImGui) {
         ImGui_ImplSDL3_InitForVulkan(window);
-        ImGui_ImplVulkan_InitInfo init_info = {};
-        init_info.ApiVersion = VK_API_VERSION_1_4;
-        init_info.Instance = *device->instance;
-        init_info.PhysicalDevice = *device->physicalDevice;
-        init_info.Device = *device->vkdevice;
-        init_info.QueueFamily = device->graphicsIndex;
-        init_info.Queue = *device->graphicsQueue;
-        init_info.DescriptorPool = *imguiDescriptorPool;
+        ImGui_ImplVulkan_InitInfo initInfo = {};
+        initInfo.ApiVersion = VK_API_VERSION_1_4;
+        initInfo.Instance = *device->instance;
+        initInfo.PhysicalDevice = *device->physicalDevice;
+        initInfo.Device = *device->vkdevice;
+        initInfo.QueueFamily = device->graphicsIndex;
+        initInfo.Queue = *device->graphicsQueue;
+        initInfo.DescriptorPool = *imguiDescriptorPool;
         const auto imageCount = static_cast<uint32_t>(swapChain->swapChainImages.size());
-        init_info.MinImageCount = std::max<uint32_t>(imageCount, 2);
-        init_info.ImageCount = std::max<uint32_t>(imageCount, init_info.MinImageCount);
-        init_info.UseDynamicRendering = true;
+        initInfo.MinImageCount = std::max<uint32_t>(imageCount, 2);
+        initInfo.ImageCount = std::max<uint32_t>(imageCount, initInfo.MinImageCount);
+        initInfo.UseDynamicRendering = true;
         imguiColorFormat = static_cast<VkFormat>(swapChain->swapChainImageFormat);
         imguiDepthFormat = static_cast<VkFormat>(resourceManager->findDepthFormat());
         imguiPipelineRenderingInfo = VkPipelineRenderingCreateInfoKHR{};
@@ -136,11 +137,11 @@ void Engine::initialize()
         imguiPipelineRenderingInfo.pColorAttachmentFormats = &imguiColorFormat;
         imguiPipelineRenderingInfo.depthAttachmentFormat = imguiDepthFormat;
         imguiPipelineRenderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
-        init_info.PipelineInfoMain.RenderPass = VK_NULL_HANDLE;
-        init_info.PipelineInfoMain.Subpass = 0;
-        init_info.PipelineInfoMain.MSAASamples = static_cast<VkSampleCountFlagBits>(device->msaaSamples);
-        init_info.PipelineInfoMain.PipelineRenderingCreateInfo = imguiPipelineRenderingInfo;
-        if (!ImGui_ImplVulkan_Init(&init_info)) {
+        initInfo.PipelineInfoMain.RenderPass = VK_NULL_HANDLE;
+        initInfo.PipelineInfoMain.Subpass = 0;
+        initInfo.PipelineInfoMain.MSAASamples = static_cast<VkSampleCountFlagBits>(device->msaaSamples);
+        initInfo.PipelineInfoMain.PipelineRenderingCreateInfo = imguiPipelineRenderingInfo;
+        if (!ImGui_ImplVulkan_Init(&initInfo)) {
             throw std::runtime_error("ImGui_ImplVulkan_Init failed");
         }
     }
@@ -153,27 +154,30 @@ void Engine::createImGuiDescriptorPool()
 {
 #if ENGINE_ENABLE_IMGUI
     ZoneScopedN("Engine::createImGuiDescriptorPool");
-    // Backends require separate sampled image + sampler descriptors (not combined).
+    // backends need separate sampled image + sampler descriptors, not combined
+    constexpr uint32_t kPoolCount = 1000;
     auto& vkDevice = device->vkdevice;
-    const uint32_t imguiSampledImageMin = std::max<uint32_t>(IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE, 1000);
-    const uint32_t imguiSamplerMin = std::max<uint32_t>(IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE, 1000);
-    std::array poolSizes{
+    const uint32_t imguiSampledImageMin =
+        std::max<uint32_t>(IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE, kPoolCount);
+    const uint32_t imguiSamplerMin =
+        std::max<uint32_t>(IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE, kPoolCount);
+    const std::array poolSizes{
         vk::DescriptorPoolSize{.type = vk::DescriptorType::eSampler, .descriptorCount = imguiSamplerMin},
         vk::DescriptorPoolSize{.type = vk::DescriptorType::eSampledImage, .descriptorCount = imguiSampledImageMin},
-        vk::DescriptorPoolSize{.type = vk::DescriptorType::eStorageImage, .descriptorCount = 1000},
-        vk::DescriptorPoolSize{.type = vk::DescriptorType::eUniformTexelBuffer, .descriptorCount = 1000},
-        vk::DescriptorPoolSize{.type = vk::DescriptorType::eStorageTexelBuffer, .descriptorCount = 1000},
-        vk::DescriptorPoolSize{.type = vk::DescriptorType::eUniformBuffer, .descriptorCount = 1000},
-        vk::DescriptorPoolSize{.type = vk::DescriptorType::eStorageBuffer, .descriptorCount = 1000},
-        vk::DescriptorPoolSize{.type = vk::DescriptorType::eUniformBufferDynamic, .descriptorCount = 1000},
-        vk::DescriptorPoolSize{.type = vk::DescriptorType::eStorageBufferDynamic, .descriptorCount = 1000},
-        vk::DescriptorPoolSize{.type = vk::DescriptorType::eInputAttachment, .descriptorCount = 1000}};
+        vk::DescriptorPoolSize{.type = vk::DescriptorType::eStorageImage, .descriptorCount = kPoolCount},
+        vk::DescriptorPoolSize{.type = vk::DescriptorType::eUniformTexelBuffer, .descriptorCount = kPoolCount},
+        vk::DescriptorPoolSize{.type = vk::DescriptorType::eStorageTexelBuffer, .descriptorCount = kPoolCount},
+        vk::DescriptorPoolSize{.type = vk::DescriptorType::eUniformBuffer, .descriptorCount = kPoolCount},
+        vk::DescriptorPoolSize{.type = vk::DescriptorType::eStorageBuffer, .descriptorCount = kPoolCount},
+        vk::DescriptorPoolSize{.type = vk::DescriptorType::eUniformBufferDynamic, .descriptorCount = kPoolCount},
+        vk::DescriptorPoolSize{.type = vk::DescriptorType::eStorageBufferDynamic, .descriptorCount = kPoolCount},
+        vk::DescriptorPoolSize{.type = vk::DescriptorType::eInputAttachment, .descriptorCount = kPoolCount}};
 
-    const uint32_t maxSets = 1000 * static_cast<uint32_t>(poolSizes.size());
-    vk::DescriptorPoolCreateInfo poolInfo{.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-                                          .maxSets = maxSets,
-                                          .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
-                                          .pPoolSizes = poolSizes.data()};
+    const uint32_t maxSets = kPoolCount * static_cast<uint32_t>(poolSizes.size());
+    const vk::DescriptorPoolCreateInfo poolInfo{.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+                                                .maxSets = maxSets,
+                                                .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
+                                                .pPoolSizes = poolSizes.data()};
     imguiDescriptorPool = vk::raii::DescriptorPool(vkDevice, poolInfo);
     setDebugName(vkDevice, imguiDescriptorPool, "ImGuiDescriptorPool");
 #endif
@@ -185,22 +189,20 @@ void Engine::run()
         initialize();
     }
 
-
     bool quit = false;
     bool minimized = false;
-    // OS keyboard focus (not ImGui "game focus"). Used to soft-cap FPS when another window is on top.
+    // OS keyboard focus, not ImGui game focus; soft-caps FPS when another window is on top
     bool windowFocused = true;
-    // Game mode: relative mouse + hidden ImGui. UI mode (I): free cursor, only ImGui focused.
     lastTime = std::chrono::high_resolution_clock::now();
     fpsTime = lastTime;
-    // Background throttle only — focused path relies on swapchain vsync (FIFO).
+    // focused frames rely on swapchain vsync (FIFO)
     constexpr double kUnfocusedTargetMs = 1000.0 / 30.0;
+    constexpr float kCameraSpeed = 5.0f;
     auto& deviceRef = device->vkdevice;
 
+    // game focus captures the mouse and hides the cursor; UI focus (I key) frees both
     const auto setGameFocus = [this](bool gameFocused)
     {
-        // gameFocused = true  → capture mouse, hide cursor (look/move)
-        // gameFocused = false → free mouse, show cursor (ImGui only)
         SDL_SetWindowRelativeMouseMode(window, gameFocused);
         if (gameFocused) {
             SDL_HideCursor();
@@ -215,7 +217,7 @@ void Engine::run()
     while (!quit) {
         ZoneScopedN("Frame");
 
-        auto currentTime = std::chrono::high_resolution_clock::now();
+        const auto currentTime = std::chrono::high_resolution_clock::now();
         frameCount++;
 
         // averaged over one second, shown by the ImGui stats overlay
@@ -232,7 +234,7 @@ void Engine::run()
             SDL_Event e{};
             while (SDL_PollEvent(&e) != 0) {
 #if ENGINE_ENABLE_IMGUI
-                // Only feed ImGui while the UI is open so it cannot steal game input.
+                // feed ImGui only while open so it cannot steal game input
                 if (enableImGui && imguiUiOpen) {
                     ImGui_ImplSDL3_ProcessEvent(&e);
                 }
@@ -243,19 +245,17 @@ void Engine::run()
                 }
 #if ENGINE_ENABLE_IMGUI
                 else if (e.type == SDL_EVENT_KEY_DOWN && e.key.scancode == SDL_SCANCODE_I && !e.key.repeat) {
-                    // I toggles ImGui. While typing in an ImGui field, let 'i' go to the widget.
+                    // typing 'i' in an ImGui field goes to the widget
                     const bool typingInImGui = enableImGui && imguiUiOpen && ImGui::GetIO().WantTextInput;
                     if (!typingInImGui && enableImGui) {
                         imguiUiOpen = !imguiUiOpen;
                         setImGuiInputEnabled(imguiUiOpen);
-                        // Open UI → ImGui focus. Close UI → game focus.
                         setGameFocus(!imguiUiOpen);
                     }
                 }
 #endif
                 else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !imguiUiOpen && e.button.button == SDL_BUTTON_LEFT) {
-                    // Re-assert relative mode on click while in game focus — SDL may
-                    // drop it on focus loss until a mouse button is pressed.
+                    // SDL may drop relative mode on focus loss until a click
                     setGameFocus(true);
                 } else if (e.type == SDL_EVENT_MOUSE_MOTION && !imguiUiOpen) {
                     camera->rotate(-e.motion.xrel, e.motion.yrel);
@@ -286,34 +286,36 @@ void Engine::run()
 #endif
 
         if (!minimized && !quit) {
-            // ── Camera keyboard movement (game focus only) ───────
-            // WASD        → forward / back / left / right
-            // LShift      → up (+Y)
-            // LCtrl       → down (-Y)
+            // WASD moves, LShift up, LCtrl down
             if (!imguiUiOpen) {
                 ZoneScopedN("CameraInput");
                 const float dt = std::chrono::duration<float>(currentTime - lastTime).count();
-                const float speed = 5.0f;
-                const float step = speed * dt;
+                const float step = kCameraSpeed * dt;
 
                 int keyCount = 0;
                 const bool* keys = SDL_GetKeyboardState(&keyCount);
 
-                if (keys[SDL_SCANCODE_W])
+                if (keys[SDL_SCANCODE_W]) {
                     camera->moveForward(step);
-                if (keys[SDL_SCANCODE_S])
+                }
+                if (keys[SDL_SCANCODE_S]) {
                     camera->moveForward(-step);
-                if (keys[SDL_SCANCODE_A])
+                }
+                if (keys[SDL_SCANCODE_A]) {
                     camera->moveRight(-step);
-                if (keys[SDL_SCANCODE_D])
+                }
+                if (keys[SDL_SCANCODE_D]) {
                     camera->moveRight(step);
-                if (keys[SDL_SCANCODE_LSHIFT])
+                }
+                if (keys[SDL_SCANCODE_LSHIFT]) {
                     camera->moveUp(step);
-                if (keys[SDL_SCANCODE_LCTRL])
+                }
+                if (keys[SDL_SCANCODE_LCTRL]) {
                     camera->moveUp(-step);
+                }
             }
 
-            // Upload camera for this frame's in-flight slot before recording/submit.
+            // upload camera for this in-flight slot before submit
             {
                 ZoneScopedN("DrawFrame");
                 camera->updateCameraData(renderer->currentFrame);
@@ -324,15 +326,13 @@ void Engine::run()
             SDL_Delay(100);
         }
 
-        // When unfocused, Windows often stops vsync throttling and the loop burns CPU/GPU.
-        // Soft-cap only in that case; focused frames stay paced by present mode.
+        // unfocused windows often lose vsync pacing and burn CPU/GPU
         if (!windowFocused && !minimized && !quit) {
             ZoneScopedN("UnfocusedFramePacing");
             const auto frameEndTime = std::chrono::high_resolution_clock::now();
-            const double frameMs =
-                std::chrono::duration<double, std::milli>(frameEndTime - currentTime).count();
-            if (frameMs < kUnfocusedTargetMs) {
-                SDL_Delay(static_cast<Uint32>(kUnfocusedTargetMs - frameMs));
+            const double elapsedMs = std::chrono::duration<double, std::milli>(frameEndTime - currentTime).count();
+            if (elapsedMs < kUnfocusedTargetMs) {
+                SDL_Delay(static_cast<Uint32>(kUnfocusedTargetMs - elapsedMs));
             }
         }
 
@@ -340,14 +340,6 @@ void Engine::run()
         FrameMark;
     }
     deviceRef.waitIdle();
-}
-
-
-void Engine::render()
-{
-    if (renderer) {
-        renderer->drawFrame();
-    }
 }
 
 void Engine::setImGuiInputEnabled([[maybe_unused]] bool enabled)
@@ -541,7 +533,6 @@ void Engine::applyPendingModelActions()
     }
 }
 
-
 void Engine::scanFolder()
 {
     ZoneScopedN("Engine::scanFolder");
@@ -556,7 +547,7 @@ void Engine::scanFolder()
 
     std::error_code errorCode;
     if (!std::filesystem::exists(rootPath, errorCode) || !std::filesystem::is_directory(rootPath, errorCode)) {
-        log_info("ImGui scanFolder failed: invalid asset directory", "Engine");
+        logInfo("ImGui scanFolder failed: invalid asset directory", "Engine");
         return;
     }
 
@@ -597,7 +588,7 @@ void Engine::scanFolder()
         selectedAssetIndex = 0;
     }
 
-    log_info(std::format("ImGui scanFolder found {} model folders", discoveredAssets.size()), "Engine");
+    logInfo(std::format("ImGui scanFolder found {} model folders", discoveredAssets.size()), "Engine");
 }
 
 void Engine::recreateSwapchain()
@@ -630,13 +621,13 @@ void Engine::loadSelectedModel()
 {
     ZoneScopedN("Engine::loadSelectedModel");
     if (selectedAssetIndex < 0 || static_cast<std::size_t>(selectedAssetIndex) >= discoveredAssets.size()) {
-        log_info("Load model: no selected asset", "Engine");
+        logInfo("Load model: no selected asset", "Engine");
         return;
     }
 
     const std::filesystem::path& assetPath = discoveredAssets[static_cast<std::size_t>(selectedAssetIndex)];
     const std::string name = assetPath.filename().string();
-    log_info(std::format("Load model started: {}", assetPath.string()), "Engine");
+    logInfo(std::format("Load model started: {}", assetPath.string()), "Engine");
 #ifdef TRACY_ENABLE
     {
         const std::string msg = std::format("LoadModel {}", assetPath.string());
@@ -650,7 +641,7 @@ void Engine::loadSelectedModel()
         id = assetsLoader->loadModel(assetPath.string(), glm::make_vec3(&loadedModelPosition[0]));
     } catch (const std::exception& error) {
         // UI boundary: a broken model must not take the engine down
-        log_error(std::format("Load model {} failed: {}", name, error.what()), "Engine");
+        logError(std::format("Load model {} failed: {}", name, error.what()), "Engine");
     }
     // uploads the new model, or discards what a failed load left in the scratch
     resourceManager->flushGpuAssets();
@@ -680,17 +671,15 @@ void Engine::unloadModel(EntityId id)
 #if ENGINE_USE_MIMALLOC
     mi_collect(true);
 #endif
-    log_info(std::format("Unloaded model {}: {} textures left", name, textureManager->size()), "Engine");
+    logInfo(std::format("Unloaded model {}: {} textures left", name, textureManager->size()), "Engine");
     loadStatus = std::format("Unloaded {}", name);
     isLoadStatusError = false;
 }
 
-void Engine::shutdown() { cleanup(); }
-
 void Engine::cleanup()
 {
     ZoneScopedN("Engine::cleanup");
-    if (!initialized)
+    if (!initialized) {
         return;
     auto& deviceRef = device->vkdevice;
     {
@@ -717,8 +706,8 @@ void Engine::cleanup()
     if (scene) {
         scene->objectStorage.clear();
     }
-    log_info("Object storage cleared", "Engine");
-    // Explicitly clear command buffers before destroying other resources
+    logInfo("Object storage cleared", "Engine");
+    // command buffers go before the resources they reference
     if (resourceManager) {
         resourceManager->commandBuffers.clear();
         resourceManager->transferCommandBuffer.clear();
@@ -732,17 +721,17 @@ void Engine::cleanup()
     assetsLoader.reset();
     scene.reset();
     camera.reset();
-    log_info("Resources cleaned up", "Engine");
+    logInfo("Resources cleaned up", "Engine");
     swapChain.reset();
-    log_info("Swap chain cleaned up", "Engine");
+    logInfo("Swap chain cleaned up", "Engine");
     allocator.reset();
-    log_info("Allocator cleaned up", "Engine");
+    logInfo("Allocator cleaned up", "Engine");
     SDL_DestroyWindow(window);
-    log_info("Window destroyed", "Engine");
+    logInfo("Window destroyed", "Engine");
     window = nullptr;
     SDL_Quit();
     device.reset();
-    log_info("Device cleaned up", "Engine");
+    logInfo("Device cleaned up", "Engine");
     initialized = false;
-    log_info("Engine cleaned up", "Engine");
+    logInfo("Engine cleaned up", "Engine");
 }

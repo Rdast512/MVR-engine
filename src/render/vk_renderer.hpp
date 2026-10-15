@@ -33,6 +33,6 @@ private:
     Camera& camera;
     DeviceGeneratedCommands dgc;
     VkTracyContext* tracyContext = nullptr;
-    // drawn every frame: the stats overlay is always on, panels only while the UI is open
-    bool imguiEnabled = false;
+    // unused when imgui is compiled out
+    [[maybe_unused]] bool imguiEnabled = false;
 };

@@ -1,8 +1,10 @@
 #pragma once
 #include <array>
+#include <cstdint>
 #include <span>
 #include <string_view>
 #include <utility>
+#include <vector>
 #include <vulkan/vulkan_raii.hpp>
 #include "../core/types.hpp"
 #include "Constants.h"
@@ -100,7 +102,7 @@ public:
     void createCommandPool();
     void createCommandBuffers();
     void createDepthResources();
-    // Grow/recreate the per-frame GpuObjectUB arrays so they fit at least entityCount entries.
+    // grows/recreates the per-frame GpuObjectUB arrays to fit entityCount entries
     void ensureInstanceCapacity(uint32_t entityCount);
     void createUniformBuffers();
     void createColorResources();
@@ -113,7 +115,7 @@ public:
     void createCameraBuffers(Camera& camera);
     void setSwapChainImageCount(uint32_t count) { swapChainImageCount = count; createSyncObjects(); }
 
-    // Per-frame Tracy plots for geometry / mesh / entity resource usage.
+    // per-frame Tracy plots for resource usage
     void tracyPlotResources() const;
 
     [[nodiscard]] vk::DeviceAddress instanceUboAddress(uint32_t frameSlot, EntityId entityId) const noexcept;
@@ -172,9 +174,9 @@ public:
     // indexed by EntityId, parallel to objectStorage
     std::vector<ModelAllocation> modelAllocations;
 
-    // One GpuObjectUB[capacity] buffer per frame-in-flight, rewritten by the CPU every frame.
+    // one GpuObjectUB[capacity] buffer per frame-in-flight, rewritten by the CPU every frame
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> instanceUbos;
-    // Allocated instance GpuObjectUB slots per frame buffer (may be > entity count).
+    // GpuObjectUB slots per frame buffer, may exceed entity count
     uint32_t instanceCapacity = 0;
 
 private:

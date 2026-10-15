@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -90,17 +91,17 @@ namespace
     }
 } // namespace
 
-void log_debug_at(std::string_view message, std::string_view subsystem, std::string_view dll)
+void logDebugAt(std::string_view message, std::string_view subsystem, std::string_view dll)
 {
     loggerFor(dll).debug("[{}] {}", subsystem, message);
 }
 
-void log_info_at(std::string_view message, std::string_view subsystem, std::string_view dll)
+void logInfoAt(std::string_view message, std::string_view subsystem, std::string_view dll)
 {
     loggerFor(dll).info("[{}] {}", subsystem, message);
 }
 
-void log_error_at(std::string_view message, std::string_view subsystem, std::string_view dll)
+void logErrorAt(std::string_view message, std::string_view subsystem, std::string_view dll)
 {
     loggerFor(dll).error("[{}] {}", subsystem, message);
 }
