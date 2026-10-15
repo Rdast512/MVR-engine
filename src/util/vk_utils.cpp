@@ -105,8 +105,11 @@ void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags2 usage, vk::MemoryPr
     allocInfo.flags |= extraAllocationFlags;
     // BestPractices-vkBindBufferMemory-small-dedicated-allocation: do not force
     // dedicated blocks for small buffers (validation threshold is typically 1 MiB).
+    // dgc preprocess faults on nvidia when suballocated, so it stays dedicated
     constexpr vk::DeviceSize kMinDedicatedAllocationBytes = 1024 * 1024;
-    if ((allocInfo.flags & VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT) != 0 && size < kMinDedicatedAllocationBytes) {
+    const bool isPreprocess = (usage & vk::BufferUsageFlagBits2::ePreprocessBufferEXT) != vk::BufferUsageFlags2{};
+    if ((allocInfo.flags & VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT) != 0 && size < kMinDedicatedAllocationBytes &&
+        !isPreprocess) {
         allocInfo.flags &= ~VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     }
 

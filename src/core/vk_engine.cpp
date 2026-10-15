@@ -681,6 +681,7 @@ void Engine::cleanup()
     ZoneScopedN("Engine::cleanup");
     if (!initialized) {
         return;
+    }
     auto& deviceRef = device->vkdevice;
     {
         ZoneScopedN("Engine::cleanup::waitIdle");
