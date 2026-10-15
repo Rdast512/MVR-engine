@@ -4,8 +4,6 @@
 
 #include <glm/gtc/constants.hpp>
 
-#include <algorithm>
-#include <cmath>
 #include <cstring>
 
 Camera::Camera(SwapChain& swapChain) : swapChain(swapChain)
@@ -32,8 +30,8 @@ void Camera::focusOn(const glm::vec3& target, float distance)
     //   forward.x = cos(pitch)*sin(yaw)
     //   forward.y = -sin(pitch)
     //   forward.z = cos(pitch)*cos(yaw)
-    pitch = std::clamp(std::asin(glm::clamp(-dir.y, -1.0f, 1.0f)), -kPitchLimit, kPitchLimit);
-    yaw = std::atan2(dir.x, dir.z);
+    pitch = glm::clamp(glm::asin(glm::clamp(-dir.y, -1.0f, 1.0f)), -kPitchLimit, kPitchLimit);
+    yaw = glm::atan(dir.x, dir.z);
 }
 
 Camera::~Camera()
@@ -59,12 +57,12 @@ void Camera::rotate(float yawDelta, float pitchDelta)
 {
     yaw += yawDelta * kMouseSensitivity;
     pitch += pitchDelta * kMouseSensitivity;
-    pitch = std::clamp(pitch, -kPitchLimit, kPitchLimit);
+    pitch = glm::clamp(pitch, -kPitchLimit, kPitchLimit);
 }
 
 void Camera::setFov(float fovVerticalDegrees)
 {
-    fov = std::clamp(glm::radians(fovVerticalDegrees), kFovMin, kFovMax);
+    fov = glm::clamp(glm::radians(fovVerticalDegrees), kFovMin, kFovMax);
     projDirty = true;
 }
 
@@ -72,9 +70,9 @@ void Camera::addFov(float deltaDegrees) { setFov(glm::degrees(fov) + deltaDegree
 
 void Camera::updateVectors()
 {
-    forward.x = std::cos(pitch) * std::sin(yaw);
-    forward.y = -std::sin(pitch);
-    forward.z = std::cos(pitch) * std::cos(yaw);
+    forward.x = glm::cos(pitch) * glm::sin(yaw);
+    forward.y = -glm::sin(pitch);
+    forward.z = glm::cos(pitch) * glm::cos(yaw);
     forward = glm::normalize(forward);
 
     right = glm::normalize(glm::cross(forward, worldUp));

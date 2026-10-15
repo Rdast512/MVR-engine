@@ -107,10 +107,10 @@ namespace
             out = static_cast<float>(*src) / 255.0f;
             return true;
         case TG3_COMPONENT_TYPE_SHORT:
-            out = std::max(static_cast<float>(loadUnaligned<int16_t>(src)) / 32767.0f, -1.0f);
+            out = glm::max(static_cast<float>(loadUnaligned<int16_t>(src)) / 32767.0f, -1.0f);
             return true;
         case TG3_COMPONENT_TYPE_BYTE:
-            out = std::max(static_cast<float>(loadUnaligned<int8_t>(src)) / 127.0f, -1.0f);
+            out = glm::max(static_cast<float>(loadUnaligned<int8_t>(src)) / 127.0f, -1.0f);
             return true;
         default:
             return false;
@@ -1383,7 +1383,7 @@ namespace
             .world = world,
             .linear = linear,
             // degenerate scale has no inverse; linear keeps normals finite
-            .normal = std::abs(det) > std::numeric_limits<float>::min() ? glm::transpose(glm::inverse(linear)) : linear,
+            .normal = glm::abs(det) > std::numeric_limits<float>::min() ? glm::transpose(glm::inverse(linear)) : linear,
             .isIdentity = world == glm::mat4{1.0f},
             .flipsWinding = det < 0.0f,
         };
