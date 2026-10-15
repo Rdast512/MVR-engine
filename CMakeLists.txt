@@ -249,10 +249,10 @@ endfunction()
 
 engine_add_slang_pass(passes/mesh_raster.slang
     ENTRIES meshMain
-    DEPENDS types.slang core/binding.slang core/math.slang geometry/mesh.slang)
+    DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang geometry/mesh.slang)
 engine_add_slang_pass(passes/mesh_fragment.slang
     ENTRIES fragMain
-    DEPENDS types.slang core/binding.slang material/pbr.slang)
+    DEPENDS types.slang core/binding.slang core/frame.slang material/pbr.slang)
 
 add_custom_target(Shaders ALL DEPENDS ${COMPILED_SHADERS})
 

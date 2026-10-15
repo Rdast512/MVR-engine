@@ -2,27 +2,24 @@
 
 #include "types.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <vector>
 
+// Material rows live on the GPU. The CPU only holds rows added since the last flush; ids are absolute rows of the GPU
+// table, so pending row i has id uploadedCount + i.
 class MaterialStore
 {
 public:
-    // CPU cache of GPU material rows. ids are indices into these vectors / the GPU SSBO.
-    std::vector<GpuMaterial> gpuMaterials;
-    std::vector<MaterialPbrExtension> pbrExtensions;
+    std::vector<GpuMaterial> pendingMaterials;
+    std::vector<MaterialPbrExtension> pendingExtensions;
     uint32_t uploadedCount = 0;
     // add() dedups only from here, so every row belongs to one model and unloads with it
     uint32_t modelFirst = 1;
     uint32_t cacheHits = 0;
     uint32_t cacheMisses = 0;
 
-    MaterialStore()
-    {
-        gpuMaterials.push_back(GpuMaterial{});
-        pbrExtensions.push_back(MaterialPbrExtension{});
-        ++cacheMisses;
-    }
+    MaterialStore() { addDefaultRow(); }
 
     [[nodiscard]] uint32_t defaultMaterialId() const noexcept { return 0; }
 
@@ -30,52 +27,63 @@ public:
 
     uint32_t add(const GpuMaterial& material, const MaterialPbrExtension& ext = {})
     {
-        for (uint32_t i = modelFirst; i < gpuMaterials.size(); ++i) {
-            if (gpuMaterials[i] == material && pbrExtensions[i] == ext) {
+        for (uint32_t id = std::max(modelFirst, uploadedCount); id < size(); ++id) {
+            const uint32_t row = id - uploadedCount;
+            if (pendingMaterials[row] == material && pendingExtensions[row] == ext) {
                 ++cacheHits;
-                return i;
+                return id;
             }
         }
-        gpuMaterials.push_back(material);
-        pbrExtensions.push_back(ext);
+        pendingMaterials.push_back(material);
+        pendingExtensions.push_back(ext);
         ++cacheMisses;
-        return static_cast<uint32_t>(gpuMaterials.size() - 1);
+        return size() - 1;
     }
 
-    [[nodiscard]] uint32_t size() const noexcept { return static_cast<uint32_t>(gpuMaterials.size()); }
-
-    [[nodiscard]] uint32_t pendingCount() const noexcept
+    [[nodiscard]] uint32_t size() const noexcept
     {
-        return size() > uploadedCount ? size() - uploadedCount : 0;
+        return uploadedCount + static_cast<uint32_t>(pendingMaterials.size());
     }
 
-    [[nodiscard]] const GpuMaterial* get(uint32_t id) const noexcept
+    [[nodiscard]] uint32_t pendingCount() const noexcept { return static_cast<uint32_t>(pendingMaterials.size()); }
+
+    // the GPU now owns the pending rows
+    void markUploaded()
     {
-        if (id >= gpuMaterials.size()) {
-            return nullptr;
-        }
-        return &gpuMaterials[id];
+        uploadedCount = size();
+        dropPending();
     }
-
-    [[nodiscard]] const GpuMaterial* scratchMaterial(uint32_t id) const noexcept { return get(id); }
-
-    void markUploaded() noexcept { uploadedCount = size(); }
 
     // rows a failed load added; they never reached the GPU
     void discardPending()
     {
-        gpuMaterials.resize(uploadedCount);
-        pbrExtensions.resize(uploadedCount);
+        dropPending();
+        if (uploadedCount == 0) {
+            addDefaultRow();
+        }
         modelFirst = size();
     }
 
     // rows [first, first + count) of one uploaded model; the default row 0 is never erased
-    void erase(uint32_t first, uint32_t count)
+    void erase([[maybe_unused]] uint32_t first, uint32_t count)
     {
         assert(first >= 1 && first + count <= uploadedCount);
-        gpuMaterials.erase(gpuMaterials.begin() + first, gpuMaterials.begin() + first + count);
-        pbrExtensions.erase(pbrExtensions.begin() + first, pbrExtensions.begin() + first + count);
         uploadedCount -= count;
         modelFirst = size();
+    }
+
+private:
+    // row 0, uploaded with the first model
+    void addDefaultRow()
+    {
+        pendingMaterials.push_back(GpuMaterial{});
+        pendingExtensions.push_back(MaterialPbrExtension{});
+        ++cacheMisses;
+    }
+
+    void dropPending()
+    {
+        pendingMaterials = {};
+        pendingExtensions = {};
     }
 };

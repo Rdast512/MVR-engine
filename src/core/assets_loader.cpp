@@ -1714,10 +1714,6 @@ namespace
 
             PrimitiveDraw draw{};
             draw.materialId = materialId;
-            if (const GpuMaterial* gpu = ctx.materials.scratchMaterial(materialId)) {
-                draw.albedoTex = gpu->baseColorTex;
-                draw.albedoSamp = gpu->baseColorSamp;
-            }
             draw.firstVertex = firstVertex;
             draw.vertexCount = vertexCount;
             draw.firstIndex = firstIndex;
@@ -2009,19 +2005,8 @@ std::optional<EntityId> AssetsLoader::loadGltfModel(const std::string& modelPath
         unionDraw.meshletCount = (last.meshlets.firstMeshlet + last.meshlets.meshletCount) - unionDraw.firstMeshlet;
     }
 
-    uint32_t previewTex = textureManager.getDefaultTextureIndex();
-    uint32_t previewMat = materialStore.defaultMaterialId();
-    if (primitiveCount > 0) {
-        const PrimitiveDraw& first = geometryStore.primitiveDraws[firstPrimitive];
-        previewMat = first.materialId;
-        if (first.albedoTex != kNoneIndex) {
-            previewTex = first.albedoTex;
-        }
-    }
-
     const Transform transform{.position = xyz};
-    const MaterialRef material{.textureIndex = previewTex, .materialId = previewMat};
-    const EntityId id = objectStorage.create(transform, unionDraw, material, firstPrimitive, primitiveCount, modelPath);
+    const EntityId id = objectStorage.create(transform, unionDraw, firstPrimitive, primitiveCount, modelPath);
     objectStorage.textureRefs[id] = textureRefs.commit();
     logInfo(std::format("Loaded model entity {} | primitives=[{}, {}) | meshlets: {} (first {})", id, firstPrimitive,
                          firstPrimitive + primitiveCount, unionDraw.meshletCount, unionDraw.firstMeshlet),
@@ -2091,8 +2076,6 @@ std::optional<EntityId> AssetsLoader::loadObjModel(const std::string& modelPath,
 
     PrimitiveDraw draw{};
     draw.materialId = materialId;
-    draw.albedoTex = gpu.baseColorTex;
-    draw.albedoSamp = gpu.baseColorSamp;
     draw.firstVertex = firstVertex;
     draw.vertexCount = static_cast<uint32_t>(geometryStore.positions.size()) - firstVertex;
     draw.firstIndex = firstIndex;
@@ -2101,8 +2084,7 @@ std::optional<EntityId> AssetsLoader::loadObjModel(const std::string& modelPath,
     geometryStore.primitiveDraws.push_back(draw);
 
     const Transform transform{.position = xyz};
-    const MaterialRef material{.textureIndex = gpu.baseColorTex, .materialId = materialId};
-    const EntityId id = objectStorage.create(transform, draw.meshlets, material, firstPrimitive, 1, modelPath);
+    const EntityId id = objectStorage.create(transform, draw.meshlets, firstPrimitive, 1, modelPath);
     objectStorage.textureRefs[id] = textureRefs.commit();
     logInfo(std::format("Loaded model entity {} | primitives=[{}, {}) | meshlets: {} (first {})", id, firstPrimitive,
                          firstPrimitive + 1, draw.meshlets.meshletCount, draw.meshlets.firstMeshlet),

@@ -3,30 +3,25 @@
 
 #include "types.slang"
 #include "core/binding.slang"
-#include "core/math.slang"
+#include "core/frame.slang"
 
-GpuMeshletDesc loadMeshlet(MeshPushData push, uint gid)
+// meshlet data is model-relative: every table is indexed from the model's slice
+GpuMeshletDesc loadMeshlet(DrawContext draw, uint meshletIndex)
 {
-    GpuMeshletDesc* table = bdaPtr<GpuMeshletDesc>(push.meshlets);
-    return table[push.firstMeshlet + gid];
+    return bdaPtr<GpuMeshletDesc>(draw.model.meshlets)[draw.primitive.firstMeshlet + meshletIndex];
 }
 
-GpuVertex loadMeshletVertex(MeshPushData push, GpuMeshletDesc meshlet, uint vi)
+GpuVertex loadMeshletVertex(DrawContext draw, GpuMeshletDesc meshlet, uint vi)
 {
-    uint* meshletVertTable = bdaPtr<uint>(push.meshletVertices);
-    GpuVertex* vertexTable = bdaPtr<GpuVertex>(push.vertices);
-    uint globalVertexIndex = meshletVertTable[meshlet.vertexOffset + vi];
-    return vertexTable[globalVertexIndex];
+    uint vertexIndex = bdaPtr<uint>(draw.model.meshletVertices)[meshlet.vertexOffset + vi];
+    return bdaPtr<GpuVertex>(draw.model.vertices)[vertexIndex];
 }
 
-uint3 loadMeshletTriangle(MeshPushData push, GpuMeshletDesc meshlet, uint ti)
+uint3 loadMeshletTriangle(DrawContext draw, GpuMeshletDesc meshlet, uint ti)
 {
-    uint8_t* meshletTriTable = bdaPtr<uint8_t>(push.meshletTriangles);
+    uint8_t* corners = bdaPtr<uint8_t>(draw.model.meshletTriangles);
     uint base = meshlet.triangleOffset + ti * 3;
-    return uint3(
-        uint(meshletTriTable[base + 0]),
-        uint(meshletTriTable[base + 1]),
-        uint(meshletTriTable[base + 2]));
+    return uint3(uint(corners[base + 0]), uint(corners[base + 1]), uint(corners[base + 2]));
 }
 
 #endif

@@ -61,20 +61,13 @@ struct MeshletDraw
     uint32_t meshletCount = 0;
 };
 
-struct MaterialRef
-{
-    uint32_t textureIndex = 0;
-    uint32_t materialId = 0;
-};
-
 inline constexpr uint32_t kNoneIndex = ~0u;
 
+// CPU catalog row; the shaders read the GpuPrimitive mirror
 struct PrimitiveDraw
 {
     MeshletDraw meshlets;
     uint32_t materialId = kNoneIndex;
-    uint32_t albedoTex = kNoneIndex;
-    uint32_t albedoSamp = kNoneIndex;
     uint32_t firstVertex = 0;
     uint32_t vertexCount = 0;
     uint32_t firstIndex = 0;
@@ -132,6 +125,26 @@ struct alignas(16) GpuMaterial
 
     bool operator==(const GpuMaterial&) const = default;
 };
+// types.slang pads the 97 B of fields to this stride
+static_assert(sizeof(GpuMaterial) == 112);
+static_assert(offsetof(GpuMaterial, baseColorTex) == 52);
+static_assert(offsetof(GpuMaterial, baseColorSamp) == 72);
+static_assert(offsetof(GpuMaterial, emissiveUv) == 96);
+
+// GPU mirror of one primitive. Values are relative to the owning model's slices (GpuModel)
+struct GpuPrimitive
+{
+    uint32_t firstMeshlet = 0;
+    uint32_t meshletCount = 0;
+    // kNoneIndex selects the default material, row 0 of the shared table
+    uint32_t materialId = kNoneIndex;
+    uint32_t firstVertex = 0;
+    uint32_t vertexCount = 0;
+    uint32_t firstIndex = 0;
+    uint32_t indexCount = 0;
+    uint32_t pad0 = 0;
+};
+static_assert(sizeof(GpuPrimitive) == 32);
 
 // CPU-only KHR PBR-next + texture-transform. Not uploaded until the PBR path exists.
 struct MaterialUvTransform
@@ -316,20 +329,77 @@ struct alignas(16) GpuCameraData {
     glm::vec4 cameraParams; // reserved
 };
 
+// one row per entity in the per-frame instance buffer
 struct alignas(16) GpuObjectUB {
-    // Transform Matrices
-    glm::mat4 modelMatrix;     // World transformation matrix (64 bytes)
-    glm::mat4 prevModelMatrix; // Previous frame world matrix for temporal motion vectors (64 bytes)
-
-    // Bounding Box / Sphere for GPU Culling (Frustum & Occlusion)
-    glm::vec4 boundingSphere;     // xyz = center, w = radius (16 bytes)
-
-    // Resource & Material Handles
-    uint32_t materialID;          // Index into global Material SSBO array (4 bytes)
-    uint32_t instanceFlags;        // Bit flags (e.g., bit 0: dynamic, bit 1: cast shadow) (4 bytes)
-    uint32_t baseVertex;          // Vertex offset in buffer (4 bytes)
-    uint32_t baseIndex;           // Index offset in buffer (4 bytes)
+    glm::mat4 modelMatrix;
+    // previous frame, for motion vectors
+    glm::mat4 prevModelMatrix;
+    // xyz = center, w = radius
+    glm::vec4 boundingSphere;
+    // row in GpuFrameRoot::models
+    uint32_t modelIndex;
+    uint32_t instanceFlags;
+    uint32_t pad0;
+    uint32_t pad1;
 };
+static_assert(sizeof(GpuObjectUB) == 160);
+static_assert(offsetof(GpuObjectUB, modelIndex) == 144);
+
+// GpuModel::attributeMask bits
+namespace GpuModelAttribute
+{
+    inline constexpr uint32_t Normals = 1u << 0;
+    inline constexpr uint32_t Tangents = 1u << 1;
+    inline constexpr uint32_t Uv1 = 1u << 2;
+    inline constexpr uint32_t Joints = 1u << 3;
+    inline constexpr uint32_t Weights = 1u << 4;
+    inline constexpr uint32_t Indices = 1u << 5;
+} // namespace GpuModelAttribute
+
+// slice addresses of one loaded model; data inside a slice is model-relative. 0 = stream absent
+struct GpuModel
+{
+    vk::DeviceAddress vertices = 0;
+    vk::DeviceAddress meshlets = 0;
+    vk::DeviceAddress meshletVertices = 0;
+    vk::DeviceAddress meshletTriangles = 0;
+    vk::DeviceAddress materials = 0;
+    vk::DeviceAddress pbrExtensions = 0;
+    vk::DeviceAddress normals = 0;
+    vk::DeviceAddress tangents = 0;
+    vk::DeviceAddress uv1 = 0;
+    vk::DeviceAddress joints = 0;
+    vk::DeviceAddress weights = 0;
+    vk::DeviceAddress indices = 0;
+    uint32_t attributeMask = 0;
+    uint32_t pad0 = 0;
+};
+static_assert(sizeof(GpuModel) == 104);
+static_assert(offsetof(GpuModel, attributeMask) == 96);
+
+// per-frame entry point for every shader: the only address the push data carries
+struct GpuFrameRoot
+{
+    vk::DeviceAddress camera = 0;
+    // GpuObjectUB[entity]
+    vk::DeviceAddress instances = 0;
+    // GpuModel[entity]
+    vk::DeviceAddress models = 0;
+    // GpuPrimitive[], absolute rows
+    vk::DeviceAddress primitives = 0;
+    // GpuMaterial[], absolute rows; row 0 is the default material
+    vk::DeviceAddress materials = 0;
+    vk::DeviceAddress pbrExtensions = 0;
+    vk::DeviceAddress lights = 0;
+    // raw acceleration structure address, 0 until RT exists
+    vk::DeviceAddress tlas = 0;
+    uint32_t lightCount = 0;
+    uint32_t instanceCount = 0;
+    uint32_t primitiveCount = 0;
+    uint32_t pad0 = 0;
+};
+static_assert(sizeof(GpuFrameRoot) == 80);
+static_assert(offsetof(GpuFrameRoot, lightCount) == 64);
 
 
 struct EngineSettings

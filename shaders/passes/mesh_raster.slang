@@ -1,5 +1,6 @@
 #include "types.slang"
 #include "core/binding.slang"
+#include "core/frame.slang"
 #include "core/math.slang"
 #include "geometry/mesh.slang"
 
@@ -14,13 +15,15 @@ void meshMain(
     out vertices MeshVertexOut verts[kMaxMeshletVertices],
     out indices uint3 tris[kMaxMeshletTriangles])
 {
-    if (gid >= push.meshletCount)
+    DrawContext draw = loadDrawContext(push);
+    const uint meshletIndex = push.meshletOffset + gid;
+    if (gid >= push.meshletCount || meshletIndex >= draw.primitive.meshletCount)
     {
         SetMeshOutputCounts(0, 0);
         return;
     }
 
-    GpuMeshletDesc meshlet = loadMeshlet(push, gid);
+    GpuMeshletDesc meshlet = loadMeshlet(draw, meshletIndex);
     const uint vertCount = min(meshlet.vertexCount, kMaxMeshletVertices);
     const uint primCount = min(meshlet.triangleCount, kMaxMeshletTriangles);
     SetMeshOutputCounts(vertCount, primCount);
@@ -30,13 +33,11 @@ void meshMain(
         return;
     }
 
-    GpuObjectUB object = bdaPtr<GpuObjectUB>(push.objectUbAddress)[0];
-    GpuCameraData camera = bdaPtr<GpuCameraData>(push.cameraAddress)[0];
-    float4x4 mvp = objectToClip(camera, object);
+    float4x4 mvp = objectToClip(loadCamera(draw.root), draw.instance);
 
     for (uint vi = gtid; vi < vertCount; vi += kGroupSize)
     {
-        GpuVertex v = loadMeshletVertex(push, meshlet, vi);
+        GpuVertex v = loadMeshletVertex(draw, meshlet, vi);
         verts[vi].pos = mul(mvp, float4(v.pos, 1.0));
         verts[vi].fragColor = v.color;
         verts[vi].fragTexCoord = v.texCoord;
@@ -44,6 +45,6 @@ void meshMain(
 
     for (uint ti = gtid; ti < primCount; ti += kGroupSize)
     {
-        tris[ti] = loadMeshletTriangle(push, meshlet, ti);
+        tris[ti] = loadMeshletTriangle(draw, meshlet, ti);
     }
 }

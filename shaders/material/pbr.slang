@@ -3,12 +3,17 @@
 
 #include "types.slang"
 #include "core/binding.slang"
+#include "core/frame.slang"
 
-float4 sampleAlbedo(MeshPushData push, float2 uv)
+// glTF base color: factor * texture * vertex color
+float4 sampleBaseColor(GpuMaterial material, float2 uv, float3 vertexColor)
 {
-    Texture2D texture = tex2D(push.texture);
-    SamplerState samplerState = samplerOf(push.samplerHandle);
-    return texture.Sample(samplerState, uv);
+    float4 color = material.baseColorFactor * float4(vertexColor, 1.0);
+    if (material.baseColorTex != kNoneIndex && material.baseColorSamp != kNoneIndex)
+    {
+        color *= tex2D(material.baseColorTex).Sample(samplerOf(material.baseColorSamp), uv);
+    }
+    return color;
 }
 
 #endif

@@ -2,7 +2,8 @@
 
 | Path | Task |
 |---|---|
-| `types.slang` | Shared POD + `FrameRoot` (camera, instances, clusters, materials, TLAS handle, BDA tables) |
+| `types.slang` | Shared POD + `GpuFrameRoot` (camera, instances, model slices, primitives, materials, lights, TLAS) |
+| `core/frame` | Push data → `GpuFrameRoot` → instance, model, primitive, material |
 | `base.slang` | Your current raster: amplification / mesh / textured PBR fragment |
 | `core/binding` | `tex2D(handle)`, `tlasOf`, BDA load |
 | `geo/mesh` | Meshlet fetch/cull used by `base` |

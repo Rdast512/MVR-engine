@@ -9,7 +9,6 @@
 #include <vulkan/vulkan_raii.hpp>
 
 class DescriptorManager;
-class Camera;
 
 // GPU-driven mesh draws: PUSH_DATA + DRAW_MESH_TASKS via VK_EXT_device_generated_commands.
 // Sequences are CPU-filled until a cull compute pass exists.
@@ -27,7 +26,7 @@ public:
 
     void init();
 
-    void updateSequences(uint32_t frameSlot, const Camera& camera);
+    void updateSequences(uint32_t frameSlot);
 
     void recordPreprocess(vk::raii::CommandBuffer& cmd) const;
     void recordExecute(vk::raii::CommandBuffer& cmd) const;

@@ -3,14 +3,15 @@
 
 #include "types.slang"
 
-Texture2D tex2D(DescriptorHandle<Texture2D> handle)
+// heap indices come from GpuMaterial rows; callers never pass kNoneIndex
+Texture2D tex2D(uint heapIndex)
 {
-    return getDescriptorFromHandle(handle);
+    return getDescriptorFromHandle(DescriptorHandle<Texture2D>(uint2(heapIndex, 0)));
 }
 
-SamplerState samplerOf(DescriptorHandle<SamplerState> handle)
+SamplerState samplerOf(uint heapIndex)
 {
-    return getDescriptorFromHandle(handle);
+    return getDescriptorFromHandle(DescriptorHandle<SamplerState>(uint2(heapIndex, 0)));
 }
 
 T* bdaPtr<T>(uint64_t address)

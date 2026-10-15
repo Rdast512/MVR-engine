@@ -37,10 +37,9 @@ class ObjectStorage
 {
 public:
     std::vector<Transform> transforms;
-    std::vector<glm::mat4> modelMatrices;
+    // last frame's model matrix, the GpuObjectUB prevModelMatrix source
     std::vector<glm::mat4> prevModelMatrices;
     std::vector<MeshletDraw> meshletDraws;
-    std::vector<MaterialRef> materials;
     std::vector<uint32_t> flags;
     std::vector<std::string> names;
     std::vector<uint32_t> firstPrimitives;
@@ -48,9 +47,8 @@ public:
     // texture heap indices this entity retains (TextureManager refcounts)
     std::vector<std::vector<uint32_t>> textureRefs;
 
-    [[nodiscard]] EntityId create(const Transform& transform, const MeshletDraw& meshletDraw,
-                                  const MaterialRef& material, uint32_t firstPrimitive, uint32_t primitiveCount,
-                                  std::string_view name = {});
+    [[nodiscard]] EntityId create(const Transform& transform, const MeshletDraw& meshletDraw, uint32_t firstPrimitive,
+                                  uint32_t primitiveCount, std::string_view name = {});
 
     [[nodiscard]] uint32_t size() const noexcept { return static_cast<uint32_t>(transforms.size()); }
     [[nodiscard]] bool empty() const noexcept { return transforms.empty(); }
@@ -66,7 +64,3 @@ public:
 // ---------------------------------------------------------------------------
 
 [[nodiscard]] glm::mat4 computeModelMatrix(const Transform& transform);
-
-// Writes GpuObjectUB[i] for each active entity; updates prevModelMatrices for next frame.
-// meshPreRotation is applied as: model = trs * meshPreRotation (same order as before).
-void writeObjectUbs(ObjectStorage& storage, std::span<GpuObjectUB> mappedUbs, const glm::mat4& meshPreRotation);

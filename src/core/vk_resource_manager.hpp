@@ -2,6 +2,7 @@
 #include <array>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -35,6 +36,7 @@ enum class AssetBuffer : uint8_t {
     Materials,
     PbrExt,
     Lights,
+    Primitives,       // GpuPrimitive[], parallel to GeometryStore::primitiveDraws
     Count
 };
 inline constexpr size_t kAssetBufferCount = std::to_underlying(AssetBuffer::Count);
@@ -84,8 +86,8 @@ struct AttachmentImage {
 };
 
 // Manages GPU resources (buffers, images, command pools) using Device + Assets data.
-// Instance GpuObjectUB data lives in a single host-visible buffer per frame slot (SoA-friendly).
-// Geometry is mesh-shader only: vertex SSBO + meshlet tables via BDA (no index buffer).
+// Shaders reach everything through the per-frame GpuFrameRoot: instances (host-visible, one buffer per frame slot),
+// the GpuModel slice table and the shared asset buffers. The CPU keeps their addresses, not their contents.
 class ResourceManager {
 public:
     ResourceManager(const Device &deviceWrapper,
@@ -118,7 +120,10 @@ public:
     // per-frame Tracy plots for resource usage
     void tracyPlotResources() const;
 
-    [[nodiscard]] vk::DeviceAddress instanceUboAddress(uint32_t frameSlot, EntityId entityId) const noexcept;
+    [[nodiscard]] vk::DeviceAddress frameRootAddress(uint32_t frameSlot) const noexcept
+    {
+        return frameRoots[frameSlot].address;
+    }
     [[nodiscard]] const DeviceBuffer& asset(AssetBuffer id) const noexcept
     {
         return assetBuffers[std::to_underlying(id)];
@@ -178,6 +183,11 @@ public:
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> instanceUbos;
     // GpuObjectUB slots per frame buffer, may exceed entity count
     uint32_t instanceCapacity = 0;
+    // one GpuFrameRoot per frame-in-flight, rewritten every frame
+    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> frameRoots;
+    // GpuModel[modelAllocations.size()], rebuilt after every flush and erase (GPU idle)
+    HostBuffer modelTable;
+    std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> cameraAddresses{};
 
 private:
     struct AttachmentDesc {
@@ -192,6 +202,14 @@ private:
     };
 
     void destroyInstanceUboBuffers();
+    // persistently mapped host-visible storage buffer with a device address
+    void createHostBuffer(HostBuffer& target, vk::DeviceSize size, const std::string& debugName,
+                          const char* tracyName) const;
+    void destroyHostBuffer(HostBuffer& target, const char* tracyName) const;
+    void rebuildModelTable();
+    void writeFrameRoot(uint32_t frameSlot);
+    // scratch PrimitiveDraws as model-relative GpuPrimitives; call before remapScratchOffsets
+    [[nodiscard]] std::vector<GpuPrimitive> packScratchPrimitives() const;
     void destroyAssetBuffer(AssetBuffer id);
     // device-local storage buffer with the asset usage flags; not yet installed
     void createAssetBuffer(AssetBuffer id, vk::DeviceSize capacity, vk::raii::Buffer& buffer,
@@ -200,7 +218,8 @@ private:
     void installAssetBuffer(AssetBuffer id, vk::raii::Buffer&& buffer, VmaAllocation memory, vk::DeviceSize usedBytes,
                             vk::DeviceSize capacityBytes);
     void appendDeviceLocal(AssetBuffer id, std::span<const std::byte> src);
-    [[nodiscard]] std::span<const std::byte> scratchBytes(AssetBuffer id, std::span<const GpuLight> lights) const;
+    [[nodiscard]] std::span<const std::byte> scratchBytes(AssetBuffer id, std::span<const GpuLight> lights,
+                                                          std::span<const GpuPrimitive> primitives) const;
     // removes the model's byte ranges from every asset buffer in one submit
     void compactAssetBuffers(const ModelAllocation& removed);
     // shifts every catalog reference past the removed slices and erases the slices

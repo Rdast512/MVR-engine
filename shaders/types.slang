@@ -40,10 +40,42 @@ struct GpuObjectUB
 
     float4 boundingSphere;
 
-    uint materialID;
+    uint modelIndex;
     uint instanceFlags;
-    uint baseVertex;
-    uint baseIndex;
+    uint pad0;
+    uint pad1;
+};
+
+// slice addresses of one model; data inside a slice is model-relative
+struct GpuModel
+{
+    uint64_t vertices;
+    uint64_t meshlets;
+    uint64_t meshletVertices;
+    uint64_t meshletTriangles;
+    uint64_t materials;
+    uint64_t pbrExtensions;
+    uint64_t normals;
+    uint64_t tangents;
+    uint64_t uv1;
+    uint64_t joints;
+    uint64_t weights;
+    uint64_t indices;
+    uint attributeMask;
+    uint pad0;
+};
+
+// values are relative to the owning model's slices
+struct GpuPrimitive
+{
+    uint firstMeshlet;
+    uint meshletCount;
+    uint materialId; // kNoneIndex = default material (row 0 of GpuFrameRoot.materials)
+    uint firstVertex;
+    uint vertexCount;
+    uint firstIndex;
+    uint indexCount;
+    uint pad0;
 };
 
 struct GpuVertex
@@ -90,6 +122,12 @@ struct GpuMaterial
     uint8_t normalUv;
     uint8_t occlusionUv;
     uint8_t emissiveUv;
+
+    // C++ alignas(16) stride is 112 B
+    uint8_t pad0;
+    uint8_t pad1;
+    uint8_t pad2;
+    uint3 pad3;
 };
 
 struct GpuLight
@@ -106,19 +144,14 @@ struct GpuLight
     float pad1;
 };
 
-// MeshPushData: 72 B, matches src/render/push_data.hpp
+// MeshPushData: 24 B, matches src/render/push_data.hpp
 struct MeshPushData
 {
-    uint64_t cameraAddress;
-    uint64_t objectUbAddress;
-    uint64_t vertices;
-    uint64_t meshlets;
-    uint64_t meshletVertices;
-    uint64_t meshletTriangles;
-    uint firstMeshlet;
+    uint64_t frameRoot;
+    uint instanceIndex;
+    uint primitiveIndex;
+    uint meshletOffset; // first meshlet of this batch, relative to the primitive
     uint meshletCount;
-    DescriptorHandle<Texture2D> texture;
-    DescriptorHandle<SamplerState> samplerHandle;
 };
 
 struct MeshVertexOut
@@ -128,19 +161,21 @@ struct MeshVertexOut
     float2 fragTexCoord : TEXCOORD;
 };
 
-// future frame table (BDA + heap ids). raster still uses MeshPushData.
-struct FrameRoot
+// per-frame root, matches GpuFrameRoot in src/core/types.hpp
+struct GpuFrameRoot
 {
-    uint64_t cameraAddress;
-    uint64_t objectUbAddress;
-    uint64_t vertices;
-    uint64_t meshlets;
-    uint64_t meshletVertices;
-    uint64_t meshletTriangles;
-    uint64_t materials;
-    uint64_t pbrExt;
-    uint64_t lights;
+    uint64_t camera;
+    uint64_t instances;     // GpuObjectUB[entity]
+    uint64_t models;        // GpuModel[entity]
+    uint64_t primitives;    // GpuPrimitive[], absolute rows
+    uint64_t materials;     // GpuMaterial[], absolute rows
+    uint64_t pbrExtensions;
+    uint64_t lights;        // GpuLight[lightCount]
     uint64_t tlas;
+    uint lightCount;
+    uint instanceCount;
+    uint primitiveCount;
+    uint pad0;
 };
 
 #endif

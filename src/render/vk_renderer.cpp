@@ -180,7 +180,7 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
                                              .pColorAttachments = &colorAttachmentInfo,
                                              .pDepthAttachment = &depthAttachmentInfo};
 
-    dgc.updateSequences(currentFrame, camera);
+    dgc.updateSequences(currentFrame);
 
     {
         ZoneScopedN("DgcPreprocess");
