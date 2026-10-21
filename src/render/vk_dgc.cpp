@@ -99,6 +99,7 @@ void DeviceGeneratedCommands::init()
 
     shaderStages = kDgcMeshStages;
     createLayout();
+    createStateCommandBuffer();
 
     const uint32_t initialCapacity =
         std::min(std::max(resourceManager.objectStorage.size(), 1u), props.maxIndirectSequenceCount);
@@ -146,6 +147,29 @@ void DeviceGeneratedCommands::createLayout()
 
     layout = vk::raii::IndirectCommandsLayoutEXT(device.vkdevice, createInfo);
     explicitPreprocess = true;
+}
+
+// separate state buffer as in nvpro vk_device_generated_cmds; Nsight 2026.3.1 replay faults when
+// stateCommandBuffer is the recording command buffer itself
+void DeviceGeneratedCommands::createStateCommandBuffer()
+{
+    statePool = vk::raii::CommandPool(device.vkdevice, {.queueFamilyIndex = device.graphicsIndex});
+    setDebugName(device.vkdevice, statePool, "DgcStateCommandPool");
+
+    const vk::CommandBufferAllocateInfo allocInfo{
+        .commandPool = *statePool,
+        .level = vk::CommandBufferLevel::eSecondary,
+        .commandBufferCount = 1,
+    };
+    stateCommandBuffer = std::move(vk::raii::CommandBuffers(device.vkdevice, allocInfo).front());
+    setDebugName(device.vkdevice, stateCommandBuffer, "DgcStateCommandBuffer");
+
+    // pipeline and heaps are created once before init, so recording once is enough
+    const vk::CommandBufferInheritanceInfo inheritance{};
+    stateCommandBuffer.begin({.pInheritanceInfo = &inheritance});
+    stateCommandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.pipeline);
+    stateCommandBuffer.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
+    stateCommandBuffer.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
 }
 
 vk::DeviceSize DeviceGeneratedCommands::queryPreprocessSize(uint32_t capacity) const
@@ -375,7 +399,7 @@ void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd) con
         vk::GeneratedCommandsPipelineInfoEXT pipelineInfo{};
         vk::GeneratedCommandsInfoEXT info{};
         fillGeneratedCommandsInfo(info, pipelineInfo, recordedFrame, chunk);
-        cmd.preprocessGeneratedCommandsEXT(info, *cmd);
+        cmd.preprocessGeneratedCommandsEXT(info, *stateCommandBuffer);
     }
 
     const vk::MemoryBarrier2 preprocessBarrier{

@@ -33,6 +33,7 @@ public:
 
 private:
     void createLayout();
+    void createStateCommandBuffer();
     void ensureFrameCapacity(uint32_t frameSlot, uint32_t minSequences);
     void destroyFrameResources(uint32_t frameSlot);
     void allocateSequenceBuffer(uint32_t frameSlot, uint32_t capacity);
@@ -51,6 +52,10 @@ private:
     vk::raii::IndirectCommandsLayoutEXT layout = nullptr;
     vk::ShaderStageFlags shaderStages{};
     bool explicitPreprocess = false;
+
+    // stays in recording state; pool declared first so the buffer is freed before it
+    vk::raii::CommandPool statePool = nullptr;
+    vk::raii::CommandBuffer stateCommandBuffer = nullptr;
 
     uint32_t sequenceCount = 0;
     uint32_t recordedFrame = 0;
