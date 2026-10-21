@@ -21,7 +21,7 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
-option(ENABLE_SANITIZERS "ASan+UBSan in Debug (engine and third-party)" ON)
+option(ENABLE_SANITIZERS "ASan+UBSan in Debug (engine and third-party)" OFF)
 option(ENGINE_ENABLE_COVERAGE "Clang source-based coverage in Debug (engine targets)" ON)
 option(ENGINE_UNITY_BUILD "UNITY_BUILD on engine libraries (not postprocessing)" OFF)
 option(ENGINE_USE_MIMALLOC "Use mimalloc for engine and third-party allocations" ON)

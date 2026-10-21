@@ -33,7 +33,7 @@ namespace
 
     // NVIDIA 616.92: one execute with > 96 sequences drops/garbles sequences nondeterministically
     // (and faults with a non-4 KiB preprocess offset); split into chunks of at most 96
-    constexpr uint32_t kMaxSequencesPerExecute = 96;
+    constexpr uint32_t kMaxSequencesPerExecute = 95;
     // each chunk's preprocess region starts page-aligned; reported 256 B alignment is not enough
     constexpr vk::DeviceSize kPreprocessChunkAlignment = 4096;
 
