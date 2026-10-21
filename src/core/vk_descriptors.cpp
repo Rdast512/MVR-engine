@@ -199,7 +199,7 @@ void DescriptorManager::createHeapBuffers(vk::DeviceSize resourceHeapSize, vk::D
             vk::BufferUsageFlagBits2::eDescriptorHeapEXT,
         vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, resourceHeapBuffer,
         resourceHeapMemory, allocator, device,
-        queueFamilyIndices, "DescriptorHeapResourceMemory",
+        queueFamilyIndices, "DescriptorHeap_Resource",
         VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
     const VkResult resourceHeapMapResult =
         vmaMapMemory(allocator, resourceHeapMemory, &mappedResourceHeapPtr);
@@ -207,7 +207,6 @@ void DescriptorManager::createHeapBuffers(vk::DeviceSize resourceHeapSize, vk::D
         throw std::runtime_error(std::format("Failed to map resource descriptor heap memory (VkResult={})",
                                              static_cast<int>(resourceHeapMapResult)));
     }
-    setDebugName(device, resourceHeapBuffer, "DescriptorHeap_Resource");
 
     const VkBufferDeviceAddressInfo resourceHeapAddressInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
@@ -229,7 +228,7 @@ void DescriptorManager::createHeapBuffers(vk::DeviceSize resourceHeapSize, vk::D
             vk::BufferUsageFlagBits2::eDescriptorHeapEXT,
         vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, samplerHeapBuffer,
         samplerHeapMemory, allocator, device,
-        queueFamilyIndices, "DescriptorHeapSamplerMemory",
+        queueFamilyIndices, "DescriptorHeap_Sampler",
         VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
     const VkResult samplerHeapMapResult =
         vmaMapMemory(allocator, samplerHeapMemory, &mappedSamplerHeapPtr);
@@ -237,7 +236,6 @@ void DescriptorManager::createHeapBuffers(vk::DeviceSize resourceHeapSize, vk::D
         throw std::runtime_error(std::format("Failed to map sampler descriptor heap memory (VkResult={})",
                                              static_cast<int>(samplerHeapMapResult)));
     }
-    setDebugName(device, samplerHeapBuffer, "DescriptorHeap_Sampler");
 
     const VkBufferDeviceAddressInfo samplerHeapAddressInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,

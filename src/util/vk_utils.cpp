@@ -1,5 +1,6 @@
 #include "vk_utils.hpp"
 
+#include "debug.hpp"
 #include "vk_tracy.hpp"
 #include "../static_headers/logger.hpp"
 
@@ -71,7 +72,7 @@ void transitionImageLayout(
 void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags2 usage, vk::MemoryPropertyFlags properties,
                   vk::raii::Buffer& buffer, VmaAllocation& bufferMemory, VmaAllocator allocator,
                   const vk::raii::Device& device, const std::vector<uint32_t>& queueFamilyIndices,
-                  std::string_view memoryDebugBaseName, VmaAllocationCreateFlags extraAllocationFlags)
+                  std::string_view debugName, VmaAllocationCreateFlags extraAllocationFlags)
 {
     ZoneScopedN("createBuffer");
     logInfo("createBuffer() started", "Utils");
@@ -113,17 +114,25 @@ void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags2 usage, vk::MemoryPr
         allocInfo.flags &= ~VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     }
 
+    // bind after naming so bind-time validation messages carry the name
+    allocInfo.flags |= VMA_ALLOCATION_CREATE_DONT_BIND_BIT;
     VkBuffer rawBuffer{};
     if (vmaCreateBuffer(allocator, &static_cast<const VkBufferCreateInfo&>(bufferInfo), &allocInfo, &rawBuffer,
                         &bufferMemory, nullptr) != VK_SUCCESS) {
         throw std::runtime_error("Failed to allocate buffer with VMA");
     }
     buffer = vk::raii::Buffer(device, rawBuffer);
+    setDebugName(device, buffer, debugName);
+    if (vmaBindBufferMemory(allocator, bufferMemory, rawBuffer) != VK_SUCCESS) {
+        buffer = nullptr;
+        vmaFreeMemory(allocator, bufferMemory);
+        bufferMemory = nullptr;
+        throw std::runtime_error(std::format("Failed to bind memory for buffer {}", debugName));
+    }
 
     static std::atomic<uint64_t> allocationCounter = 0;
     const uint64_t id = allocationCounter.fetch_add(1, std::memory_order_relaxed);
-    const std::string uniqueName =
-        std::format("{}_{}", memoryDebugBaseName.empty() ? "DeviceMemory" : memoryDebugBaseName, id);
+    const std::string uniqueName = std::format("{}Memory_{}", debugName, id);
     vmaSetAllocationName(allocator, bufferMemory, uniqueName.c_str());
 }
 

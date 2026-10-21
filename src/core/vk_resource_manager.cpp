@@ -127,13 +127,12 @@ void ResourceManager::createHostBuffer(HostBuffer& target, vk::DeviceSize size, 
                  vk::BufferUsageFlagBits2::eUniformBuffer | vk::BufferUsageFlagBits2::eStorageBuffer |
                      vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                  vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, target.buffer,
-                 target.memory, allocator.allocator, device, queueFamilyIndices, std::format("{}Memory", debugName),
+                 target.memory, allocator.allocator, device, queueFamilyIndices, debugName,
                  VMA_ALLOCATION_CREATE_MAPPED_BIT);
     VmaAllocationInfo allocationInfo{};
     vmaGetAllocationInfo(allocator.allocator, target.memory, &allocationInfo);
     target.mapped = allocationInfo.pMappedData;
     target.address = device.getBufferAddress({.buffer = *target.buffer});
-    setDebugName(device, target.buffer, debugName);
     tracyResourceAlloc(static_cast<VkBuffer>(*target.buffer), static_cast<size_t>(size), tracyName);
 }
 
@@ -389,7 +388,7 @@ void ResourceManager::createAssetBuffer(AssetBuffer id, vk::DeviceSize capacity,
                  vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eTransferDst |
                      vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                  vk::MemoryPropertyFlagBits::eDeviceLocal, buffer, memory, allocator.allocator, device,
-                 queueFamilyIndices, std::format("{}Memory", kAssetBufferInfo[std::to_underlying(id)].debugName));
+                 queueFamilyIndices, kAssetBufferInfo[std::to_underlying(id)].debugName);
 }
 
 void ResourceManager::installAssetBuffer(AssetBuffer id, vk::raii::Buffer&& buffer, VmaAllocation memory,
@@ -404,7 +403,6 @@ void ResourceManager::installAssetBuffer(AssetBuffer id, vk::raii::Buffer&& buff
     dst.usedBytes = usedBytes;
     dst.capacityBytes = capacityBytes;
     dst.address = device.getBufferAddress({.buffer = *dst.buffer});
-    setDebugName(device, dst.buffer, info.debugName);
     tracyResourceAlloc(static_cast<VkBuffer>(*dst.buffer), static_cast<size_t>(capacityBytes), info.tracyName);
 }
 
@@ -431,7 +429,7 @@ void ResourceManager::appendDeviceLocal(AssetBuffer id, std::span<const std::byt
                  vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                  vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, staging,
                  stagingMemory, allocator.allocator, device, queueFamilyIndices,
-                 std::format("{}StagingMemory", debugName));
+                 std::format("{}Staging", debugName));
     vmaCopyMemoryToAllocation(allocator.allocator, src.data(), stagingMemory, 0, srcBytes);
 
     const vk::DeviceSize oldUsed = dst.usedBytes;
@@ -614,7 +612,7 @@ void ResourceManager::createCameraBuffers(Camera& camera)
                          vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                      vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, buffer,
                      bufferMem, allocator.allocator, device, queueFamilyIndices,
-                     std::format("CameraUniformBufferMemory_{}", i));
+                     std::format("CameraUniformBuffer_{}", i));
         camera.cameraBuffers[i] = std::move(buffer);
         camera.cameraBuffersMemory[i] = bufferMem;
         void* data = nullptr;

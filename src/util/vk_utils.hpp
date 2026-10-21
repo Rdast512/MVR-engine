@@ -23,7 +23,8 @@ void transitionImageLayout(
     std::optional<vk::AccessFlags2> srcAccessMaskOverride = std::nullopt,
     std::optional<vk::AccessFlags2> dstAccessMaskOverride = std::nullopt);
 
-// Creates a VkBuffer with VMA allocation.  Pure utility — does not depend on any manager class.
+// Creates a VkBuffer with VMA allocation, named before its memory is bound.  Pure utility — does not depend on any
+// manager class.
 void createBuffer(
     vk::DeviceSize size,
     vk::BufferUsageFlags2 usage,
@@ -33,7 +34,7 @@ void createBuffer(
     VmaAllocator allocator,
     const vk::raii::Device& device,
     const std::vector<uint32_t>& queueFamilyIndices,
-    std::string_view memoryDebugBaseName = "ResourceBufferMemory",
+    std::string_view debugName,
     VmaAllocationCreateFlags extraAllocationFlags = 0);
 
 // Ends a one-time command buffer, submits it and blocks until the queue drains.

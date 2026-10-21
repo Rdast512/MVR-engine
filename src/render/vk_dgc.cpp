@@ -3,7 +3,6 @@
 #include "../static_headers/logger.hpp"
 #include "core/vk_descriptors.hpp"
 #include "push_data.hpp"
-#include "util/debug.hpp"
 #include "util/vk_tracy.hpp"
 #include "util/vk_utils.hpp"
 
@@ -185,7 +184,7 @@ void DeviceGeneratedCommands::allocateSequenceBuffer(uint32_t frameSlot, uint32_
     createBuffer(bufferSize, vk::BufferUsageFlagBits2::eIndirectBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                  vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, buffer, memory,
                  resourceManager.allocator.allocator, device.vkdevice, device.queueFamilyIndices,
-                 std::format("DgcSequenceMemory_{}", frameSlot));
+                 std::format("DgcSequences_{}", frameSlot));
 
     sequenceBuffers[frameSlot] = std::move(buffer);
     sequenceMemory[frameSlot] = memory;
@@ -194,7 +193,6 @@ void DeviceGeneratedCommands::allocateSequenceBuffer(uint32_t frameSlot, uint32_
     sequenceMapped[frameSlot] = mapped;
     sequenceAddresses[frameSlot] = device.vkdevice.getBufferAddress({.buffer = *sequenceBuffers[frameSlot]});
     sequenceCapacity[frameSlot] = capacity;
-    setDebugName(device.vkdevice, sequenceBuffers[frameSlot], std::format("DgcSequences_{}", frameSlot));
     tracyResourceAlloc(static_cast<VkBuffer>(*sequenceBuffers[frameSlot]), static_cast<size_t>(bufferSize),
                        "GPU/DgcSequences");
 }
@@ -215,14 +213,13 @@ void DeviceGeneratedCommands::allocatePreprocessBuffer(uint32_t frameSlot, uint3
     createBuffer(preprocessSize,
                  vk::BufferUsageFlagBits2::ePreprocessBufferEXT | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                  vk::MemoryPropertyFlagBits::eDeviceLocal, buffer, memory, resourceManager.allocator.allocator,
-                 device.vkdevice, device.queueFamilyIndices, std::format("DgcPreprocessMemory_{}", frameSlot),
+                 device.vkdevice, device.queueFamilyIndices, std::format("DgcPreprocess_{}", frameSlot),
                  VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
 
     preprocessBuffers[frameSlot] = std::move(buffer);
     preprocessMemory[frameSlot] = memory;
     preprocessAddresses[frameSlot] = device.vkdevice.getBufferAddress({.buffer = *preprocessBuffers[frameSlot]});
     preprocessSizes[frameSlot] = preprocessSize;
-    setDebugName(device.vkdevice, preprocessBuffers[frameSlot], std::format("DgcPreprocess_{}", frameSlot));
     tracyResourceAlloc(static_cast<VkBuffer>(*preprocessBuffers[frameSlot]), static_cast<size_t>(preprocessSize),
                        "GPU/DgcPreprocess");
 }
