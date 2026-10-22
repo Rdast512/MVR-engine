@@ -192,6 +192,8 @@ void DeviceGeneratedCommands::ensureFrameCapacity(uint32_t frameSlot, uint32_t m
     if (minSequences <= sequenceCapacity[frameSlot]) {
         return;
     }
+    // zone only on growth: reallocation stalls the frame
+    ZoneScopedN("DeviceGeneratedCommands::ensureFrameCapacity");
 
     const auto& props = device.capabilities.deviceGeneratedCommands;
     uint32_t newCapacity = sequenceCapacity[frameSlot] == 0 ? minSequences : sequenceCapacity[frameSlot];
@@ -213,6 +215,7 @@ void DeviceGeneratedCommands::ensureFrameCapacity(uint32_t frameSlot, uint32_t m
 
 void DeviceGeneratedCommands::allocateSequenceBuffer(uint32_t frameSlot, uint32_t capacity)
 {
+    ZoneScopedN("DeviceGeneratedCommands::allocateSequenceBuffer");
     const vk::DeviceSize bufferSize = static_cast<vk::DeviceSize>(capacity) * sizeof(MeshDgcSequence);
     vk::raii::Buffer buffer({});
     VmaAllocation memory = nullptr;
@@ -234,6 +237,7 @@ void DeviceGeneratedCommands::allocateSequenceBuffer(uint32_t frameSlot, uint32_
 
 void DeviceGeneratedCommands::allocatePreprocessBuffer(uint32_t frameSlot, uint32_t capacity)
 {
+    ZoneScopedN("DeviceGeneratedCommands::allocatePreprocessBuffer");
     const vk::DeviceSize chunkSize = queryPreprocessSize(std::min(capacity, kMaxSequencesPerExecute));
     if (chunkSize == 0) {
         preprocessSizes[frameSlot] = 0;
@@ -265,6 +269,7 @@ void DeviceGeneratedCommands::allocatePreprocessBuffer(uint32_t frameSlot, uint3
 
 void DeviceGeneratedCommands::destroyFrameResources(uint32_t frameSlot)
 {
+    ZoneScopedN("DeviceGeneratedCommands::destroyFrameResources");
     if (sequenceMapped[frameSlot] != nullptr && sequenceMemory[frameSlot] != nullptr) {
         vmaUnmapMemory(resourceManager.allocator.allocator, sequenceMemory[frameSlot]);
         sequenceMapped[frameSlot] = nullptr;
@@ -318,9 +323,12 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot)
     };
 
     uint32_t needed = 0;
-    forEachPrimitive([&](EntityId, uint32_t, uint32_t meshletCount) {
-        needed += sequenceCountForMeshlets(meshletCount, maxGroupsX);
-    });
+    {
+        ZoneScopedN("DeviceGeneratedCommands::updateSequences::count");
+        forEachPrimitive([&](EntityId, uint32_t, uint32_t meshletCount) {
+            needed += sequenceCountForMeshlets(meshletCount, maxGroupsX);
+        });
+    }
     if (needed == 0) {
         return;
     }
@@ -347,7 +355,10 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot)
         }
     };
 
-    forEachPrimitive(fillSequences);
+    {
+        ZoneScopedN("DeviceGeneratedCommands::updateSequences::fill");
+        forEachPrimitive(fillSequences);
+    }
 
     TracyPlot("Vulkan/DgcSequenceCount", static_cast<double>(sequenceCount));
 }
