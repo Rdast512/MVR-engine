@@ -1,4 +1,5 @@
 #pragma once
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,6 +22,8 @@ public:
     // Load a model into CPU mesh vectors and create a SoA entity in objectStorage.
     // nullopt on failure; flush the scratch to the GPU before the next load (one model per flush).
     [[nodiscard]] std::optional<EntityId> loadModel(std::string modelPath, glm::vec3 xyz);
+    // model file a folder pack or file path loads; also the model cache key. nullopt when the folder has none
+    [[nodiscard]] static std::optional<std::filesystem::path> resolveModelPath(const std::filesystem::path& modelPath);
 
     ObjectStorage& objectStorage;
     TextureManager& textureManager;

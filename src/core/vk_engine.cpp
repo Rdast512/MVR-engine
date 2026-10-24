@@ -627,13 +627,14 @@ void Engine::drawLoadedModelsPanel()
         return;
     }
 
-    constexpr int kColumnCount = 6;
+    constexpr int kColumnCount = 7;
     constexpr ImGuiTableFlags kTableFlags =
         ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingFixedFit;
     if (!ImGui::BeginTable("##loadedModels", kColumnCount, kTableFlags)) {
         return;
     }
     ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Nodes");
     ImGui::TableSetupColumn("Prims");
     ImGui::TableSetupColumn("Meshlets");
     ImGui::TableSetupColumn("Textures");
@@ -647,14 +648,25 @@ void Engine::drawLoadedModelsPanel()
         ImGui::TableNextColumn();
         ImGui::TextUnformatted(std::filesystem::path(storage.names[id]).filename().string().c_str());
         ImGui::SetItemTooltip("%s", storage.names[id].c_str());
+        const ModelId modelId = storage.modelIds[id];
+        const bool hasModel = modelId < resourceManager->modelAllocations.size();
+        const ModelAllocation* model = hasModel ? &resourceManager->modelAllocations[modelId] : nullptr;
+        ImGui::TableNextColumn();
+        ImGui::Text("%u", model != nullptr ? model->nodes.count : 0);
+        ImGui::SetItemTooltip("mesh placements; prims and meshlets are stored once per mesh");
         ImGui::TableNextColumn();
         ImGui::Text("%u", storage.primitiveCounts[id]);
         ImGui::TableNextColumn();
         ImGui::Text("%u", storage.meshletDraws[id].meshletCount);
         ImGui::TableNextColumn();
-        ImGui::Text("%zu", storage.textureRefs[id].size());
+        ImGui::Text("%zu", model != nullptr ? model->textureRefs.size() : 0);
         ImGui::TableNextColumn();
-        ImGui::Text("%.1f MiB", toMiB(resourceManager->modelGpuBytes(id)));
+        if (model != nullptr && model->refCount > 1) {
+            ImGui::Text("%.1f MiB x%u", toMiB(resourceManager->modelGpuBytes(modelId)), model->refCount);
+            ImGui::SetItemTooltip("geometry shared by %u entities loaded from the same file", model->refCount);
+        } else {
+            ImGui::Text("%.1f MiB", toMiB(hasModel ? resourceManager->modelGpuBytes(modelId) : 0));
+        }
         ImGui::TableNextColumn();
         if (ImGui::SmallButton("Unload")) {
             pendingUnload = id;
@@ -675,12 +687,19 @@ void Engine::drawAssetsPanel() const
     const LightStore& lights = scene->lightStore;
     const ObjectStorage& storage = scene->objectStorage;
 
-    // the catalog holds flushed primitives only, so pending rows count 0
+    // primitives are stored once per model; every entity of the model draws them
     std::vector<uint32_t> primitiveUses(materials.infos.size(), 0);
-    for (const PrimitiveDraw& draw : scene->geometryStore.primitiveDraws) {
-        const uint32_t id = draw.materialId == kNoneIndex ? materials.defaultMaterialId() : draw.materialId;
-        if (id < primitiveUses.size()) {
-            ++primitiveUses[id];
+    std::vector<uint32_t> entityUses(materials.infos.size(), 0);
+    for (const ModelAllocation& model : resourceManager->modelAllocations) {
+        for (uint32_t p = model.primitives.first; p < model.primitives.end(); ++p) {
+            const uint32_t materialId = scene->geometryStore.primitiveDraws[p].materialId;
+            const uint32_t id = materialId == kNoneIndex ? materials.defaultMaterialId() : materialId;
+            if (id < primitiveUses.size()) {
+                ++primitiveUses[id];
+            }
+        }
+        for (const uint32_t id : model.materialRefs) {
+            entityUses[id] += model.refCount;
         }
     }
 
@@ -698,16 +717,19 @@ void Engine::drawAssetsPanel() const
 
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    const std::string materialsLabel = std::format("Materials ({})###materials", materials.infos.size());
+    const std::string materialsLabel = std::format("Materials ({})###materials", materials.liveCount());
     const bool isMaterialsOpen = ImGui::TreeNodeEx(materialsLabel.c_str(), ImGuiTreeNodeFlags_SpanFullWidth);
     ImGui::TableNextColumn();
     ImGui::TextDisabled("cache %u hits / %u misses", materials.cacheHits, materials.cacheMisses);
-    ImGui::SetItemTooltip("hit: a glTF material identical to an earlier row of the same model reuses it");
+    ImGui::SetItemTooltip("hit: a loaded material identical to a live row reuses it, across models");
     ImGui::TableNextColumn();
     if (isMaterialsOpen) {
         constexpr vk::DeviceSize kRowBytes = sizeof(GpuMaterial) + sizeof(GpuMaterialExtension);
         for (uint32_t id = 0; id < materials.infos.size(); ++id) {
             const MaterialStore::MaterialInfo& info = materials.infos[id];
+            if (info.isFree) {
+                continue;
+            }
             const GpuMaterial& m = info.material;
             vk::DeviceSize textureBytes = 0;
             for (const uint32_t heapIndex : materialTextures(info)) {
@@ -725,12 +747,10 @@ void Engine::drawAssetsPanel() const
             ImGui::ColorButton("##albedo", {m.baseColorFactor.r, m.baseColorFactor.g, m.baseColorFactor.b, 1.0f},
                                kSwatchFlags, swatchSize);
             ImGui::SameLine();
-            if (info.dedupHits > 0) {
-                ImGui::Text("%u prims, +%u merged", primitiveUses[id], info.dedupHits);
-            } else {
-                ImGui::Text("%u prims", primitiveUses[id]);
-            }
-            ImGui::SetItemTooltip("primitives drawn with this row; merged: identical glTF materials folded into it");
+            ImGui::Text("%u objects, %u prims, %u hits", entityUses[id], primitiveUses[id], info.dedupHits);
+            ImGui::SetItemTooltip("objects: entities drawing it; prims: unique primitives using it; hits: loads that "
+                                  "reused this row instead of adding one (%u models hold it)",
+                                  info.refCount);
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(formatSize(kRowBytes + textureBytes).c_str());
             ImGui::SetItemTooltip("%s row + %s textures (shared textures count for every material using them)",
@@ -925,8 +945,21 @@ void Engine::loadSelectedModel()
         TracyMessage(msg.c_str(), msg.size());
     }
 #endif
-    device->vkdevice.waitIdle();
     const auto start = std::chrono::steady_clock::now();
+    // same file already on the GPU: a new entity shares its geometry, materials and textures
+    if (const std::optional<std::filesystem::path> modelFile = AssetsLoader::resolveModelPath(assetPath)) {
+        if (const std::optional<ModelId> model = resourceManager->findModel(modelFile->string())) {
+            device->vkdevice.waitIdle();
+            resourceManager->instantiateModel(*model,
+                                              Transform{.position = glm::make_vec3(&loadedModelPosition[0])});
+            resourceManager->ensureInstanceCapacity(scene->objectStorage.size());
+            const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            loadStatus = std::format("Instanced {} in {:.3f} s (shared)", name, seconds);
+            isLoadStatusError = false;
+            return;
+        }
+    }
+    device->vkdevice.waitIdle();
     std::optional<EntityId> id;
     try {
         id = assetsLoader->loadModel(assetPath.string(), glm::make_vec3(&loadedModelPosition[0]));
@@ -957,8 +990,8 @@ void Engine::unloadModel(EntityId id)
     const std::string name = std::filesystem::path(storage.names[id]).filename().string();
     // frames in flight still read the buffers, textures and heap slots being freed
     device->vkdevice.waitIdle();
-    textureManager->release(storage.textureRefs[id]);
-    resourceManager->eraseModel(id);
+    // textures come back only when this was the model's last entity
+    textureManager->release(resourceManager->eraseEntity(id));
 #if ENGINE_USE_MIMALLOC
     mi_collect(true);
 #endif

@@ -53,8 +53,6 @@ struct GpuModel
     uint64_t meshlets;
     uint64_t meshletVertices;
     uint64_t meshletTriangles;
-    uint64_t materials;
-    uint64_t pbrExtensions;
     uint64_t normals;
     uint64_t tangents;
     uint64_t uv1;
@@ -66,7 +64,41 @@ struct GpuModel
     uint64_t morphTan;     // float4 deltas
     uint64_t morphTargets; // GpuMorphTarget[]
     uint64_t morphWeights; // float[], glTF default weights
+    uint64_t nodes;        // GpuNode[nodeCount]
     uint attributeMask;
+    uint nodeCount;
+};
+
+static const uint kNodeFlagFlipWinding = 1u;
+
+// one mesh placement inside its model, model-relative
+struct GpuNode
+{
+    float4 localToModel[3]; // affine rows
+    float4 boundingSphere;  // model space
+    uint firstPrimitive;
+    uint primitiveCount;
+    uint flags;
+    uint pad0;
+};
+
+// one entity x node, transforms precomputed per frame
+struct GpuNodeInstance
+{
+    float4x4 worldMatrix;
+    float4x4 prevWorldMatrix;
+    float4 boundingSphere; // world space
+    uint entityIndex;
+    uint modelIndex;
+    uint nodeIndex;
+    uint flags;
+};
+
+struct GpuDrawRecord
+{
+    uint nodeInstanceIndex;
+    uint primitiveIndex; // absolute row of GpuFrameRoot.primitives
+    uint meshletOffset;  // relative to the primitive
     uint pad0;
 };
 
@@ -83,7 +115,7 @@ struct GpuPrimitive
 {
     uint firstMeshlet;
     uint meshletCount;
-    uint materialId; // kNoneIndex = default material (row 0 of GpuFrameRoot.materials)
+    uint materialId; // absolute row of GpuFrameRoot.materials, kNoneIndex = default material (row 0)
     uint firstVertex;
     uint vertexCount;
     uint firstIndex;
@@ -236,10 +268,8 @@ struct GpuMaterialExtension
 struct MeshPushData
 {
     uint64_t frameRoot;
-    uint instanceIndex;
-    uint primitiveIndex;
-    uint meshletOffset; // first meshlet of this batch, relative to the primitive
-    uint meshletCount;
+    uint drawIndex;    // row of GpuFrameRoot.drawRecords
+    uint meshletCount; // groups in this batch
 };
 
 struct MeshVertexOut
@@ -254,15 +284,19 @@ struct GpuFrameRoot
 {
     uint64_t camera;
     uint64_t instances;     // GpuObjectUB[entity]
-    uint64_t models;        // GpuModel[entity]
+    uint64_t models;        // GpuModel[model]
     uint64_t primitives;    // GpuPrimitive[], absolute rows
     uint64_t materials;     // whole GpuMaterial[]; only row 0 (default) is read here
     uint64_t pbrExtensions; // whole GpuMaterialExtension[], parallel to materials
     uint64_t lights;        // GpuLight[lightCount]
     uint64_t tlas;
+    uint64_t nodeInstances; // GpuNodeInstance[nodeInstanceCount]
+    uint64_t drawRecords;   // GpuDrawRecord[drawRecordCount]
     uint lightCount;
     uint instanceCount;
     uint primitiveCount;
+    uint nodeInstanceCount;
+    uint drawRecordCount;
     uint pad0;
 };
 

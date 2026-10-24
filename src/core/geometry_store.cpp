@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <span>
 
 namespace
 {
@@ -49,20 +50,21 @@ void GeometryStore::reserveGeometry(size_t extraVertices, size_t extraIndices)
     indices.reserve(indices.size() + extraIndices);
 }
 
-glm::vec4 GeometryStore::boundingSphere() const
+glm::vec4 GeometryStore::boundingSphere(uint32_t firstVertex, uint32_t vertexCount) const
 {
-    if (positions.empty()) {
+    if (vertexCount == 0) {
         return glm::vec4{0.0f};
     }
-    glm::vec3 minCorner = positions.front();
-    glm::vec3 maxCorner = positions.front();
-    for (const glm::vec3& position : positions) {
+    const std::span<const glm::vec3> points(positions.data() + firstVertex, vertexCount);
+    glm::vec3 minCorner = points.front();
+    glm::vec3 maxCorner = points.front();
+    for (const glm::vec3& position : points) {
         minCorner = glm::min(minCorner, position);
         maxCorner = glm::max(maxCorner, position);
     }
     const glm::vec3 center = (minCorner + maxCorner) * 0.5f;
     float radiusSquared = 0.0f;
-    for (const glm::vec3& position : positions) {
+    for (const glm::vec3& position : points) {
         const glm::vec3 offset = position - center;
         radiusSquared = std::max(radiusSquared, glm::dot(offset, offset));
     }
@@ -200,10 +202,12 @@ void GeometryStore::clearScratch()
     drop(morphNrm);
     drop(morphTan);
     presentStreams = 0;
+    textureRefs = {};
     flushedPrimitiveCount = static_cast<uint32_t>(primitiveDraws.size());
     flushedMorphTargetCount = static_cast<uint32_t>(morphTargets.size());
     flushedMorphWeightCount = static_cast<uint32_t>(morphWeights.size());
     flushedAuxBlobCount = static_cast<uint32_t>(auxBlobs.size());
+    flushedNodeCount = static_cast<uint32_t>(nodeDraws.size());
 }
 
 void GeometryStore::discardScratch()
@@ -212,5 +216,6 @@ void GeometryStore::discardScratch()
     morphTargets.resize(flushedMorphTargetCount);
     morphWeights.resize(flushedMorphWeightCount);
     auxBlobs.resize(flushedAuxBlobCount);
+    nodeDraws.resize(flushedNodeCount);
     clearScratch();
 }

@@ -14,7 +14,7 @@
 
 namespace
 {
-    // packed size is 36 (24-byte push + 12-byte draw); 16-byte stride keeps the
+    // packed size is 28 (16-byte push + 12-byte draw); 16-byte stride keeps the
     // frame root BDA in pushData 8-byte aligned for every sequence
     struct alignas(16) MeshDgcSequence
     {
@@ -298,9 +298,7 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot)
     }
 
     const auto& storage = resourceManager.objectStorage;
-    // entities not flushed yet have no GPU slice
-    const auto entityCount =
-        std::min(storage.size(), static_cast<uint32_t>(resourceManager.modelAllocations.size()));
+    const uint32_t entityCount = storage.size();
     if (entityCount == 0) {
         return;
     }
@@ -308,17 +306,22 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot)
     const auto& geometry = resourceManager.geometryStore;
     const uint32_t maxGroupsX = maxMeshGroupsX(device.capabilities);
 
-    // visits every primitive with meshlets; the shaders resolve everything else from the frame root
+    // visits every (node instance, primitive) with meshlets; a mesh placed by n nodes is visited n times
     auto forEachPrimitive = [&](auto&& visit) {
         for (EntityId id = 0; id < entityCount; ++id) {
-            if ((storage.flags[id] & EntityFlag::Active) == 0) {
+            // an entity whose load is not flushed yet has no GPU model
+            if ((storage.flags[id] & EntityFlag::Active) == 0 || storage.modelIds[id] == kInvalidModelId) {
                 continue;
             }
-            const uint32_t primFirst = storage.firstPrimitives[id];
-            for (uint32_t p = primFirst; p < primFirst + storage.primitiveCounts[id]; ++p) {
-                const uint32_t meshletCount = geometry.primitiveDraws[p].meshlets.meshletCount;
-                if (meshletCount > 0) {
-                    visit(id, p, meshletCount);
+            const ElementRange nodes = resourceManager.modelAllocations[storage.modelIds[id]].nodes;
+            for (uint32_t k = 0; k < nodes.count; ++k) {
+                const NodeDraw& node = geometry.nodeDraws[nodes.first + k];
+                const uint32_t nodeInstance = resourceManager.entityNodeInstanceFirst[id] + k;
+                for (uint32_t p = node.firstPrimitive; p < node.firstPrimitive + node.primitiveCount; ++p) {
+                    const uint32_t meshletCount = geometry.primitiveDraws[p].meshlets.meshletCount;
+                    if (meshletCount > 0) {
+                        visit(nodeInstance, p, meshletCount);
+                    }
                 }
             }
         }
@@ -327,10 +330,12 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot)
     uint32_t needed = 0;
     {
         ZoneScopedN("DeviceGeneratedCommands::updateSequences::count");
-        forEachPrimitive([&](EntityId, uint32_t, uint32_t meshletCount) {
+        forEachPrimitive([&](uint32_t, uint32_t, uint32_t meshletCount) {
             needed += sequenceCountForMeshlets(meshletCount, maxGroupsX);
         });
     }
+    // the frame root reports 0 records when nothing draws
+    GpuDrawRecord* records = resourceManager.mapDrawRecords(frameSlot, needed);
     if (needed == 0) {
         return;
     }
@@ -339,21 +344,22 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot)
     auto* sequences = static_cast<MeshDgcSequence*>(sequenceMapped[frameSlot]);
 
     const vk::DeviceAddress frameRoot = resourceManager.frameRootAddress(frameSlot);
-    auto fillSequences = [&](EntityId id, uint32_t primitive, uint32_t meshletCount) {
+    // one draw record per sequence, same index
+    auto fillSequences = [&](uint32_t nodeInstance, uint32_t primitive, uint32_t meshletCount) {
         // meshlet batches past maxMeshWorkGroupCount split into more sequences
         for (uint32_t offset = 0; offset < meshletCount; offset += maxGroupsX) {
             const uint32_t batch = std::min(meshletCount - offset, maxGroupsX);
-            sequences[sequenceCount++] = MeshDgcSequence{
-                .pushData =
-                    {
-                        .frameRoot = frameRoot,
-                        .instanceIndex = id,
-                        .primitiveIndex = primitive,
-                        .meshletOffset = offset,
-                        .meshletCount = batch,
-                    },
+            records[sequenceCount] = GpuDrawRecord{
+                .nodeInstanceIndex = nodeInstance,
+                .primitiveIndex = primitive,
+                .meshletOffset = offset,
+                .pad0 = 0,
+            };
+            sequences[sequenceCount] = MeshDgcSequence{
+                .pushData = {.frameRoot = frameRoot, .drawIndex = sequenceCount, .meshletCount = batch},
                 .draw = {.groupCountX = batch, .groupCountY = 1, .groupCountZ = 1},
             };
+            ++sequenceCount;
         }
     };
 

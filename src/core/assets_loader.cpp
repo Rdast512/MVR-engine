@@ -8,7 +8,6 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
-#include <limits>
 #include <optional>
 #include <thread>
 #include <glm/gtc/quaternion.hpp>
@@ -1365,55 +1364,9 @@ namespace
         return {};
     }
 
-    // node world transform baked into vertices; the model is a single entity with one transform
-    struct GltfNodeXform
-    {
-        glm::mat4 world{1.0f};
-        glm::mat3 linear{1.0f};
-        glm::mat3 normal{1.0f};
-        bool isIdentity = true;
-        bool flipsWinding = false;
-    };
-
-    static GltfNodeXform makeNodeXform(const glm::mat4& world)
-    {
-        const glm::mat3 linear{world};
-        const float det = glm::determinant(linear);
-        return GltfNodeXform{
-            .world = world,
-            .linear = linear,
-            // degenerate scale has no inverse; linear keeps normals finite
-            .normal = glm::abs(det) > std::numeric_limits<float>::min() ? glm::transpose(glm::inverse(linear)) : linear,
-            .isIdentity = world == glm::mat4{1.0f},
-            .flipsWinding = det < 0.0f,
-        };
-    }
-
-    static glm::vec3 normalizeOrZero(const glm::vec3& v)
-    {
-        const float len = glm::length(v);
-        return len > 0.0f ? v / len : v;
-    }
-
-    static void bakeNodeXform(GeometryStore& geometry, uint32_t firstVertex, uint32_t vertexCount,
-                              const GltfNodeXform& xform)
-    {
-        if (xform.isIdentity) {
-            return;
-        }
-        // mirrored transforms flip bitangent handedness
-        const float handedness = xform.flipsWinding ? -1.0f : 1.0f;
-        for (uint32_t v = firstVertex; v < firstVertex + vertexCount; ++v) {
-            geometry.positions[v] = glm::vec3(xform.world * glm::vec4(geometry.positions[v], 1.0f));
-            geometry.normals[v] = normalizeOrZero(xform.normal * geometry.normals[v]);
-            const glm::vec4 tangent = geometry.tangents[v];
-            geometry.tangents[v] =
-                glm::vec4(normalizeOrZero(xform.linear * glm::vec3(tangent)), tangent.w * handedness);
-        }
-    }
-
+    // mesh-local deltas: nodes place the mesh at draw time, so nothing is transformed here
     static void storeMorphTargets(GeometryStore& geometry, const tg3_model& model, const tg3_primitive& prim,
-                                  uint32_t vertexCount, const GltfNodeXform& xform)
+                                  uint32_t vertexCount)
     {
         if (prim.targets_count == 0) {
             return;
@@ -1436,29 +1389,18 @@ namespace
                 logDebug(std::format("glTF morph[{}] attr='{}' accessor={} floats={}", t, key, attrs[a].value,
                                       delta.size()),
                           "AssetLoader");
-                // deltas are directions: linear part only, no translation, no renormalize
                 if (key == "POSITION") {
                     target.posOffset = static_cast<uint32_t>(geometry.morphPos.size());
                     geometry.morphPos.resize(target.posOffset + vertexCount, glm::vec3{0.0f});
                     fillVec3Range(geometry.morphPos, target.posOffset, vertexCount, delta, comps);
-                    for (uint32_t v = 0; v < vertexCount && !xform.isIdentity; ++v) {
-                        geometry.morphPos[target.posOffset + v] = xform.linear * geometry.morphPos[target.posOffset + v];
-                    }
                 } else if (key == "NORMAL") {
                     target.nrmOffset = static_cast<uint32_t>(geometry.morphNrm.size());
                     geometry.morphNrm.resize(target.nrmOffset + vertexCount, glm::vec3{0.0f});
                     fillVec3Range(geometry.morphNrm, target.nrmOffset, vertexCount, delta, comps);
-                    for (uint32_t v = 0; v < vertexCount && !xform.isIdentity; ++v) {
-                        geometry.morphNrm[target.nrmOffset + v] = xform.normal * geometry.morphNrm[target.nrmOffset + v];
-                    }
                 } else if (key == "TANGENT") {
                     target.tanOffset = static_cast<uint32_t>(geometry.morphTan.size());
                     geometry.morphTan.resize(target.tanOffset + vertexCount, glm::vec4{0.0f});
                     fillVec4Range(geometry.morphTan, target.tanOffset, vertexCount, delta, comps, glm::vec4{0.0f});
-                    for (uint32_t v = 0; v < vertexCount && !xform.isIdentity; ++v) {
-                        glm::vec4& tangent = geometry.morphTan[target.tanOffset + v];
-                        tangent = glm::vec4(xform.linear * glm::vec3(tangent), tangent.w);
-                    }
                 }
             }
             geometry.morphTargets.push_back(target);
@@ -1547,6 +1489,47 @@ namespace
         glm::mat4 world{1.0f};
     };
 
+    // EXT_mesh_gpu_instancing: per-instance TRS in the node's local space; empty when the node has none
+    static std::vector<glm::mat4> gpuInstanceTransforms(const tg3_model& model, const tg3_node& node)
+    {
+        const tg3_value* attributes = objectField(findExtensionValue(node.ext, "EXT_mesh_gpu_instancing"), "attributes");
+        if (attributes == nullptr) {
+            return {};
+        }
+        // normalized integer rotations are allowed; readAccessorFloats unpacks them
+        const auto read = [&](std::string_view key, uint32_t comps) -> std::vector<float> {
+            const int32_t accessor = valueAsInt(objectField(attributes, key), -1);
+            if (accessor < 0 || accessorCompCount(model, accessor) != comps) {
+                return {};
+            }
+            return readAccessorFloats(model, accessor);
+        };
+        const std::vector<float> translations = read("TRANSLATION", 3);
+        const std::vector<float> rotations = read("ROTATION", 4);
+        const std::vector<float> scales = read("SCALE", 3);
+        const size_t count = std::max({translations.size() / 3, rotations.size() / 4, scales.size() / 3});
+
+        // the spec requires equal counts; a short attribute leaves its part identity
+        std::vector<glm::mat4> transforms(count, glm::mat4{1.0f});
+        for (size_t i = 0; i < count; ++i) {
+            glm::mat4& transform = transforms[i];
+            if (i * 3 + 2 < translations.size()) {
+                transform = glm::translate(transform, {translations[i * 3], translations[i * 3 + 1], translations[i * 3 + 2]});
+            }
+            if (i * 4 + 3 < rotations.size()) {
+                const glm::quat rotation{rotations[i * 4 + 3], rotations[i * 4], rotations[i * 4 + 1], rotations[i * 4 + 2]};
+                transform *= glm::mat4_cast(glm::normalize(rotation));
+            }
+            if (i * 3 + 2 < scales.size()) {
+                transform = glm::scale(transform, {scales[i * 3], scales[i * 3 + 1], scales[i * 3 + 2]});
+            }
+        }
+        logDebug(std::format("glTF EXT_mesh_gpu_instancing: mesh {} x{} (T={} R={} S={})", node.mesh, count,
+                              translations.size() / 3, rotations.size() / 4, scales.size() / 3),
+                  "AssetLoader");
+        return transforms;
+    }
+
     // walk the active scene; meshes are placed per referencing node, unreferenced meshes are not drawn
     static std::vector<GltfMeshInstance> collectMeshInstances(const tg3_model& model)
     {
@@ -1589,7 +1572,15 @@ namespace
             const tg3_node& node = model.nodes[nodeIndex];
             const glm::mat4 world = parentWorld * gltfNodeLocalMatrix(node);
             if (node.mesh >= 0 && static_cast<uint32_t>(node.mesh) < model.meshes_count) {
-                instances.push_back(GltfMeshInstance{.mesh = static_cast<uint32_t>(node.mesh), .world = world});
+                const auto mesh = static_cast<uint32_t>(node.mesh);
+                const std::vector<glm::mat4> gpuInstances = gpuInstanceTransforms(model, node);
+                // with the extension the node draws only its instances
+                if (gpuInstances.empty()) {
+                    instances.push_back(GltfMeshInstance{.mesh = mesh, .world = world});
+                }
+                for (const glm::mat4& local : gpuInstances) {
+                    instances.push_back(GltfMeshInstance{.mesh = mesh, .world = world * local});
+                }
             }
             for (uint32_t ci = node.children_count; ci > 0; --ci) {
                 stack.emplace_back(node.children[ci - 1], world);
@@ -1598,7 +1589,7 @@ namespace
         return instances;
     }
 
-    static uint32_t appendGltfMesh(GltfLoadCtx& ctx, const tg3_model& model, uint32_t mi, const GltfNodeXform& xform)
+    static uint32_t appendGltfMesh(GltfLoadCtx& ctx, const tg3_model& model, uint32_t mi)
     {
         GeometryStore& geometry = ctx.geometry;
         const tg3_mesh& mesh = model.meshes[mi];
@@ -1680,11 +1671,6 @@ namespace
                 logInfo(std::format("glTF mesh[{}].prim[{}] skipped: no triangles", mi, pi), "AssetLoader");
                 continue;
             }
-            if (xform.flipsWinding) {
-                for (size_t t = 0; t + 2 < triIndices.size(); t += 3) {
-                    std::swap(triIndices[t + 1], triIndices[t + 2]);
-                }
-            }
 
             const uint32_t firstVertex = static_cast<uint32_t>(geometry.positions.size());
             geometry.resizeVertices(firstVertex + vertexCount);
@@ -1696,7 +1682,6 @@ namespace
             for (const auto& [name, acc] : extraAttrs) {
                 storeVertexAttribute(geometry, firstVertex, vertexCount, model, name, acc);
             }
-            bakeNodeXform(geometry, firstVertex, vertexCount, xform);
 
             for (uint32_t v = 0; v < vertexCount; ++v) {
                 geometry.packVertex(firstVertex + v);
@@ -1709,7 +1694,7 @@ namespace
             const uint32_t indexCount = static_cast<uint32_t>(triIndices.size());
 
             const uint32_t morphFirst = static_cast<uint32_t>(geometry.morphTargets.size());
-            storeMorphTargets(geometry, model, prim, vertexCount, xform);
+            storeMorphTargets(geometry, model, prim, vertexCount);
             const uint32_t morphCount = static_cast<uint32_t>(geometry.morphTargets.size()) - morphFirst;
 
             uint32_t materialId = ctx.materials.defaultMaterialId();
@@ -1750,12 +1735,12 @@ namespace
 
     // Upper bound from accessor counts, so the per-vertex arrays and indices allocate once per model.
     static void reserveGltfGeometry(GeometryStore& geometry, const tg3_model& model,
-                                    const std::vector<GltfMeshInstance>& instances)
+                                    const std::vector<uint32_t>& meshes)
     {
         uint64_t vertexCount = 0;
         uint64_t indexCount = 0;
-        for (const GltfMeshInstance& instance : instances) {
-            const tg3_mesh& mesh = model.meshes[instance.mesh];
+        for (const uint32_t mi : meshes) {
+            const tg3_mesh& mesh = model.meshes[mi];
             for (uint32_t pi = 0; pi < mesh.primitives_count; ++pi) {
                 const tg3_primitive& prim = mesh.primitives[pi];
                 int32_t posAcc = -1;
@@ -1809,17 +1794,60 @@ namespace
 
         const std::vector<GltfMeshInstance> instances = collectMeshInstances(model);
         logDebug(std::format("glTF mesh instances: {}", instances.size()), "AssetLoader");
-        reserveGltfGeometry(geometry, model, instances);
 
-        const uint32_t firstPrimitive = static_cast<uint32_t>(geometry.primitiveDraws.size());
-        uint32_t storedPrimitives = 0;
+        // each referenced mesh is stored once, in first-reference order
+        std::vector<uint32_t> uniqueMeshes;
+        std::vector<uint8_t> isReferenced(model.meshes_count, 0);
         for (const GltfMeshInstance& instance : instances) {
-            storedPrimitives += appendGltfMesh(ctx, model, instance.mesh, makeNodeXform(instance.world));
+            if (std::exchange(isReferenced[instance.mesh], uint8_t{1}) == 0) {
+                uniqueMeshes.push_back(instance.mesh);
+            }
         }
+        reserveGltfGeometry(geometry, model, uniqueMeshes);
+
+        struct MeshPrimitives
+        {
+            uint32_t first = 0;
+            uint32_t count = 0;
+            glm::vec4 boundingSphere{0.0f}; // mesh space
+        };
+        std::vector<MeshPrimitives> meshPrimitives(model.meshes_count);
+        const uint32_t firstPrimitive = static_cast<uint32_t>(geometry.primitiveDraws.size());
+        for (const uint32_t mi : uniqueMeshes) {
+            meshPrimitives[mi].first = static_cast<uint32_t>(geometry.primitiveDraws.size());
+            meshPrimitives[mi].count = appendGltfMesh(ctx, model, mi);
+        }
+        const uint32_t storedPrimitives = static_cast<uint32_t>(geometry.primitiveDraws.size()) - firstPrimitive;
         buildGltfMeshlets(geometry, firstPrimitive);
 
-        logInfo(std::format("glTF geometry appended: verts={} indices={} primitives={}", geometry.vertices.size(),
-                             geometry.indices.size(), storedPrimitives),
+        // a mesh's primitives append their vertices back to back
+        for (const uint32_t mi : uniqueMeshes) {
+            MeshPrimitives& range = meshPrimitives[mi];
+            if (range.count == 0) {
+                continue;
+            }
+            const PrimitiveDraw& first = geometry.primitiveDraws[range.first];
+            const PrimitiveDraw& last = geometry.primitiveDraws[range.first + range.count - 1];
+            range.boundingSphere =
+                geometry.boundingSphere(first.firstVertex, last.firstVertex + last.vertexCount - first.firstVertex);
+        }
+        for (const GltfMeshInstance& instance : instances) {
+            const MeshPrimitives& range = meshPrimitives[instance.mesh];
+            if (range.count == 0) {
+                continue;
+            }
+            geometry.nodeDraws.push_back(NodeDraw{
+                .localToModel = instance.world,
+                .boundingSphere = transformBoundingSphere(instance.world, range.boundingSphere),
+                .firstPrimitive = range.first,
+                .primitiveCount = range.count,
+                .flags = glm::determinant(glm::mat3(instance.world)) < 0.0f ? NodeFlag::FlipWinding : 0u,
+            });
+        }
+
+        logInfo(std::format("glTF geometry appended: verts={} indices={} meshes={} primitives={} nodes={}",
+                             geometry.vertices.size(), geometry.indices.size(), uniqueMeshes.size(), storedPrimitives,
+                             instances.size()),
                  "AssetLoader");
         return storedPrimitives;
     }
@@ -1844,7 +1872,7 @@ namespace
             }
         }
 
-        // retained on behalf of the new entity; returns the deduplicated list
+        // retained on behalf of the new model; returns the deduplicated list
         [[nodiscard]] std::vector<uint32_t> commit()
         {
             std::ranges::sort(heapIndices);
@@ -1878,12 +1906,16 @@ AssetsLoader::AssetsLoader(ObjectStorage& objectStorageIn, TextureManager& textu
     logInfo("AssetsLoader initialized", "AssetLoader");
 }
 
-std::optional<EntityId> AssetsLoader::loadModel(std::string modelPath, glm::vec3 xyz)
+std::optional<std::filesystem::path> AssetsLoader::resolveModelPath(const std::filesystem::path& modelPath)
 {
-    ZoneScopedN("AssetsLoader::loadModel");
     // Folder packs (models/<name>/*) or a direct file. Prefer .gltf, then .glb, then .obj.
-    std::filesystem::path path = std::filesystem::path(modelPath).make_preferred();
     std::error_code errorCode;
+    // one spelling per file, so the model cache key matches however the path was written
+    std::filesystem::path path = std::filesystem::weakly_canonical(modelPath, errorCode);
+    if (errorCode) {
+        path = modelPath;
+    }
+    path.make_preferred();
     if (std::filesystem::is_directory(path, errorCode)) {
         std::filesystem::path gltf;
         std::filesystem::path glb;
@@ -1916,8 +1948,18 @@ std::optional<EntityId> AssetsLoader::loadModel(std::string modelPath, glm::vec3
         }
         path.make_preferred();
     }
+    return path;
+}
 
-    const std::string pathString = path.string();
+std::optional<EntityId> AssetsLoader::loadModel(std::string modelPath, glm::vec3 xyz)
+{
+    ZoneScopedN("AssetsLoader::loadModel");
+    const std::optional<std::filesystem::path> path = resolveModelPath(modelPath);
+    if (!path) {
+        return std::nullopt;
+    }
+
+    const std::string pathString = path->string();
     const bool isGltf = pathString.ends_with(".gltf") || pathString.ends_with(".glb");
     const bool isObj = pathString.ends_with(".obj");
 
@@ -2013,7 +2055,7 @@ std::optional<EntityId> AssetsLoader::loadGltfModel(const std::string& modelPath
 
     const Transform transform{.position = xyz};
     const EntityId id = objectStorage.create(transform, unionDraw, firstPrimitive, primitiveCount, modelPath);
-    objectStorage.textureRefs[id] = textureRefs.commit();
+    geometryStore.textureRefs = textureRefs.commit();
     logInfo(std::format("Loaded model entity {} | primitives=[{}, {}) | meshlets: {} (first {})", id, firstPrimitive,
                          firstPrimitive + primitiveCount, unionDraw.meshletCount, unionDraw.firstMeshlet),
              "AssetLoader");
@@ -2088,10 +2130,17 @@ std::optional<EntityId> AssetsLoader::loadObjModel(const std::string& modelPath,
     draw.indexCount = indexCount;
     draw.meshlets = geometryStore.buildMeshletsForRange(firstIndex, indexCount, firstVertex, draw.vertexCount);
     geometryStore.primitiveDraws.push_back(draw);
+    geometryStore.nodeDraws.push_back(NodeDraw{
+        .localToModel = glm::mat4{1.0f},
+        .boundingSphere = geometryStore.boundingSphere(firstVertex, draw.vertexCount),
+        .firstPrimitive = firstPrimitive,
+        .primitiveCount = 1,
+        .flags = 0,
+    });
 
     const Transform transform{.position = xyz};
     const EntityId id = objectStorage.create(transform, draw.meshlets, firstPrimitive, 1, modelPath);
-    objectStorage.textureRefs[id] = textureRefs.commit();
+    geometryStore.textureRefs = textureRefs.commit();
     logInfo(std::format("Loaded model entity {} | primitives=[{}, {}) | meshlets: {} (first {})", id, firstPrimitive,
                          firstPrimitive + 1, draw.meshlets.meshletCount, draw.meshlets.firstMeshlet),
              "AssetLoader");

@@ -3,7 +3,9 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <format>
 
 EntityId ObjectStorage::create(const Transform& transform, const MeshletDraw& meshletDraw, uint32_t firstPrimitive,
@@ -18,7 +20,7 @@ EntityId ObjectStorage::create(const Transform& transform, const MeshletDraw& me
     firstPrimitives.push_back(firstPrimitive);
     primitiveCounts.push_back(primitiveCount);
     localBounds.emplace_back(0.0f);
-    textureRefs.emplace_back();
+    modelIds.push_back(kInvalidModelId);
 
 #ifdef TRACY_ENABLE
     const std::string msg = std::format(
@@ -40,7 +42,7 @@ void ObjectStorage::clear() noexcept
     firstPrimitives.clear();
     primitiveCounts.clear();
     localBounds.clear();
-    textureRefs.clear();
+    modelIds.clear();
 }
 
 void ObjectStorage::erase(EntityId id)
@@ -55,7 +57,7 @@ void ObjectStorage::erase(EntityId id)
     eraseAt(firstPrimitives);
     eraseAt(primitiveCounts);
     eraseAt(localBounds);
-    eraseAt(textureRefs);
+    eraseAt(modelIds);
 }
 
 glm::mat4 computeModelMatrix(const Transform& transform)
@@ -67,4 +69,32 @@ glm::mat4 computeModelMatrix(const Transform& transform)
     model = glm::rotate(model, transform.rotation.z, glm::vec3{0.0f, 0.0f, 1.0f});
     model = glm::scale(model, transform.scale);
     return model;
+}
+
+glm::vec4 transformBoundingSphere(const glm::mat4& matrix, const glm::vec4& sphere)
+{
+    const float maxScale = std::sqrt(std::max({glm::dot(glm::vec3(matrix[0]), glm::vec3(matrix[0])),
+                                               glm::dot(glm::vec3(matrix[1]), glm::vec3(matrix[1])),
+                                               glm::dot(glm::vec3(matrix[2]), glm::vec3(matrix[2]))}));
+    return {glm::vec3(matrix * glm::vec4(glm::vec3(sphere), 1.0f)), sphere.w * maxScale};
+}
+
+glm::vec4 mergeBoundingSpheres(const glm::vec4& a, const glm::vec4& b)
+{
+    if (a.w <= 0.0f) {
+        return b;
+    }
+    if (b.w <= 0.0f) {
+        return a;
+    }
+    const glm::vec3 offset = glm::vec3(b) - glm::vec3(a);
+    const float distance = glm::length(offset);
+    if (distance + b.w <= a.w) {
+        return a;
+    }
+    if (distance + a.w <= b.w) {
+        return b;
+    }
+    const float radius = (distance + a.w + b.w) * 0.5f;
+    return {glm::vec3(a) + offset * ((radius - a.w) / distance), radius};
 }

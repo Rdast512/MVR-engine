@@ -86,7 +86,7 @@ target_link_libraries(VulkanMemoryAllocator INTERFACE Vulkan::Vulkan)
 # ------------------------------------------------------------------------------
 # 1. Slang (Manual Download & Extract)
 # ------------------------------------------------------------------------------
-set(SLANG_TAG "v2026.18.3")
+set(SLANG_TAG "v2026.20")
 string(REGEX REPLACE "^v" "" SLANG_VERSION "${SLANG_TAG}")
 set(SLANG_RELEASE_URL "https://github.com/shader-slang/slang/releases/download")
 

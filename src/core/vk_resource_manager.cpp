@@ -54,6 +54,7 @@ namespace
         {"LightBuffer", "GPU/Lights", "Vulkan/LightBytes", "Vulkan/LightCapacityBytes", sizeof(GpuLight)},
         {"PrimitiveBuffer", "GPU/Primitives", "Vulkan/PrimitiveBytes", "Vulkan/PrimitiveCapacityBytes",
          sizeof(GpuPrimitive)},
+        {"NodeBuffer", "GPU/Nodes", "Vulkan/NodeBytes", "Vulkan/NodeCapacityBytes", sizeof(GpuNode)},
     }};
 
     constexpr const char* kColorTracyName = "GPU/ColorMSAA";
@@ -61,6 +62,18 @@ namespace
     constexpr const char* kInstanceUboTracyName = "GPU/InstanceUBO";
     constexpr const char* kFrameRootTracyName = "GPU/FrameRoot";
     constexpr const char* kModelTableTracyName = "GPU/ModelTable";
+    constexpr const char* kNodeInstanceTracyName = "GPU/NodeInstances";
+    constexpr const char* kDrawRecordTracyName = "GPU/DrawRecords";
+
+    // GpuNode stores the affine part as rows; glm is column-major
+    [[nodiscard]] std::array<glm::vec4, 3> affineRows(const glm::mat4& matrix)
+    {
+        std::array<glm::vec4, 3> rows{};
+        for (int row = 0; row < 3; ++row) {
+            rows[row] = {matrix[0][row], matrix[1][row], matrix[2][row], matrix[3][row]};
+        }
+        return rows;
+    }
 
     [[nodiscard]] std::string formatBytes(vk::DeviceSize bytes)
     {
@@ -247,7 +260,7 @@ void ResourceManager::rebuildModelTable()
     }
 
     auto* rows = static_cast<GpuModel*>(modelTable.mapped);
-    for (EntityId id = 0; id < modelCount; ++id) {
+    for (ModelId id = 0; id < modelCount; ++id) {
         // a stream the model does not have stays 0
         const auto slice = [&](AssetBuffer buffer) -> vk::DeviceAddress {
             return modelAllocations[id].gpu[std::to_underlying(buffer)].count > 0 ? modelAssetAddress(buffer, id) : 0;
@@ -257,8 +270,6 @@ void ResourceManager::rebuildModelTable()
             .meshlets = slice(AssetBuffer::Meshlets),
             .meshletVertices = slice(AssetBuffer::MeshletVertices),
             .meshletTriangles = slice(AssetBuffer::MeshletTriangles),
-            .materials = slice(AssetBuffer::Materials),
-            .pbrExtensions = slice(AssetBuffer::PbrExt),
             .normals = slice(AssetBuffer::Normals),
             .tangents = slice(AssetBuffer::Tangents),
             .uv1 = slice(AssetBuffer::Uv1),
@@ -270,6 +281,8 @@ void ResourceManager::rebuildModelTable()
             .morphTan = slice(AssetBuffer::MorphTan),
             .morphTargets = slice(AssetBuffer::MorphTargets),
             .morphWeights = slice(AssetBuffer::MorphWeights),
+            .nodes = slice(AssetBuffer::Nodes),
+            .nodeCount = modelAllocations[id].nodes.count,
         };
         const std::array<std::pair<vk::DeviceAddress, uint32_t>, 7> streams{{
             {model.normals, GpuModelAttribute::Normals},
@@ -303,9 +316,13 @@ void ResourceManager::writeFrameRoot(uint32_t frameSlot)
         .pbrExtensions = asset(AssetBuffer::PbrExt).address,
         .lights = asset(AssetBuffer::Lights).address,
         .tlas = 0,
+        .nodeInstances = nodeInstanceBuffers[frameSlot].address,
+        .drawRecords = drawRecordBuffers[frameSlot].address,
         .lightCount = lightStore.uploadedCount(),
         .instanceCount = objectStorage.size(),
         .primitiveCount = uploadedCount(AssetBuffer::Primitives),
+        .nodeInstanceCount = nodeInstanceCount,
+        .drawRecordCount = drawRecordCount[frameSlot],
         .pad0 = 0,
     };
 }
@@ -331,19 +348,28 @@ uint32_t ResourceManager::uploadedCount(AssetBuffer id) const noexcept
     return static_cast<uint32_t>(asset(id).usedBytes / kAssetBufferInfo[std::to_underlying(id)].stride);
 }
 
-vk::DeviceAddress ResourceManager::modelAssetAddress(AssetBuffer id, EntityId entityId) const noexcept
+vk::DeviceAddress ResourceManager::modelAssetAddress(AssetBuffer id, ModelId modelId) const noexcept
 {
     const vk::DeviceSize stride = kAssetBufferInfo[std::to_underlying(id)].stride;
-    return asset(id).address + modelAllocations[entityId].gpu[std::to_underlying(id)].first * stride;
+    return asset(id).address + modelAllocations[modelId].gpu[std::to_underlying(id)].first * stride;
 }
 
-vk::DeviceSize ResourceManager::modelGpuBytes(EntityId entityId) const noexcept
+vk::DeviceSize ResourceManager::modelGpuBytes(ModelId modelId) const noexcept
 {
     vk::DeviceSize bytes = 0;
     for (size_t i = 0; i < kAssetBufferCount; ++i) {
-        bytes += modelAllocations[entityId].gpu[i].count * kAssetBufferInfo[i].stride;
+        bytes += modelAllocations[modelId].gpu[i].count * kAssetBufferInfo[i].stride;
     }
     return bytes;
+}
+
+std::optional<ModelId> ResourceManager::findModel(std::string_view key) const
+{
+    const auto it = std::ranges::find(modelAllocations, key, &ModelAllocation::key);
+    if (it == modelAllocations.end()) {
+        return std::nullopt;
+    }
+    return static_cast<ModelId>(it - modelAllocations.begin());
 }
 
 std::pair<vk::DeviceSize, vk::DeviceSize> ResourceManager::assetTotals() const noexcept
@@ -375,6 +401,10 @@ ResourceManager::~ResourceManager()
         destroyHostBuffer(root, kFrameRootTracyName);
     }
     destroyHostBuffer(modelTable, kModelTableTracyName);
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        destroyHostBuffer(nodeInstanceBuffers[i], kNodeInstanceTracyName);
+        destroyHostBuffer(drawRecordBuffers[i], kDrawRecordTracyName);
+    }
     for (size_t i = 0; i < kAssetBufferCount; ++i) {
         destroyAssetBuffer(static_cast<AssetBuffer>(i));
     }
@@ -414,6 +444,8 @@ void ResourceManager::updateUniformBuffers(uint32_t currentImage)
     ZoneScopedN("ResourceManager::updateUniformBuffer");
     ensureInstanceCapacity(objectStorage.size());
     writeFrameRoot(currentImage);
+    // reads prevModelMatrices before the entity loop below advances them
+    writeNodeInstances(currentImage);
 
     // write-combined memory: whole rows, never read back
     auto* instances = static_cast<GpuObjectUB*>(instanceUbos[currentImage].mapped);
@@ -422,18 +454,12 @@ void ResourceManager::updateUniformBuffers(uint32_t currentImage)
             continue;
         }
         const glm::mat4 model = computeModelMatrix(objectStorage.transforms[id]);
-        const glm::vec4 localBounds = objectStorage.localBounds[id];
-        // largest axis scale keeps the sphere conservative under non-uniform scale
-        const float maxScale = std::sqrt(std::max({glm::dot(glm::vec3(model[0]), glm::vec3(model[0])),
-                                                   glm::dot(glm::vec3(model[1]), glm::vec3(model[1])),
-                                                   glm::dot(glm::vec3(model[2]), glm::vec3(model[2]))}));
         instances[id] = GpuObjectUB{
             .modelMatrix = model,
             .prevModelMatrix = objectStorage.prevModelMatrices[id],
-            .boundingSphere = glm::vec4{glm::vec3(model * glm::vec4(glm::vec3(localBounds), 1.0f)),
-                                        localBounds.w * maxScale},
-            // one model per entity
-            .modelIndex = id,
+            .boundingSphere = transformBoundingSphere(model, objectStorage.localBounds[id]),
+            // entities loaded from one file share its model
+            .modelIndex = objectStorage.modelIds[id],
             .instanceFlags = objectStorage.flags[id],
             .pad0 = 0,
             .pad1 = 0,
@@ -631,10 +657,12 @@ std::span<const std::byte> ResourceManager::scratchBytes(AssetBuffer id, const P
     case AssetBuffer::MorphTargets:     return std::as_bytes(std::span(packed.morphTargets));
     case AssetBuffer::MorphWeights:
         return std::as_bytes(std::span(geometryStore.morphWeights).subspan(geometryStore.flushedMorphWeightCount));
-    case AssetBuffer::Materials:        return std::as_bytes(std::span(materialStore.pendingMaterials));
-    case AssetBuffer::PbrExt:           return std::as_bytes(std::span(packed.extensions));
-    case AssetBuffer::Lights:           return std::as_bytes(std::span(packed.lights));
+    // not model-sliced: appendMaterialUploads and uploadLights write them
+    case AssetBuffer::Materials:
+    case AssetBuffer::PbrExt:
+    case AssetBuffer::Lights:           return {};
     case AssetBuffer::Primitives:       return std::as_bytes(std::span(packed.primitives));
+    case AssetBuffer::Nodes:            return std::as_bytes(std::span(packed.nodes));
     case AssetBuffer::Count:            break;
     }
     return {};
@@ -685,9 +713,6 @@ void ResourceManager::remapScratchOffsets()
 std::vector<GpuPrimitive> ResourceManager::packScratchPrimitives() const
 {
     ZoneScopedN("ResourceManager::packScratchPrimitives");
-    // the model's material slice starts after the default row
-    const uint32_t materialFirst =
-        std::max(uploadedCount(AssetBuffer::Materials), materialStore.defaultMaterialId() + 1);
     std::vector<GpuPrimitive> packed;
     packed.reserve(geometryStore.primitiveDraws.size() - geometryStore.flushedPrimitiveCount);
     for (uint32_t p = geometryStore.flushedPrimitiveCount; p < geometryStore.primitiveDraws.size(); ++p) {
@@ -698,7 +723,8 @@ std::vector<GpuPrimitive> ResourceManager::packScratchPrimitives() const
         packed.push_back(GpuPrimitive{
             .firstMeshlet = draw.meshlets.firstMeshlet,
             .meshletCount = draw.meshlets.meshletCount,
-            .materialId = isDefaultMaterial ? kNoneIndex : draw.materialId - materialFirst,
+            // material rows are shared, so the id is absolute
+            .materialId = isDefaultMaterial ? kNoneIndex : draw.materialId,
             .firstVertex = draw.firstVertex,
             .vertexCount = draw.vertexCount,
             .firstIndex = draw.firstIndex,
@@ -713,7 +739,97 @@ std::vector<GpuPrimitive> ResourceManager::packScratchPrimitives() const
     return packed;
 }
 
-std::vector<GpuLight> ResourceManager::packScratchLights(EntityId owner) const
+std::vector<GpuNode> ResourceManager::packScratchNodes() const
+{
+    std::vector<GpuNode> packed;
+    packed.reserve(geometryStore.nodeDraws.size() - geometryStore.flushedNodeCount);
+    for (uint32_t n = geometryStore.flushedNodeCount; n < geometryStore.nodeDraws.size(); ++n) {
+        const NodeDraw& node = geometryStore.nodeDraws[n];
+        packed.push_back(GpuNode{
+            .localToModel = affineRows(node.localToModel),
+            .boundingSphere = node.boundingSphere,
+            // catalog rows past the watermark are this model's
+            .firstPrimitive = node.firstPrimitive - geometryStore.flushedPrimitiveCount,
+            .primitiveCount = node.primitiveCount,
+            .flags = node.flags,
+            .pad0 = 0,
+        });
+    }
+    return packed;
+}
+
+void ResourceManager::rebuildNodeInstanceLayout()
+{
+    entityNodeInstanceFirst.resize(objectStorage.size());
+    uint32_t rows = 0;
+    for (EntityId id = 0; id < objectStorage.size(); ++id) {
+        entityNodeInstanceFirst[id] = rows;
+        const ModelId modelId = objectStorage.modelIds[id];
+        if (modelId != kInvalidModelId) {
+            rows += modelAllocations[modelId].nodes.count;
+        }
+    }
+    nodeInstanceCount = rows;
+    if (rows <= nodeInstanceCapacity && nodeInstanceBuffers[0].memory != nullptr) {
+        return;
+    }
+    // callers hold the GPU idle, so every frame slot can be replaced
+    nodeInstanceCapacity = std::max({rows, nodeInstanceCapacity * 2, 1u});
+    logInfo(std::format("node instances: {} rows, capacity {}", rows, nodeInstanceCapacity), "ResourceManager");
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        destroyHostBuffer(nodeInstanceBuffers[i], kNodeInstanceTracyName);
+        createHostBuffer(nodeInstanceBuffers[i], sizeof(GpuNodeInstance) * static_cast<vk::DeviceSize>(nodeInstanceCapacity),
+                         std::format("NodeInstances_{}", i), kNodeInstanceTracyName);
+    }
+}
+
+void ResourceManager::writeNodeInstances(uint32_t frameSlot)
+{
+    ZoneScopedN("ResourceManager::writeNodeInstances");
+    // write-combined memory: whole rows, never read back
+    auto* rows = static_cast<GpuNodeInstance*>(nodeInstanceBuffers[frameSlot].mapped);
+    const auto entityCount = static_cast<EntityId>(entityNodeInstanceFirst.size());
+    for (EntityId id = 0; id < entityCount; ++id) {
+        const ModelId modelId = objectStorage.modelIds[id];
+        if (modelId == kInvalidModelId || (objectStorage.flags[id] & EntityFlag::Active) == 0) {
+            continue;
+        }
+        const glm::mat4 entityMatrix = computeModelMatrix(objectStorage.transforms[id]);
+        const glm::mat4& prevEntityMatrix = objectStorage.prevModelMatrices[id];
+        const ElementRange nodes = modelAllocations[modelId].nodes;
+        for (uint32_t k = 0; k < nodes.count; ++k) {
+            const NodeDraw& node = geometryStore.nodeDraws[nodes.first + k];
+            const glm::mat4 world = entityMatrix * node.localToModel;
+            // the entity transform can mirror too, so winding follows the combined matrix
+            const bool isMirrored = glm::determinant(glm::mat3(world)) < 0.0f;
+            rows[entityNodeInstanceFirst[id] + k] = GpuNodeInstance{
+                .worldMatrix = world,
+                .prevWorldMatrix = prevEntityMatrix * node.localToModel,
+                .boundingSphere = transformBoundingSphere(entityMatrix, node.boundingSphere),
+                .entityIndex = id,
+                .modelIndex = modelId,
+                .nodeIndex = k,
+                .flags = (node.flags & ~NodeFlag::FlipWinding) | (isMirrored ? NodeFlag::FlipWinding : 0u),
+            };
+        }
+    }
+}
+
+GpuDrawRecord* ResourceManager::mapDrawRecords(uint32_t frameSlot, uint32_t count)
+{
+    if (count > drawRecordCapacity[frameSlot] || drawRecordBuffers[frameSlot].memory == nullptr) {
+        // only this slot is replaced; its previous frame finished before recording started
+        drawRecordCapacity[frameSlot] = std::max({count, drawRecordCapacity[frameSlot] * 2, 64u});
+        destroyHostBuffer(drawRecordBuffers[frameSlot], kDrawRecordTracyName);
+        createHostBuffer(drawRecordBuffers[frameSlot],
+                         sizeof(GpuDrawRecord) * static_cast<vk::DeviceSize>(drawRecordCapacity[frameSlot]),
+                         std::format("DrawRecords_{}", frameSlot), kDrawRecordTracyName);
+    }
+    drawRecordCount[frameSlot] = count;
+    return static_cast<GpuDrawRecord*>(drawRecordBuffers[frameSlot].mapped);
+}
+
+std::vector<GpuLight> ResourceManager::packScratchLights() const
 {
     ZoneScopedN("ResourceManager::packScratchLights");
     std::vector<GpuLight> packed;
@@ -725,7 +841,6 @@ std::vector<GpuLight> ResourceManager::packScratchLights(EntityId owner) const
         GpuLight light{};
         light.position = instance.position;
         light.direction = instance.direction;
-        light.instanceIndex = owner;
         if (instance.defIndex < lightStore.defs.size()) {
             const LightDef& def = lightStore.defs[instance.defIndex];
             light.range = def.range;
@@ -797,6 +912,7 @@ void ResourceManager::createUniformBuffers()
         createHostBuffer(frameRoots[i], sizeof(GpuFrameRoot), std::format("FrameRoot_{}", i), kFrameRootTracyName);
     }
     rebuildModelTable();
+    rebuildNodeInstanceLayout();
 }
 
 void ResourceManager::flushGpuAssets()
@@ -805,19 +921,18 @@ void ResourceManager::flushGpuAssets()
     logInfo("flushGpuAssets() started", "ResourceManager");
     logInfo(std::format("cpu scratch: verts={} meshlets={} meshletVerts={} triCorners={} indices={} "
                          "normals={} tangents={} uv1={} joints={} weights={} morphPos/Nrm/Tan={}/{}/{} "
-                         "materials={} pbrExt={} lights={}/{} prims={} (flushed {})",
+                         "new materials={} lights={}/{} prims={} (flushed {})",
                          geometryStore.vertices.size(), geometryStore.meshlets.size(),
                          geometryStore.meshletVertices.size(), geometryStore.meshletTriangles.size(),
                          geometryStore.indices.size(), geometryStore.normals.size(), geometryStore.tangents.size(),
                          geometryStore.uv1.size(), geometryStore.joints0.size(), geometryStore.weights0.size(),
                          geometryStore.morphPos.size(), geometryStore.morphNrm.size(), geometryStore.morphTan.size(),
-                         materialStore.pendingMaterials.size(), materialStore.pendingExtensions.size(),
-                         lightStore.defs.size(), lightStore.instances.size(), geometryStore.primitiveDraws.size(),
+                         materialStore.dirtyRows.size(), lightStore.defs.size(), lightStore.instances.size(), geometryStore.primitiveDraws.size(),
                          geometryStore.flushedPrimitiveCount),
              "ResourceManager");
 
     // one model per flush keeps every slice contiguous and its GPU data model-relative
-    const auto pendingEntities = static_cast<uint32_t>(objectStorage.size() - modelAllocations.size());
+    const auto pendingEntities = std::ranges::count(objectStorage.modelIds, kInvalidModelId);
     if (pendingEntities > 1) {
         throw std::logic_error(std::format("flushGpuAssets: {} models pending, expected at most 1", pendingEntities));
     }
@@ -825,7 +940,12 @@ void ResourceManager::flushGpuAssets()
         discardScratch();
         return;
     }
+    const EntityId entity = objectStorage.size() - 1;
+    if (objectStorage.modelIds[entity] != kInvalidModelId) {
+        throw std::logic_error("flushGpuAssets: the pending entity must be the newest");
+    }
 
+    const auto modelId = static_cast<ModelId>(modelAllocations.size());
     ModelAllocation allocation{
         .gpu = {},
         .primitives = {geometryStore.flushedPrimitiveCount,
@@ -838,44 +958,62 @@ void ResourceManager::flushGpuAssets()
                              geometryStore.flushedMorphWeightCount},
         .auxBlobs = {geometryStore.flushedAuxBlobCount,
                      static_cast<uint32_t>(geometryStore.auxBlobs.size()) - geometryStore.flushedAuxBlobCount},
+        .nodes = {geometryStore.flushedNodeCount,
+                  static_cast<uint32_t>(geometryStore.nodeDraws.size()) - geometryStore.flushedNodeCount},
+        .key = objectStorage.names[entity],
+        .meshletDraw = {},
+        .localBounds = glm::vec4{0.0f},
+        .lights = packScratchLights(),
+        .materialRefs = {},
+        .textureRefs = std::move(geometryStore.textureRefs),
+        .refCount = 0,
     };
 
-    const EntityId entity = static_cast<EntityId>(modelAllocations.size());
+    for (uint32_t n = allocation.nodes.first; n < allocation.nodes.end(); ++n) {
+        allocation.localBounds = mergeBoundingSpheres(allocation.localBounds, geometryStore.nodeDraws[n].boundingSphere);
+    }
     PackedScratch packed{
         .primitives = packScratchPrimitives(),
-        .lights = {},
-        .extensions = {},
+        .nodes = packScratchNodes(),
         .morphTargets =
             packMorphTargets(std::span(geometryStore.morphTargets).subspan(geometryStore.flushedMorphTargetCount)),
+        .materialRows = {},
+        .materials = {},
+        .extensions = {},
     };
     remapScratchOffsets();
 
-    logInfo(std::format("material cache: total={} uploaded={} pending={} hits={} misses={}", materialStore.size(),
-                         materialStore.uploadedCount, materialStore.pendingCount(), materialStore.cacheHits,
+    logInfo(std::format("material cache: rows={} live={} new={} hits={} misses={}", materialStore.size(),
+                         materialStore.liveCount(), materialStore.dirtyRows.size(), materialStore.cacheHits,
                          materialStore.cacheMisses),
              "ResourceManager");
 
-    packed.lights = packScratchLights(entity);
-    packed.extensions = packMaterialExtensions(materialStore.pendingExtensions);
     std::array<uint32_t, kAssetBufferCount> firsts{};
     std::vector<AssetUpload> uploads;
     uploads.reserve(kAssetBufferCount);
     for (size_t i = 0; i < kAssetBufferCount; ++i) {
         const auto id = static_cast<AssetBuffer>(i);
-        // the default material row rides along with the first flush but belongs to no model
-        const bool isMaterialRow = id == AssetBuffer::Materials || id == AssetBuffer::PbrExt;
-        firsts[i] = std::max(uploadedCount(id), isMaterialRow ? materialStore.defaultMaterialId() + 1 : 0u);
+        if (!isModelSliced(id)) {
+            continue;
+        }
+        firsts[i] = uploadedCount(id);
         uploads.push_back({.id = id, .bytes = scratchBytes(id, packed), .dstOffset = asset(id).usedBytes});
     }
+    appendMaterialUploads(packed, uploads);
     uploadAssetBuffers(uploads);
+    materialStore.dirtyRows.clear();
     for (size_t i = 0; i < kAssetBufferCount; ++i) {
-        allocation.gpu[i] = {firsts[i], uploadedCount(static_cast<AssetBuffer>(i)) - firsts[i]};
+        if (isModelSliced(static_cast<AssetBuffer>(i))) {
+            allocation.gpu[i] = {firsts[i], uploadedCount(static_cast<AssetBuffer>(i)) - firsts[i]};
+        }
     }
-    modelAllocations.push_back(allocation);
-    objectStorage.localBounds[entity] = geometryStore.boundingSphere();
-
-    materialStore.markUploaded();
-    lightStore.uploaded.insert(lightStore.uploaded.end(), packed.lights.begin(), packed.lights.end());
+    // remapped to GPU-absolute above
+    allocation.meshletDraw = objectStorage.meshletDraws[entity];
+    allocation.materialRefs = materialStore.commitModel();
+    modelAllocations.push_back(std::move(allocation));
+    attachEntity(entity, modelId);
+    uploadLights();
+    rebuildNodeInstanceLayout();
 
     geometryStore.clearScratch();
     lightStore.clearScratch();
@@ -891,7 +1029,7 @@ void ResourceManager::flushGpuAssets()
                          uploadedCount(AssetBuffer::MeshletVertices), uploadedCount(AssetBuffer::MeshletTriangles),
                          uploadedCount(AssetBuffer::Indices), uploadedCount(AssetBuffer::MorphPos),
                          uploadedCount(AssetBuffer::MorphNrm), uploadedCount(AssetBuffer::MorphTan),
-                         materialStore.uploadedCount, lightStore.uploadedCount(), geometryStore.primitiveDraws.size(),
+                         materialStore.liveCount(), lightStore.uploadedCount(), geometryStore.primitiveDraws.size(),
                          geometryStore.morphTargets.size()),
              "ResourceManager");
     const auto [gpuAssetBytes, gpuAssetCapacity] = assetTotals();
@@ -905,7 +1043,7 @@ void ResourceManager::flushGpuAssets()
 #ifdef TRACY_ENABLE
     const std::string tracyMsg = std::format(
         "flush gpu assets total={} verts={} meshlets={} materials={} lights={}", formatBytes(gpuAssetBytes),
-        uploadedCount(AssetBuffer::Vertices), uploadedCount(AssetBuffer::Meshlets), materialStore.uploadedCount,
+        uploadedCount(AssetBuffer::Vertices), uploadedCount(AssetBuffer::Meshlets), materialStore.liveCount(),
         lightStore.uploadedCount());
     TracyMessage(tracyMsg.c_str(), tracyMsg.size());
 #endif
@@ -917,57 +1055,133 @@ void ResourceManager::discardScratch()
     logInfo("flushGpuAssets: no new model, discarding load scratch", "ResourceManager");
     geometryStore.discardScratch();
     lightStore.clearScratch();
-    materialStore.discardPending();
+    materialStore.discardModel();
 #if ENGINE_USE_MIMALLOC
     mi_collect(true);
 #endif
 }
 
-void ResourceManager::eraseModel(EntityId id)
+void ResourceManager::appendMaterialUploads(PackedScratch& packed, std::vector<AssetUpload>& uploads) const
 {
-    ZoneScopedN("ResourceManager::eraseModel");
-    if (id >= modelAllocations.size()) {
-        throw std::out_of_range(std::format("eraseModel: entity {} has no GPU allocation", id));
+    packed.materialRows = materialStore.dirtyRows;
+    std::ranges::sort(packed.materialRows);
+    std::vector<MaterialPbrExtension> extensions;
+    extensions.reserve(packed.materialRows.size());
+    for (const uint32_t id : packed.materialRows) {
+        packed.materials.push_back(materialStore.infos[id].material);
+        extensions.push_back(materialStore.infos[id].extension);
     }
-    const ModelAllocation removed = modelAllocations[id];
-    logInfo(std::format("erase model entity {} '{}': {} on GPU, {} primitives", id, objectStorage.names[id],
-                         formatBytes(modelGpuBytes(id)), removed.primitives.count),
+    packed.extensions = packMaterialExtensions(extensions);
+
+    const std::span<const GpuMaterial> materials(packed.materials);
+    const std::span<const GpuMaterialExtension> packedExtensions(packed.extensions);
+    for (size_t first = 0; first < packed.materialRows.size();) {
+        size_t last = first + 1;
+        while (last < packed.materialRows.size() && packed.materialRows[last] == packed.materialRows[last - 1] + 1) {
+            ++last;
+        }
+        const vk::DeviceSize row = packed.materialRows[first];
+        uploads.push_back({.id = AssetBuffer::Materials,
+                           .bytes = std::as_bytes(materials.subspan(first, last - first)),
+                           .dstOffset = row * sizeof(GpuMaterial)});
+        uploads.push_back({.id = AssetBuffer::PbrExt,
+                           .bytes = std::as_bytes(packedExtensions.subspan(first, last - first)),
+                           .dstOffset = row * sizeof(GpuMaterialExtension)});
+        first = last;
+    }
+}
+
+void ResourceManager::attachEntity(EntityId entity, ModelId modelId)
+{
+    ModelAllocation& model = modelAllocations[modelId];
+    objectStorage.modelIds[entity] = modelId;
+    objectStorage.localBounds[entity] = model.localBounds;
+    ++model.refCount;
+    for (GpuLight light : model.lights) {
+        light.instanceIndex = entity;
+        lightStore.uploaded.push_back(light);
+    }
+}
+
+void ResourceManager::uploadLights()
+{
+    const std::span<const std::byte> bytes = std::as_bytes(std::span(lightStore.uploaded));
+    if (!bytes.empty()) {
+        const std::array uploads{AssetUpload{.id = AssetBuffer::Lights, .bytes = bytes, .dstOffset = 0}};
+        uploadAssetBuffers(uploads);
+    }
+    // the mirror may have shrunk; rows past it are stale and GpuFrameRoot::lightCount stops before them
+    assetBuffers[std::to_underlying(AssetBuffer::Lights)].usedBytes = bytes.size_bytes();
+}
+
+EntityId ResourceManager::instantiateModel(ModelId modelId, const Transform& transform)
+{
+    ZoneScopedN("ResourceManager::instantiateModel");
+    const ModelAllocation& model = modelAllocations.at(modelId);
+    const EntityId entity = objectStorage.create(transform, model.meshletDraw, model.primitives.first,
+                                                 model.primitives.count, model.key);
+    attachEntity(entity, modelId);
+    uploadLights();
+    rebuildNodeInstanceLayout();
+    logInfo(std::format("instance entity {} of model {} '{}': {} entities share {} on GPU", entity, modelId, model.key,
+                         modelAllocations[modelId].refCount, formatBytes(modelGpuBytes(modelId))),
              "ResourceManager");
+    tracyPlotResources();
+    return entity;
+}
 
-    compactAssetBuffers(removed);
-    rebaseCatalog(id, removed);
-
-    const ElementRange materials = removed.gpu[std::to_underlying(AssetBuffer::Materials)];
-    if (materials.count > 0) {
-        materialStore.erase(materials.first, materials.count);
+std::vector<uint32_t> ResourceManager::eraseEntity(EntityId id)
+{
+    ZoneScopedN("ResourceManager::eraseEntity");
+    if (id >= objectStorage.size()) {
+        throw std::out_of_range(std::format("eraseEntity: no entity {}", id));
     }
-    const ElementRange lights = removed.gpu[std::to_underlying(AssetBuffer::Lights)];
+    const ModelId modelId = objectStorage.modelIds[id];
+    logInfo(std::format("erase entity {} '{}' (model {})", id, objectStorage.names[id], modelId), "ResourceManager");
+
+    // owners are entity ids, which shift down past the erased one
     std::vector<GpuLight>& lightRows = lightStore.uploaded;
-    lightRows.erase(lightRows.begin() + lights.first, lightRows.begin() + lights.end());
-    bool isOwnerShifted = false;
+    std::erase_if(lightRows, [id](const GpuLight& light) { return light.instanceIndex == id; });
     for (GpuLight& light : lightRows) {
         if (light.instanceIndex > id) {
             --light.instanceIndex;
-            isOwnerShifted = true;
         }
     }
-    // compaction already moved the rows; only their owner ids still point past the erased entity
-    if (isOwnerShifted) {
-        const std::array uploads{
-            AssetUpload{.id = AssetBuffer::Lights, .bytes = std::as_bytes(std::span(lightRows)), .dstOffset = 0}};
-        uploadAssetBuffers(uploads);
+    objectStorage.erase(id);
+
+    std::vector<uint32_t> releasedTextures;
+    if (modelId != kInvalidModelId && --modelAllocations[modelId].refCount == 0) {
+        releasedTextures = eraseModel(modelId);
     }
+    uploadLights();
+    rebuildNodeInstanceLayout();
     if (objectStorage.empty()) {
         geometryStore.extensionsUsed.clear();
         geometryStore.extensionsRequired.clear();
     }
-    rebuildModelTable();
 
     const auto [gpuAssetBytes, gpuAssetCapacity] = assetTotals();
     logInfo(std::format("gpu ssbo total after erase: used {} / cap {}", formatBytes(gpuAssetBytes),
                          formatBytes(gpuAssetCapacity)),
              "ResourceManager");
     tracyPlotResources();
+    return releasedTextures;
+}
+
+std::vector<uint32_t> ResourceManager::eraseModel(ModelId modelId)
+{
+    ZoneScopedN("ResourceManager::eraseModel");
+    logInfo(std::format("erase model {} '{}': {} on GPU, {} primitives, {} materials, {} textures", modelId,
+                         modelAllocations[modelId].key, formatBytes(modelGpuBytes(modelId)),
+                         modelAllocations[modelId].primitives.count, modelAllocations[modelId].materialRefs.size(),
+                         modelAllocations[modelId].textureRefs.size()),
+             "ResourceManager");
+    ModelAllocation removed = std::move(modelAllocations[modelId]);
+    compactAssetBuffers(removed);
+    rebaseCatalog(modelId, removed);
+    materialStore.release(removed.materialRefs);
+    rebuildModelTable();
+    return std::move(removed.textureRefs);
 }
 
 void ResourceManager::compactAssetBuffers(const ModelAllocation& removed)
@@ -1023,7 +1237,7 @@ void ResourceManager::compactAssetBuffers(const ModelAllocation& removed)
     }
 }
 
-void ResourceManager::rebaseCatalog(EntityId id, const ModelAllocation& removed)
+void ResourceManager::rebaseCatalog(ModelId modelId, const ModelAllocation& removed)
 {
     ZoneScopedN("ResourceManager::rebaseCatalog");
     const auto gpuRange = [&removed](AssetBuffer buffer) { return removed.gpu[std::to_underlying(buffer)]; };
@@ -1042,18 +1256,23 @@ void ResourceManager::rebaseCatalog(EntityId id, const ModelAllocation& removed)
     eraseSlice(geometry.morphTargets, removed.morphTargets);
     eraseSlice(geometry.morphWeights, removed.morphWeights);
     eraseSlice(geometry.auxBlobs, removed.auxBlobs);
+    eraseSlice(geometry.nodeDraws, removed.nodes);
+    geometry.flushedNodeCount -= removed.nodes.count;
     geometry.flushedPrimitiveCount -= removed.primitives.count;
     geometry.flushedMorphTargetCount -= removed.morphTargets.count;
     geometry.flushedMorphWeightCount -= removed.morphWeights.count;
     geometry.flushedAuxBlobCount -= removed.auxBlobs.count;
 
+    // material ids are shared rows that never move
     for (PrimitiveDraw& draw : geometry.primitiveDraws) {
         shift(draw.meshlets.firstMeshlet, gpuRange(AssetBuffer::Meshlets));
         shift(draw.firstVertex, gpuRange(AssetBuffer::Vertices));
         shift(draw.firstIndex, gpuRange(AssetBuffer::Indices));
-        shift(draw.materialId, gpuRange(AssetBuffer::Materials));
         shift(draw.morphFirst, removed.morphTargets);
         shift(draw.morphWeightFirst, removed.morphWeights);
+    }
+    for (NodeDraw& node : geometry.nodeDraws) {
+        shift(node.firstPrimitive, removed.primitives);
     }
     for (MorphTarget& target : geometry.morphTargets) {
         shift(target.posOffset, gpuRange(AssetBuffer::MorphPos));
@@ -1061,11 +1280,14 @@ void ResourceManager::rebaseCatalog(EntityId id, const ModelAllocation& removed)
         shift(target.tanOffset, gpuRange(AssetBuffer::MorphTan));
     }
 
-    objectStorage.erase(id);
-    modelAllocations.erase(modelAllocations.begin() + id);
+    modelAllocations.erase(modelAllocations.begin() + modelId);
     for (EntityId other = 0; other < objectStorage.size(); ++other) {
         shift(objectStorage.firstPrimitives[other], removed.primitives);
         shift(objectStorage.meshletDraws[other].firstMeshlet, gpuRange(AssetBuffer::Meshlets));
+        ModelId& otherModel = objectStorage.modelIds[other];
+        if (otherModel != kInvalidModelId && otherModel > modelId) {
+            --otherModel;
+        }
     }
     for (ModelAllocation& allocation : modelAllocations) {
         for (size_t i = 0; i < kAssetBufferCount; ++i) {
@@ -1075,6 +1297,8 @@ void ResourceManager::rebaseCatalog(EntityId id, const ModelAllocation& removed)
         shift(allocation.morphTargets.first, removed.morphTargets);
         shift(allocation.morphWeights.first, removed.morphWeights);
         shift(allocation.auxBlobs.first, removed.auxBlobs);
+        shift(allocation.nodes.first, removed.nodes);
+        shift(allocation.meshletDraw.firstMeshlet, gpuRange(AssetBuffer::Meshlets));
     }
 }
 
@@ -1100,7 +1324,7 @@ void ResourceManager::tracyPlotResources() const
     TracyPlot("Vulkan/MeshletTriangleCorners", static_cast<double>(uploadedCount(AssetBuffer::MeshletTriangles)));
     TracyPlot("Vulkan/VerticesInUse", static_cast<double>(uploadedCount(AssetBuffer::Vertices)));
     TracyPlot("Vulkan/IndexCount", static_cast<double>(uploadedCount(AssetBuffer::Indices)));
-    TracyPlot("Vulkan/MaterialCount", static_cast<double>(materialStore.uploadedCount));
+    TracyPlot("Vulkan/MaterialCount", static_cast<double>(materialStore.liveCount()));
     TracyPlot("Vulkan/MaterialCacheSize", static_cast<double>(materialStore.size()));
     TracyPlot("Vulkan/MaterialCacheHits", static_cast<double>(materialStore.cacheHits));
     TracyPlot("Vulkan/MaterialCacheMisses", static_cast<double>(materialStore.cacheMisses));
@@ -1118,6 +1342,8 @@ void ResourceManager::tracyPlotResources() const
     TracyPlot("Vulkan/CpuScratchVertices", static_cast<double>(geometryStore.vertices.size()));
     TracyPlot("Vulkan/CpuScratchMeshlets", static_cast<double>(geometryStore.meshlets.size()));
     TracyPlot("Vulkan/InstanceCapacity", static_cast<double>(instanceCapacity));
+    TracyPlot("Vulkan/NodeInstanceCount", static_cast<double>(nodeInstanceCount));
+    TracyPlot("Vulkan/NodeCount", static_cast<double>(geometryStore.nodeDraws.size()));
     TracyPlot("Vulkan/InstanceUboBytes", static_cast<double>(sizeof(GpuObjectUB) * instanceCapacity));
     TracyPlot("Vulkan/MeshBdaReady",
               static_cast<double>(asset(AssetBuffer::Vertices).address != 0 &&

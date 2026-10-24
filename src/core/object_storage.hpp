@@ -13,6 +13,9 @@
 // ---------------------------------------------------------------------------
 using EntityId = uint32_t;
 inline constexpr EntityId kInvalidEntityId = ~EntityId{0};
+// index into ResourceManager::modelAllocations; several entities may draw one model
+using ModelId = uint32_t;
+inline constexpr ModelId kInvalidModelId = ~ModelId{0};
 
 struct Transform
 {
@@ -46,8 +49,8 @@ public:
     std::vector<uint32_t> primitiveCounts;
     // model-space bounding sphere (xyz center, w radius), set when the model is flushed
     std::vector<glm::vec4> localBounds;
-    // texture heap indices this entity retains (TextureManager refcounts)
-    std::vector<std::vector<uint32_t>> textureRefs;
+    // shared GPU model the entity draws; kInvalidModelId until its load is flushed
+    std::vector<ModelId> modelIds;
 
     [[nodiscard]] EntityId create(const Transform& transform, const MeshletDraw& meshletDraw, uint32_t firstPrimitive,
                                   uint32_t primitiveCount, std::string_view name = {});
@@ -66,3 +69,7 @@ public:
 // ---------------------------------------------------------------------------
 
 [[nodiscard]] glm::mat4 computeModelMatrix(const Transform& transform);
+// radius scales by the largest axis, so the sphere stays conservative under non-uniform scale
+[[nodiscard]] glm::vec4 transformBoundingSphere(const glm::mat4& matrix, const glm::vec4& sphere);
+// smallest sphere enclosing both; a zero-radius empty sphere yields the other
+[[nodiscard]] glm::vec4 mergeBoundingSpheres(const glm::vec4& a, const glm::vec4& b);

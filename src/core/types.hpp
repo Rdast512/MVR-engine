@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <string>
 #include <utility>
 #include <vector>
@@ -78,6 +79,24 @@ struct PrimitiveDraw
     uint32_t morphWeightFirst = kNoneIndex;
 };
 
+namespace NodeFlag
+{
+    // mirrored transform (det < 0): the mesh shader swaps triangle winding
+    inline constexpr uint32_t FlipWinding = 1u << 0;
+} // namespace NodeFlag
+
+// one placement of a mesh inside its model; the mesh's primitives are stored once and shared by its nodes
+struct NodeDraw
+{
+    glm::mat4 localToModel{1.0f};
+    // model space: the mesh's sphere moved by localToModel
+    glm::vec4 boundingSphere{0.0f};
+    // catalog-absolute row of the mesh's first PrimitiveDraw
+    uint32_t firstPrimitive = 0;
+    uint32_t primitiveCount = 0;
+    uint32_t flags = 0;
+};
+
 struct MorphTarget
 {
     uint32_t posOffset = kNoneIndex;
@@ -146,7 +165,7 @@ struct GpuPrimitive
 {
     uint32_t firstMeshlet = 0;
     uint32_t meshletCount = 0;
-    // kNoneIndex selects the default material, row 0 of the shared table
+    // absolute row of the shared material table; kNoneIndex selects the default material, row 0
     uint32_t materialId = kNoneIndex;
     uint32_t firstVertex = 0;
     uint32_t vertexCount = 0;
@@ -160,6 +179,45 @@ struct GpuPrimitive
 };
 static_assert(sizeof(GpuPrimitive) == 40);
 static_assert(offsetof(GpuPrimitive, morphFirst) == 28);
+
+// GPU mirror of NodeDraw, model-relative; read by culling and ray tracing, the raster path uses GpuNodeInstance
+struct GpuNode
+{
+    // rows of the affine localToModel
+    std::array<glm::vec4, 3> localToModel{glm::vec4{1, 0, 0, 0}, glm::vec4{0, 1, 0, 0}, glm::vec4{0, 0, 1, 0}};
+    glm::vec4 boundingSphere{0.0f};
+    // model-relative row of the mesh's first GpuPrimitive
+    uint32_t firstPrimitive = 0;
+    uint32_t primitiveCount = 0;
+    uint32_t flags = 0;
+    uint32_t pad0 = 0;
+};
+static_assert(sizeof(GpuNode) == 80);
+static_assert(offsetof(GpuNode, firstPrimitive) == 64);
+
+// one entity x node, rewritten every frame: transforms are precomputed so shaders read one matrix
+struct GpuNodeInstance
+{
+    glm::mat4 worldMatrix{1.0f};
+    glm::mat4 prevWorldMatrix{1.0f};
+    glm::vec4 boundingSphere{0.0f}; // world space
+    uint32_t entityIndex = 0;
+    uint32_t modelIndex = 0;
+    uint32_t nodeIndex = 0; // model-relative
+    uint32_t flags = 0;     // NodeFlag
+};
+static_assert(sizeof(GpuNodeInstance) == 160);
+static_assert(offsetof(GpuNodeInstance, entityIndex) == 144);
+
+// one draw: a meshlet batch of one primitive placed by one node instance; written by DGC fill, later by culling
+struct GpuDrawRecord
+{
+    uint32_t nodeInstanceIndex = 0;
+    uint32_t primitiveIndex = 0; // absolute row of GpuFrameRoot.primitives
+    uint32_t meshletOffset = 0;  // first meshlet of the batch, relative to the primitive
+    uint32_t pad0 = 0;
+};
+static_assert(sizeof(GpuDrawRecord) == 16);
 
 // CPU authoring form of KHR PBR-next + texture-transform; uploaded packed as GpuMaterialExtension
 struct MaterialUvTransform
@@ -470,8 +528,6 @@ struct GpuModel
     vk::DeviceAddress meshlets = 0;
     vk::DeviceAddress meshletVertices = 0;
     vk::DeviceAddress meshletTriangles = 0;
-    vk::DeviceAddress materials = 0;
-    vk::DeviceAddress pbrExtensions = 0;
     vk::DeviceAddress normals = 0;
     vk::DeviceAddress tangents = 0;
     vk::DeviceAddress uv1 = 0;
@@ -483,11 +539,12 @@ struct GpuModel
     vk::DeviceAddress morphTan = 0;
     vk::DeviceAddress morphTargets = 0;
     vk::DeviceAddress morphWeights = 0;
+    vk::DeviceAddress nodes = 0;
     uint32_t attributeMask = 0;
-    uint32_t pad0 = 0;
+    uint32_t nodeCount = 0;
 };
-static_assert(sizeof(GpuModel) == 144);
-static_assert(offsetof(GpuModel, attributeMask) == 136);
+static_assert(sizeof(GpuModel) == 136);
+static_assert(offsetof(GpuModel, attributeMask) == 128);
 
 // per-frame entry point for every shader: the only address the push data carries
 struct GpuFrameRoot
@@ -495,24 +552,30 @@ struct GpuFrameRoot
     vk::DeviceAddress camera = 0;
     // GpuObjectUB[entity]
     vk::DeviceAddress instances = 0;
-    // GpuModel[entity]
+    // GpuModel[model]
     vk::DeviceAddress models = 0;
     // GpuPrimitive[], absolute rows
     vk::DeviceAddress primitives = 0;
-    // whole GpuMaterial[] buffer; shaders read only row 0 (default material), model rows via GpuModel::materials
+    // whole GpuMaterial[] buffer, shared by all models; GpuPrimitive::materialId indexes it
     vk::DeviceAddress materials = 0;
     // whole GpuMaterialExtension[] buffer, parallel to materials
     vk::DeviceAddress pbrExtensions = 0;
     vk::DeviceAddress lights = 0;
     // raw acceleration structure address, 0 until RT exists
     vk::DeviceAddress tlas = 0;
+    // GpuNodeInstance[nodeInstanceCount] of this frame slot
+    vk::DeviceAddress nodeInstances = 0;
+    // GpuDrawRecord[drawRecordCount] of this frame slot; MeshPushData::drawIndex indexes it
+    vk::DeviceAddress drawRecords = 0;
     uint32_t lightCount = 0;
     uint32_t instanceCount = 0;
     uint32_t primitiveCount = 0;
+    uint32_t nodeInstanceCount = 0;
+    uint32_t drawRecordCount = 0;
     uint32_t pad0 = 0;
 };
-static_assert(sizeof(GpuFrameRoot) == 80);
-static_assert(offsetof(GpuFrameRoot, lightCount) == 64);
+static_assert(sizeof(GpuFrameRoot) == 104);
+static_assert(offsetof(GpuFrameRoot, lightCount) == 80);
 
 
 struct EngineSettings

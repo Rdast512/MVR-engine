@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -35,10 +36,11 @@ enum class AssetBuffer : uint8_t {
     MorphTan,
     MorphTargets,     // GpuMorphTarget[], model-relative delta offsets
     MorphWeights,     // float[], glTF default weights
-    Materials,
-    PbrExt,
-    Lights,
+    Materials,        // shared rows, MaterialStore ids; not sliced per model
+    PbrExt,           // parallel to Materials
+    Lights,           // per entity, rewritten from LightStore::uploaded; not sliced per model
     Primitives,       // GpuPrimitive[], parallel to GeometryStore::primitiveDraws
+    Nodes,            // GpuNode[], parallel to GeometryStore::nodeDraws
     Count
 };
 inline constexpr size_t kAssetBufferCount = std::to_underlying(AssetBuffer::Count);
@@ -51,16 +53,37 @@ struct ElementRange {
     [[nodiscard]] uint32_t end() const noexcept { return first + count; }
 };
 
-// One model's contiguous slice of every asset buffer and catalog array; unload erases the slices
-// and shifts everything after them (docs/model_unload_ui_spec.md).
+// buffers holding one contiguous slice per model; the others are shared (Materials, PbrExt) or per entity (Lights)
+[[nodiscard]] constexpr bool isModelSliced(AssetBuffer id) noexcept
+{
+    return id != AssetBuffer::Materials && id != AssetBuffer::PbrExt && id != AssetBuffer::Lights;
+}
+
+// One uploaded model, shared by every entity loaded from the same file. Owns a contiguous slice of every
+// model-sliced asset buffer and catalog array; erasing its last entity drops the slices and shifts everything after
+// them (docs/model_unload_ui_spec.md).
 // GPU data that points into other GPU data (meshlet vertex ids, meshlet offsets, indices) is relative to
 // the model's slice, so compaction is a plain copy; draws add the slice base to the buffer address.
 struct ModelAllocation {
-    std::array<ElementRange, kAssetBufferCount> gpu;
+    std::array<ElementRange, kAssetBufferCount> gpu; // empty for buffers that are not model-sliced
     ElementRange primitives;   // GeometryStore::primitiveDraws
     ElementRange morphTargets; // GeometryStore::morphTargets
     ElementRange morphWeights; // GeometryStore::morphWeights
     ElementRange auxBlobs;     // GeometryStore::auxBlobs
+    ElementRange nodes;        // GeometryStore::nodeDraws
+    // resolved model file (AssetsLoader::resolveModelPath), the cache key
+    std::string key;
+    // union over the model's primitives, copied into every instance
+    MeshletDraw meshletDraw;
+    // union of the node spheres, model space
+    glm::vec4 localBounds{0.0f};
+    // model space, instanceIndex unset; every instance appends its own copy
+    std::vector<GpuLight> lights;
+    // one reference each, dropped with the model
+    std::vector<uint32_t> materialRefs; // MaterialStore rows
+    std::vector<uint32_t> textureRefs;  // TextureManager heap indices
+    // entities drawing the model
+    uint32_t refCount = 0;
 };
 
 // Growable device-local buffer; capacity may exceed used after grow-with-headroom
@@ -113,14 +136,20 @@ public:
     // append load scratch to device-local SSBOs as one model, then drop CPU bulk arrays.
     // scratch without a new entity (failed load) is discarded
     void flushGpuAssets();
-    // drops an uploaded model: compacts every asset buffer (exact-fit realloc), rebases the catalog,
-    // erases the entity. Textures are the caller's (TextureManager::release). GPU must be idle.
-    void eraseModel(EntityId id);
+    [[nodiscard]] std::optional<ModelId> findModel(std::string_view key) const;
+    // new entity drawing an uploaded model; nothing is loaded or uploaded except its light rows
+    EntityId instantiateModel(ModelId modelId, const Transform& transform);
+    // erases the entity; its model goes with its last entity (compaction, material release).
+    // returns the texture references the caller must drop (TextureManager::release). GPU must be idle.
+    [[nodiscard]] std::vector<uint32_t> eraseEntity(EntityId id);
     void createCameraBuffers(Camera& camera);
     void setSwapChainImageCount(uint32_t count) { swapChainImageCount = count; createSyncObjects(); }
 
     // per-frame Tracy plots for resource usage
     void tracyPlotResources() const;
+    // count rows of this frame slot's draw-record buffer, grown if needed (the slot must not be in flight);
+    // the frame root written afterwards points at it
+    [[nodiscard]] GpuDrawRecord* mapDrawRecords(uint32_t frameSlot, uint32_t count);
 
     [[nodiscard]] vk::DeviceAddress frameRootAddress(uint32_t frameSlot) const noexcept
     {
@@ -132,10 +161,10 @@ public:
     }
     // appends are exact, so used bytes / stride is the uploaded element count
     [[nodiscard]] uint32_t uploadedCount(AssetBuffer id) const noexcept;
-    // address of the entity's slice of an asset buffer
-    [[nodiscard]] vk::DeviceAddress modelAssetAddress(AssetBuffer id, EntityId entityId) const noexcept;
-    // bytes the entity occupies across all asset buffers
-    [[nodiscard]] vk::DeviceSize modelGpuBytes(EntityId entityId) const noexcept;
+    // address of the model's slice of an asset buffer
+    [[nodiscard]] vk::DeviceAddress modelAssetAddress(AssetBuffer id, ModelId modelId) const noexcept;
+    // bytes the model's slices occupy, shared by all its entities
+    [[nodiscard]] vk::DeviceSize modelGpuBytes(ModelId modelId) const noexcept;
     // {used, capacity} summed over all asset buffers
     [[nodiscard]] std::pair<vk::DeviceSize, vk::DeviceSize> assetTotals() const noexcept;
 
@@ -178,13 +207,23 @@ public:
     AttachmentImage depthAttachment;
 
     std::array<DeviceBuffer, kAssetBufferCount> assetBuffers;
-    // indexed by EntityId, parallel to objectStorage
+    // indexed by ModelId (ObjectStorage::modelIds)
     std::vector<ModelAllocation> modelAllocations;
 
     // one GpuObjectUB[capacity] buffer per frame-in-flight, rewritten by the CPU every frame
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> instanceUbos;
     // GpuObjectUB slots per frame buffer, may exceed entity count
     uint32_t instanceCapacity = 0;
+    // GpuNodeInstance[nodeInstanceCapacity] per frame slot: one row per entity x node, rewritten every frame
+    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> nodeInstanceBuffers;
+    uint32_t nodeInstanceCapacity = 0;
+    // first node-instance row per entity (entity-major); rebuilt whenever entities or models change
+    std::vector<uint32_t> entityNodeInstanceFirst;
+    uint32_t nodeInstanceCount = 0;
+    // GpuDrawRecord[] per frame slot, filled by mapDrawRecords callers
+    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> drawRecordBuffers;
+    std::array<uint32_t, MAX_FRAMES_IN_FLIGHT> drawRecordCapacity{};
+    std::array<uint32_t, MAX_FRAMES_IN_FLIGHT> drawRecordCount{};
     // one GpuFrameRoot per frame-in-flight, rewritten every frame
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> frameRoots;
     // GpuModel[modelTableCapacity], rows rewritten in place after every flush and erase (GPU idle)
@@ -202,9 +241,12 @@ private:
     // load rows packed from scratch into their GPU form
     struct PackedScratch {
         std::vector<GpuPrimitive> primitives;
-        std::vector<GpuLight> lights;
-        std::vector<GpuMaterialExtension> extensions;
+        std::vector<GpuNode> nodes;
         std::vector<GpuMorphTarget> morphTargets;
+        // MaterialStore::dirtyRows, sorted, with their packed rows
+        std::vector<uint32_t> materialRows;
+        std::vector<GpuMaterial> materials;
+        std::vector<GpuMaterialExtension> extensions;
     };
     struct AttachmentDesc {
         vk::Format format;
@@ -226,6 +268,11 @@ private:
     void writeFrameRoot(uint32_t frameSlot);
     // scratch PrimitiveDraws as model-relative GpuPrimitives; call before remapScratchOffsets
     [[nodiscard]] std::vector<GpuPrimitive> packScratchPrimitives() const;
+    // scratch NodeDraws as model-relative GpuNodes
+    [[nodiscard]] std::vector<GpuNode> packScratchNodes() const;
+    // entity-major node-instance rows; grows the per-frame buffers (GPU idle)
+    void rebuildNodeInstanceLayout();
+    void writeNodeInstances(uint32_t frameSlot);
     void destroyAssetBuffer(AssetBuffer id);
     // device-local storage buffer with the asset usage flags; not yet installed
     void createAssetBuffer(AssetBuffer id, vk::DeviceSize capacity, vk::raii::Buffer& buffer,
@@ -236,17 +283,25 @@ private:
     // one staging buffer and one submit + idle for all uploads
     void uploadAssetBuffers(std::span<const AssetUpload> uploads);
     [[nodiscard]] std::span<const std::byte> scratchBytes(AssetBuffer id, const PackedScratch& packed) const;
+    // dirty material rows, one upload per run of consecutive ids
+    void appendMaterialUploads(PackedScratch& packed, std::vector<AssetUpload>& uploads) const;
+    // links the entity to the model and appends its light rows; call uploadLights after
+    void attachEntity(EntityId entity, ModelId modelId);
+    // rewrites the light buffer from LightStore::uploaded
+    void uploadLights();
+    // drops a model nothing draws; returns its texture references
+    [[nodiscard]] std::vector<uint32_t> eraseModel(ModelId modelId);
     // removes the model's byte ranges from every asset buffer in one submit
     void compactAssetBuffers(const ModelAllocation& removed);
-    // shifts every catalog reference past the removed slices and erases the slices
-    void rebaseCatalog(EntityId id, const ModelAllocation& removed);
+    // shifts every catalog reference past the removed slices and erases the slices and the model
+    void rebaseCatalog(ModelId modelId, const ModelAllocation& removed);
     // failed load: nothing reaches the GPU and the catalog returns to the last flush
     void discardScratch();
     void createAttachment(AttachmentImage& target, const AttachmentDesc& desc);
     void destroyAttachment(AttachmentImage& target, const char* tracyName);
     void remapScratchOffsets();
-    // rows owned by entity owner, kept in model space
-    [[nodiscard]] std::vector<GpuLight> packScratchLights(EntityId owner) const;
+    // model-space light template; attachEntity sets the owner per instance
+    [[nodiscard]] std::vector<GpuLight> packScratchLights() const;
     [[nodiscard]] vk::raii::CommandBuffer& oneTimeTransferCmd();
     [[nodiscard]] const vk::raii::Queue& oneTimeTransferQueue() const noexcept;
 };

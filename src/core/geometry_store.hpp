@@ -35,6 +35,8 @@ public:
     std::vector<uint32_t> meshletVertices;
     std::vector<uint8_t> meshletTriangles;
     std::vector<PrimitiveDraw> primitiveDraws;
+    // mesh placements; a mesh's primitives appear once in primitiveDraws however many nodes place it
+    std::vector<NodeDraw> nodeDraws;
 
     std::vector<MorphTarget> morphTargets;
     std::vector<glm::vec3> morphPos;
@@ -45,6 +47,8 @@ public:
     std::vector<AuxBlob> auxBlobs;
     std::vector<std::string> extensionsUsed;
     std::vector<std::string> extensionsRequired;
+    // texture heap indices the loaded model retains; the flush hands them to its ModelAllocation
+    std::vector<uint32_t> textureRefs;
 
     // GpuModelAttribute bits of the optional streams any primitive of this load provided;
     // absent streams stay zero-filled in scratch and are not uploaded
@@ -55,14 +59,15 @@ public:
     uint32_t flushedMorphTargetCount = 0;
     uint32_t flushedMorphWeightCount = 0;
     uint32_t flushedAuxBlobCount = 0;
+    uint32_t flushedNodeCount = 0;
 
     // grow SoA + packed GpuVertex to newCount; new verts get default attrs
     void resizeVertices(uint32_t newCount);
     // capacity for extraVertices more in all nine per-vertex arrays, and extraIndices more indices
     void reserveGeometry(size_t extraVertices, size_t extraIndices);
 
-    // model-space sphere (AABB center, farthest vertex) over the scratch positions; zero when empty
-    [[nodiscard]] glm::vec4 boundingSphere() const;
+    // sphere (AABB center, farthest vertex) over positions [firstVertex, +vertexCount); zero when empty
+    [[nodiscard]] glm::vec4 boundingSphere(uint32_t firstVertex, uint32_t vertexCount) const;
 
     // pack vertices[v] from positions/colors/uv0
     void packVertex(uint32_t v);
@@ -76,7 +81,7 @@ public:
     [[nodiscard]] MeshletDraw buildMeshletsForRange(uint32_t firstIndex, uint32_t indexCount, uint32_t firstVertex,
                                                     uint32_t vertexCount);
 
-    // drop load scratch after GPU append; catalog (primitiveDraws, morphTargets, weights, aux) stays
+    // drop load scratch after GPU append; catalog (primitiveDraws, nodeDraws, morphTargets, weights, aux) stays
     void clearScratch();
     // failed load: catalog entries past the watermarks go too
     void discardScratch();

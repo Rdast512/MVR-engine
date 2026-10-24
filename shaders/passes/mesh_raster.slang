@@ -16,7 +16,7 @@ void meshMain(
     out indices uint3 tris[kMaxMeshletTriangles])
 {
     DrawContext draw = loadDrawContext(push);
-    const uint meshletIndex = push.meshletOffset + gid;
+    const uint meshletIndex = draw.record.meshletOffset + gid;
     if (gid >= push.meshletCount || meshletIndex >= draw.primitive.meshletCount)
     {
         SetMeshOutputCounts(0, 0);
@@ -33,7 +33,7 @@ void meshMain(
         return;
     }
 
-    float4x4 mvp = objectToClip(loadCamera(draw.root), draw.instance);
+    float4x4 mvp = objectToClip(loadCamera(draw.root), draw.nodeInstance.worldMatrix);
 
     for (uint vi = gtid; vi < vertCount; vi += kGroupSize)
     {
@@ -44,8 +44,11 @@ void meshMain(
         verts[vi].fragTexCoord = v.texCoord;
     }
 
+    // a mirrored placement reverses winding; swapping two corners restores the front face
+    const bool isMirrored = (draw.nodeInstance.flags & kNodeFlagFlipWinding) != 0;
     for (uint ti = gtid; ti < primCount; ti += kGroupSize)
     {
-        tris[ti] = loadMeshletTriangle(draw, meshlet, ti);
+        const uint3 tri = loadMeshletTriangle(draw, meshlet, ti);
+        tris[ti] = isMirrored ? tri.xzy : tri;
     }
 }
