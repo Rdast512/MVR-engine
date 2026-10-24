@@ -77,7 +77,6 @@ DeviceGeneratedCommands::~DeviceGeneratedCommands()
 
 void DeviceGeneratedCommands::init()
 {
-    ZoneScopedN("DeviceGeneratedCommands::init");
 
     if (descriptorManager.descriptorBindingMode != DescriptorBindingMode::DescriptorHeaps) {
         throw std::runtime_error("DGC requires descriptor heaps for PUSH_DATA tokens");

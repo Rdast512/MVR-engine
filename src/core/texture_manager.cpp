@@ -42,7 +42,6 @@ std::string TextureManager::resolvePath(std::string_view path)
 // heap slots are not freed: the DescriptorManager is destroyed first
 TextureManager::~TextureManager()
 {
-    ZoneScopedN("TextureManager::~TextureManager");
     logInfo("Destructor called", "TextureManager");
 
     for (auto& [heapIndex, entry] : heapEntries) {
@@ -218,7 +217,6 @@ vk::SamplerCreateInfo samplerInfoFromGltf(int32_t minFilter, int32_t magFilter, 
 
 void TextureManager::init()
 {
-    ZoneScopedN("TextureManager::init");
     logInfo("init() started", "TextureManager");
     // descriptor manager's default sampler serves the glTF default (trilinear, repeat)
     samplerKeyToIndex[packSamplerKey(TG3_TEXTURE_FILTER_LINEAR_MIPMAP_LINEAR, TG3_TEXTURE_FILTER_LINEAR,

@@ -2,7 +2,6 @@
 
 #include "../util/debug.hpp"
 #include "../static_headers/logger.hpp"
-#include "../util/vk_tracy.hpp"
 
 namespace
 {
@@ -21,7 +20,6 @@ SwapChain::SwapChain(SDL_Window *window, const Device &device)
       queueFamilyIndices(device.queueFamilyIndices) {}
 
 void SwapChain::init() {
-    ZoneScopedN("SwapChain::init");
     logInfo("Initialized SwapChain", "SwapChain");
     createSwapChain();
     createImageViews();
@@ -67,7 +65,6 @@ vk::Extent2D SwapChain::chooseSwapExtent(
 
 
 void SwapChain::createSwapChain() {
-    ZoneScopedN("SwapChain::createSwapChain");
 
     // caps2 avoids the legacy-gpdsc2 validation warning
     const vk::PhysicalDeviceSurfaceInfo2KHR surfaceInfo{.surface = *surface};
@@ -143,7 +140,6 @@ void SwapChain::createSwapChain() {
 }
 
 void SwapChain::createImageViews() {
-    ZoneScopedN("SwapChain::createImageViews");
     vk::ImageViewCreateInfo imageViewCreateInfo{
         .viewType = vk::ImageViewType::e2D,
         .format = swapChainImageFormat,
@@ -157,13 +153,11 @@ void SwapChain::createImageViews() {
 }
 
 void SwapChain::cleanupSwapChain() {
-    ZoneScopedN("SwapChain::cleanupSwapChain");
     swapChainImageViews.clear();
     swapChain = nullptr;
 }
 
 void SwapChain::recreateSwapChain() {
-    ZoneScopedN("SwapChain::recreateSwapChain");
     vkDevice.waitIdle();
     cleanupSwapChain();
     createSwapChain();

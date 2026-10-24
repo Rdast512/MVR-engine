@@ -1,7 +1,6 @@
 #include "vk_pipeline.hpp"
 #include "../core/vk_descriptors.hpp"
 #include "../util/debug.hpp"
-#include "../util/vk_tracy.hpp"
 
 #include <array>
 #include <fstream>
@@ -16,7 +15,6 @@ namespace
 {
     std::vector<char> readFile(const std::string& filename)
     {
-        ZoneScopedN("Pipeline::readFile");
         std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
         if (!file.is_open()) {
@@ -39,13 +37,11 @@ Pipeline::Pipeline(ResourceManager& resourceManager, DescriptorManager& descript
 
 void Pipeline::init()
 {
-    ZoneScopedN("Pipeline::init");
     createMeshPipeline();
 }
 
 void Pipeline::createMeshPipeline()
 {
-    ZoneScopedN("Pipeline::createMeshPipeline");
     const auto shaderDir = std::filesystem::path(ENGINE_SHADER_DIR);
     const auto meshSpirv = readFile((shaderDir / "passes" / "mesh_raster.spv").string());
     const auto fragSpirv = readFile((shaderDir / "passes" / "mesh_fragment.spv").string());

@@ -23,7 +23,6 @@ void Renderer::setTracyContext(VkTracyContext* tracyContextIn) { tracyContext = 
 
 void Renderer::rebuildSwapchainResources() const
 {
-    ZoneScopedN("SwapchainRecreate");
     resourceManager.updateSwapChainExtent(swapChain.swapChainExtent);
     resourceManager.updateSwapChainImageFormat(swapChain.swapChainImageFormat);
     resourceManager.setSwapChainImageCount(static_cast<uint32_t>(swapChain.swapChainImages.size()));
@@ -31,9 +30,6 @@ void Renderer::rebuildSwapchainResources() const
     resourceManager.createDepthResources();
     // aspect ratio follows the new extent
     camera.setFov(camera.getFovDegrees());
-    TracyPlot("Vulkan/SwapchainWidth", static_cast<double>(swapChain.swapChainExtent.width));
-    TracyPlot("Vulkan/SwapchainHeight", static_cast<double>(swapChain.swapChainExtent.height));
-    TracyPlot("Vulkan/SwapchainImagesInUse", static_cast<double>(swapChain.swapChainImages.size()));
 }
 
 void Renderer::drawFrame()
@@ -48,7 +44,6 @@ void Renderer::drawFrame()
     auto& commandBuffer = resourceManager.commandBuffers[currentFrame];
 
     resourceManager.tracyPlotResources();
-    TracyPlot("Vulkan/SwapchainImagesInUse", static_cast<double>(swapChain.swapChainImages.size()));
 
     {
         ZoneScopedN("FenceWait");
@@ -69,7 +64,6 @@ void Renderer::drawFrame()
     }
 
     if (result == vk::Result::eErrorOutOfDateKHR) {
-        ZoneScopedN("SwapchainRecreate_Acquire");
         swapChain.recreateSwapChain();
         rebuildSwapchainResources();
         return;
@@ -122,7 +116,6 @@ void Renderer::drawFrame()
     }
 
     if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
-        ZoneScopedN("SwapchainRecreate_Present");
         swapChain.recreateSwapChain();
         rebuildSwapchainResources();
     } else if (result != vk::Result::eSuccess) {

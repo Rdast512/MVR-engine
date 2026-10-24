@@ -268,7 +268,6 @@ const vk::raii::Queue& ResourceManager::oneTimeTransferQueue() const noexcept
 
 ResourceManager::~ResourceManager()
 {
-    ZoneScopedN("ResourceManager::~ResourceManager");
     logInfo("Destructor called", "ResourceManager");
     destroyInstanceUboBuffers();
     for (HostBuffer& root : frameRoots) {
@@ -284,7 +283,6 @@ ResourceManager::~ResourceManager()
 
 void ResourceManager::init()
 {
-    ZoneScopedN("ResourceManager::init");
     logInfo("init() started", "ResourceManager");
     createCommandPool();
     createCommandBuffers();
@@ -294,7 +292,6 @@ void ResourceManager::init()
 
 void ResourceManager::createSyncObjects()
 {
-    ZoneScopedN("ResourceManager::createSyncObjects");
     logInfo("createSyncObjects() started", "ResourceManager");
     presentCompleteSemaphore.clear();
     renderFinishedSemaphore.clear();
@@ -340,7 +337,6 @@ void ResourceManager::updateUniformBuffers(uint32_t currentImage)
 
 void ResourceManager::createCommandPool()
 {
-    ZoneScopedN("ResourceManager::createCommandPool");
     logInfo("createCommandPool() started", "ResourceManager");
     vk::CommandPoolCreateInfo poolInfo{.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
                                        .queueFamilyIndex = graphicsIndex};
@@ -356,7 +352,6 @@ void ResourceManager::createCommandPool()
 
 void ResourceManager::createCommandBuffers()
 {
-    ZoneScopedN("ResourceManager::createCommandBuffers");
     logInfo("createCommandBuffers() started", "ResourceManager");
     commandBuffers.clear();
     vk::CommandBufferAllocateInfo allocInfo{.commandPool = commandPool,
@@ -598,7 +593,6 @@ std::vector<GpuLight> ResourceManager::packScratchLights() const
 
 void ResourceManager::createCameraBuffers(Camera& camera)
 {
-    ZoneScopedN("ResourceManager::createCameraBuffers");
     logInfo("createCameraBuffers() started", "ResourceManager");
     camera.allocator = allocator.allocator;
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -648,7 +642,6 @@ void ResourceManager::ensureInstanceCapacity(uint32_t entityCount)
 
 void ResourceManager::createUniformBuffers()
 {
-    ZoneScopedN("ResourceManager::createUniformBuffers");
     logInfo("createUniformBuffers() started", "ResourceManager");
     ensureInstanceCapacity(std::max(objectStorage.size(), 1u));
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
@@ -947,7 +940,6 @@ void ResourceManager::tracyPlotResources() const
     TracyPlot("Vulkan/CpuScratchMeshlets", static_cast<double>(geometryStore.meshlets.size()));
     TracyPlot("Vulkan/InstanceCapacity", static_cast<double>(instanceCapacity));
     TracyPlot("Vulkan/InstanceUboBytes", static_cast<double>(sizeof(GpuObjectUB) * instanceCapacity));
-    TracyPlot("Vulkan/CommandBuffersInUse", static_cast<double>(commandBuffers.size()));
     TracyPlot("Vulkan/MeshBdaReady",
               static_cast<double>(asset(AssetBuffer::Vertices).address != 0 &&
                                   asset(AssetBuffer::Meshlets).address != 0 &&
@@ -1018,7 +1010,6 @@ void ResourceManager::createAttachment(AttachmentImage& target, const Attachment
 
 void ResourceManager::createColorResources()
 {
-    ZoneScopedN("ResourceManager::createColorResources");
     logInfo("createColorResources() started", "ResourceManager");
     if (swapChainImageFormat == vk::Format::eUndefined) {
         return;
@@ -1049,7 +1040,6 @@ void ResourceManager::updateSwapChainExtent(const vk::Extent2D newExtent)
 
 void ResourceManager::createDepthResources()
 {
-    ZoneScopedN("ResourceManager::createDepthResources");
     logInfo("createDepthResources() started", "ResourceManager");
     const vk::Format depthFormat = findDepthFormat();
     logInfo(std::format("Depth format selected: {}", vk::to_string(depthFormat)), "ResourceManager");

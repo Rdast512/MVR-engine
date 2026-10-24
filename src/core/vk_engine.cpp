@@ -10,6 +10,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <utility>
 
@@ -17,6 +18,15 @@
 namespace
 {
     [[nodiscard]] double toMiB(vk::DeviceSize bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); }
+
+    // the swapchain is *_SRGB, so ImGui's sRGB-authored colors must be stored linear
+    [[nodiscard]] ImVec4 srgbToLinear(const ImVec4& color)
+    {
+        const auto channel = [](float c) {
+            return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+        };
+        return {channel(color.x), channel(color.y), channel(color.z), color.w};
+    }
 } // namespace
 #endif
 
@@ -24,7 +34,6 @@ Engine::~Engine() { cleanup(); }
 
 void Engine::initialize()
 {
-    ZoneScopedN("Engine::initialize");
     // runtime flag mirrors the compile-time switch
     enableImGui = (ENGINE_ENABLE_IMGUI != 0);
 
@@ -153,7 +162,6 @@ void Engine::initialize()
 void Engine::createImGuiDescriptorPool()
 {
 #if ENGINE_ENABLE_IMGUI
-    ZoneScopedN("Engine::createImGuiDescriptorPool");
     // backends need separate sampled image + sampler descriptors, not combined
     constexpr uint32_t kPoolCount = 1000;
     auto& vkDevice = device->vkdevice;
@@ -533,7 +541,6 @@ void Engine::applyPendingModelActions()
 
 void Engine::scanFolder()
 {
-    ZoneScopedN("Engine::scanFolder");
     discoveredAssets.clear();
     selectedAssetIndex = -1;
     hasScannedAssets = true;
@@ -591,7 +598,6 @@ void Engine::scanFolder()
 
 void Engine::recreateSwapchain()
 {
-    ZoneScopedN("Engine::recreateSwapchain");
     if (!swapChain || !renderer || !resourceManager) {
         return;
     }
@@ -605,13 +611,6 @@ void Engine::recreateSwapchain()
         ImGui_ImplVulkan_SetMinImageCount(std::max<uint32_t>(imageCount, 2));
         imguiColorFormat = static_cast<VkFormat>(swapChain->swapChainImageFormat);
     }
-#endif
-
-#ifdef TRACY_ENABLE
-    TracyMessageL("Swapchain recreated");
-    TracyPlot("Vulkan/SwapchainWidth", static_cast<double>(swapChain->swapChainExtent.width));
-    TracyPlot("Vulkan/SwapchainHeight", static_cast<double>(swapChain->swapChainExtent.height));
-    TracyPlot("Vulkan/SwapchainImagesInUse", static_cast<double>(swapChain->swapChainImages.size()));
 #endif
 }
 
@@ -676,15 +675,11 @@ void Engine::unloadModel(EntityId id)
 
 void Engine::cleanup()
 {
-    ZoneScopedN("Engine::cleanup");
     if (!initialized) {
         return;
     }
     auto& deviceRef = device->vkdevice;
-    {
-        ZoneScopedN("Engine::cleanup::waitIdle");
-        deviceRef.waitIdle();
-    }
+    deviceRef.waitIdle();
 
     if (tracyContext) {
         tracyContext->shutdown();

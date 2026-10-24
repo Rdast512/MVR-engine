@@ -32,7 +32,6 @@ DescriptorManager::DescriptorManager(const vk::raii::Device& device, VmaAllocato
 
 DescriptorManager::~DescriptorManager()
 {
-    ZoneScopedN("DescriptorManager::~DescriptorManager");
     if (mappedResourceHeapPtr != nullptr && resourceHeapMemory != nullptr) {
         vmaUnmapMemory(allocator, resourceHeapMemory);
         mappedResourceHeapPtr = nullptr;
@@ -48,7 +47,6 @@ DescriptorManager::~DescriptorManager()
 
 void DescriptorManager::init()
 {
-    ZoneScopedN("DescriptorManager::init");
     createHeaps();
     createHeapDescriptors();
 }
@@ -56,7 +54,6 @@ void DescriptorManager::init()
 
 void DescriptorManager::createHeaps()
 {
-    ZoneScopedN("DescriptorManager::createHeaps");
 
     if (samplerDescriptorSize == 0 || imageDescriptorSize == 0 || samplerDescriptorAlignment == 0 ||
         imageDescriptorAlignment == 0) {
@@ -131,7 +128,6 @@ void DescriptorManager::freeImageDescriptor(uint32_t heapIndex)
 // default linear/anisotropic sampler, written straight into the sampler heap
 void DescriptorManager::createHeapDescriptors()
 {
-    ZoneScopedN("DescriptorManager::createHeapDescriptors");
 
     const vk::DeviceSize currentSampOffset = alignUp(0, samplerDescriptorAlignment);
     samplerDescriptorOffset = currentSampOffset;
@@ -156,10 +152,7 @@ void DescriptorManager::createHeapDescriptors()
         .address = static_cast<uint8_t*>(mappedSamplerHeapPtr) + currentSampOffset,
         .size = samplerDescriptorSize,
     };
-    {
-        ZoneScopedN("DescriptorManager::createHeapDescriptors::writeSamplerDescriptorsEXT");
-        device.writeSamplerDescriptorsEXT(samplerInfo, samplerWrite);
-    }
+    device.writeSamplerDescriptorsEXT(samplerInfo, samplerWrite);
 
     defaultSamplerHeapIndex = static_cast<uint32_t>(currentSampOffset / samplerDescriptorSize);
     nextSamplerDescriptorOffset = alignUp(currentSampOffset + samplerDescriptorSize, samplerDescriptorAlignment);
@@ -192,7 +185,6 @@ uint32_t DescriptorManager::writeSamplerDescriptor(const vk::SamplerCreateInfo& 
 
 void DescriptorManager::createHeapBuffers(vk::DeviceSize resourceHeapSize, vk::DeviceSize samplerHeapSize)
 {
-    ZoneScopedN("DescriptorManager::createHeapBuffers");
     createBuffer(
         resourceHeapSize,
         vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress |

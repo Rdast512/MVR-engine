@@ -20,7 +20,6 @@
 #include <string_view>
 #include "../static_headers/logger.hpp"
 #include "../util/debug.hpp"
-#include "util/vk_tracy.hpp"
 #include "vulkan/vulkan.hpp"
 
 namespace
@@ -151,7 +150,6 @@ Device::Device(SDL_Window* window, bool enableValidationLayers) :
 
 void Device::init()
 {
-    ZoneScopedN("Device::init");
     createInstance();
     setupDebugMessenger();
     createSurface();
@@ -161,7 +159,6 @@ void Device::init()
 
 void Device::createInstance()
 {
-    ZoneScopedN("Device::createInstance");
 
     constexpr vk::ApplicationInfo appInfo{.pApplicationName = "Hello Triangle",
                                           .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
@@ -252,7 +249,6 @@ static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(vk::DebugUtilsMessageSever
 
 void Device::setupDebugMessenger()
 {
-    ZoneScopedN("Device::setupDebugMessenger");
     if (!enableValidationLayers)
         return;
 
@@ -270,7 +266,6 @@ void Device::setupDebugMessenger()
 
 void Device::createSurface()
 {
-    ZoneScopedN("Device::createSurface");
     VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
     if (!SDL_Vulkan_CreateSurface(window, *instance, nullptr, &rawSurface)) {
         throw std::runtime_error("Failed to create surface");
@@ -289,7 +284,6 @@ vk::SampleCountFlagBits Device::getMaxUsableSampleCount() const
 
 void Device::pickPhysicalDevice()
 {
-    ZoneScopedN("Device::pickPhysicalDevice");
     const auto devices = instance.enumeratePhysicalDevices();
 
     std::optional<size_t> bestIndex;
@@ -350,7 +344,6 @@ void Device::findQueueFamilies(std::span<const vk::QueueFamilyProperties> famili
 
 void Device::queryCapabilities()
 {
-    ZoneScopedN("Device::queryCapabilities");
     const std::vector<vk::ExtensionProperties> availableExtensions =
         physicalDevice.enumerateDeviceExtensionProperties();
     capabilities.hasClusterAccelerationStructure =
@@ -492,7 +485,6 @@ void Device::queryCapabilities()
 
 void Device::createLogicalDevice()
 {
-    ZoneScopedN("Device::createLogicalDevice");
     const std::vector<QueueFamilyChain> queueFamilyChains =
         physicalDevice.getQueueFamilyProperties2<QueueFamilyChain>();
     logQueueFamilies(queueFamilyChains);
