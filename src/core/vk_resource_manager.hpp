@@ -33,6 +33,8 @@ enum class AssetBuffer : uint8_t {
     MorphPos,
     MorphNrm,
     MorphTan,
+    MorphTargets,     // GpuMorphTarget[], model-relative delta offsets
+    MorphWeights,     // float[], glTF default weights
     Materials,
     PbrExt,
     Lights,
@@ -185,11 +187,25 @@ public:
     uint32_t instanceCapacity = 0;
     // one GpuFrameRoot per frame-in-flight, rewritten every frame
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> frameRoots;
-    // GpuModel[modelAllocations.size()], rebuilt after every flush and erase (GPU idle)
+    // GpuModel[modelTableCapacity], rows rewritten in place after every flush and erase (GPU idle)
     HostBuffer modelTable;
+    uint32_t modelTableCapacity = 0;
     std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> cameraAddresses{};
 
 private:
+    // bytes written at dstOffset of an asset buffer; the buffer grows (x2) when the write passes its capacity
+    struct AssetUpload {
+        AssetBuffer id;
+        std::span<const std::byte> bytes;
+        vk::DeviceSize dstOffset;
+    };
+    // load rows packed from scratch into their GPU form
+    struct PackedScratch {
+        std::vector<GpuPrimitive> primitives;
+        std::vector<GpuLight> lights;
+        std::vector<GpuMaterialExtension> extensions;
+        std::vector<GpuMorphTarget> morphTargets;
+    };
     struct AttachmentDesc {
         vk::Format format;
         vk::ImageUsageFlags usage;
@@ -217,9 +233,9 @@ private:
     // replaces the asset buffer (destroying the old one) with an already-filled buffer
     void installAssetBuffer(AssetBuffer id, vk::raii::Buffer&& buffer, VmaAllocation memory, vk::DeviceSize usedBytes,
                             vk::DeviceSize capacityBytes);
-    void appendDeviceLocal(AssetBuffer id, std::span<const std::byte> src);
-    [[nodiscard]] std::span<const std::byte> scratchBytes(AssetBuffer id, std::span<const GpuLight> lights,
-                                                          std::span<const GpuPrimitive> primitives) const;
+    // one staging buffer and one submit + idle for all uploads
+    void uploadAssetBuffers(std::span<const AssetUpload> uploads);
+    [[nodiscard]] std::span<const std::byte> scratchBytes(AssetBuffer id, const PackedScratch& packed) const;
     // removes the model's byte ranges from every asset buffer in one submit
     void compactAssetBuffers(const ModelAllocation& removed);
     // shifts every catalog reference past the removed slices and erases the slices
@@ -229,7 +245,8 @@ private:
     void createAttachment(AttachmentImage& target, const AttachmentDesc& desc);
     void destroyAttachment(AttachmentImage& target, const char* tracyName);
     void remapScratchOffsets();
-    [[nodiscard]] std::vector<GpuLight> packScratchLights() const;
+    // rows owned by entity owner, kept in model space
+    [[nodiscard]] std::vector<GpuLight> packScratchLights(EntityId owner) const;
     [[nodiscard]] vk::raii::CommandBuffer& oneTimeTransferCmd();
     [[nodiscard]] const vk::raii::Queue& oneTimeTransferQueue() const noexcept;
 };

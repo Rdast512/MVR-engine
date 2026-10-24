@@ -74,7 +74,8 @@ struct PrimitiveDraw
     uint32_t indexCount = 0;
     uint32_t morphFirst = 0;
     uint32_t morphCount = 0;
-    uint32_t morphWeightFirst = 0;
+    // kNoneIndex: the mesh has no default weights (all zero)
+    uint32_t morphWeightFirst = kNoneIndex;
 };
 
 struct MorphTarget
@@ -83,6 +84,15 @@ struct MorphTarget
     uint32_t nrmOffset = kNoneIndex;
     uint32_t tanOffset = kNoneIndex;
 };
+
+// GPU mirror of MorphTarget: delta offsets relative to the model's morph slices, kNoneIndex = absent
+struct GpuMorphTarget
+{
+    uint32_t posOffset = kNoneIndex;
+    uint32_t nrmOffset = kNoneIndex;
+    uint32_t tanOffset = kNoneIndex;
+};
+static_assert(sizeof(GpuMorphTarget) == 12);
 
 namespace GpuMaterialFlag
 {
@@ -142,11 +152,16 @@ struct GpuPrimitive
     uint32_t vertexCount = 0;
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;
-    uint32_t pad0 = 0;
+    // rows of the model's morph target slice; deltas are indexed by vertex - firstVertex
+    uint32_t morphFirst = 0;
+    uint32_t morphCount = 0;
+    // row of the model's morph weight slice, kNoneIndex = no default weights
+    uint32_t morphWeightFirst = kNoneIndex;
 };
-static_assert(sizeof(GpuPrimitive) == 32);
+static_assert(sizeof(GpuPrimitive) == 40);
+static_assert(offsetof(GpuPrimitive, morphFirst) == 28);
 
-// CPU-only KHR PBR-next + texture-transform. Not uploaded until the PBR path exists.
+// CPU authoring form of KHR PBR-next + texture-transform; uploaded packed as GpuMaterialExtension
 struct MaterialUvTransform
 {
     glm::vec2 offset{0.0f, 0.0f};
@@ -240,6 +255,89 @@ struct MaterialPbrExtension
     bool operator==(const MaterialPbrExtension&) const = default;
 };
 
+// GPU mirrors of the above: 4-byte fields only, no implicit padding (scalar layout, types.slang)
+struct GpuUvTransform
+{
+    glm::vec2 offset{0.0f, 0.0f};
+    glm::vec2 scale{1.0f, 1.0f};
+    float rotation = 0.0f;
+};
+static_assert(sizeof(GpuUvTransform) == 20);
+
+struct GpuTextureRef
+{
+    uint32_t tex = kNoneIndex;
+    uint32_t samp = kNoneIndex;
+    uint32_t uv = 0;
+    float normalScale = 1.0f;
+    GpuUvTransform uvXform{};
+};
+static_assert(sizeof(GpuTextureRef) == 36);
+
+// one row per GpuMaterial row, same index
+struct GpuMaterialExtension
+{
+    uint32_t flags = 0;
+
+    GpuUvTransform baseColorUv{};
+    GpuUvTransform metalRoughUv{};
+    GpuUvTransform normalUv{};
+    GpuUvTransform occlusionUv{};
+    GpuUvTransform emissiveUv{};
+
+    float ior = 1.5f;
+    float emissiveStrength = 1.0f;
+    float dispersion = 0.0f;
+
+    float specularFactor = 1.0f;
+    glm::vec3 specularColorFactor{1.0f};
+    GpuTextureRef specular;
+    GpuTextureRef specularColor;
+
+    float clearcoatFactor = 0.0f;
+    float clearcoatRoughnessFactor = 0.0f;
+    GpuTextureRef clearcoat;
+    GpuTextureRef clearcoatRoughness;
+    GpuTextureRef clearcoatNormal;
+
+    glm::vec3 sheenColorFactor{0.0f};
+    float sheenRoughnessFactor = 0.0f;
+    GpuTextureRef sheenColor;
+    GpuTextureRef sheenRoughness;
+
+    float transmissionFactor = 0.0f;
+    GpuTextureRef transmission;
+
+    float thicknessFactor = 0.0f;
+    float attenuationDistance = 0.0f;
+    glm::vec3 attenuationColor{1.0f};
+    GpuTextureRef thickness;
+
+    float iridescenceFactor = 0.0f;
+    float iridescenceIor = 1.3f;
+    float iridescenceThicknessMin = 100.0f;
+    float iridescenceThicknessMax = 400.0f;
+    GpuTextureRef iridescence;
+    GpuTextureRef iridescenceThickness;
+
+    float anisotropyStrength = 0.0f;
+    float anisotropyRotation = 0.0f;
+    GpuTextureRef anisotropy;
+
+    float diffuseTransmissionFactor = 0.0f;
+    glm::vec3 diffuseTransmissionColorFactor{1.0f};
+    GpuTextureRef diffuseTransmission;
+    GpuTextureRef diffuseTransmissionColor;
+};
+static_assert(sizeof(GpuMaterialExtension) == 724);
+static_assert(offsetof(GpuMaterialExtension, ior) == 104);
+static_assert(offsetof(GpuMaterialExtension, specular) == 132);
+static_assert(offsetof(GpuMaterialExtension, clearcoat) == 212);
+static_assert(offsetof(GpuMaterialExtension, sheenColor) == 336);
+static_assert(offsetof(GpuMaterialExtension, thickness) == 468);
+static_assert(offsetof(GpuMaterialExtension, iridescence) == 520);
+static_assert(offsetof(GpuMaterialExtension, diffuseTransmission) == 652);
+
 struct LightDef
 {
     uint8_t type = 1;
@@ -250,26 +348,29 @@ struct LightDef
     float outerCone = 0.785398163f;
 };
 
+// model space: the same space as the model's baked vertices
 struct LightInstance
 {
     uint32_t defIndex = kNoneIndex;
-    glm::vec3 worldPos{0.0f};
-    glm::vec3 worldDir{0.0f, 0.0f, -1.0f};
+    glm::vec3 position{0.0f};
+    glm::vec3 direction{0.0f, 0.0f, -1.0f};
 };
 
-// folded LightDef + LightInstance for the light SSBO (RT/PT later)
+// folded LightDef + LightInstance for the light SSBO (RT/PT later).
+// model space; shaders move it to world space with instances[instanceIndex].modelMatrix
 struct alignas(16) GpuLight
 {
-    glm::vec3 worldPos{0.0f};
+    glm::vec3 position{0.0f};
     float range = 0.0f;
-    glm::vec3 worldDir{0.0f, 0.0f, -1.0f};
+    glm::vec3 direction{0.0f, 0.0f, -1.0f};
     float intensity = 1.0f;
     glm::vec3 color{1.0f};
     uint32_t type = 1;
     float innerCone = 0.0f;
     float outerCone = 0.785398163f;
+    // owning entity, absolute: shifts down on unload like every entity id
+    uint32_t instanceIndex = 0;
     float pad0 = 0.0f;
-    float pad1 = 0.0f;
 };
 static_assert(sizeof(GpuLight) == 64, "GpuLight must stay 64 B");
 
@@ -328,13 +429,18 @@ struct alignas(16) GpuCameraData {
     float frameDeltaTime;      // Delta time in seconds
     glm::vec4 cameraParams; // reserved
 };
+static_assert(sizeof(GpuCameraData) == 512);
+static_assert(offsetof(GpuCameraData, prevViewProj) == 384);
+static_assert(offsetof(GpuCameraData, cameraPos) == 448);
+static_assert(offsetof(GpuCameraData, renderTargetSize) == 464);
+static_assert(offsetof(GpuCameraData, cameraParams) == 496);
 
 // one row per entity in the per-frame instance buffer
 struct alignas(16) GpuObjectUB {
     glm::mat4 modelMatrix;
     // previous frame, for motion vectors
     glm::mat4 prevModelMatrix;
-    // xyz = center, w = radius
+    // world space: xyz = center, w = radius
     glm::vec4 boundingSphere;
     // row in GpuFrameRoot::models
     uint32_t modelIndex;
@@ -354,6 +460,7 @@ namespace GpuModelAttribute
     inline constexpr uint32_t Joints = 1u << 3;
     inline constexpr uint32_t Weights = 1u << 4;
     inline constexpr uint32_t Indices = 1u << 5;
+    inline constexpr uint32_t Morphs = 1u << 6;
 } // namespace GpuModelAttribute
 
 // slice addresses of one loaded model; data inside a slice is model-relative. 0 = stream absent
@@ -371,11 +478,16 @@ struct GpuModel
     vk::DeviceAddress joints = 0;
     vk::DeviceAddress weights = 0;
     vk::DeviceAddress indices = 0;
+    vk::DeviceAddress morphPos = 0;
+    vk::DeviceAddress morphNrm = 0;
+    vk::DeviceAddress morphTan = 0;
+    vk::DeviceAddress morphTargets = 0;
+    vk::DeviceAddress morphWeights = 0;
     uint32_t attributeMask = 0;
     uint32_t pad0 = 0;
 };
-static_assert(sizeof(GpuModel) == 104);
-static_assert(offsetof(GpuModel, attributeMask) == 96);
+static_assert(sizeof(GpuModel) == 144);
+static_assert(offsetof(GpuModel, attributeMask) == 136);
 
 // per-frame entry point for every shader: the only address the push data carries
 struct GpuFrameRoot
@@ -387,8 +499,9 @@ struct GpuFrameRoot
     vk::DeviceAddress models = 0;
     // GpuPrimitive[], absolute rows
     vk::DeviceAddress primitives = 0;
-    // GpuMaterial[], absolute rows; row 0 is the default material
+    // whole GpuMaterial[] buffer; shaders read only row 0 (default material), model rows via GpuModel::materials
     vk::DeviceAddress materials = 0;
+    // whole GpuMaterialExtension[] buffer, parallel to materials
     vk::DeviceAddress pbrExtensions = 0;
     vk::DeviceAddress lights = 0;
     // raw acceleration structure address, 0 until RT exists

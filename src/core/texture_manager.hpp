@@ -64,7 +64,7 @@ public:
     [[nodiscard]] uint32_t getOrCreateSampler(int32_t minFilter, int32_t magFilter, int32_t wrapS, int32_t wrapT);
     [[nodiscard]] bool isCached(std::string cacheKey, TextureColorSpace colorSpace) const;
 
-    // 1x1 white, never released; sampled by primitives without an albedo texture
+    // 1x1 white, never released; freed heap slots are rewritten to it
     [[nodiscard]] uint32_t getDefaultTextureIndex() const noexcept { return defaultTextureIndex; }
 
     // Load calls never change reference counts; owners retain what they keep.
@@ -74,6 +74,12 @@ public:
     // destroys the textures in heapIndices that nobody retained (failed load cleanup)
     void releaseUnreferenced(std::span<const uint32_t> heapIndices);
     [[nodiscard]] uint32_t size() const noexcept { return static_cast<uint32_t>(heapEntries.size()); }
+
+    struct TextureInfo {
+        std::string name; // cache key without folder and color space
+        vk::DeviceSize bytes = 0;
+    };
+    [[nodiscard]] std::optional<TextureInfo> textureInfo(uint32_t heapIndex) const;
 
     // Thread-safe decoders (no Vulkan); upload the result with loadTextureFromPixels
     [[nodiscard]] static DecodedImage decodeRgba8(std::span<const uint8_t> bytes);

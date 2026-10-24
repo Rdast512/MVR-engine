@@ -1,4 +1,5 @@
 #pragma once
+#include <optional>
 #include <vulkan/vulkan_raii.hpp>
 
 #include "types.hpp"
@@ -8,6 +9,9 @@ class DescriptorManager
     void createHeaps();
     void createHeapDescriptors();
     void createHeapBuffers(vk::DeviceSize resourceHeapSize, vk::DeviceSize samplerHeapSize);
+    void writeImageAt(vk::DeviceSize offset, const vk::ImageViewCreateInfo& imageViewCreateInfo) const;
+    // rewritten into freed image slots so a stale index samples it instead of a destroyed image
+    std::optional<vk::ImageViewCreateInfo> fallbackImageView;
     vk::DeviceSize minResourceHeapReservedRange = 0;
     vk::DeviceSize minSamplerHeapReservedRange = 0;
 
@@ -35,6 +39,8 @@ public:
     void writeImageDescriptor(TextureAsset& textureAsset, const vk::ImageViewCreateInfo& imageViewCreateInfo);
     // slot is reused by a later writeImageDescriptor; no in-flight frame may still sample it
     void freeImageDescriptor(uint32_t heapIndex);
+    // the view must outlive every later freeImageDescriptor call
+    void setFallbackImage(const vk::ImageViewCreateInfo& imageViewCreateInfo) { fallbackImageView = imageViewCreateInfo; }
     [[nodiscard]] uint32_t writeSamplerDescriptor(const vk::SamplerCreateInfo& samplerInfo);
 
 

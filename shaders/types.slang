@@ -61,8 +61,21 @@ struct GpuModel
     uint64_t joints;
     uint64_t weights;
     uint64_t indices;
+    uint64_t morphPos;     // float3 deltas
+    uint64_t morphNrm;     // float3 deltas
+    uint64_t morphTan;     // float4 deltas
+    uint64_t morphTargets; // GpuMorphTarget[]
+    uint64_t morphWeights; // float[], glTF default weights
     uint attributeMask;
     uint pad0;
+};
+
+// delta offsets relative to the model's morph slices, kNoneIndex = absent
+struct GpuMorphTarget
+{
+    uint posOffset;
+    uint nrmOffset;
+    uint tanOffset;
 };
 
 // values are relative to the owning model's slices
@@ -75,7 +88,9 @@ struct GpuPrimitive
     uint vertexCount;
     uint firstIndex;
     uint indexCount;
-    uint pad0;
+    uint morphFirst;       // rows of model.morphTargets
+    uint morphCount;
+    uint morphWeightFirst; // row of model.morphWeights, kNoneIndex = no default weights
 };
 
 struct GpuVertex
@@ -130,18 +145,91 @@ struct GpuMaterial
     uint3 pad3;
 };
 
+// model space; loadWorldLight moves it to world space through its owning instance
 struct GpuLight
 {
-    float3 worldPos;
+    float3 position;
     float range;
-    float3 worldDir;
+    float3 direction;
     float intensity;
     float3 color;
     uint type;
     float innerCone;
     float outerCone;
+    uint instanceIndex;
     float pad0;
-    float pad1;
+};
+
+struct GpuUvTransform
+{
+    float2 offset;
+    float2 scale;
+    float rotation;
+};
+
+struct GpuTextureRef
+{
+    uint tex;  // kNoneIndex = absent
+    uint samp;
+    uint uv;
+    float normalScale;
+    GpuUvTransform uvXform;
+};
+
+// 724 B, one row per GpuMaterial row (same index)
+struct GpuMaterialExtension
+{
+    uint flags; // MaterialExtFlag::*
+
+    GpuUvTransform baseColorUv;
+    GpuUvTransform metalRoughUv;
+    GpuUvTransform normalUv;
+    GpuUvTransform occlusionUv;
+    GpuUvTransform emissiveUv;
+
+    float ior;
+    float emissiveStrength;
+    float dispersion;
+
+    float specularFactor;
+    float3 specularColorFactor;
+    GpuTextureRef specular;
+    GpuTextureRef specularColor;
+
+    float clearcoatFactor;
+    float clearcoatRoughnessFactor;
+    GpuTextureRef clearcoat;
+    GpuTextureRef clearcoatRoughness;
+    GpuTextureRef clearcoatNormal;
+
+    float3 sheenColorFactor;
+    float sheenRoughnessFactor;
+    GpuTextureRef sheenColor;
+    GpuTextureRef sheenRoughness;
+
+    float transmissionFactor;
+    GpuTextureRef transmission;
+
+    float thicknessFactor;
+    float attenuationDistance; // 0 = infinite
+    float3 attenuationColor;
+    GpuTextureRef thickness;
+
+    float iridescenceFactor;
+    float iridescenceIor;
+    float iridescenceThicknessMin;
+    float iridescenceThicknessMax;
+    GpuTextureRef iridescence;
+    GpuTextureRef iridescenceThickness;
+
+    float anisotropyStrength;
+    float anisotropyRotation;
+    GpuTextureRef anisotropy;
+
+    float diffuseTransmissionFactor;
+    float3 diffuseTransmissionColorFactor;
+    GpuTextureRef diffuseTransmission;
+    GpuTextureRef diffuseTransmissionColor;
 };
 
 // MeshPushData: 24 B, matches src/render/push_data.hpp
@@ -168,8 +256,8 @@ struct GpuFrameRoot
     uint64_t instances;     // GpuObjectUB[entity]
     uint64_t models;        // GpuModel[entity]
     uint64_t primitives;    // GpuPrimitive[], absolute rows
-    uint64_t materials;     // GpuMaterial[], absolute rows
-    uint64_t pbrExtensions;
+    uint64_t materials;     // whole GpuMaterial[]; only row 0 (default) is read here
+    uint64_t pbrExtensions; // whole GpuMaterialExtension[], parallel to materials
     uint64_t lights;        // GpuLight[lightCount]
     uint64_t tlas;
     uint lightCount;

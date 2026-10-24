@@ -11,8 +11,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <format>
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #if ENGINE_ENABLE_IMGUI
 namespace
@@ -26,6 +30,138 @@ namespace
             return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
         };
         return {channel(color.x), channel(color.y), channel(color.z), color.w};
+    }
+
+    [[nodiscard]] std::string formatSize(vk::DeviceSize bytes)
+    {
+        constexpr vk::DeviceSize kMiB = 1024 * 1024;
+        return bytes >= kMiB ? std::format("{:.1f} MiB", toMiB(bytes))
+                             : std::format("{:.1f} KiB", static_cast<double>(bytes) / 1024.0);
+    }
+
+    // one row of the asset tree: label | value | size, size column left current for the caller
+    template <typename... Args>
+    void propertyRow(const char* label, std::format_string<Args...> fmt, Args&&... args)
+    {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen |
+                                     ImGuiTreeNodeFlags_SpanFullWidth);
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(std::format(fmt, std::forward<Args>(args)...).c_str());
+        ImGui::TableNextColumn();
+    }
+
+    void textureRow(const TextureManager& textures, const char* slot, uint32_t heapIndex)
+    {
+        if (heapIndex == kNoneIndex) {
+            return;
+        }
+        const std::optional<TextureManager::TextureInfo> info = textures.textureInfo(heapIndex);
+        if (!info) {
+            propertyRow(slot, "missing (heap {})", heapIndex);
+            return;
+        }
+        propertyRow(slot, "{}", info->name);
+        ImGui::TextUnformatted(formatSize(info->bytes).c_str());
+    }
+
+    [[nodiscard]] const char* alphaModeName(uint32_t flags)
+    {
+        switch (flags & GpuMaterialFlag::AlphaModeMask) {
+        case GpuMaterialFlag::AlphaMask:  return "mask";
+        case GpuMaterialFlag::AlphaBlend: return "blend";
+        default:                          return "opaque";
+        }
+    }
+
+    [[nodiscard]] const char* lightTypeName(uint32_t type)
+    {
+        switch (type) {
+        case 0:  return "Directional";
+        case 2:  return "Spot";
+        default: return "Point";
+        }
+    }
+
+    // distinct textures a material samples, base and extension slots
+    [[nodiscard]] std::vector<uint32_t> materialTextures(const MaterialStore::MaterialInfo& info)
+    {
+        const GpuMaterial& m = info.material;
+        const MaterialPbrExtension& e = info.extension;
+        std::vector<uint32_t> heapIndices{
+            m.baseColorTex,         m.metalRoughTex,          m.normalTex,
+            m.occlusionTex,         m.emissiveTex,            e.specular.tex,
+            e.specularColor.tex,    e.clearcoat.tex,          e.clearcoatRoughness.tex,
+            e.clearcoatNormal.tex,  e.sheenColor.tex,         e.sheenRoughness.tex,
+            e.transmission.tex,     e.thickness.tex,          e.iridescence.tex,
+            e.iridescenceThickness.tex, e.anisotropy.tex,     e.diffuseTransmission.tex,
+            e.diffuseTransmissionColor.tex,
+        };
+        std::erase(heapIndices, kNoneIndex);
+        std::ranges::sort(heapIndices);
+        const auto [first, last] = std::ranges::unique(heapIndices);
+        heapIndices.erase(first, last);
+        return heapIndices;
+    }
+
+    void drawMaterialExtensions(const TextureManager& textures, const MaterialPbrExtension& e)
+    {
+        const auto has = [&e](uint32_t flag) { return (e.flags & flag) != 0; };
+        if (has(MaterialExtFlag::Unlit)) {
+            propertyRow("Unlit", "yes");
+        }
+        if (has(MaterialExtFlag::EmissiveStrength)) {
+            propertyRow("Emissive strength", "{:.2f}", e.emissiveStrength);
+        }
+        if (has(MaterialExtFlag::Ior)) {
+            propertyRow("IOR", "{:.3f}", e.ior);
+        }
+        if (has(MaterialExtFlag::Dispersion)) {
+            propertyRow("Dispersion", "{:.3f}", e.dispersion);
+        }
+        if (has(MaterialExtFlag::Specular)) {
+            propertyRow("Specular", "{:.2f}, color ({:.2f}, {:.2f}, {:.2f})", e.specularFactor,
+                        e.specularColorFactor.r, e.specularColorFactor.g, e.specularColorFactor.b);
+            textureRow(textures, "Specular map", e.specular.tex);
+            textureRow(textures, "Specular color map", e.specularColor.tex);
+        }
+        if (has(MaterialExtFlag::Clearcoat)) {
+            propertyRow("Clearcoat", "{:.2f}, roughness {:.2f}", e.clearcoatFactor, e.clearcoatRoughnessFactor);
+            textureRow(textures, "Clearcoat map", e.clearcoat.tex);
+            textureRow(textures, "Clearcoat roughness map", e.clearcoatRoughness.tex);
+            textureRow(textures, "Clearcoat normal map", e.clearcoatNormal.tex);
+        }
+        if (has(MaterialExtFlag::Sheen)) {
+            propertyRow("Sheen", "color ({:.2f}, {:.2f}, {:.2f}), roughness {:.2f}", e.sheenColorFactor.r,
+                        e.sheenColorFactor.g, e.sheenColorFactor.b, e.sheenRoughnessFactor);
+            textureRow(textures, "Sheen color map", e.sheenColor.tex);
+            textureRow(textures, "Sheen roughness map", e.sheenRoughness.tex);
+        }
+        if (has(MaterialExtFlag::Transmission)) {
+            propertyRow("Transmission", "{:.2f}", e.transmissionFactor);
+            textureRow(textures, "Transmission map", e.transmission.tex);
+        }
+        if (has(MaterialExtFlag::Volume)) {
+            propertyRow("Volume", "thickness {:.3f}, attenuation distance {:.2f}", e.thicknessFactor,
+                        e.attenuationDistance);
+            textureRow(textures, "Thickness map", e.thickness.tex);
+        }
+        if (has(MaterialExtFlag::Iridescence)) {
+            propertyRow("Iridescence", "{:.2f}, ior {:.2f}, thickness [{:.0f}, {:.0f}] nm", e.iridescenceFactor,
+                        e.iridescenceIor, e.iridescenceThicknessMin, e.iridescenceThicknessMax);
+            textureRow(textures, "Iridescence map", e.iridescence.tex);
+            textureRow(textures, "Iridescence thickness map", e.iridescenceThickness.tex);
+        }
+        if (has(MaterialExtFlag::Anisotropy)) {
+            propertyRow("Anisotropy", "{:.2f}, rotation {:.2f}", e.anisotropyStrength, e.anisotropyRotation);
+            textureRow(textures, "Anisotropy map", e.anisotropy.tex);
+        }
+        if (has(MaterialExtFlag::DiffuseTransmission)) {
+            propertyRow("Diffuse transmission", "{:.2f}", e.diffuseTransmissionFactor);
+            textureRow(textures, "Diffuse transmission map", e.diffuseTransmission.tex);
+            textureRow(textures, "Diffuse transmission color map", e.diffuseTransmissionColor.tex);
+        }
     }
 } // namespace
 #endif
@@ -384,6 +520,7 @@ void Engine::drawImGui()
         if (ImGui::Begin("Engine")) {
             drawLoadPanel();
             drawLoadedModelsPanel();
+            drawAssetsPanel();
         }
         ImGui::End();
     }
@@ -523,6 +660,164 @@ void Engine::drawLoadedModelsPanel()
             pendingUnload = id;
         }
         ImGui::PopID();
+    }
+    ImGui::EndTable();
+#endif
+}
+
+void Engine::drawAssetsPanel() const
+{
+#if ENGINE_ENABLE_IMGUI
+    if (!ImGui::CollapsingHeader("Assets")) {
+        return;
+    }
+    const MaterialStore& materials = scene->materialStore;
+    const LightStore& lights = scene->lightStore;
+    const ObjectStorage& storage = scene->objectStorage;
+
+    // the catalog holds flushed primitives only, so pending rows count 0
+    std::vector<uint32_t> primitiveUses(materials.infos.size(), 0);
+    for (const PrimitiveDraw& draw : scene->geometryStore.primitiveDraws) {
+        const uint32_t id = draw.materialId == kNoneIndex ? materials.defaultMaterialId() : draw.materialId;
+        if (id < primitiveUses.size()) {
+            ++primitiveUses[id];
+        }
+    }
+
+    constexpr ImGuiTableFlags kTableFlags =
+        ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
+    if (!ImGui::BeginTable("##assets", 3, kTableFlags)) {
+        return;
+    }
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+    ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableHeadersRow();
+    const ImVec2 swatchSize{ImGui::GetTextLineHeight(), ImGui::GetTextLineHeight()};
+    constexpr ImGuiColorEditFlags kSwatchFlags = ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop;
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    const std::string materialsLabel = std::format("Materials ({})###materials", materials.infos.size());
+    const bool isMaterialsOpen = ImGui::TreeNodeEx(materialsLabel.c_str(), ImGuiTreeNodeFlags_SpanFullWidth);
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("cache %u hits / %u misses", materials.cacheHits, materials.cacheMisses);
+    ImGui::SetItemTooltip("hit: a glTF material identical to an earlier row of the same model reuses it");
+    ImGui::TableNextColumn();
+    if (isMaterialsOpen) {
+        constexpr vk::DeviceSize kRowBytes = sizeof(GpuMaterial) + sizeof(GpuMaterialExtension);
+        for (uint32_t id = 0; id < materials.infos.size(); ++id) {
+            const MaterialStore::MaterialInfo& info = materials.infos[id];
+            const GpuMaterial& m = info.material;
+            vk::DeviceSize textureBytes = 0;
+            for (const uint32_t heapIndex : materialTextures(info)) {
+                if (const std::optional<TextureManager::TextureInfo> texture = textureManager->textureInfo(heapIndex)) {
+                    textureBytes += texture->bytes;
+                }
+            }
+
+            ImGui::PushID(static_cast<int>(id));
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            const std::string label = info.name.empty() ? std::format("material {}", id) : info.name;
+            const bool isOpen = ImGui::TreeNodeEx(label.c_str(), ImGuiTreeNodeFlags_SpanFullWidth);
+            ImGui::TableNextColumn();
+            ImGui::ColorButton("##albedo", {m.baseColorFactor.r, m.baseColorFactor.g, m.baseColorFactor.b, 1.0f},
+                               kSwatchFlags, swatchSize);
+            ImGui::SameLine();
+            if (info.dedupHits > 0) {
+                ImGui::Text("%u prims, +%u merged", primitiveUses[id], info.dedupHits);
+            } else {
+                ImGui::Text("%u prims", primitiveUses[id]);
+            }
+            ImGui::SetItemTooltip("primitives drawn with this row; merged: identical glTF materials folded into it");
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(formatSize(kRowBytes + textureBytes).c_str());
+            ImGui::SetItemTooltip("%s row + %s textures (shared textures count for every material using them)",
+                                  formatSize(kRowBytes).c_str(), formatSize(textureBytes).c_str());
+
+            if (isOpen) {
+                propertyRow("Base color", "({:.2f}, {:.2f}, {:.2f}, {:.2f})", m.baseColorFactor.r,
+                            m.baseColorFactor.g, m.baseColorFactor.b, m.baseColorFactor.a);
+                propertyRow("Metallic / roughness", "{:.2f} / {:.2f}", m.metallicFactor, m.roughnessFactor);
+                propertyRow("Emissive", "({:.2f}, {:.2f}, {:.2f})", m.emissiveFactor.r, m.emissiveFactor.g,
+                            m.emissiveFactor.b);
+                propertyRow("Normal scale", "{:.2f}", m.normalScale);
+                propertyRow("Occlusion strength", "{:.2f}", m.occlusionStrength);
+                propertyRow("Alpha", "{}, cutoff {:.2f}{}", alphaModeName(m.flags), m.alphaCutoff,
+                            (m.flags & GpuMaterialFlag::DoubleSided) != 0 ? ", double sided" : "");
+                textureRow(*textureManager, "Albedo", m.baseColorTex);
+                textureRow(*textureManager, "Metallic-roughness", m.metalRoughTex);
+                textureRow(*textureManager, "Normal", m.normalTex);
+                textureRow(*textureManager, "Occlusion", m.occlusionTex);
+                textureRow(*textureManager, "Emissive map", m.emissiveTex);
+                drawMaterialExtensions(*textureManager, info.extension);
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+        ImGui::TreePop();
+    }
+
+    // warm accent keeps lights apart from material rows
+    const ImVec4 lightAccent = srgbToLinear({1.0f, 0.78f, 0.3f, 1.0f});
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::PushStyleColor(ImGuiCol_Text, lightAccent);
+    const std::string lightsLabel = std::format("Lights ({})###lights", lights.uploadedCount());
+    const bool isLightsOpen = ImGui::TreeNodeEx(lightsLabel.c_str(), ImGuiTreeNodeFlags_SpanFullWidth);
+    ImGui::PopStyleColor();
+    ImGui::TableNextColumn();
+    ImGui::TableNextColumn();
+    if (isLightsOpen) {
+        for (uint32_t i = 0; i < lights.uploadedCount(); ++i) {
+            const GpuLight& light = lights.uploaded[i];
+            const bool hasOwner = light.instanceIndex < storage.size();
+            const std::string owner =
+                hasOwner ? std::filesystem::path(storage.names[light.instanceIndex]).stem().string() : "?";
+
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::PushStyleColor(ImGuiCol_Text, lightAccent);
+            const std::string label = std::format("{} light {}", lightTypeName(light.type), i);
+            const bool isOpen = ImGui::TreeNodeEx(label.c_str(), ImGuiTreeNodeFlags_SpanFullWidth);
+            ImGui::PopStyleColor();
+            ImGui::TableNextColumn();
+            ImGui::ColorButton("##color", {light.color.r, light.color.g, light.color.b, 1.0f}, kSwatchFlags,
+                               swatchSize);
+            ImGui::SameLine();
+            ImGui::Text("%.1f, %s", light.intensity, owner.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(formatSize(sizeof(GpuLight)).c_str());
+
+            if (isOpen) {
+                propertyRow("Color", "({:.2f}, {:.2f}, {:.2f})", light.color.r, light.color.g, light.color.b);
+                propertyRow("Intensity", "{:.2f}", light.intensity);
+                if (light.type != 0) {
+                    propertyRow("Range", "{}", light.range > 0.0f ? std::format("{:.2f}", light.range) : "infinite");
+                }
+                if (light.type == 2) {
+                    propertyRow("Cone inner / outer", "{:.1f} / {:.1f} deg", glm::degrees(light.innerCone),
+                                glm::degrees(light.outerCone));
+                }
+                // GPU rows are model space; the shader applies the owner's model matrix
+                const glm::mat4 model =
+                    hasOwner ? computeModelMatrix(storage.transforms[light.instanceIndex]) : glm::mat4{1.0f};
+                if (light.type != 0) {
+                    const glm::vec3 position{model * glm::vec4(light.position, 1.0f)};
+                    propertyRow("Position", "({:.2f}, {:.2f}, {:.2f})", position.x, position.y, position.z);
+                }
+                if (light.type != 1) {
+                    const glm::vec3 direction = glm::normalize(glm::mat3(model) * light.direction);
+                    propertyRow("Direction", "({:.2f}, {:.2f}, {:.2f})", direction.x, direction.y, direction.z);
+                }
+                propertyRow("Owner", "{} (entity {})", owner, light.instanceIndex);
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+        ImGui::TreePop();
     }
     ImGui::EndTable();
 #endif

@@ -10,7 +10,10 @@ public:
     // load scratch; cleared after GPU append
     std::vector<LightDef> defs;
     std::vector<LightInstance> instances;
-    uint32_t uploadedCount = 0;
+    // mirror of the GPU light buffer: unload rewrites instanceIndex, which has no GPU-side fix-up
+    std::vector<GpuLight> uploaded;
+
+    [[nodiscard]] uint32_t uploadedCount() const noexcept { return static_cast<uint32_t>(uploaded.size()); }
 
     uint32_t addDef(const LightDef& def)
     {

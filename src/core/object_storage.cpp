@@ -17,6 +17,7 @@ EntityId ObjectStorage::create(const Transform& transform, const MeshletDraw& me
     names.emplace_back(name);
     firstPrimitives.push_back(firstPrimitive);
     primitiveCounts.push_back(primitiveCount);
+    localBounds.emplace_back(0.0f);
     textureRefs.emplace_back();
 
 #ifdef TRACY_ENABLE
@@ -38,6 +39,7 @@ void ObjectStorage::clear() noexcept
     names.clear();
     firstPrimitives.clear();
     primitiveCounts.clear();
+    localBounds.clear();
     textureRefs.clear();
 }
 
@@ -52,6 +54,7 @@ void ObjectStorage::erase(EntityId id)
     eraseAt(names);
     eraseAt(firstPrimitives);
     eraseAt(primitiveCounts);
+    eraseAt(localBounds);
     eraseAt(textureRefs);
 }
 

@@ -84,26 +84,15 @@ void DescriptorManager::writeImageDescriptor(TextureAsset& textureAsset, const v
     const vk::DeviceSize currentResOffset = reuseSlot
         ? static_cast<vk::DeviceSize>(freeImageSlots.back()) * imageDescriptorSize
         : alignUp(textureDescriptorOffset, imageDescriptorAlignment);
+    // the driver-reserved range sits at the end of the heap
+    if (!reuseSlot && currentResOffset + imageDescriptorSize > resourceHeapInfo.reservedRangeOffset) {
+        throw std::runtime_error(std::format("resource heap full: {} image slots",
+                                             resourceHeapInfo.reservedRangeOffset / imageDescriptorSize));
+    }
     if (reuseSlot) {
         freeImageSlots.pop_back();
     }
-    const vk::ImageDescriptorInfoEXT descriptorImageInfo{
-        .pView = &imageViewCreateInfo,
-        .layout = vk::ImageLayout::eShaderReadOnlyOptimal,
-    };
-    const vk::ResourceDescriptorInfoEXT imageInfo{
-        .type = vk::DescriptorType::eSampledImage,
-        .data = vk::ResourceDescriptorDataEXT{&descriptorImageInfo},
-    };
-    const vk::HostAddressRangeEXT imageWrite{
-        .address = static_cast<uint8_t*>(mappedResourceHeapPtr) + currentResOffset,
-        .size = imageDescriptorSize,
-    };
-
-    {
-        ZoneScopedN("DescriptorManager::createHeapDescriptors::writeResourceDescriptorsEXT");
-        device.writeResourceDescriptorsEXT(imageInfo, imageWrite);
-    }
+    writeImageAt(currentResOffset, imageViewCreateInfo);
 
     // next texture needs a fresh slot
     if (!reuseSlot) {
@@ -120,8 +109,29 @@ void DescriptorManager::writeImageDescriptor(TextureAsset& textureAsset, const v
 }
 
 
+void DescriptorManager::writeImageAt(vk::DeviceSize offset, const vk::ImageViewCreateInfo& imageViewCreateInfo) const
+{
+    const vk::ImageDescriptorInfoEXT descriptorImageInfo{
+        .pView = &imageViewCreateInfo,
+        .layout = vk::ImageLayout::eShaderReadOnlyOptimal,
+    };
+    const vk::ResourceDescriptorInfoEXT imageInfo{
+        .type = vk::DescriptorType::eSampledImage,
+        .data = vk::ResourceDescriptorDataEXT{&descriptorImageInfo},
+    };
+    const vk::HostAddressRangeEXT imageWrite{
+        .address = static_cast<uint8_t*>(mappedResourceHeapPtr) + offset,
+        .size = imageDescriptorSize,
+    };
+    ZoneScopedN("DescriptorManager::writeResourceDescriptorsEXT");
+    device.writeResourceDescriptorsEXT(imageInfo, imageWrite);
+}
+
 void DescriptorManager::freeImageDescriptor(uint32_t heapIndex)
 {
+    if (fallbackImageView) {
+        writeImageAt(static_cast<vk::DeviceSize>(heapIndex) * imageDescriptorSize, *fallbackImageView);
+    }
     freeImageSlots.push_back(heapIndex);
 }
 
@@ -166,6 +176,11 @@ void DescriptorManager::createHeapDescriptors()
 uint32_t DescriptorManager::writeSamplerDescriptor(const vk::SamplerCreateInfo& samplerInfo)
 {
     const vk::DeviceSize currentSampOffset = alignUp(nextSamplerDescriptorOffset, samplerDescriptorAlignment);
+    // samplers are deduplicated and never freed; the count stays small, but the reserved range is off limits
+    if (currentSampOffset + samplerDescriptorSize > samplerHeapInfo.reservedRangeOffset) {
+        throw std::runtime_error(std::format("sampler heap full: {} slots",
+                                             samplerHeapInfo.reservedRangeOffset / samplerDescriptorSize));
+    }
     const vk::HostAddressRangeEXT samplerWrite{
         .address = static_cast<uint8_t*>(mappedSamplerHeapPtr) + currentSampOffset,
         .size = samplerDescriptorSize,

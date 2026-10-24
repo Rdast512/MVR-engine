@@ -65,6 +65,7 @@ class Engine
     void drawStatsOverlay() const;
     void drawLoadPanel();
     void drawLoadedModelsPanel();
+    void drawAssetsPanel() const;
     void applyPendingModelActions();
     void loadSelectedModel();
     void unloadModel(EntityId id);

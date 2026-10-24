@@ -234,6 +234,12 @@ void TextureManager::init()
     constexpr std::array<uint8_t, 4> kWhite{255, 255, 255, 255};
     defaultTextureIndex = loadTextureFromPixels("engine:default-white", kWhite, 1, 1, TextureColorSpace::Srgb);
     retain(std::span(&defaultTextureIndex, 1));
+    const TextureAsset& white = loadedTextures.at(heapEntries.at(defaultTextureIndex).cacheKey);
+    descriptorManager.setFallbackImage(vk::ImageViewCreateInfo{
+        .image = *white.textureImage,
+        .viewType = vk::ImageViewType::e2D,
+        .format = rgbaFormat(TextureColorSpace::Srgb),
+        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}});
     logInfo("Initialized", "TextureManager");
 }
 
@@ -244,6 +250,20 @@ std::optional<uint32_t> TextureManager::cachedHeapIndex(const std::string& key) 
         return std::nullopt;
     }
     return it->second.descriptorHeapIndex;
+}
+
+std::optional<TextureManager::TextureInfo> TextureManager::textureInfo(uint32_t heapIndex) const
+{
+    const auto entry = heapEntries.find(heapIndex);
+    if (entry == heapEntries.end()) {
+        return std::nullopt;
+    }
+    const std::string& cacheKey = entry->second.cacheKey;
+    VmaAllocationInfo allocationInfo{};
+    vmaGetAllocationInfo(allocator.allocator, loadedTextures.at(cacheKey).textureImageMemory, &allocationInfo);
+    // KTX keys carry no color space suffix; npos keeps the whole key
+    const std::string_view path = std::string_view(cacheKey).substr(0, cacheKey.rfind('|'));
+    return TextureInfo{.name = std::filesystem::path(path).filename().string(), .bytes = allocationInfo.size};
 }
 
 bool TextureManager::isCached(std::string cacheKey, TextureColorSpace colorSpace) const

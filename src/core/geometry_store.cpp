@@ -5,6 +5,8 @@
 
 #include <meshoptimizer.h>
 
+#include <algorithm>
+#include <cmath>
 #include <format>
 
 namespace
@@ -45,6 +47,26 @@ void GeometryStore::reserveGeometry(size_t extraVertices, size_t extraIndices)
     weights0.reserve(vertexTarget);
     vertices.reserve(vertexTarget);
     indices.reserve(indices.size() + extraIndices);
+}
+
+glm::vec4 GeometryStore::boundingSphere() const
+{
+    if (positions.empty()) {
+        return glm::vec4{0.0f};
+    }
+    glm::vec3 minCorner = positions.front();
+    glm::vec3 maxCorner = positions.front();
+    for (const glm::vec3& position : positions) {
+        minCorner = glm::min(minCorner, position);
+        maxCorner = glm::max(maxCorner, position);
+    }
+    const glm::vec3 center = (minCorner + maxCorner) * 0.5f;
+    float radiusSquared = 0.0f;
+    for (const glm::vec3& position : positions) {
+        const glm::vec3 offset = position - center;
+        radiusSquared = std::max(radiusSquared, glm::dot(offset, offset));
+    }
+    return glm::vec4{center, std::sqrt(radiusSquared)};
 }
 
 void GeometryStore::packVertex(uint32_t v)
@@ -177,6 +199,7 @@ void GeometryStore::clearScratch()
     drop(morphPos);
     drop(morphNrm);
     drop(morphTan);
+    presentStreams = 0;
     flushedPrimitiveCount = static_cast<uint32_t>(primitiveDraws.size());
     flushedMorphTargetCount = static_cast<uint32_t>(morphTargets.size());
     flushedMorphWeightCount = static_cast<uint32_t>(morphWeights.size());

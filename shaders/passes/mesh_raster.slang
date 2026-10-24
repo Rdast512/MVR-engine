@@ -37,8 +37,9 @@ void meshMain(
 
     for (uint vi = gtid; vi < vertCount; vi += kGroupSize)
     {
-        GpuVertex v = loadMeshletVertex(draw, meshlet, vi);
-        verts[vi].pos = mul(mvp, float4(v.pos, 1.0));
+        const uint vertexIndex = loadMeshletVertexIndex(draw, meshlet, vi);
+        GpuVertex v = loadVertex(draw, vertexIndex);
+        verts[vi].pos = mul(mvp, float4(applyMorphPosition(draw, vertexIndex, v.pos), 1.0));
         verts[vi].fragColor = v.color;
         verts[vi].fragTexCoord = v.texCoord;
     }

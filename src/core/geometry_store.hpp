@@ -46,6 +46,10 @@ public:
     std::vector<std::string> extensionsUsed;
     std::vector<std::string> extensionsRequired;
 
+    // GpuModelAttribute bits of the optional streams any primitive of this load provided;
+    // absent streams stay zero-filled in scratch and are not uploaded
+    uint32_t presentStreams = 0;
+
     // catalog watermarks: primitiveDraws/morphTargets below these are GPU-absolute
     uint32_t flushedPrimitiveCount = 0;
     uint32_t flushedMorphTargetCount = 0;
@@ -56,6 +60,9 @@ public:
     void resizeVertices(uint32_t newCount);
     // capacity for extraVertices more in all nine per-vertex arrays, and extraIndices more indices
     void reserveGeometry(size_t extraVertices, size_t extraIndices);
+
+    // model-space sphere (AABB center, farthest vertex) over the scratch positions; zero when empty
+    [[nodiscard]] glm::vec4 boundingSphere() const;
 
     // pack vertices[v] from positions/colors/uv0
     void packVertex(uint32_t v);

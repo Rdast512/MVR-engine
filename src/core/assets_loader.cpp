@@ -978,7 +978,7 @@ namespace
 
             MaterialPbrExtension pbrExt{};
             parseGltfMaterialPbrExtensions(ctx, material, gpu, pbrExt, owner);
-            ctx.materialIds[i] = ctx.materials.add(gpu, pbrExt);
+            ctx.materialIds[i] = ctx.materials.add(gpu, pbrExt, strView(material.name));
         }
     }
 
@@ -1088,9 +1088,9 @@ namespace
             const glm::mat4 world = gltfNodeWorldMatrix(model, ni, parent);
             LightInstance instance{};
             instance.defIndex = defBase + static_cast<uint32_t>(lightIndex);
-            instance.worldPos = glm::vec3(world[3]);
+            instance.position = glm::vec3(world[3]);
             const glm::vec3 dir = glm::mat3(world) * glm::vec3{0.0f, 0.0f, -1.0f};
-            instance.worldDir = glm::length(dir) > 0.0f ? glm::normalize(dir) : glm::vec3{0.0f, 0.0f, -1.0f};
+            instance.direction = glm::length(dir) > 0.0f ? glm::normalize(dir) : glm::vec3{0.0f, 0.0f, -1.0f};
             ctx.lights.addInstance(instance);
         }
     }
@@ -1473,6 +1473,7 @@ namespace
             logDebug(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, normals.size()),
                       "AssetLoader");
             fillVec3Range(geometry.normals, firstVertex, vertexCount, normals, accessorCompCount(model, accessorIdx));
+            geometry.presentStreams |= GpuModelAttribute::Normals;
             return;
         }
         if (name == "TANGENT") {
@@ -1481,6 +1482,7 @@ namespace
                       "AssetLoader");
             fillVec4Range(geometry.tangents, firstVertex, vertexCount, tangents, accessorCompCount(model, accessorIdx),
                           glm::vec4{0.0f, 0.0f, 0.0f, 1.0f});
+            geometry.presentStreams |= GpuModelAttribute::Tangents;
             return;
         }
         if (name == "COLOR_0") {
@@ -1496,6 +1498,7 @@ namespace
             logDebug(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, uvs.size()),
                       "AssetLoader");
             fillUvRange(geometry.uv1, firstVertex, vertexCount, uvs, accessorCompCount(model, accessorIdx), true);
+            geometry.presentStreams |= GpuModelAttribute::Uv1;
             return;
         }
         if (name.starts_with("TEXCOORD_") && name != "TEXCOORD_0") {
@@ -1519,6 +1522,7 @@ namespace
                 }
                 geometry.joints0[firstVertex + i] = packed;
             }
+            geometry.presentStreams |= GpuModelAttribute::Joints;
             return;
         }
         if (name == "WEIGHTS_0") {
@@ -1527,6 +1531,7 @@ namespace
                       "AssetLoader");
             fillVec4Range(geometry.weights0, firstVertex, vertexCount, weights, accessorCompCount(model, accessorIdx),
                           glm::vec4{0.0f});
+            geometry.presentStreams |= GpuModelAttribute::Weights;
             return;
         }
         if (name.starts_with("JOINTS_") || name.starts_with("WEIGHTS_")) {
@@ -1720,7 +1725,8 @@ namespace
             draw.indexCount = indexCount;
             draw.morphFirst = morphCount > 0 ? morphFirst : 0;
             draw.morphCount = morphCount;
-            draw.morphWeightFirst = mesh.weights_count > 0 ? morphWeightFirst : 0;
+            // a short weight list would let the shader read past the mesh's weights
+            draw.morphWeightFirst = morphCount > 0 && mesh.weights_count >= morphCount ? morphWeightFirst : kNoneIndex;
             // draw.meshlets is filled by buildGltfMeshlets once every primitive is appended
             parseGltfExtras(geometry, AuxOwnerKind::Primitive, static_cast<uint32_t>(geometry.primitiveDraws.size()),
                             prim.ext, std::format("mesh[{}].prim[{}]", mi, pi));
@@ -2072,7 +2078,7 @@ std::optional<EntityId> AssetsLoader::loadObjModel(const std::string& modelPath,
     gpu.baseColorTex = textureManager.loadTexture(objTexture);
     heapIndices.push_back(gpu.baseColorTex);
     gpu.baseColorSamp = textureManager.getOrCreateSampler(-1, -1, TG3_TEXTURE_WRAP_REPEAT, TG3_TEXTURE_WRAP_REPEAT);
-    const uint32_t materialId = materialStore.add(gpu);
+    const uint32_t materialId = materialStore.add(gpu, {}, std::filesystem::path(modelPath).stem().string());
 
     PrimitiveDraw draw{};
     draw.materialId = materialId;

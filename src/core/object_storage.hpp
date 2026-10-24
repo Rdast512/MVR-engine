@@ -44,6 +44,8 @@ public:
     std::vector<std::string> names;
     std::vector<uint32_t> firstPrimitives;
     std::vector<uint32_t> primitiveCounts;
+    // model-space bounding sphere (xyz center, w radius), set when the model is flushed
+    std::vector<glm::vec4> localBounds;
     // texture heap indices this entity retains (TextureManager refcounts)
     std::vector<std::vector<uint32_t>> textureRefs;
 
