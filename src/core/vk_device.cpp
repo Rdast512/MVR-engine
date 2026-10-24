@@ -50,6 +50,7 @@ constexpr std::array kRequiredDeviceExtensions = {
     vk::KHRCopyMemoryIndirectExtensionName,
     vk::KHRShaderUntypedPointersExtensionName,
     vk::KHRDeviceAddressCommandsExtensionName,
+    vk::KHRRobustness2ExtensionName, // shader objects take no VkPipelineRobustnessCreateInfo
     // EXT
     vk::EXTOpacityMicromapExtensionName,
     vk::EXTMemoryBudgetExtensionName,
@@ -502,7 +503,8 @@ void Device::createLogicalDevice()
         vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features, vk::PhysicalDeviceVulkan12Features,
         vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceVulkan14Features,
         // EXT
-        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, vk::PhysicalDeviceDescriptorHeapFeaturesEXT,
+        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, vk::PhysicalDeviceExtendedDynamicState2FeaturesEXT,
+        vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT, vk::PhysicalDeviceDescriptorHeapFeaturesEXT,
         vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT,
         vk::PhysicalDeviceMeshShaderFeaturesEXT, vk::PhysicalDeviceDeviceGeneratedCommandsFeaturesEXT,
         vk::PhysicalDeviceMemoryPriorityFeaturesEXT,
@@ -517,11 +519,14 @@ void Device::createLogicalDevice()
         vk::PhysicalDeviceMaintenance7FeaturesKHR, vk::PhysicalDeviceMaintenance8FeaturesKHR,
         vk::PhysicalDeviceMaintenance9FeaturesKHR, vk::PhysicalDeviceMaintenance10FeaturesKHR,
         vk::PhysicalDeviceCopyMemoryIndirectFeaturesKHR, vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR,
-        vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR, vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV,
+        vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR, vk::PhysicalDeviceRobustness2FeaturesKHR,
+        vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV,
         vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV>
         featureChain = {// vk::PhysicalDeviceFeatures2
                         {.features =
                              {
+                                 // required by robustBufferAccess2
+                                 .robustBufferAccess = true,
                                  .geometryShader = true,
                                  .sampleRateShading = true,
                                  .multiDrawIndirect = true,
@@ -563,6 +568,17 @@ void Device::createLogicalDevice()
                          .hostImageCopy = true},
                         // vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
                         {.extendedDynamicState = true},
+                        // vk::PhysicalDeviceExtendedDynamicState2FeaturesEXT
+                        // logicOp / patchControlPoints are not promoted and unused (mesh-only, no logic op)
+                        {.extendedDynamicState2 = true},
+                        // vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT
+                        // states set by ShaderObjects::bindMeshState
+                        {.extendedDynamicState3PolygonMode = true,
+                         .extendedDynamicState3RasterizationSamples = true,
+                         .extendedDynamicState3SampleMask = true,
+                         .extendedDynamicState3AlphaToCoverageEnable = true,
+                         .extendedDynamicState3ColorBlendEnable = true,
+                         .extendedDynamicState3ColorWriteMask = true},
                         // vk::PhysicalDeviceDescriptorHeapFeaturesEXT (required, checked in pickPhysicalDevice)
                         {.descriptorHeap = true},
                         // vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT
@@ -625,6 +641,8 @@ void Device::createLogicalDevice()
                         {.presentModeFifoLatestReady = true},
                         // vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR
                         {.shaderUntypedPointers = true},
+                        // vk::PhysicalDeviceRobustness2FeaturesKHR
+                        {.robustBufferAccess2 = true, .robustImageAccess2 = true, .nullDescriptor = true},
                         // vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV
                         {.clusterAccelerationStructure = true},
                         // vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV

@@ -115,10 +115,6 @@ void setDebugName(const vk::raii::Device &device, const vk::raii::DescriptorSet 
 	setDebugNameImpl(device, set, name, vk::ObjectType::eDescriptorSet);
 }
 
-void setDebugName(const vk::raii::Device &device, const vk::raii::PipelineLayout &layout, std::string_view name) {
-	setDebugNameImpl(device, layout, name, vk::ObjectType::ePipelineLayout);
-}
-
-void setDebugName(const vk::raii::Device &device, const vk::raii::Pipeline &pipeline, std::string_view name) {
-	setDebugNameImpl(device, pipeline, name, vk::ObjectType::ePipeline);
+void setDebugName(const vk::raii::Device &device, const vk::raii::ShaderEXT &shader, std::string_view name) {
+	setDebugNameImpl(device, shader, name, vk::ObjectType::eShaderEXT);
 }

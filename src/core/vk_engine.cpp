@@ -115,12 +115,11 @@ void Engine::initialize()
     }
 #endif
 
-    pipeline = std::make_unique<Pipeline>(*resourceManager, *descriptorManager, device->vkdevice,
-                                          swapChain->swapChainExtent, swapChain->swapChainImageFormat);
-    pipeline->init();
+    shaderObjects = std::make_unique<ShaderObjects>(*resourceManager, *descriptorManager, device->vkdevice);
+    shaderObjects->init();
 
-    renderer = std::make_unique<Renderer>(*device, *swapChain, *resourceManager, *descriptorManager, *pipeline, *camera,
-                                          tracyContext.get(), enableImGui);
+    renderer = std::make_unique<Renderer>(*device, *swapChain, *resourceManager, *descriptorManager, *shaderObjects,
+                                          *camera, tracyContext.get(), enableImGui);
     renderer->rebuildSwapchainResources();
 
 #if ENGINE_ENABLE_IMGUI
@@ -708,7 +707,7 @@ void Engine::cleanup()
     }
 
     renderer.reset();
-    pipeline.reset();
+    shaderObjects.reset();
     descriptorManager.reset();
     textureManager.reset();
     resourceManager.reset(); // before assetsLoader: holds refs to its vertex/index vectors

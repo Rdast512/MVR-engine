@@ -2,8 +2,8 @@
 #include "../Constants.h"
 #include "assets_loader.hpp"
 #include "texture_manager.hpp"
-#include "../render/vk_pipeline.hpp"
 #include "../render/vk_renderer.hpp"
+#include "../render/vk_shader_objects.hpp"
 #include "../util/vk_tracy.hpp"
 #include "vk_allocator.hpp"
 #include "vk_descriptors.hpp"
@@ -35,7 +35,7 @@ class Engine
     std::unique_ptr<TextureManager> textureManager;
     std::unique_ptr<DescriptorManager> descriptorManager;
     std::unique_ptr<Camera> camera;
-    std::unique_ptr<Pipeline> pipeline;
+    std::unique_ptr<ShaderObjects> shaderObjects;
     std::unique_ptr<Renderer> renderer;
     bool initialized = false;
     std::chrono::high_resolution_clock::time_point lastTime;

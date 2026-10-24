@@ -63,8 +63,9 @@ namespace
 } // namespace
 
 DeviceGeneratedCommands::DeviceGeneratedCommands(Device& device, ResourceManager& resourceManager,
-                                                 DescriptorManager& descriptorManager, Pipeline& pipeline) :
-    device(device), resourceManager(resourceManager), descriptorManager(descriptorManager), pipeline(pipeline)
+                                                 DescriptorManager& descriptorManager, ShaderObjects& shaderObjects) :
+    device(device), resourceManager(resourceManager), descriptorManager(descriptorManager),
+    shaderObjects(shaderObjects)
 {
 }
 
@@ -97,6 +98,11 @@ void DeviceGeneratedCommands::init()
     }
 
     shaderStages = kDgcMeshStages;
+    generatedShaders = {*shaderObjects.meshShader, *shaderObjects.fragmentShader};
+    generatedShaderInfo = vk::GeneratedCommandsShaderInfoEXT{
+        .shaderCount = static_cast<uint32_t>(generatedShaders.size()),
+        .pShaders = generatedShaders.data(),
+    };
     createLayout();
     createStateCommandBuffer();
 
@@ -163,21 +169,18 @@ void DeviceGeneratedCommands::createStateCommandBuffer()
     stateCommandBuffer = std::move(vk::raii::CommandBuffers(device.vkdevice, allocInfo).front());
     setDebugName(device.vkdevice, stateCommandBuffer, "DgcStateCommandBuffer");
 
-    // pipeline and heaps are created once before init, so recording once is enough
+    // shaders and heaps are created once before init, so recording once is enough
     const vk::CommandBufferInheritanceInfo inheritance{};
     stateCommandBuffer.begin({.pInheritanceInfo = &inheritance});
-    stateCommandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.pipeline);
+    shaderObjects.bindMeshState(stateCommandBuffer);
     stateCommandBuffer.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
     stateCommandBuffer.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
 }
 
 vk::DeviceSize DeviceGeneratedCommands::queryPreprocessSize(uint32_t capacity) const
 {
-    vk::GeneratedCommandsPipelineInfoEXT pipelineInfo{
-        .pipeline = *pipeline.pipeline,
-    };
     const vk::GeneratedCommandsMemoryRequirementsInfoEXT memInfo{
-        .pNext = &pipelineInfo,
+        .pNext = &generatedShaderInfo,
         .indirectCommandsLayout = *layout,
         .maxSequenceCount = capacity,
         .maxDrawCount = 1,
@@ -362,15 +365,13 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot)
     TracyPlot("Vulkan/DgcSequenceCount", static_cast<double>(sequenceCount));
 }
 
-void DeviceGeneratedCommands::fillGeneratedCommandsInfo(vk::GeneratedCommandsInfoEXT& info,
-                                                        vk::GeneratedCommandsPipelineInfoEXT& pipelineInfo,
-                                                        uint32_t frameSlot, uint32_t chunk) const
+void DeviceGeneratedCommands::fillGeneratedCommandsInfo(vk::GeneratedCommandsInfoEXT& info, uint32_t frameSlot,
+                                                        uint32_t chunk) const
 {
     const uint32_t firstSequence = chunk * kMaxSequencesPerExecute;
     const uint32_t chunkSequences = std::min(sequenceCount - firstSequence, kMaxSequencesPerExecute);
 
-    pipelineInfo.pipeline = *pipeline.pipeline;
-    info.pNext = &pipelineInfo;
+    info.pNext = &generatedShaderInfo;
     info.shaderStages = shaderStages;
     info.indirectExecutionSet = nullptr;
     info.indirectCommandsLayout = *layout;
@@ -406,9 +407,8 @@ void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd) con
 
     // chunks use disjoint preprocess regions, so no barrier is needed between them
     for (uint32_t chunk = 0; chunk < chunkCount(); ++chunk) {
-        vk::GeneratedCommandsPipelineInfoEXT pipelineInfo{};
         vk::GeneratedCommandsInfoEXT info{};
-        fillGeneratedCommandsInfo(info, pipelineInfo, recordedFrame, chunk);
+        fillGeneratedCommandsInfo(info, recordedFrame, chunk);
         cmd.preprocessGeneratedCommandsEXT(info, *stateCommandBuffer);
     }
 
@@ -429,9 +429,8 @@ void DeviceGeneratedCommands::recordExecute(vk::raii::CommandBuffer& cmd) const
     }
 
     for (uint32_t chunk = 0; chunk < chunkCount(); ++chunk) {
-        vk::GeneratedCommandsPipelineInfoEXT pipelineInfo{};
         vk::GeneratedCommandsInfoEXT info{};
-        fillGeneratedCommandsInfo(info, pipelineInfo, recordedFrame, chunk);
+        fillGeneratedCommandsInfo(info, recordedFrame, chunk);
         cmd.executeGeneratedCommandsEXT(explicitPreprocess ? vk::True : vk::False, info);
     }
 }

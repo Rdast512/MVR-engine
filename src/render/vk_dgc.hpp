@@ -3,7 +3,7 @@
 #include "../Constants.h"
 #include "core/vk_device.hpp"
 #include "core/vk_resource_manager.hpp"
-#include "vk_pipeline.hpp"
+#include "vk_shader_objects.hpp"
 
 #include <array>
 #include <vulkan/vulkan_raii.hpp>
@@ -16,7 +16,7 @@ class DeviceGeneratedCommands
 {
 public:
     DeviceGeneratedCommands(Device& device, ResourceManager& resourceManager, DescriptorManager& descriptorManager,
-                            Pipeline& pipeline);
+                            ShaderObjects& shaderObjects);
     ~DeviceGeneratedCommands();
 
     DeviceGeneratedCommands(const DeviceGeneratedCommands&) = delete;
@@ -39,17 +39,18 @@ private:
     void allocateSequenceBuffer(uint32_t frameSlot, uint32_t capacity);
     void allocatePreprocessBuffer(uint32_t frameSlot, uint32_t capacity);
     [[nodiscard]] vk::DeviceSize queryPreprocessSize(uint32_t capacity) const;
-    void fillGeneratedCommandsInfo(vk::GeneratedCommandsInfoEXT& info,
-                                   vk::GeneratedCommandsPipelineInfoEXT& pipelineInfo, uint32_t frameSlot,
-                                   uint32_t chunk) const;
+    void fillGeneratedCommandsInfo(vk::GeneratedCommandsInfoEXT& info, uint32_t frameSlot, uint32_t chunk) const;
     [[nodiscard]] uint32_t chunkCount() const;
 
     Device& device;
     ResourceManager& resourceManager;
     DescriptorManager& descriptorManager;
-    Pipeline& pipeline;
+    ShaderObjects& shaderObjects;
 
     vk::raii::IndirectCommandsLayoutEXT layout = nullptr;
+    // one handle per stage of kDgcMeshStages; pointed to by generatedShaderInfo
+    std::array<vk::ShaderEXT, 2> generatedShaders{};
+    vk::GeneratedCommandsShaderInfoEXT generatedShaderInfo{};
     vk::ShaderStageFlags shaderStages{};
     bool explicitPreprocess = false;
 

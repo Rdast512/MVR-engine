@@ -10,10 +10,10 @@
 #include <stdexcept>
 
 Renderer::Renderer(Device& device, SwapChain& swapChain, ResourceManager& resourceManager,
-                   DescriptorManager& descriptorManager, Pipeline& pipeline, Camera& camera,
+                   DescriptorManager& descriptorManager, ShaderObjects& shaderObjects, Camera& camera,
                    VkTracyContext* tracyContext, bool imguiEnabled) :
     device(device), swapChain(swapChain), resourceManager(resourceManager), descriptorManager(descriptorManager),
-    pipeline(pipeline), camera(camera), dgc(device, resourceManager, descriptorManager, pipeline),
+    shaderObjects(shaderObjects), camera(camera), dgc(device, resourceManager, descriptorManager, shaderObjects),
     tracyContext(tracyContext), imguiEnabled(imguiEnabled)
 {
     dgc.init();
@@ -183,11 +183,11 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneDgcPreprocess, *cmd, "GPU_DgcPreprocess", gpuTrace);
 #endif
-        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.pipeline);
-        cmd.setViewport(0,
-                        vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChain.swapChainExtent.width),
-                                     static_cast<float>(swapChain.swapChainExtent.height), 0.0f, 1.0f));
-        cmd.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChain.swapChainExtent));
+        shaderObjects.bindMeshState(cmd);
+        // shader objects require the *WithCount variants
+        cmd.setViewportWithCount(vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChain.swapChainExtent.width),
+                                              static_cast<float>(swapChain.swapChainExtent.height), 0.0f, 1.0f));
+        cmd.setScissorWithCount(vk::Rect2D(vk::Offset2D(0, 0), swapChain.swapChainExtent));
         cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
         cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
 

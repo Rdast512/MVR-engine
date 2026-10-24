@@ -4,7 +4,7 @@
 #include "core/vk_swapchain.hpp"
 #include "scene/vk_camera.hpp"
 #include "vk_dgc.hpp"
-#include "vk_pipeline.hpp"
+#include "vk_shader_objects.hpp"
 
 class VkTracyContext;
 
@@ -12,7 +12,7 @@ class Renderer
 {
 public:
     Renderer(Device& device, SwapChain& swapChain, ResourceManager& resourceManager,
-             DescriptorManager& descriptorManager, Pipeline& pipeline, Camera& camera,
+             DescriptorManager& descriptorManager, ShaderObjects& shaderObjects, Camera& camera,
              VkTracyContext* tracyContext = nullptr, bool imguiEnabled = false);
 
     void setTracyContext(VkTracyContext* tracyContextIn);
@@ -29,7 +29,7 @@ private:
     SwapChain& swapChain;
     ResourceManager& resourceManager;
     DescriptorManager& descriptorManager;
-    Pipeline& pipeline;
+    ShaderObjects& shaderObjects;
     Camera& camera;
     DeviceGeneratedCommands dgc;
     VkTracyContext* tracyContext = nullptr;

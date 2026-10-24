@@ -1,7 +1,7 @@
 set(RENDER_SOURCES
     vk_dgc.cpp
-    vk_pipeline.cpp
     vk_renderer.cpp
+    vk_shader_objects.cpp
     vk_pbr.cpp
 )
 
