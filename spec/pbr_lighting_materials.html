@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PBR on the RTX path</title>
+  <meta name="description" content="How this engine shades glTF metallic-roughness materials and punctual lights, and how RTXDI, RTXGI NRC, opacity micromaps and DLSS-RR turn that into a frame on NVIDIA RTX GPUs." />
+  <link rel="stylesheet" href="pbr_lighting_materials.css" />
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+
+  <header class="topbar">
+    <div class="brand"><i class="brand-mark" aria-hidden="true"></i><span>PBR on the RTX path</span></div>
+    <div class="topbar-actions">
+      <a class="btn" href="pbr_implementation_plan.md">Plan</a>
+      <button class="btn" id="theme-toggle" type="button" aria-label="Toggle color theme">Theme</button>
+    </div>
+    <div class="progress" id="progress" aria-hidden="true"></div>
+  </header>
+
+  <div class="layout">
+    <details class="toc" id="toc" open>
+      <summary>Contents</summary>
+      <nav aria-label="Contents">
+        <p class="part">Part I · Shade one point</p>
+        <ol>
+          <li><a href="#equation"><span class="n">1</span>The one equation</a></li>
+          <li><a href="#metal-diel"><span class="n">2</span>Metal vs dielectric</a></li>
+          <li><a href="#params"><span class="n">3</span>What the file stores</a></li>
+          <li><a href="#fresnel"><span class="n">4</span>Fresnel</a></li>
+          <li><a href="#rough"><span class="n">5</span>Roughness and α</a></li>
+          <li><a href="#specular"><span class="n">6</span>Specular: D and V</a></li>
+          <li><a href="#diffuse"><span class="n">7</span>Diffuse + full BRDF</a></li>
+          <li><a href="#playground"><span class="n">8</span>Live material</a></li>
+          <li><a href="#extras"><span class="n">9</span>Normal, AO, emissive, alpha</a></li>
+          <li><a href="#lights"><span class="n">10</span>Punctual lights</a></li>
+        </ol>
+        <p class="part">Part II · Render the frame</p>
+        <ol>
+          <li><a href="#frame"><span class="n">11</span>The frame at a glance</a></li>
+          <li><a href="#scene"><span class="n">12</span>G-buffer and TLAS</a></li>
+          <li><a href="#omm"><span class="n">13</span>Opacity micromaps</a></li>
+          <li><a href="#rtxdi"><span class="n">14</span>RTXDI: direct light</a></li>
+          <li><a href="#rtxgi"><span class="n">15</span>RTXGI NRC: indirect light</a></li>
+          <li><a href="#dlss"><span class="n">16</span>DLSS-RR guides</a></li>
+          <li><a href="#slang"><span class="n">17</span>Where it lives in Slang</a></li>
+        </ol>
+        <p class="part">Reference</p>
+        <ol>
+          <li><a href="#pitfalls"><span class="n">18</span>Pitfalls</a></li>
+          <li><a href="#glossary"><span class="n">19</span>Glossary</a></li>
+        </ol>
+      </nav>
+    </details>
+
+    <main id="content">
+      <header class="hero">
+        <p class="kicker">Human explainer · RTXDI + RTXGI + OMM + DLSS-RR</p>
+        <h1>PBR, lights, and the RTX frame</h1>
+        <p class="lede">
+          Part I builds the shading of a single surface point from glTF data, one symbol at a time.
+          Every graph and scene on this page evaluates the same formulas the engine runs.
+          Part II shows where RTXDI, RTXGI NRC, opacity micromaps and DLSS-RR sit in the frame, and what each one reads and writes. The engine targets NVIDIA RTX GPUs only.
+        </p>
+        <div class="route">
+          <a href="#equation"><b>New to PBR</b><span>Start at §1. Each section opens with a one-line summary.</span></a>
+          <a href="#playground"><b>Know the math</b><span>Jump to the live material and light lab, then Part II.</span></a>
+          <a href="#frame"><b>Implementing</b><span>Start at the frame graph in §11, then read the plan (top bar).</span></a>
+        </div>
+      </header>
+
+      <!-- ============================== PART I ============================== -->
+      <div class="part-head">
+        <p>Part I</p>
+        <h2>Shade one point</h2>
+        <p class="lede">Inputs: a surface point, the direction to the camera, a light. Output: how much light leaves toward the camera.</p>
+      </div>
+
+      <section class="sec" id="equation">
+        <div class="sec-head"><span class="sec-num">1</span><h2>The one equation</h2></div>
+        <p class="tldr"><b>In one line</b>Outgoing light = self-glow + for each light (how the surface redirects it × how bright it arrives × how squarely it hits).</p>
+        <pre class="formula">L<sub>o</sub> = emissive + Σ<sub>lights</sub> f(V, L) · L<sub>i</sub> · NdotL</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Symbol</th><th>What it is</th><th>Plain</th></tr></thead>
+            <tbody>
+              <tr><td><code>N</code></td><td>unit surface normal, after the normal map and the double-sided flip</td><td>which way the surface faces</td></tr>
+              <tr><td><code>V</code></td><td>unit vector to the camera</td><td>where you look from</td></tr>
+              <tr><td><code>L</code></td><td>unit vector to the light</td><td>where the light comes from</td></tr>
+              <tr><td><code>H</code></td><td><code>normalize(L + V)</code></td><td>the tilt a tiny mirror needs to bounce <code>L</code> into <code>V</code></td></tr>
+              <tr><td><code>f</code></td><td>BRDF, units 1/sr</td><td>the share of light from <code>L</code> that leaves toward <code>V</code></td></tr>
+              <tr><td><code>L<sub>i</sub></code></td><td>light arriving at this point</td><td>how bright the lamp is <em>here</em></td></tr>
+              <tr><td><code>NdotL</code></td><td><code>max(N·L, 0)</code></td><td>a grazing beam spreads over more area</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <figure class="fig">
+          <div class="fig-head"><h3>The four vectors</h3></div>
+          <p class="hint">Move the light and the camera. <code>H</code> sits halfway between them. The specular highlight peaks when <code>H</code> lines up with <code>N</code>.</p>
+          <div class="controls">
+            <label><span class="row">light angle <output id="vec-l-val"></output></span><input id="vec-l" type="range" min="-85" max="85" step="1" value="-35" data-fmt="deg" /></label>
+            <label><span class="row">camera angle <output id="vec-v-val"></output></span><input id="vec-v" type="range" min="-85" max="85" step="1" value="30" data-fmt="deg" /></label>
+          </div>
+          <svg class="diagram" id="vec-svg" viewBox="0 0 640 250" role="img" aria-label="Surface with normal, light, view and half vectors"></svg>
+          <p class="readout" id="vec-read"></p>
+        </figure>
+        <figure class="photo">
+          <img src="pbr_figures/diffuse-specular.jpg" alt="A beam hits a rough clay surface: a wide fan of scattered rays and one narrow mirror-like bounce" width="1280" height="720" loading="lazy" />
+          <figcaption>
+            <strong>What <code>f</code> describes.</strong>
+            Most light entering a dielectric scatters inside and leaves as a wide colored fan: the <em>diffuse</em> lobe.
+            A fraction <code>F</code> bounces off the surface as a narrow <em>specular</em> lobe around the mirror direction.
+            The glints are microfacets. Roughness measures how widely their normals spread.
+          </figcaption>
+        </figure>
+        <p>The engine evaluates <code>f</code> in ray-traced passes (<code>material.brdf</code>). There is one implementation, and every pass calls it.</p>
+      </section>
+
+      <section class="sec" id="metal-diel">
+        <div class="sec-head"><span class="sec-num">2</span><h2>Metal vs dielectric</h2></div>
+        <p class="tldr"><b>In one line</b>Metals have no diffuse and colored reflections. Everything else has colored diffuse and a 4 % white reflection.</p>
+        <div class="grid-2">
+          <article class="card diel">
+            <h3>Dielectric</h3>
+            <p>Plastic, wood, paint, stone. Light mostly <em>enters</em>, scatters among pigments, and comes back out colored.</p>
+            <p><code>baseColor</code> is albedo. Head-on, 4 % reflects as white (<code>f0 = 0.04</code>, from index of refraction 1.5).</p>
+          </article>
+          <article class="card metal">
+            <h3>Metal</h3>
+            <p>Gold, iron, chrome. Light does not enter, so there is no diffuse at all. The color <em>is</em> the reflection.</p>
+            <p><code>baseColor</code> is <code>f0</code>. Gold ≈ <code>(1.00, 0.77, 0.34)</code>, chrome ≈ <code>(0.55, 0.55, 0.55)</code>.</p>
+          </article>
+        </div>
+        <p>glTF blends the two with one scalar, <code>metallic</code>. The blend collapses into three shader inputs:</p>
+        <svg class="diagram" viewBox="0 0 700 170" role="img" aria-label="baseColor, metallic and roughness derive c_diff, f0 and alpha">
+          <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0 10 5 0 10z" /></marker></defs>
+          <rect class="box" x="10" y="20" width="150" height="36" rx="8" /><text x="85" y="43" text-anchor="middle">baseColor</text>
+          <rect class="box" x="10" y="68" width="150" height="36" rx="8" /><text x="85" y="91" text-anchor="middle">metallic</text>
+          <rect class="box" x="10" y="116" width="150" height="36" rx="8" /><text x="85" y="139" text-anchor="middle">roughness</text>
+          <rect class="box g-direct" x="330" y="14" width="230" height="44" rx="8" /><text x="445" y="33" text-anchor="middle">c_diff = baseColor · (1 − m)</text><text class="sub" x="445" y="49" text-anchor="middle">diffuse color · metals → 0</text>
+          <rect class="box g-indirect" x="330" y="66" width="230" height="44" rx="8" /><text x="445" y="85" text-anchor="middle">f0 = lerp(0.04, baseColor, m)</text><text class="sub" x="445" y="101" text-anchor="middle">head-on reflectance</text>
+          <rect class="box g-geo" x="330" y="118" width="230" height="44" rx="8" /><text x="445" y="137" text-anchor="middle">α = roughness²</text><text class="sub" x="445" y="153" text-anchor="middle">GGX width</text>
+          <path class="edge" d="M160 38 C240 38 250 36 328 36" /><path class="edge" d="M160 38 C240 38 250 88 328 88" />
+          <path class="edge" d="M160 86 C240 86 250 40 328 40" /><path class="edge" d="M160 86 C240 86 250 84 328 84" />
+          <path class="edge" d="M160 134 C240 134 250 140 328 140" />
+          <text x="590" y="92" class="sub">→ evalBrdf</text>
+        </svg>
+        <pre class="formula">c_diff = baseColor · (1 − metallic)           <span class="cmt">// metals: no diffuse</span>
+f0     = lerp(0.04, baseColor, metallic)      <span class="cmt">// metals: colored reflection</span>
+α      = roughness²                           <span class="cmt">// GGX uses α, not roughness</span></pre>
+        <figure class="photo">
+          <img src="pbr_figures/materials-lamp.jpg" alt="Matte red rubber sphere next to a polished gold sphere under a hanging lamp" width="1280" height="720" loading="lazy" />
+          <figcaption><strong>Same lamp, two materials.</strong> The red dielectric is broad, colored shading (<code>c_diff</code> dominates). The gold metal has no diffuse. You see the lamp and the room as tinted reflections (<code>c_diff = 0</code>).</figcaption>
+        </figure>
+        <div class="callout spec"><strong>Spec note</strong>Current Appendix B does <em>not</em> scale dielectric albedo by an extra <code>(1 − 0.04)</code>. Energy balance comes from the <code>(1 − F)</code> on the diffuse term (§7).</div>
+      </section>
+
+      <section class="sec" id="params">
+        <div class="sec-head"><span class="sec-num">3</span><h2>What the file stores</h2></div>
+        <p class="tldr"><b>In one line</b>Factors × textures × vertex color, with each texture in its own color space and channel.</p>
+        <pre class="formula">baseColor = baseColorFactor · sample_srgb(baseColorTexture) · COLOR_0
+metallic  = saturate(metallicFactor  · sample_linear(metallicRoughnessTexture).<span class="kw">b</span>)
+roughness = saturate(roughnessFactor · sample_linear(metallicRoughnessTexture).<span class="kw">g</span>)
+emissive  = emissiveFactor · sample_srgb(emissiveTexture).rgb
+ao        = 1 + strength · (sample_linear(occlusionTexture).<span class="kw">r</span> − 1)     <span class="cmt">// 1 without a map</span></pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Texture</th><th>Color space</th><th>Channels used</th><th>GPU format</th></tr></thead>
+            <tbody>
+              <tr><td><code>baseColorTexture</code></td><td>sRGB rgb, linear a</td><td>albedo or metal f0. a = coverage</td><td><code>*_SRGB</code></td></tr>
+              <tr><td><code>metallicRoughnessTexture</code></td><td>linear</td><td><strong>B = metal, G = rough</strong>. R and A ignored</td><td><code>*_UNORM</code></td></tr>
+              <tr><td><code>normalTexture</code></td><td>linear</td><td>rgb tangent-space normal, OpenGL +Y</td><td><code>*_UNORM</code></td></tr>
+              <tr><td><code>occlusionTexture</code></td><td>linear</td><td><strong>R only</strong></td><td><code>*_UNORM</code></td></tr>
+              <tr><td><code>emissiveTexture</code></td><td>sRGB</td><td>rgb</td><td><code>*_SRGB</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout trap"><strong>Defaults are not grey plastic</strong>No <code>pbrMetallicRoughness</code> means <code>metallic = 1</code>, <code>roughness = 1</code>, white. That is a rough white <em>metal</em>, nearly black without indirect light. It is spec-correct, not a loader bug. Try the “glTF default” preset in §8.</div>
+        <details class="deeper">
+          <summary>Worked sRGB example and packing traps</summary>
+          <p>Texel <code>[64, 124, 231, 255]</code> with factor <code>[0.2, 1.0, 0.7, 1.0]</code> decodes to linear <code>[0.051, 0.202, 0.799, 1]</code>, so <code>baseColor ≈ [0.010, 0.202, 0.559, 1]</code>. Lighting sRGB values directly gives grey metals and neon plastics.</p>
+          <p>Authors often put AO in the unused R of the metal-rough image and reference that image twice. Core glTF never reads R on the metal-rough slot. The engine stores UVs as <code>v′ = 1 − v</code> for Vulkan.</p>
+        </details>
+      </section>
+
+      <section class="sec" id="fresnel">
+        <div class="sec-head"><span class="sec-num">4</span><h2>Fresnel: why edges go white</h2></div>
+        <p class="tldr"><b>In one line</b>Every material becomes a mirror at grazing angles. <code>f0</code> sets only the head-on value.</p>
+        <pre class="formula">F(f0, VdotH) = f0 + (1 − f0) · (1 − VdotH)<sup>5</sup></pre>
+        <figure class="fig">
+          <div class="fig-head"><h3>Schlick F vs angle</h3></div>
+          <div class="legend"><span style="color:var(--accent-2)"><i></i>dielectric f0 = 0.04</span><span style="color:var(--accent)"><i></i>metal f0 (slider)</span></div>
+          <div class="controls">
+            <label><span class="row">metal f0 <output id="fresnel-f0-val"></output></span><input id="fresnel-f0" type="range" min="0.04" max="1" step="0.01" value="0.55" /></label>
+          </div>
+          <canvas class="plot" id="plot-fresnel"></canvas>
+          <p class="readout" id="read-fresnel"></p>
+        </figure>
+        <p>At <code>VdotH = 0.5</code> a dielectric reflects 7 %, still mostly diffuse. At <code>0.2</code> it reflects 35 %. That is the wet sheen at a glancing view.</p>
+      </section>
+
+      <section class="sec" id="rough">
+        <div class="sec-head"><span class="sec-num">5</span><h2>Roughness and α</h2></div>
+        <p class="tldr"><b>In one line</b>Artists paint perceptual roughness. GGX wants <code>α = roughness²</code> so the slider feels even.</p>
+        <figure class="fig">
+          <div class="fig-head"><h3>Burley remap</h3></div>
+          <div class="legend"><span style="color:var(--faint)"><i></i>identity (wrong)</span><span style="color:var(--accent)"><i></i>α = r²</span><span style="color:var(--accent-2)"><i></i>α² = r⁴ (what D uses)</span></div>
+          <canvas class="plot" id="plot-alpha"></canvas>
+          <p class="readout" id="read-alpha">hover the plot</p>
+        </figure>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>roughness</th><th>α</th><th>Looks like</th></tr></thead>
+            <tbody>
+              <tr><td class="num">0</td><td class="num">0</td><td>perfect mirror</td></tr>
+              <tr><td class="num">0.2</td><td class="num">0.04</td><td>polished metal, clear coat</td></tr>
+              <tr><td class="num">0.4–0.5</td><td class="num">0.16–0.25</td><td>satin, brushed</td></tr>
+              <tr><td class="num">1</td><td class="num">1</td><td>chalk: wide, dim highlight</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="sec" id="specular">
+        <div class="sec-head"><span class="sec-num">6</span><h2>Specular: D and V</h2></div>
+        <p class="tldr"><b>In one line</b><code>D</code> counts facets aimed at <code>H</code>. <code>V</code> removes the ones hidden from light or camera.</p>
+        <pre class="formula">a2 = α²
+D  = a2 / (π · (NdotH² · (a2 − 1) + 1)²)                         <span class="cmt">// peak 1/(π α²) at H = N</span>
+V  = 0.5 / (NdotL·√(NdotV²(1−a2)+a2) + NdotV·√(NdotL²(1−a2)+a2))  <span class="cmt">// height-correlated Smith</span>
+f_specular = F · D · V</pre>
+        <figure class="fig">
+          <div class="fig-head"><h3>GGX D vs N·H</h3></div>
+          <div class="legend"><span style="color:var(--faint)"><i></i>roughness 1 (flat 1/π)</span><span style="color:var(--accent-3)"><i></i>roughness 0.5</span><span style="color:var(--accent)"><i></i>slider</span></div>
+          <div class="controls">
+            <label><span class="row">roughness <output id="d-rough-val"></output></span><input id="d-rough" type="range" min="0.05" max="1" step="0.01" value="0.25" /></label>
+            <label class="check"><input id="d-log" type="checkbox" checked /> log Y</label>
+          </div>
+          <canvas class="plot" id="plot-d"></canvas>
+          <p class="readout" id="read-d"></p>
+        </figure>
+        <figure class="fig">
+          <div class="fig-head"><h3>The same D as a lobe around N</h3></div>
+          <p class="hint">Radius is D normalized to its peak. Smooth is a needle, rough is nearly a hemisphere. The energy is the same, spread wider, so each direction is dimmer.</p>
+          <div class="controls">
+            <label><span class="row">roughness <output id="polar-rough-val"></output></span><input id="polar-rough" type="range" min="0.05" max="1" step="0.01" value="0.2" /></label>
+          </div>
+          <canvas class="plot" id="plot-polar"></canvas>
+        </figure>
+        <div class="callout trap"><strong>The two NdotLs</strong>This <code>V</code> already contains the BRDF’s <code>1/(4·NdotL·NdotV)</code>. The light loop still multiplies by the rendering-equation <code>NdotL</code>, once. Drop it and grazing lights are too bright. Double it and they are too dark.</div>
+        <details class="deeper">
+          <summary>Separable Smith form (also spec-legal)</summary>
+          <pre class="formula">G1(x) = 2x / (x + √(α² + (1 − α²)x²))
+f_specular = F · D · G1(NdotL) · G1(NdotV) / (4 · NdotL · NdotV)</pre>
+          <p>Any D/G pair is allowed. The <em>inputs</em> <code>c_diff</code>, <code>f0</code>, <code>α</code> must match Appendix B.</p>
+        </details>
+      </section>
+
+      <section class="sec" id="diffuse">
+        <div class="sec-head"><span class="sec-num">7</span><h2>Diffuse + the full BRDF</h2></div>
+        <p class="tldr"><b>In one line</b>Diffuse is <code>c_diff/π</code>, scaled by whatever Fresnel did not reflect.</p>
+        <pre class="formula">f = (1 − F) · c_diff / π  +  F · D · V</pre>
+        <div class="callout plain"><strong>Why 1/π</strong>A white Lambert surface under uniform light must reflect exactly what it receives. Integrating <code>cos θ</code> over the hemisphere gives π, so <code>f = 1/π</code>. <code>(1 − F)</code> is the energy the specular lobe did not take.</div>
+        <h3 id="combined">Worked numbers: head-on, <code>L<sub>i</sub> = 1</code>, all dots = 1</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Material</th><th>c_diff</th><th>f0</th><th>α</th><th>D</th><th>f · NdotL</th></tr></thead>
+            <tbody>
+              <tr><td>white plastic, r 0.5, base 0.8</td><td class="num">0.8</td><td class="num">0.04</td><td class="num">0.25</td><td class="num">5.09</td><td class="num">0.295</td></tr>
+              <tr><td>gold, r 0.1</td><td class="num">0</td><td>gold</td><td class="num">0.01</td><td class="num">3183</td><td class="num">≈ 796 · f0 (tight spike)</td></tr>
+              <tr><td>glTF default (m 1, r 1, white)</td><td class="num">0</td><td class="num">1</td><td class="num">1</td><td class="num">0.318</td><td class="num">0.080 (dim grey)</td></tr>
+              <tr><td>dark rubber, r 1, base 0.05</td><td class="num">0.05</td><td class="num">0.04</td><td class="num">1</td><td class="num">0.318</td><td class="num">0.0185</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="sec" id="playground">
+        <div class="sec-head"><span class="sec-num">8</span><h2>Live material</h2></div>
+        <p class="tldr"><b>In one line</b>Three sliders drive the whole BRDF. Drag the sphere to move the light.</p>
+        <figure class="fig">
+          <div class="fig-head"><h3>Shaded sphere · one directional light</h3></div>
+          <div class="seg" role="group" aria-label="Material presets">
+            <button type="button" data-preset="plastic" aria-pressed="true">Plastic</button>
+            <button type="button" data-preset="gold" aria-pressed="false">Gold</button>
+            <button type="button" data-preset="rubber" aria-pressed="false">Rubber</button>
+            <button type="button" data-preset="default" aria-pressed="false">glTF default</button>
+          </div>
+          <div class="controls">
+            <label><span class="row">metallic <output id="mat-metal-val"></output></span><input id="mat-metal" type="range" min="0" max="1" step="0.01" value="0" /></label>
+            <label><span class="row">roughness <output id="mat-rough-val"></output></span><input id="mat-rough" type="range" min="0.04" max="1" step="0.01" value="0.4" /></label>
+            <label><span class="row">exposure <output id="mat-exp-val"></output></span><input id="mat-exp" type="range" min="0.2" max="6" step="0.1" value="1.6" /></label>
+            <label style="flex:0 0 auto;min-width:auto">baseColor <input id="mat-color" type="color" value="#c8c8c8" /></label>
+          </div>
+          <canvas class="square" id="plot-sphere" aria-label="Sphere shaded with the glTF BRDF; drag to move the light"></canvas>
+          <div class="stats">
+            <div class="stat"><b>c_diff</b><span id="stat-cdiff"></span></div>
+            <div class="stat"><b>f0</b><span id="stat-f0"></span></div>
+            <div class="stat"><b>α = r²</b><span id="stat-a"></span></div>
+            <div class="stat"><b>peak L<sub>o</sub></b><span id="stat-lo"></span></div>
+          </div>
+        </figure>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Want</th><th>metallic</th><th>roughness</th><th>baseColor</th></tr></thead>
+            <tbody>
+              <tr><td>chrome</td><td>1</td><td>0–0.1</td><td>≈ (0.55, 0.55, 0.55)</td></tr>
+              <tr><td>gold</td><td>1</td><td>0–0.2</td><td>≈ (1.00, 0.77, 0.34) linear</td></tr>
+              <tr><td>brushed iron</td><td>1</td><td>0.3–0.5</td><td>≈ (0.56, 0.57, 0.58)</td></tr>
+              <tr><td>glossy plastic</td><td>0</td><td>0.2–0.4</td><td>albedo</td></tr>
+              <tr><td>matte paint</td><td>0</td><td>0.6–0.9</td><td>albedo</td></tr>
+              <tr><td>rubber, asphalt</td><td>0</td><td>0.9–1</td><td>dark albedo</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Painted metal is dielectric paint (<code>metallic = 0</code>), with bare-metal texels only where the paint is chipped.</p>
+      </section>
+
+      <section class="sec" id="extras">
+        <div class="sec-head"><span class="sec-num">9</span><h2>Normal, AO, emissive, alpha</h2></div>
+        <p class="tldr"><b>In one line</b>None of these is a BRDF lobe. They change <code>N</code>, scale <em>indirect</em> light, add glow, or cut holes.</p>
+        <div class="grid-2">
+          <article class="card">
+            <h3>Normal map</h3>
+            <pre class="formula">n  = sample_linear(normalTex).xyz · 2 − 1
+n  = normalize(float3(n.xy · scale, n.z))
+B  = cross(N, T) · tangent.w
+N  = normalize(T·n.x + B·n.y + N·n.z)</pre>
+            <p>OpenGL +Y. Never flip Y. No tangent means no normal map.</p>
+          </article>
+          <article class="card">
+            <h3>Occlusion (AO)</h3>
+            <p><code>ao</code> scales <strong>indirect</strong> light only (RTXGI in §15). The sun still reaches a crack that faces it.</p>
+            <p>In a lights-only view, a correct AO map looks ignored.</p>
+          </article>
+          <article class="card">
+            <h3>Emissive</h3>
+            <p>Added after lighting. It is not scaled by <code>NdotL</code> or AO. Factor ≤ 1 in core. HDR needs <code>KHR_materials_emissive_strength</code>.</p>
+          </article>
+          <article class="card">
+            <h3>Alpha</h3>
+            <p><code>OPAQUE</code> ignores a. <code>MASK</code> cuts at <code>alphaCutoff</code> (0.5 by default). <code>BLEND</code> is straight-alpha over <em>after</em> lighting. Never premultiply before the BRDF.</p>
+            <p>In the engine, the G-buffer pass cuts <code>MASK</code> exactly with <code>discard</code>. Shadow and bounce rays use opacity micromaps (§13).</p>
+          </article>
+        </div>
+        <p><code>doubleSided</code>: no culling, and <code>N = −N</code> on back faces <em>before</em> the BRDF.</p>
+      </section>
+
+      <section class="sec" id="lights">
+        <div class="sec-head"><span class="sec-num">10</span><h2>Punctual lights</h2></div>
+        <p class="tldr"><b>In one line</b>The three light types only change how <code>L</code> and <code>L<sub>i</sub></code> are built. The BRDF is the same.</p>
+        <pre class="formula">L<sub>i</sub> = color · intensity · distanceAttenuation · coneAttenuation</pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Type</th><th><code>L</code></th><th><code>intensity</code></th><th>Attenuation</th></tr></thead>
+            <tbody>
+              <tr><td>directional</td><td><code>−worldDir</code> (node −Z)</td><td>lux</td><td>1</td></tr>
+              <tr><td>point</td><td><code>normalize(lightPos − P)</code></td><td>candela</td><td><code>window(d) / d²</code></td></tr>
+              <tr><td>spot</td><td>same as point</td><td>candela</td><td>point × cone</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <figure class="fig" id="lab">
+          <div class="fig-head"><h3>Light lab</h3></div>
+          <p class="hint">A small ray tracer running the page’s BRDF, with hard shadows. Rubber on the left (<code>m 0, r 0.85</code>), gold on the right (<code>m 1, r 0.18</code>). The photo is a real-world reference for the same setup. Turn indirect off to see pure punctual lighting: the gold goes black except for the highlight, because a metal only shows what it reflects.</p>
+          <div class="seg" role="group" aria-label="Light type">
+            <button type="button" data-light="directional" aria-pressed="true">Directional</button>
+            <button type="button" data-light="point" aria-pressed="false">Point</button>
+            <button type="button" data-light="spot" aria-pressed="false">Spot</button>
+          </div>
+          <div class="controls" data-for="directional">
+            <label><span class="row">sun elevation <output id="lab-elev-val"></output></span><input id="lab-elev" type="range" min="5" max="85" step="1" value="38" data-fmt="deg" /></label>
+            <label><span class="row">sun azimuth <output id="lab-azim-val"></output></span><input id="lab-azim" type="range" min="-170" max="170" step="1" value="-40" data-fmt="deg" /></label>
+          </div>
+          <div class="controls" data-for="point" hidden>
+            <label><span class="row">position x <output id="lab-px-val"></output></span><input id="lab-px" type="range" min="-2.5" max="2.5" step="0.05" value="-0.2" /></label>
+            <label><span class="row">height <output id="lab-py-val"></output></span><input id="lab-py" type="range" min="0.3" max="3" step="0.05" value="1.6" /></label>
+            <label><span class="row">range (0 = ∞) <output id="lab-range-val"></output></span><input id="lab-range" type="range" min="0" max="6" step="0.1" value="0" /></label>
+          </div>
+          <div class="controls" data-for="spot" hidden>
+            <label><span class="row">inner cone <output id="lab-inner-val"></output></span><input id="lab-inner" type="range" min="0" max="44" step="1" value="12" data-fmt="deg" /></label>
+            <label><span class="row">outer cone <output id="lab-outer-val"></output></span><input id="lab-outer" type="range" min="4" max="60" step="1" value="28" data-fmt="deg" /></label>
+            <label><span class="row">aim x <output id="lab-aim-val"></output></span><input id="lab-aim" type="range" min="-1.5" max="1.5" step="0.05" value="0" /></label>
+          </div>
+          <div class="controls">
+            <label><span class="row">exposure <output id="lab-exp-val"></output></span><input id="lab-exp" type="range" min="0.2" max="4" step="0.05" value="1" /></label>
+            <label class="check"><input id="lab-indirect" type="checkbox" checked /> 1-bounce indirect (noisy, accumulates)</label>
+          </div>
+          <div class="scene-grid">
+            <canvas class="scene" id="lab-canvas" aria-label="Rendered scene of two spheres under the selected light"></canvas>
+            <figure>
+              <img id="lab-photo" src="pbr_figures/light-directional.jpg" alt="Reference photo" width="1280" height="720" loading="lazy" />
+              <figcaption id="lab-caption"></figcaption>
+            </figure>
+          </div>
+          <p class="readout" id="lab-read"></p>
+        </figure>
+
+        <h3>Distance: inverse square with a range window</h3>
+        <pre class="formula">attenuation = window(d) / max(d², 1e-4)
+window(d)   = range == 0 ? 1 : saturate(1 − (d / range)⁴)     <span class="cmt">// exactly 0 at d ≥ range</span></pre>
+        <figure class="fig">
+          <div class="legend"><span style="color:var(--faint)"><i></i>1/d²</span><span style="color:var(--accent)"><i></i>windowed</span></div>
+          <div class="controls">
+            <label><span class="row">range (m) <output id="light-range-val"></output></span><input id="light-range" type="range" min="1" max="10" step="0.1" value="4" /></label>
+          </div>
+          <canvas class="plot" id="plot-range"></canvas>
+          <p class="readout" id="read-range"></p>
+        </figure>
+
+        <h3>Spot cone</h3>
+        <pre class="formula">cd     = dot(spotDir, −L)                        <span class="cmt">// +1 on the axis</span>
+scale  = 1 / max(0.001, cos(inner) − cos(outer))
+offset = −cos(outer) · scale
+cone   = saturate(cd · scale + offset)²</pre>
+        <div class="callout trap"><strong>Sign</strong><code>L</code> points <em>toward</em> the light and <code>spotDir</code> points <em>away</em> from it, so on-axis <code>dot(spotDir, −L) = +1</code>. Writing <code>dot(spotDir, L)</code> turns the hot spot black and lights a ring.</div>
+        <figure class="fig">
+          <div class="controls">
+            <label><span class="row">inner <output id="spot-inner-val"></output></span><input id="spot-inner" type="range" min="0" max="80" step="1" value="0" data-fmt="deg" /></label>
+            <label><span class="row">outer <output id="spot-outer-val"></output></span><input id="spot-outer" type="range" min="5" max="90" step="1" value="45" data-fmt="deg" /></label>
+          </div>
+          <canvas class="plot" id="plot-spot"></canvas>
+          <p class="readout" id="read-spot"></p>
+        </figure>
+
+        <h3>The loop</h3>
+        <pre class="formula">L<sub>o</sub> = emissive
+for each node-attached light:
+    (L, L<sub>i</sub>) = evalLight(light, P)
+    if NdotL ≤ 0: continue
+    L<sub>o</sub> += evalBrdf(V, L) · L<sub>i</sub> · NdotL · visible(P, L)</pre>
+        <div class="callout engine"><strong>In this engine</strong>This loop defines the answer, but the engine never runs it. With hundreds of lights, looping over all of them per pixel is too slow, so RTXDI (§14) picks a few lights per pixel and estimates the same sum.</div>
+        <p>Exposure belongs to the engine. A 1 cd point light at 1 m on white Lambert gives <code>1/π ≈ 0.32</code> nits, far below SDR white.</p>
+      </section>
+
+      <!-- ============================== PART II ============================== -->
+      <div class="part-head">
+        <p>Part II</p>
+        <h2>Render the frame</h2>
+        <p class="lede">Part I shaded one point. A frame needs about 8 million of them, plus shadows, bounced light, and a clean image from very few rays. Four NVIDIA SDKs do that work, and the engine only writes the glue each one asks for.</p>
+      </div>
+
+      <section class="sec" id="frame">
+        <div class="sec-head"><span class="sec-num">11</span><h2>The frame at a glance</h2></div>
+        <p class="tldr"><b>In one line</b>Raster the first hit into a G-buffer, then RTXDI adds direct light, RTXGI NRC adds bounced light, and DLSS-RR denoises and upscales.</p>
+        <figure class="fig">
+          <svg class="diagram" viewBox="0 0 760 610" role="img" aria-label="Frame graph">
+            <defs><marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0 10 5 0 10z" /></marker></defs>
+            <text class="tag sub" x="20" y="18">ONCE PER ASSET</text>
+            <text class="tag sub" x="270" y="18">EVERY FRAME</text>
+            <text class="tag sub" x="560" y="18">WRITES</text>
+            <a href="#omm"><rect class="box g-geo" x="20" y="30" width="210" height="46" rx="9" /><text x="125" y="51" text-anchor="middle">OMM bake (CPU)</text><text class="sub" x="125" y="67" text-anchor="middle">OMM SDK · alpha → micromaps</text></a>
+            <a href="#omm"><rect class="box g-geo" x="20" y="94" width="210" height="46" rx="9" /><text x="125" y="115" text-anchor="middle">micromap build</text><text class="sub" x="125" y="131" text-anchor="middle">vkCmdBuildMicromapsEXT</text></a>
+            <a href="#scene"><rect class="box g-geo" x="20" y="158" width="210" height="46" rx="9" /><text x="125" y="179" text-anchor="middle">BLAS build</text><text class="sub" x="125" y="195" text-anchor="middle">one per primitive (+ OMM)</text></a>
+
+            <a href="#scene"><rect class="box g-geo" x="270" y="30" width="250" height="46" rx="9" /><text x="395" y="51" text-anchor="middle">TLAS build</text><text class="sub" x="395" y="67" text-anchor="middle">CPU instance rows · full rebuild</text></a>
+            <a href="#scene"><rect class="box g-out" x="270" y="94" width="250" height="46" rx="9" /><text x="395" y="115" text-anchor="middle">G-buffer raster</text><text class="sub" x="395" y="131" text-anchor="middle">mesh shader + DGC · jittered</text></a>
+            <a href="#rtxdi"><rect class="box g-direct" x="270" y="158" width="250" height="46" rx="9" /><text x="395" y="179" text-anchor="middle">rtxdi_initial</text><text class="sub" x="395" y="195" text-anchor="middle">light + BRDF candidates → reservoir</text></a>
+            <a href="#rtxdi"><rect class="box g-direct" x="270" y="222" width="250" height="46" rx="9" /><text x="395" y="243" text-anchor="middle">rtxdi_shade</text><text class="sub" x="395" y="259" text-anchor="middle">spatiotemporal reuse → shadow ray</text></a>
+            <a href="#rtxgi"><rect class="box g-indirect" x="270" y="286" width="250" height="46" rx="9" /><text x="395" y="307" text-anchor="middle">nrc_update + nrc_query</text><text class="sub" x="395" y="323" text-anchor="middle">sparse training paths · 1 path per pixel</text></a>
+            <a href="#rtxgi"><rect class="box g-indirect" x="270" y="350" width="250" height="46" rx="9" /><text x="395" y="371" text-anchor="middle">NRC QueryAndTrain + Resolve</text><text class="sub" x="395" y="387" text-anchor="middle">host SDK · infer, train, write indirect</text></a>
+            <a href="#rtxgi"><rect class="box g-indirect" x="270" y="414" width="250" height="46" rx="9" /><text x="395" y="435" text-anchor="middle">noisy_color</text><text class="sub" x="395" y="451" text-anchor="middle">direct + indirect + emissive</text></a>
+            <a href="#dlss"><rect class="box g-out" x="270" y="478" width="250" height="46" rx="9" /><text x="395" y="499" text-anchor="middle">DLSS Ray Reconstruction</text><text class="sub" x="395" y="515" text-anchor="middle">host NGX · noisy → clean + upscale</text></a>
+            <rect class="box g-out" x="270" y="542" width="250" height="46" rx="9" /><text x="395" y="563" text-anchor="middle">composite</text><text class="sub" x="395" y="579" text-anchor="middle">exposure · tonemap · swapchain</text>
+
+            <rect class="box" x="560" y="94" width="180" height="46" rx="9" /><text x="650" y="115" text-anchor="middle">G-buffer ×2</text><text class="sub" x="650" y="131" text-anchor="middle">current + previous frame</text>
+            <rect class="box g-direct" x="560" y="158" width="180" height="46" rx="9" /><text x="650" y="179" text-anchor="middle">DI reservoirs</text><text class="sub" x="650" y="195" text-anchor="middle">RTXDI-owned layout</text>
+            <rect class="box g-direct" x="560" y="222" width="180" height="46" rx="9" /><text x="650" y="243" text-anchor="middle">directRadiance</text><text class="sub" x="650" y="259" text-anchor="middle">no AO</text>
+            <rect class="box g-indirect" x="560" y="318" width="180" height="46" rx="9" /><text x="650" y="339" text-anchor="middle">NRC network</text><text class="sub" x="650" y="355" text-anchor="middle">records → indirectRadiance</text>
+            <rect class="box g-indirect" x="560" y="414" width="180" height="46" rx="9" /><text x="650" y="435" text-anchor="middle">noisyColor</text><text class="sub" x="650" y="451" text-anchor="middle">direct + indirect + emissive</text>
+
+            <path class="edge" style="marker-end:url(#arrow2)" d="M125 76v16" /><path class="edge" style="marker-end:url(#arrow2)" d="M125 140v16" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M230 181 C250 181 250 53 268 53" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M395 76v16" /><path class="edge" style="marker-end:url(#arrow2)" d="M395 140v16" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M395 204v16" /><path class="edge" style="marker-end:url(#arrow2)" d="M395 268v16" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M395 332v16" /><path class="edge" style="marker-end:url(#arrow2)" d="M395 396v16" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M395 460v16" /><path class="edge" style="marker-end:url(#arrow2)" d="M395 524v16" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M520 117h38" /><path class="edge" style="marker-end:url(#arrow2)" d="M520 181h38" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M520 245h38" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M520 309 C540 309 540 341 558 341" /><path class="edge" style="marker-end:url(#arrow2)" d="M520 373 C540 373 540 341 558 341" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M520 437h38" />
+          </svg>
+          <div class="flow-legend">
+            <span><i style="border-color:var(--accent-3)"></i>geometry</span>
+            <span><i style="border-color:var(--accent)"></i>direct light (RTXDI)</span>
+            <span><i style="border-color:var(--accent-2)"></i>indirect light (RTXGI NRC)</span>
+            <span><i style="border-color:var(--text)"></i>primary / output</span>
+          </div>
+          <p class="hint" style="margin-top:0.6rem">Boxes link to their section. Every lighting pass is a compute shader with ray queries, and every ray traces the same TLAS.</p>
+        </figure>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Concern</th><th>Owner</th><th>The engine writes</th></tr></thead>
+            <tbody>
+              <tr><td>direct light</td><td><b>RTXDI</b> (ReSTIR DI)</td><td><code>RAB_*</code> bridge, light buffer, two compute entry points</td></tr>
+              <tr><td>indirect light</td><td><b>RTXGI NRC</b> (Neural Radiance Cache)</td><td>one path loop (update + query variants), one combine pass, host train/infer/resolve calls</td></tr>
+              <tr><td>alpha-tested rays</td><td><b>OMM SDK</b> + <code>VK_EXT_opacity_micromap</code></td><td>load-time bake, micromap build, attach to BLAS</td></tr>
+              <tr><td>denoise + upscale</td><td><b>DLSS-RR</b> (NGX)</td><td>guide images, host evaluate</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout engine"><strong>One BRDF everywhere</strong>RTXDI’s target pdf, the NRC path loop and the G-buffer’s specular-albedo guide all call the <code>evalBrdf</code> from §7. When they disagree, it is a bug. There is no reference light loop, homegrown cache, or custom denoiser to compare against, and no vendor fallback path.</div>
+      </section>
+
+      <section class="sec" id="scene">
+        <div class="sec-head"><span class="sec-num">12</span><h2>What the SDKs read: G-buffer and TLAS</h2></div>
+        <p class="tldr"><b>In one line</b>The rasterizer writes the first-hit surface once. Rays use standard KHR acceleration structures built from the same vertex and index buffers.</p>
+        <p>RTXDI, NRC and DLSS-RR all start from the surface the camera sees. The engine already draws meshes with mesh shaders and device-generated commands, so that pass writes a <em>G-buffer</em>: the BRDF inputs of §3 per pixel, not a lit color. Alpha testing there is an exact <code>discard</code> at the cutoff.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Image</th><th>Content</th><th>Read by</th></tr></thead>
+            <tbody>
+              <tr><td>depth</td><td>hardware depth</td><td>RTXDI, NRC paths, DLSS</td></tr>
+              <tr><td><code>normalRoughness</code></td><td>world shading normal, <strong>perceptual</strong> roughness</td><td>RTXDI, NRC paths, DLSS</td></tr>
+              <tr><td><code>geoNormal</code></td><td>geometric normal</td><td>ray origin offset</td></tr>
+              <tr><td><code>diffuseAo</code></td><td><code>c_diff</code>, ao</td><td>RTXDI, NRC paths, DLSS diffuse albedo</td></tr>
+              <tr><td><code>specularF0</code></td><td><code>f0</code></td><td>RTXDI, NRC paths</td></tr>
+              <tr><td><code>specAlbedo</code></td><td>pre-integrated <code>f0</code> at <code>NdotV</code></td><td>DLSS specular albedo</td></tr>
+              <tr><td><code>emissive</code></td><td>emissive (unlit: baseColor)</td><td><code>noisy_color</code></td></tr>
+              <tr><td><code>motion</code></td><td>pixels, current → previous</td><td>RTXDI temporal reuse, DLSS</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>The engine keeps two G-buffers and swaps them every frame. RTXDI’s temporal reuse reads last frame’s surface to check that a reused light sample still belongs to a similar surface.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Event</th><th>BLAS</th><th>TLAS</th><th>RTXDI light buffer</th></tr></thead>
+            <tbody>
+              <tr><td>load an asset</td><td>build one per primitive (with its OMM), grouped per model</td><td>new instance rows</td><td>new light rows</td></tr>
+              <tr><td>unload an asset</td><td>destroy that model’s group; the others stay valid</td><td>its rows disappear</td><td>its lights disappear</td></tr>
+              <tr><td>object moves or rotates</td><td>—</td><td>rewrite its rows, rebuild</td><td>rewrite lights attached to it</td></tr>
+              <tr><td>nothing changes</td><td>—</td><td>rebuild anyway (cheap)</td><td>—</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout engine"><strong>In this engine</strong>Every loaded model owns a slice of each vertex, index and material buffer, and unloading a model moves the slices after it. So no ray-tracing data stores a fixed id. Each frame the CPU writes, next to every TLAS instance, a <code>GpuRayInstance</code> row with the current entity and primitive. At a ray hit, <code>CommittedInstanceIndex()</code> picks that row, which leads to the model’s slices and the primitive’s material, and <code>CommittedPrimitiveIndex()</code> gives the triangle. Three indices from the model’s index slice then give the vertices to interpolate. The same <code>sampleMaterial</code> runs at the hit as in the G-buffer fragment shader.</div>
+        <details class="deeper">
+          <summary>Why the first hit is rasterized, not traced</summary>
+          <p>A camera ray and a rasterized pixel find the same surface. Raster already exists here, gives exact alpha edges with <code>discard</code>, and needs no ray-tracing pipeline or shader table. Every remaining ray (shadow, bounce) is a ray query in a compute shader.</p>
+          <p>DLSS needs the raster to be jittered by a sub-pixel offset each frame. Motion vectors are computed from the <em>unjittered</em> positions, and DLSS receives the jitter separately.</p>
+        </details>
+      </section>
+
+      <section class="sec" id="omm">
+        <div class="sec-head"><span class="sec-num">13</span><h2>Opacity micromaps</h2></div>
+        <p class="tldr"><b>In one line</b>Pre-classify tiny pieces of alpha-tested triangles, so shadow and bounce rays pass through leaf holes without running any shader.</p>
+        <p>A leaf card is two triangles with an alpha texture. Without help, a ray touching the card has to stop, fetch UV, sample alpha and compare to the cutoff. An opacity micromap splits each triangle into <code>4<sup>level</sup></code> micro-triangles, each marked <b style="color:var(--omm-opaque)">opaque</b>, <b style="color:var(--omm-transparent)">transparent</b>, or <b style="color:var(--omm-unknown)">unknown</b>. Traversal handles opaque and transparent in hardware.</p>
+        <figure class="fig">
+          <div class="fig-head"><h3>Bake a leaf card</h3></div>
+          <div class="seg" role="group" aria-label="OMM format">
+            <button type="button" data-omm="4" aria-pressed="true">4-state (as baked)</button>
+            <button type="button" data-omm="2" aria-pressed="false">2-state (as traced)</button>
+          </div>
+          <div class="controls">
+            <label><span class="row">subdivision level <output id="omm-level-val"></output></span><input id="omm-level" type="range" min="0" max="6" step="1" value="3" /></label>
+            <label><span class="row">alpha cutoff <output id="omm-cutoff-val"></output></span><input id="omm-cutoff" type="range" min="0.05" max="0.95" step="0.05" value="0.5" /></label>
+          </div>
+          <canvas class="square" id="omm-canvas" style="background:var(--canvas-bg)" aria-label="Leaf texture with micro-triangle classification"></canvas>
+          <div class="stats">
+            <div class="stat"><b>micro-tris</b><span id="omm-total"></span></div>
+            <div class="stat"><b>opaque</b><span id="omm-opaque"></span></div>
+            <div class="stat"><b>transparent</b><span id="omm-transparent"></span></div>
+            <div class="stat"><b>unknown</b><span id="omm-unknown"></span></div>
+            <div class="stat"><b>any-hit calls</b><span id="omm-anyhit"></span></div>
+            <div class="stat"><b>wrong area</b><span id="omm-error"></span></div>
+          </div>
+        </figure>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Ray</th><th>Alpha handled by</th><th>Why</th></tr></thead>
+            <tbody>
+              <tr><td>camera (first hit)</td><td>raster <code>discard</code> in the G-buffer pass</td><td>exact edges where you look at them</td></tr>
+              <tr><td>shadow, bounce</td><td>OMM, forced 2-state per instance</td><td>no shader runs during traversal. A slightly wrong edge is invisible in a soft shadow</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout engine"><strong>In this engine</strong>The OMM SDK bakes 4-state micromaps on the CPU at load time (with a disk cache), in index-buffer triangle order. Each micromap attaches to its primitive’s BLAS geometry. The instance flag <code>FORCE_OPACITY_MICROMAP_2_STATE</code> folds unknown into opaque or transparent at trace time. Instances without a micromap are <code>FORCE_OPAQUE</code>, so a ray query never sees a candidate it would have to alpha-test. The “any-hit calls” stat shows what 4-state tracing would cost.</div>
+      </section>
+
+      <section class="sec" id="rtxdi">
+        <div class="sec-head"><span class="sec-num">14</span><h2>RTXDI: direct light</h2></div>
+        <p class="tldr"><b>In one line</b>Try a few random lights, keep the most promising one, and borrow good picks from neighbors and from last frame.</p>
+        <p>The §10 loop costs one BRDF evaluation and one shadow ray per light per pixel. A scene with 300 lamps makes that 300 rays per pixel. Picking one light at random is cheap but very noisy. RTXDI (ReSTIR DI) sits between the two:</p>
+        <ol>
+          <li><b>RIS:</b> draw <code>M</code> candidate lights, weight each by its unshadowed contribution <code>p̂ = luminance(f · L<sub>i</sub> · NdotL)</code>, and keep one in a <em>reservoir</em>.</li>
+          <li><b>Temporal reuse:</b> merge with this pixel’s reservoir from the previous frame.</li>
+          <li><b>Spatial reuse:</b> merge with a few neighbors’ reservoirs.</li>
+          <li>Trace <b>one</b> shadow ray to the survivor and shade it with the reservoir weight.</li>
+        </ol>
+        <figure class="fig">
+          <div class="fig-head"><h3>300 lights over a floor, seen from above</h3></div>
+          <div class="seg" role="group" aria-label="Estimator">
+            <button type="button" data-restir="uniform" aria-pressed="false">1 random light</button>
+            <button type="button" data-restir="ris" aria-pressed="true">ReSTIR</button>
+            <button type="button" data-restir="reference" aria-pressed="false">All lights (demo only)</button>
+          </div>
+          <div class="controls">
+            <label><span class="row">candidates M <output id="restir-m-val"></output></span><input id="restir-m" type="range" min="1" max="32" step="1" value="8" /></label>
+            <label class="check"><input id="restir-spatial" type="checkbox" checked /> spatial reuse</label>
+            <label class="check"><input id="restir-temporal" type="checkbox" checked /> temporal reuse</label>
+            <button class="btn" id="restir-play" type="button" aria-pressed="false">Play frames</button>
+          </div>
+          <canvas class="scene pixel" id="restir-canvas" aria-label="Noisy direct lighting estimate"></canvas>
+          <div class="stats">
+            <div class="stat"><b>light evals / px</b><span id="restir-evals"></span></div>
+            <div class="stat"><b>shadow rays / px</b><span id="restir-rays"></span></div>
+            <div class="stat"><b>error (RMSE)</b><span id="restir-rmse"></span></div>
+            <div class="stat"><b>frame</b><span id="restir-frame"></span></div>
+          </div>
+          <p class="hint">The demo draws candidates in proportion to light power (RTXDI’s <code>Power_RIS</code> mode). The engine starts with <code>Uniform</code> candidates, which is enough for the few punctual lights a glTF scene carries.</p>
+        </figure>
+        <details class="deeper">
+          <summary>The reservoir in five lines</summary>
+          <pre class="formula">for each candidate x<sub>j</sub> (source pdf p<sub>j</sub>):
+    w<sub>j</sub> = p̂(x<sub>j</sub>) / p<sub>j</sub> ;  wSum += w<sub>j</sub> ;  keep x<sub>j</sub> with probability w<sub>j</sub> / wSum
+W   = wSum / (M · p̂(y))                     <span class="cmt">// unbiased contribution weight</span>
+L<sub>o</sub> ≈ f(y) · L<sub>i</sub>(y) · NdotL · visible(y) · W</pre>
+          <p>The demo has no occluders and merges reservoirs with the simple 1/M weights from the original paper. RTXDI adds pairwise MIS, visibility reuse, and a boiling filter.</p>
+        </details>
+
+        <h3>Where RTXDI sits in the frame</h3>
+        <p>RTXDI runs as two compute passes right after the G-buffer, before anything else lights the frame. Its only output is <code>directRadiance</code>, which <code>noisy_color</code> later adds to the indirect light.</p>
+        <figure class="fig">
+          <svg class="diagram" viewBox="0 0 760 240" role="img" aria-label="RTXDI passes, their inputs and outputs">
+            <defs><marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0 10 5 0 10z" /></marker></defs>
+            <rect class="box" x="20" y="20" width="180" height="46" rx="9" /><text x="110" y="41" text-anchor="middle">G-buffer (current)</text><text class="sub" x="110" y="57" text-anchor="middle">via RAB_GetGBufferSurface</text>
+            <rect class="box" x="20" y="96" width="180" height="46" rx="9" /><text x="110" y="117" text-anchor="middle">G-buffer (previous)</text><text class="sub" x="110" y="133" text-anchor="middle">temporal similarity test</text>
+            <rect class="box g-direct" x="20" y="172" width="180" height="46" rx="9" /><text x="110" y="193" text-anchor="middle">light buffer</text><text class="sub" x="110" y="209" text-anchor="middle">CPU · local, then infinite</text>
+
+            <rect class="box g-direct" x="260" y="20" width="220" height="56" rx="9" /><text x="370" y="43" text-anchor="middle">rtxdi_initial</text><text class="sub" x="370" y="61" text-anchor="middle">RTXDI_Sample{Local,Infinite}Lights, Brdf</text>
+            <rect class="box g-direct" x="260" y="140" width="220" height="56" rx="9" /><text x="370" y="163" text-anchor="middle">rtxdi_shade</text><text class="sub" x="370" y="181" text-anchor="middle">RTXDI_DISpatioTemporalResampling</text>
+
+            <rect class="box g-direct" x="540" y="20" width="200" height="56" rx="9" /><text x="640" y="43" text-anchor="middle">DI reservoirs</text><text class="sub" x="640" y="61" text-anchor="middle">this frame + last frame</text>
+            <rect class="box g-direct" x="540" y="140" width="200" height="56" rx="9" /><text x="640" y="163" text-anchor="middle">directRadiance</text><text class="sub" x="640" y="181" text-anchor="middle">RGBA16F → noisy_color</text>
+
+            <path class="edge" style="marker-end:url(#arrow3)" d="M200 43 C230 43 230 48 258 48" />
+            <path class="edge" style="marker-end:url(#arrow3)" d="M200 195 C232 195 232 64 258 64" />
+            <path class="edge" style="marker-end:url(#arrow3)" d="M200 119 C232 119 232 160 258 160" />
+            <path class="edge" style="marker-end:url(#arrow3)" d="M200 195 C230 195 230 180 258 180" />
+            <path class="edge" style="marker-end:url(#arrow3)" d="M480 48h58" />
+            <path class="edge" style="marker-end:url(#arrow3)" d="M600 76 C600 112 500 116 482 150" />
+            <path class="edge" style="marker-end:url(#arrow3)" d="M480 168h58" />
+          </svg>
+          <p class="hint">Every arrow into an RTXDI pass goes through the engine’s <code>RAB_*</code> bridge functions. The SDK never reads an engine buffer directly.</p>
+        </figure>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Pass</th><th>What happens</th><th>Rays</th></tr></thead>
+            <tbody>
+              <tr><td><code>rtxdi_initial</code></td><td>draw candidates from local lights (point, spot), infinite lights (directional) and one BRDF direction. Combine them into one reservoir per pixel and store it</td><td>none (unshadowed)</td></tr>
+              <tr><td><code>rtxdi_shade</code></td><td>merge with last frame’s reservoir at the reprojected pixel and with a few neighbors (fused spatiotemporal), then trace a shadow ray to the survivor and write <code>evalBrdf · L<sub>i</sub> · NdotL · W</code></td><td>1 shadow ray per pixel</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Who supplies what</h3>
+        <div class="grid-2">
+          <article class="card diel">
+            <h3>RTXDI SDK</h3>
+            <p>HLSL sampling and resampling (<code>RTXDI_*</code>), reservoir packing, neighbor-offset table, and the host <code>ReSTIRDIContext</code> that sizes buffers and fills the per-frame constants (<code>SetFrameIndex</code>, resampling parameters).</p>
+          </article>
+          <article class="card metal">
+            <h3>Engine (<code>lighting/rtxdi_bridge.slang</code>)</h3>
+            <p>The <code>RAB_*</code> functions: read a surface from the G-buffer, sample a light with <code>evalLight</code>, compute <code>p̂</code> with <code>evalBrdf</code>, sample and evaluate the BRDF pdf with <code>sampleBrdf</code> / <code>pdfBrdf</code>, and test visibility with a TLAS ray query.</p>
+          </article>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>RAB group</th><th>Backed by</th></tr></thead>
+            <tbody>
+              <tr><td>surface (<code>RAB_GetGBufferSurface</code>, <code>RAB_AreMaterialsSimilar</code>, …)</td><td>G-buffer, current or previous</td></tr>
+              <tr><td>BRDF (<code>RAB_SurfaceImportanceSampleBrdf</code>, <code>RAB_SurfaceEvaluateBrdfPdf</code>)</td><td><code>sampleBrdf</code>, <code>pdfBrdf</code></td></tr>
+              <tr><td>lights (<code>RAB_LoadLightInfo</code>, <code>RAB_SamplePolymorphicLight</code>, …)</td><td>light buffer + <code>evalLight</code></td></tr>
+              <tr><td>target pdf (<code>RAB_GetLightSampleTargetPdfForSurface</code>)</td><td><code>luminance(evalBrdf · L<sub>i</sub> · NdotL)</code></td></tr>
+              <tr><td>visibility (<code>RAB_GetConservativeVisibility</code>, …)</td><td>ray query against the TLAS</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout engine"><strong>In this engine</strong>The CPU writes the light buffer every frame: point and spot lights first, then directional lights, each moved by its node’s world matrix. That fixed order lets <code>RAB_TranslateLightIndex</code> return its input unchanged. To check correctness, set RTXDI’s resampling mode to <code>None</code> with many initial samples (the SDK’s own unbiased setup) and compare against the default fused mode.</div>
+      </section>
+
+      <section class="sec" id="rtxgi">
+        <div class="sec-head"><span class="sec-num">15</span><h2>RTXGI NRC: bounced light</h2></div>
+        <p class="tldr"><b>In one line</b>Trace a short path per pixel, then ask a small network, trained on this scene every frame, for the light that the rest of the path would have found.</p>
+        <p>Indirect light is the light arriving from other surfaces. Tracing it fully means long, noisy paths. The Neural Radiance Cache (NRC) learns “light leaving this point in this direction” for the current scene. Every pixel traces a short path and stops where the cache can take over. A sparse set of longer <em>training paths</em> teaches the cache what the scene really looks like, every frame, so it follows moving lights and objects.</p>
+
+        <h3>Where NRC sits in the frame</h3>
+        <p>NRC runs after RTXDI. The engine writes the two path passes and one combine pass; training, inference and the final write are host calls into the NRC SDK, recorded in the same command buffer. All paths start from the G-buffer surface, so no camera ray is traced again.</p>
+        <figure class="fig">
+          <svg class="diagram" viewBox="0 0 760 250" role="img" aria-label="NRC update and query paths, training and inference, then the combine pass">
+            <defs><marker id="arrow4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0 10 5 0 10z" /></marker></defs>
+            <rect class="box g-indirect" x="20" y="24" width="210" height="60" rx="9" /><text x="125" y="47" text-anchor="middle">1 · nrc_update</text><text class="sub" x="125" y="65" text-anchor="middle">sparse pixels · long training paths</text>
+            <rect class="box g-indirect" x="20" y="150" width="210" height="60" rx="9" /><text x="125" y="173" text-anchor="middle">2 · nrc_query</text><text class="sub" x="125" y="191" text-anchor="middle">every pixel · short path, then a query</text>
+            <rect class="box g-indirect" x="275" y="86" width="210" height="64" rx="9" /><text x="380" y="111" text-anchor="middle">3 · QueryAndTrain</text><text class="sub" x="380" y="131" text-anchor="middle">host SDK · infer queries, train once</text>
+            <rect class="box g-indirect" x="530" y="24" width="210" height="60" rx="9" /><text x="635" y="47" text-anchor="middle">4 · Resolve</text><text class="sub" x="635" y="65" text-anchor="middle">throughput × cached → indirect</text>
+            <rect class="box g-indirect" x="530" y="150" width="210" height="60" rx="9" /><text x="635" y="173" text-anchor="middle">5 · noisy_color</text><text class="sub" x="635" y="191" text-anchor="middle">direct + indirect + emissive</text>
+
+            <path class="edge" style="marker-end:url(#arrow4)" d="M230 54 C255 54 255 105 273 105" />
+            <path class="edge" style="marker-end:url(#arrow4)" d="M230 180 C255 180 255 132 273 132" />
+            <path class="edge" style="marker-end:url(#arrow4)" d="M485 105 C510 105 510 54 528 54" />
+            <path class="edge" style="marker-end:url(#arrow4)" d="M635 84v64" />
+            <text class="sub" x="245" y="40">training records</text>
+            <text class="sub" x="245" y="222">query records</text>
+            <text class="sub" x="380" y="236" text-anchor="middle">records live in SDK-owned buffers; the engine only binds them</text>
+          </svg>
+        </figure>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Step</th><th>What happens</th><th>NRC calls</th></tr></thead>
+            <tbody>
+              <tr><td><code>nrc_update</code></td><td>a sparse set of pixels trace long paths from their G-buffer surface. At each vertex they add direct light (RTXDI candidate sampling without reuse, plus one shadow ray) and emissive, and NRC records every vertex as a training sample</td><td><code>NrcUpdateOnHit</code>, <code>NrcUpdateOnMiss</code>, <code>NrcSetBrdfPdf</code></td></tr>
+              <tr><td><code>nrc_query</code></td><td>every pixel traces a short path from its G-buffer surface, starting with throughput <code>ao</code>. NRC decides at each hit whether to continue or to end the path with a query record. Light gathered before that point goes straight to the indirect target</td><td>same calls, plus <code>NrcWriteFinalPathInfo</code></td></tr>
+              <tr><td><code>QueryAndTrain</code></td><td>the network predicts radiance for every query record, then takes one training step on the update paths</td><td>host</td></tr>
+              <tr><td><code>Resolve</code></td><td>adds <code>throughput × predicted radiance</code> of each query into <code>indirectRadiance</code></td><td>host</td></tr>
+              <tr><td><code>noisy_color</code></td><td>writes <code>noisyColor = directRadiance + indirectRadiance + emissive</code>, the only place the three terms meet</td><td>—</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <details class="deeper" open>
+          <summary>The one path loop, both variants</summary>
+          <pre class="formula"><span class="cmt">// pathtrace.slang, built twice: NRC_UPDATE / NRC_QUERY</span>
+surface    = gbuffer[pixel]                <span class="cmt">// no camera ray</span>
+throughput = QUERY ? ao : 1                <span class="cmt">// ao only on indirect</span>
+(dir, w)   = sampleBrdf(surface, V, rng)    <span class="cmt">// w = f · cos / pdf</span>
+throughput *= w ;  NrcSetBrdfPdf
+for bounce &lt; kMaxBounces:
+    hit = traceClosest(surface.pos, dir)    <span class="cmt">// 2-state OMM</span>
+    if miss:
+        NrcUpdateOnMiss
+        break
+    Ld = direct(hit) + emissive(hit)        <span class="cmt">// RTXDI sampling, no reuse</span>
+    state = NrcUpdateOnHit(hit, Ld)        <span class="cmt">// continue, stop, or write a query</span>
+    if state != continue: break
+    (dir, w) = sampleBrdf(hit, rng) ;  NrcSetBrdfPdf
+    throughput *= w                         <span class="cmt">// roulette only if NRC allows</span>
+NrcWriteFinalPathInfo                       <span class="cmt">// query only</span></pre>
+          <p>The SDK names above follow the NRC headers as described in the plan; check them against the pinned SDK version when it is vendored.</p>
+        </details>
+        <div class="callout trap"><strong>Why train every frame</strong>The network starts empty and only knows what the training paths showed it recently. Too few training paths, or none while the camera moves, gives indirect light that lags behind the scene. The first surface never queries NRC for direct light, because RTXDI already handles it there.</div>
+        <div class="callout engine"><strong>In this engine</strong>The NRC SDK allocates its own buffers; <code>gi/nrc_bridge.slang</code> binds them and must match the SDK’s HLSL buffer packing under Slang. The host library ships as prebuilt DLLs with CUDA runtime dependencies, which is acceptable because the engine targets NVIDIA RTX GPUs only. SHaRC, RTXGI’s hash-grid cache, is not used.</div>
+      </section>
+
+      <section class="sec" id="dlss">
+        <div class="sec-head"><span class="sec-num">16</span><h2>DLSS Ray Reconstruction</h2></div>
+        <p class="tldr"><b>In one line</b>Hand the denoiser a noisy image plus clean hints about the surfaces, and it rebuilds a sharp, stable frame at display resolution.</p>
+        <p>The lit color is noisy at 1 sample per pixel and rendered below display resolution. DLSS-RR replaces hand-written denoisers and upscales too. It needs <em>guide buffers</em>: noise-free descriptions of what is at each pixel. The G-buffer pass (§12) already writes all of them.</p>
+        <figure class="fig">
+          <div class="fig-head"><h3>Guides for the light-lab scene</h3></div>
+          <div class="seg" role="group" aria-label="Guide buffer">
+            <button type="button" data-guide="noisy" aria-pressed="true">Noisy color</button>
+            <button type="button" data-guide="converged" aria-pressed="false">Converged</button>
+            <button type="button" data-guide="albedo" aria-pressed="false">Diffuse albedo</button>
+            <button type="button" data-guide="specular" aria-pressed="false">Specular albedo</button>
+            <button type="button" data-guide="normal" aria-pressed="false">Normal</button>
+            <button type="button" data-guide="rough" aria-pressed="false">Roughness</button>
+            <button type="button" data-guide="depth" aria-pressed="false">Depth</button>
+          </div>
+          <canvas class="scene" id="guides-canvas" aria-label="Guide buffer view"></canvas>
+          <p class="readout" id="guides-read"></p>
+        </figure>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Guide</th><th>Engine source</th><th>Trap</th></tr></thead>
+            <tbody>
+              <tr><td>color</td><td><code>noisyColor</code> from <code>noisy_color</code>, linear HDR</td><td>pre-tonemap, and exposure passed separately</td></tr>
+              <tr><td>diffuse albedo</td><td><code>diffuseAo.rgb</code> = <code>c_diff</code></td><td>no lighting, not sRGB, never ORM</td></tr>
+              <tr><td>specular albedo</td><td><code>specAlbedo</code>, pre-integrated <code>f0</code> at <code>NdotV</code></td><td>metals carry their color here</td></tr>
+              <tr><td>normal + roughness</td><td><code>normalRoughness</code>, roughness packed in alpha</td><td><strong>perceptual</strong> roughness, never <code>α</code></td></tr>
+              <tr><td>depth, motion</td><td>hardware depth, <code>motion</code></td><td>motion from unjittered positions; jitter passed separately</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout engine"><strong>In this engine</strong>NGX runs on the host after <code>noisy_color</code>. It picks the render resolution for the chosen quality mode, and the G-buffer and all lighting passes run at that size. A GPU without Ray Reconstruction is an initialization error. There is no fallback denoiser.</div>
+      </section>
+
+      <section class="sec" id="slang">
+        <div class="sec-head"><span class="sec-num">17</span><h2>Where it lives in Slang</h2></div>
+        <p class="tldr"><b>In one line</b>Small modules with one job each. Passes only import them and declare entry points. SDK headers are included only by the bridges and passes that need them.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Module</th><th>Owns</th><th>Section</th></tr></thead>
+            <tbody>
+              <tr><td><code>types</code></td><td><code>GpuMaterial</code>, <code>GpuLight</code>, <code>GpuModel</code>, <code>GpuPrimitive</code>, <code>GpuFrameRoot</code>, <code>GpuRayInstance</code>, flags, enums</td><td>§3, §12</td></tr>
+              <tr><td><code>core.frame</code></td><td>push data → frame root → instance, model slices, primitive, material</td><td>§12</td></tr>
+              <tr><td><code>material.pbr</code></td><td><code>sampleMaterial</code>: factors × textures, color spaces, normal map</td><td>§3, §9</td></tr>
+              <tr><td><code>material.brdf</code></td><td><code>evalBrdf</code>, <code>sampleBrdf</code>, <code>pdfBrdf</code></td><td>§4–§7</td></tr>
+              <tr><td><code>lighting.lights</code></td><td><code>evalLight</code>, range window, spot cone</td><td>§10</td></tr>
+              <tr><td><code>geometry.hit</code></td><td>ray-query hit → vertices → <code>SurfaceHit</code>, <code>traceVisibility</code>, <code>traceClosest</code></td><td>§12, §13</td></tr>
+              <tr><td><code>postprocessing.gbuffer</code></td><td>G-buffer layout and packing, DLSS guides</td><td>§12, §16</td></tr>
+              <tr><td><code>lighting/rtxdi_bridge</code></td><td><code>RAB_*</code> + RTXDI resource bindings (textual include)</td><td>§14</td></tr>
+              <tr><td><code>gi/nrc_bridge</code></td><td>NRC buffer bindings + <code>NrcConstants</code>, matching the SDK’s HLSL packing (textual include)</td><td>§15</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <pre class="formula"><span class="kw">module</span> brdf;
+<span class="kw">import</span> types;
+<span class="kw">import</span> core.math;
+
+<span class="cmt">// glTF appendix B; caller multiplies by radiance · NdotL once</span>
+<span class="kw">public</span> float3 evalBrdf(float3 n, float3 cDiff, float3 f0, float roughness, float3 v, float3 l)
+{
+    float nDotL = dot(n, l);
+    if (nDotL &lt;= 0.0) return 0.0;
+    float3 h  = normalize(l + v);
+    float  a2 = pow(max(roughness * roughness, 1e-4), 2.0);
+    float3 f  = fresnelSchlick(f0, saturate(dot(v, h)));
+    return (1.0 - f) * cDiff / kPi
+         + f * ggxD(saturate(dot(n, h)), a2) * smithVisibility(nDotL, max(dot(n, v), 1e-4), a2);
+}</pre>
+        <p>The signature takes <code>cDiff</code> and <code>f0</code> so the RTXDI bridge and the NRC path loop can call it straight from G-buffer data. The full contracts, the task order and the toolchain caveats are in <a href="pbr_implementation_plan.md">pbr_implementation_plan.md</a>.</p>
+      </section>
+
+      <!-- ============================== REFERENCE ============================== -->
+      <div class="part-head">
+        <p>Reference</p>
+        <h2>When something looks wrong</h2>
+      </div>
+
+      <section class="sec" id="pitfalls">
+        <div class="sec-head"><span class="sec-num">18</span><h2>Pitfalls</h2></div>
+        <ol class="pitfalls">
+          <li><div><b>Neon plastic, grey metal</b><span>Metal-rough or normal maps sampled as sRGB.</span></div></li>
+          <li><div><b>Default mesh nearly black</b><span>glTF default is rough metal. Correct without indirect light.</span></div></li>
+          <li><div><b>Spot hot spot black, ring lit</b><span><code>dot(spotDir, L)</code> instead of <code>−L</code>.</span></div></li>
+          <li><div><b>Crevices black in sunlight</b><span>AO applied to direct light.</span></div></li>
+          <li><div><b>Highlight sharp until roughness ~0.7</b><span>Forgot <code>α = roughness²</code>.</span></div></li>
+          <li><div><b>Grazing lights too bright or too dark</b><span>Missing or doubled <code>NdotL</code>.</span></div></li>
+          <li><div><b>Dents look like bumps</b><span>DirectX-style normal map Y.</span></div></li>
+          <li><div><b>A light that never shows up</b><span>Light definition with no node referencing it.</span></div></li>
+          <li><div><b>Object moves, its shadow does not</b><span>TLAS row not rewritten, or a light not following its entity.</span></div></li>
+          <li><div><b>Shadows pop when the camera turns</b><span>Camera culling applied to TLAS instances.</span></div></li>
+          <li><div><b>Leaves cast solid shadows</b><span>Micromap not attached to the BLAS, or the instance left <code>FORCE_OPAQUE</code>.</span></div></li>
+          <li><div><b>RTXDI with reuse differs from mode <code>None</code></b><span>Target pdf not built from the same <code>evalBrdf</code>/<code>evalLight</code>, or the previous G-buffer not swapped.</span></div></li>
+          <li><div><b>Lights smear when the camera moves</b><span>Motion vectors include the jitter, or point the wrong way (must be current → previous).</span></div></li>
+          <li><div><b>Indirect light lags or smears after a change</b><span>NRC training paths missing or too few, or AO applied after <code>Resolve</code> instead of as the query path’s starting throughput.</span></div></li>
+          <li><div><b>Smeared metals after DLSS-RR</b><span><code>α</code> written to the roughness guide, or lighting baked into albedo.</span></div></li>
+        </ol>
+      </section>
+
+      <section class="sec" id="glossary">
+        <div class="sec-head"><span class="sec-num">19</span><h2>Glossary</h2></div>
+        <dl class="glossary">
+          <dt>BRDF</dt><dd>function of two directions giving the share of light redirected from one to the other (1/sr)</dd>
+          <dt>G-buffer</dt><dd>per-pixel BRDF inputs (normal, roughness, albedo, f0, depth, motion) written by the raster pass</dd>
+          <dt>BLAS / TLAS</dt><dd>bottom-level (one per glTF primitive) and top-level (instances with transforms) acceleration structures</dd>
+          <dt>ray query</dt><dd>tracing a ray inline from a compute shader, with no ray-tracing pipeline or shader table</dd>
+          <dt>OMM</dt><dd>opacity micromap: per-micro-triangle opaque, transparent or unknown state for alpha testing in traversal</dd>
+          <dt>DGC</dt><dd>device-generated commands: the raster path’s mesh-draw lists</dd>
+          <dt>RAB</dt><dd>RTXDI application bridge: the <code>RAB_*</code> functions the engine implements for the RTXDI headers</dd>
+          <dt>RIS</dt><dd>resampled importance sampling: draw cheap candidates, keep one in proportion to a better target</dd>
+          <dt>ReSTIR</dt><dd>RIS plus reuse of reservoirs across neighbors and frames. RTXDI implements ReSTIR DI</dd>
+          <dt>NRC</dt><dd>Neural Radiance Cache (RTXGI): a small network trained every frame that predicts the light leaving a surface point</dd>
+          <dt>DLSS-RR</dt><dd>DLSS Ray Reconstruction: learned denoise + upscale driven by guide buffers</dd>
+        </dl>
+      </section>
+
+      <footer>
+        Formulas follow Khronos glTF 2.0 Appendix B and <code>KHR_lights_punctual</code>, and match <a href="gltf_parse_resources.md">gltf_parse_resources.md §14</a>.
+        Every graph and scene evaluates the same F, D, V, attenuation, and cone math as <code>material.brdf</code> / <code>lighting.lights</code>.
+        Agents: <a href="pbr_lighting_materials.md">pbr_lighting_materials.md</a> and <a href="pbr_implementation_plan.md">pbr_implementation_plan.md</a>.
+      </footer>
+    </main>
+  </div>
+  <script src="pbr_lighting_materials.js"></script>
+</body>
+</html>
