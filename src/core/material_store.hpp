@@ -26,7 +26,7 @@ public:
         MaterialPbrExtension extension;
         // models holding the row; the row is freed when this reaches 0
         uint32_t refCount = 0;
-        // add() calls answered by this row after it was created
+        // loads answered by this row after it was created: add() dedup and model instancing
         uint32_t dedupHits = 0;
         bool isFree = false;
     };
@@ -100,6 +100,17 @@ public:
         }
         loadRows.clear();
         std::erase_if(dirtyRows, [this](uint32_t id) { return infos[id].isFree; });
+    }
+
+    // cached model instanced: its rows are reused without passing through add()
+    void noteReuse(std::span<const uint32_t> rows)
+    {
+        for (const uint32_t id : rows) {
+            if (id != kDefaultId) {
+                ++cacheHits;
+                ++infos[id].dedupHits;
+            }
+        }
     }
 
     void retain(std::span<const uint32_t> rows)

@@ -1121,6 +1121,7 @@ EntityId ResourceManager::instantiateModel(ModelId modelId, const Transform& tra
     const EntityId entity = objectStorage.create(transform, model.meshletDraw, model.primitives.first,
                                                  model.primitives.count, model.key);
     attachEntity(entity, modelId);
+    materialStore.noteReuse(model.materialRefs);
     uploadLights();
     rebuildNodeInstanceLayout();
     logInfo(std::format("instance entity {} of model {} '{}': {} entities share {} on GPU", entity, modelId, model.key,
