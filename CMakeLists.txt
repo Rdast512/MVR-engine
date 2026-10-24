@@ -173,6 +173,10 @@ set(ENGINE_SLANG_CAPABILITIES
     SPV_EXT_mesh_shader
     spvMeshShadingEXT
 
+    # vk::KHRFragmentShaderBarycentricExtensionName: SV_Barycentrics in mesh_debug
+    SPV_KHR_fragment_shader_barycentric
+    spvFragmentBarycentricKHR
+
     # vk::KHRAccelerationStructureExtensionName + vk::KHRRayTracingPipelineExtensionName
     SPV_KHR_ray_tracing
     spvRayTracingKHR
@@ -253,6 +257,9 @@ engine_add_slang_pass(passes/mesh_raster.slang
 engine_add_slang_pass(passes/mesh_fragment.slang
     ENTRIES fragMain
     DEPENDS types.slang core/binding.slang core/frame.slang material/pbr.slang)
+engine_add_slang_pass(passes/mesh_debug.slang
+    ENTRIES meshDebugMain fragDebugMain
+    DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang geometry/mesh.slang)
 
 add_custom_target(Shaders ALL DEPENDS ${COMPILED_SHADERS})
 

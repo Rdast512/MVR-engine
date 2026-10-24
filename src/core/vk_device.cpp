@@ -51,6 +51,7 @@ constexpr std::array kRequiredDeviceExtensions = {
     vk::KHRShaderUntypedPointersExtensionName,
     vk::KHRDeviceAddressCommandsExtensionName,
     vk::KHRRobustness2ExtensionName, // shader objects take no VkPipelineRobustnessCreateInfo
+    vk::KHRFragmentShaderBarycentricExtensionName, // mesh_debug edge overlay
     // EXT
     vk::EXTOpacityMicromapExtensionName,
     vk::EXTMemoryBudgetExtensionName,
@@ -520,6 +521,7 @@ void Device::createLogicalDevice()
         vk::PhysicalDeviceMaintenance9FeaturesKHR, vk::PhysicalDeviceMaintenance10FeaturesKHR,
         vk::PhysicalDeviceCopyMemoryIndirectFeaturesKHR, vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR,
         vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR, vk::PhysicalDeviceRobustness2FeaturesKHR,
+        vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR,
         vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV,
         vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV>
         featureChain = {// vk::PhysicalDeviceFeatures2
@@ -643,6 +645,8 @@ void Device::createLogicalDevice()
                         {.shaderUntypedPointers = true},
                         // vk::PhysicalDeviceRobustness2FeaturesKHR
                         {.robustBufferAccess2 = true, .robustImageAccess2 = true, .nullDescriptor = true},
+                        // vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR
+                        {.fragmentShaderBarycentric = true},
                         // vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV
                         {.clusterAccelerationStructure = true},
                         // vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV

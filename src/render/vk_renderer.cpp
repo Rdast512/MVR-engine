@@ -91,7 +91,7 @@ void Renderer::drawFrame()
 
     {
         ZoneScopedN("UpdateUBO");
-        resourceManager.updateUniformBuffers(currentFrame);
+        resourceManager.updateUniformBuffers(currentFrame, debugView.packed());
     }
 
     const vk::SubmitInfo2 submitInfo{.waitSemaphoreInfoCount = 1,
@@ -177,13 +177,14 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
                                              .pDepthAttachment = &depthAttachmentInfo};
 
     dgc.updateSequences(currentFrame);
+    const RasterVariant rasterVariant = debugView.rasterVariant();
 
     {
         ZoneScopedN("DgcPreprocess");
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneDgcPreprocess, *cmd, "GPU_DgcPreprocess", gpuTrace);
 #endif
-        shaderObjects.bindMeshState(cmd);
+        shaderObjects.bindMeshState(cmd, rasterVariant);
         // shader objects require the *WithCount variants
         cmd.setViewportWithCount(vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChain.swapChainExtent.width),
                                               static_cast<float>(swapChain.swapChainExtent.height), 0.0f, 1.0f));
@@ -192,7 +193,7 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
         cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
 
         // bind once: preprocess snapshots this state; it persists into the render pass
-        dgc.recordPreprocess(cmd);
+        dgc.recordPreprocess(cmd, rasterVariant);
     }
 
     cmd.beginRendering(renderingInfo);
@@ -201,7 +202,7 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneDrawCalls, *cmd, "GPU_DrawCalls", gpuTrace);
 #endif
-        dgc.recordExecute(cmd);
+        dgc.recordExecute(cmd, rasterVariant);
     }
 
 #if ENGINE_ENABLE_IMGUI

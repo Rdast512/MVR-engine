@@ -51,4 +51,20 @@ uint3 loadMeshletTriangle(DrawContext draw, GpuMeshletDesc meshlet, uint ti)
     return uint3(uint(corners[base + 0]), uint(corners[base + 1]), uint(corners[base + 2]));
 }
 
+// meshlet corner in model space, default morph weights applied
+GpuVertex loadMeshletCorner(DrawContext draw, GpuMeshletDesc meshlet, uint vi)
+{
+    const uint vertexIndex = loadMeshletVertexIndex(draw, meshlet, vi);
+    GpuVertex v = loadVertex(draw, vertexIndex);
+    v.pos = applyMorphPosition(draw, vertexIndex, v.pos);
+    return v;
+}
+
+// a mirrored placement reverses winding; swapping two corners restores the front face
+uint3 loadFrontFacingTriangle(DrawContext draw, GpuMeshletDesc meshlet, uint ti)
+{
+    const uint3 tri = loadMeshletTriangle(draw, meshlet, ti);
+    return (draw.nodeInstance.flags & kNodeFlagFlipWinding) != 0 ? tri.xzy : tri;
+}
+
 #endif

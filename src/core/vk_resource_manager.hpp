@@ -125,7 +125,8 @@ public:
 
     void init();
     void createSyncObjects();
-    void updateUniformBuffers(uint32_t currentImage);
+    // debugView: DebugViewSettings::packed() of the frame being recorded
+    void updateUniformBuffers(uint32_t currentImage, uint32_t debugView);
     void createCommandPool();
     void createCommandBuffers();
     void createDepthResources();
@@ -265,7 +266,7 @@ private:
                           const char* tracyName) const;
     void destroyHostBuffer(HostBuffer& target, const char* tracyName) const;
     void rebuildModelTable();
-    void writeFrameRoot(uint32_t frameSlot);
+    void writeFrameRoot(uint32_t frameSlot, uint32_t debugView);
     // scratch PrimitiveDraws as model-relative GpuPrimitives; call before remapScratchOffsets
     [[nodiscard]] std::vector<GpuPrimitive> packScratchPrimitives() const;
     // scratch NodeDraws as model-relative GpuNodes

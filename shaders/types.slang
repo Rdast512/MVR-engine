@@ -71,6 +71,15 @@ struct GpuModel
 
 static const uint kNodeFlagFlipWinding = 1u;
 
+// GpuFrameRoot.debugView; must match src/render/debug_view.hpp
+static const uint kDebugViewLit = 0u;
+static const uint kDebugViewMeshlets = 1u;
+static const uint kDebugViewTriangles = 2u;
+static const uint kDebugViewPrimitives = 3u;
+static const uint kDebugViewNodeInstances = 4u;
+static const uint kDebugViewModeMask = 0xffu;
+static const uint kDebugViewFlagEdges = 1u << 8;
+
 // one mesh placement inside its model, model-relative
 struct GpuNode
 {
@@ -297,7 +306,7 @@ struct GpuFrameRoot
     uint primitiveCount;
     uint nodeInstanceCount;
     uint drawRecordCount;
-    uint pad0;
+    uint debugView; // kDebugView* mode in the low byte, kDebugViewFlag* above
 };
 
 #endif

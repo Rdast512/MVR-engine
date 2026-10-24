@@ -98,13 +98,16 @@ void DeviceGeneratedCommands::init()
     }
 
     shaderStages = kDgcMeshStages;
-    generatedShaders = {*shaderObjects.meshShader, *shaderObjects.fragmentShader};
-    generatedShaderInfo = vk::GeneratedCommandsShaderInfoEXT{
-        .shaderCount = static_cast<uint32_t>(generatedShaders.size()),
-        .pShaders = generatedShaders.data(),
-    };
+    for (size_t variant = 0; variant < kRasterVariantCount; ++variant) {
+        const ShaderObjects::MeshShaderPair& shaderPair = shaderObjects.meshShaders[variant];
+        generatedShaders[variant] = {*shaderPair.mesh, *shaderPair.fragment};
+        generatedShaderInfos[variant] = vk::GeneratedCommandsShaderInfoEXT{
+            .shaderCount = static_cast<uint32_t>(generatedShaders[variant].size()),
+            .pShaders = generatedShaders[variant].data(),
+        };
+    }
     createLayout();
-    createStateCommandBuffer();
+    createStateCommandBuffers();
 
     const uint32_t initialCapacity =
         std::min(std::max(resourceManager.objectStorage.size(), 1u), props.maxIndirectSequenceCount);
@@ -156,7 +159,7 @@ void DeviceGeneratedCommands::createLayout()
 
 // separate state buffer as in nvpro vk_device_generated_cmds; Nsight 2026.3.1 replay faults when
 // stateCommandBuffer is the recording command buffer itself
-void DeviceGeneratedCommands::createStateCommandBuffer()
+void DeviceGeneratedCommands::createStateCommandBuffers()
 {
     statePool = vk::raii::CommandPool(device.vkdevice, {.queueFamilyIndex = device.graphicsIndex});
     setDebugName(device.vkdevice, statePool, "DgcStateCommandPool");
@@ -164,29 +167,38 @@ void DeviceGeneratedCommands::createStateCommandBuffer()
     const vk::CommandBufferAllocateInfo allocInfo{
         .commandPool = *statePool,
         .level = vk::CommandBufferLevel::eSecondary,
-        .commandBufferCount = 1,
+        .commandBufferCount = static_cast<uint32_t>(kRasterVariantCount),
     };
-    stateCommandBuffer = std::move(vk::raii::CommandBuffers(device.vkdevice, allocInfo).front());
-    setDebugName(device.vkdevice, stateCommandBuffer, "DgcStateCommandBuffer");
+    vk::raii::CommandBuffers buffers(device.vkdevice, allocInfo);
 
     // shaders and heaps are created once before init, so recording once is enough
     const vk::CommandBufferInheritanceInfo inheritance{};
-    stateCommandBuffer.begin({.pInheritanceInfo = &inheritance});
-    shaderObjects.bindMeshState(stateCommandBuffer);
-    stateCommandBuffer.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
-    stateCommandBuffer.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
+    for (size_t variant = 0; variant < kRasterVariantCount; ++variant) {
+        vk::raii::CommandBuffer& state = stateCommandBuffers[variant];
+        state = std::move(buffers[variant]);
+        setDebugName(device.vkdevice, state, std::format("DgcStateCommandBuffer{}", variant));
+        state.begin({.pInheritanceInfo = &inheritance});
+        shaderObjects.bindMeshState(state, static_cast<RasterVariant>(variant));
+        state.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
+        state.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
+    }
 }
 
+// requirements depend on the shader set; one buffer serves every variant
 vk::DeviceSize DeviceGeneratedCommands::queryPreprocessSize(uint32_t capacity) const
 {
-    const vk::GeneratedCommandsMemoryRequirementsInfoEXT memInfo{
-        .pNext = &generatedShaderInfo,
-        .indirectCommandsLayout = *layout,
-        .maxSequenceCount = capacity,
-        .maxDrawCount = 1,
-    };
-    const vk::MemoryRequirements2 requirements = device.vkdevice.getGeneratedCommandsMemoryRequirementsEXT(memInfo);
-    return requirements.memoryRequirements.size;
+    vk::DeviceSize size = 0;
+    for (const vk::GeneratedCommandsShaderInfoEXT& shaderInfo : generatedShaderInfos) {
+        const vk::GeneratedCommandsMemoryRequirementsInfoEXT memInfo{
+            .pNext = &shaderInfo,
+            .indirectCommandsLayout = *layout,
+            .maxSequenceCount = capacity,
+            .maxDrawCount = 1,
+        };
+        const vk::MemoryRequirements2 requirements = device.vkdevice.getGeneratedCommandsMemoryRequirementsEXT(memInfo);
+        size = std::max(size, requirements.memoryRequirements.size);
+    }
+    return size;
 }
 
 void DeviceGeneratedCommands::ensureFrameCapacity(uint32_t frameSlot, uint32_t minSequences)
@@ -372,12 +384,12 @@ void DeviceGeneratedCommands::updateSequences(uint32_t frameSlot)
 }
 
 void DeviceGeneratedCommands::fillGeneratedCommandsInfo(vk::GeneratedCommandsInfoEXT& info, uint32_t frameSlot,
-                                                        uint32_t chunk) const
+                                                        uint32_t chunk, RasterVariant variant) const
 {
     const uint32_t firstSequence = chunk * kMaxSequencesPerExecute;
     const uint32_t chunkSequences = std::min(sequenceCount - firstSequence, kMaxSequencesPerExecute);
 
-    info.pNext = &generatedShaderInfo;
+    info.pNext = &generatedShaderInfos[std::to_underlying(variant)];
     info.shaderStages = shaderStages;
     info.indirectExecutionSet = nullptr;
     info.indirectCommandsLayout = *layout;
@@ -396,7 +408,7 @@ uint32_t DeviceGeneratedCommands::chunkCount() const
     return (sequenceCount + kMaxSequencesPerExecute - 1) / kMaxSequencesPerExecute;
 }
 
-void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd) const
+void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd, RasterVariant variant) const
 {
     ZoneScopedN("DeviceGeneratedCommands::recordPreprocess");
     if (sequenceCount == 0 || !explicitPreprocess) {
@@ -414,8 +426,8 @@ void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd) con
     // chunks use disjoint preprocess regions, so no barrier is needed between them
     for (uint32_t chunk = 0; chunk < chunkCount(); ++chunk) {
         vk::GeneratedCommandsInfoEXT info{};
-        fillGeneratedCommandsInfo(info, recordedFrame, chunk);
-        cmd.preprocessGeneratedCommandsEXT(info, *stateCommandBuffer);
+        fillGeneratedCommandsInfo(info, recordedFrame, chunk, variant);
+        cmd.preprocessGeneratedCommandsEXT(info, *stateCommandBuffers[std::to_underlying(variant)]);
     }
 
     const vk::MemoryBarrier2 preprocessBarrier{
@@ -427,7 +439,7 @@ void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd) con
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &preprocessBarrier});
 }
 
-void DeviceGeneratedCommands::recordExecute(vk::raii::CommandBuffer& cmd) const
+void DeviceGeneratedCommands::recordExecute(vk::raii::CommandBuffer& cmd, RasterVariant variant) const
 {
     ZoneScopedN("DeviceGeneratedCommands::recordExecute");
     if (sequenceCount == 0) {
@@ -436,7 +448,7 @@ void DeviceGeneratedCommands::recordExecute(vk::raii::CommandBuffer& cmd) const
 
     for (uint32_t chunk = 0; chunk < chunkCount(); ++chunk) {
         vk::GeneratedCommandsInfoEXT info{};
-        fillGeneratedCommandsInfo(info, recordedFrame, chunk);
+        fillGeneratedCommandsInfo(info, recordedFrame, chunk, variant);
         cmd.executeGeneratedCommandsEXT(explicitPreprocess ? vk::True : vk::False, info);
     }
 }

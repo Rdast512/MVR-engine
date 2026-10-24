@@ -66,6 +66,7 @@ class Engine
     void drawLoadPanel();
     void drawLoadedModelsPanel();
     void drawAssetsPanel() const;
+    void drawDebugViewPanel();
     void applyPendingModelActions();
     void loadSelectedModel();
     void unloadModel(EntityId id);

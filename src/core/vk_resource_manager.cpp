@@ -305,7 +305,7 @@ void ResourceManager::rebuildModelTable()
             "ResourceManager");
 }
 
-void ResourceManager::writeFrameRoot(uint32_t frameSlot)
+void ResourceManager::writeFrameRoot(uint32_t frameSlot, uint32_t debugView)
 {
     *static_cast<GpuFrameRoot*>(frameRoots[frameSlot].mapped) = GpuFrameRoot{
         .camera = cameraAddresses[frameSlot],
@@ -323,7 +323,7 @@ void ResourceManager::writeFrameRoot(uint32_t frameSlot)
         .primitiveCount = uploadedCount(AssetBuffer::Primitives),
         .nodeInstanceCount = nodeInstanceCount,
         .drawRecordCount = drawRecordCount[frameSlot],
-        .pad0 = 0,
+        .debugView = debugView,
     };
 }
 
@@ -439,11 +439,11 @@ void ResourceManager::createSyncObjects()
     }
 }
 
-void ResourceManager::updateUniformBuffers(uint32_t currentImage)
+void ResourceManager::updateUniformBuffers(uint32_t currentImage, uint32_t debugView)
 {
     ZoneScopedN("ResourceManager::updateUniformBuffer");
     ensureInstanceCapacity(objectStorage.size());
-    writeFrameRoot(currentImage);
+    writeFrameRoot(currentImage, debugView);
     // reads prevModelMatrices before the entity loop below advances them
     writeNodeInstances(currentImage);
 

@@ -572,7 +572,8 @@ struct GpuFrameRoot
     uint32_t primitiveCount = 0;
     uint32_t nodeInstanceCount = 0;
     uint32_t drawRecordCount = 0;
-    uint32_t pad0 = 0;
+    // DebugViewSettings::packed()
+    uint32_t debugView = 0;
 };
 static_assert(sizeof(GpuFrameRoot) == 104);
 static_assert(offsetof(GpuFrameRoot, lightCount) == 80);

@@ -28,18 +28,20 @@ public:
 
     void updateSequences(uint32_t frameSlot);
 
-    void recordPreprocess(vk::raii::CommandBuffer& cmd) const;
-    void recordExecute(vk::raii::CommandBuffer& cmd) const;
+    // both get the same variant within a frame: preprocess snapshots its shaders and state
+    void recordPreprocess(vk::raii::CommandBuffer& cmd, RasterVariant variant) const;
+    void recordExecute(vk::raii::CommandBuffer& cmd, RasterVariant variant) const;
 
 private:
     void createLayout();
-    void createStateCommandBuffer();
+    void createStateCommandBuffers();
     void ensureFrameCapacity(uint32_t frameSlot, uint32_t minSequences);
     void destroyFrameResources(uint32_t frameSlot);
     void allocateSequenceBuffer(uint32_t frameSlot, uint32_t capacity);
     void allocatePreprocessBuffer(uint32_t frameSlot, uint32_t capacity);
     [[nodiscard]] vk::DeviceSize queryPreprocessSize(uint32_t capacity) const;
-    void fillGeneratedCommandsInfo(vk::GeneratedCommandsInfoEXT& info, uint32_t frameSlot, uint32_t chunk) const;
+    void fillGeneratedCommandsInfo(vk::GeneratedCommandsInfoEXT& info, uint32_t frameSlot, uint32_t chunk,
+                                   RasterVariant variant) const;
     [[nodiscard]] uint32_t chunkCount() const;
 
     Device& device;
@@ -48,15 +50,16 @@ private:
     ShaderObjects& shaderObjects;
 
     vk::raii::IndirectCommandsLayoutEXT layout = nullptr;
-    // one handle per stage of kDgcMeshStages; pointed to by generatedShaderInfo
-    std::array<vk::ShaderEXT, 2> generatedShaders{};
-    vk::GeneratedCommandsShaderInfoEXT generatedShaderInfo{};
+    // per RasterVariant: one handle per stage of kDgcMeshStages, pointed to by the matching generatedShaderInfos row
+    std::array<std::array<vk::ShaderEXT, 2>, kRasterVariantCount> generatedShaders{};
+    std::array<vk::GeneratedCommandsShaderInfoEXT, kRasterVariantCount> generatedShaderInfos{};
     vk::ShaderStageFlags shaderStages{};
     bool explicitPreprocess = false;
 
     // stays in recording state; pool declared first so the buffer is freed before it
     vk::raii::CommandPool statePool = nullptr;
-    vk::raii::CommandBuffer stateCommandBuffer = nullptr;
+    // per RasterVariant
+    std::array<vk::raii::CommandBuffer, kRasterVariantCount> stateCommandBuffers = {nullptr, nullptr};
 
     uint32_t sequenceCount = 0;
     uint32_t recordedFrame = 0;

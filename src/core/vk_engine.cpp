@@ -521,6 +521,7 @@ void Engine::drawImGui()
             drawLoadPanel();
             drawLoadedModelsPanel();
             drawAssetsPanel();
+            drawDebugViewPanel();
         }
         ImGui::End();
     }
@@ -543,6 +544,10 @@ void Engine::drawStatsOverlay() const
     ImGui::SetNextWindowBgAlpha(kBackgroundAlpha);
     if (ImGui::Begin("##stats", nullptr, kFlags)) {
         ImGui::Text("%.0f FPS  %.2f ms", fps, frameMs);
+        // labels screenshots and captures taken in a debug view
+        if (const DebugView view = renderer->debugView.view; view != DebugView::Lit) {
+            ImGui::Text("View: %s", debugViewInfo(view).name);
+        }
     }
     ImGui::End();
 #endif
@@ -674,6 +679,52 @@ void Engine::drawLoadedModelsPanel()
         ImGui::PopID();
     }
     ImGui::EndTable();
+#endif
+}
+
+void Engine::drawDebugViewPanel()
+{
+#if ENGINE_ENABLE_IMGUI
+    if (!ImGui::CollapsingHeader("Debug view")) {
+        return;
+    }
+    DebugViewSettings& settings = renderer->debugView;
+
+    if (ImGui::BeginCombo("View", debugViewInfo(settings.view).name)) {
+        for (size_t i = 0; i < kDebugViews.size(); ++i) {
+            const auto view = static_cast<DebugView>(i);
+            const DebugViewInfo& info = kDebugViews[i];
+            if (i > 0 && info.category != kDebugViews[i - 1].category) {
+                ImGui::SeparatorText(debugViewCategoryName(info.category));
+            }
+            const bool isSelected = view == settings.view;
+            ImGui::BeginDisabled(!info.isImplemented);
+            if (ImGui::Selectable(info.name, isSelected)) {
+                settings.view = view;
+            }
+            ImGui::EndDisabled();
+            if (!info.isImplemented) {
+                ImGui::SetItemTooltip("reserved, not implemented yet");
+            }
+            if (isSelected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    // per-category options; lighting and upscaling views add theirs here
+    switch (debugViewInfo(settings.view).category) {
+    case DebugViewCategory::Geometry:
+        ImGui::Checkbox("Triangle edges", &settings.showEdges);
+        ImGui::SetItemTooltip("barycentric wireframe over the debug colors");
+        ImGui::TextDisabled("meshlet colors are per model: instances match");
+        break;
+    case DebugViewCategory::Lit:
+    case DebugViewCategory::Lighting:
+    case DebugViewCategory::Upscaling:
+        break;
+    }
 #endif
 }
 

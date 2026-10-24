@@ -4,6 +4,7 @@
 
 #include <array>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <stdexcept>
 #include <vector>
@@ -41,9 +42,28 @@ void ShaderObjects::init()
 
 void ShaderObjects::createMeshShaders()
 {
-    const auto shaderDir = std::filesystem::path(ENGINE_SHADER_DIR);
-    const auto meshSpirv = readFile((shaderDir / "passes" / "mesh_raster.spv").string());
-    const auto fragSpirv = readFile((shaderDir / "passes" / "mesh_fragment.spv").string());
+    meshShaders[std::to_underlying(RasterVariant::Lit)] = createMeshShaderPair({
+        .meshFile = "mesh_raster.spv",
+        .fragmentFile = "mesh_fragment.spv",
+        .meshEntry = "meshMain",
+        .fragmentEntry = "fragMain",
+        .debugName = "MeshRaster",
+    });
+    meshShaders[std::to_underlying(RasterVariant::GeometryDebug)] = createMeshShaderPair({
+        .meshFile = "mesh_debug.spv",
+        .fragmentFile = "mesh_debug.spv",
+        .meshEntry = "meshDebugMain",
+        .fragmentEntry = "fragDebugMain",
+        .debugName = "MeshDebug",
+    });
+}
+
+ShaderObjects::MeshShaderPair ShaderObjects::createMeshShaderPair(const MeshShaderSource& source) const
+{
+    const auto passDir = std::filesystem::path(ENGINE_SHADER_DIR) / "passes";
+    const auto meshSpirv = readFile((passDir / source.meshFile).string());
+    const auto fragSpirv =
+        source.fragmentFile == source.meshFile ? meshSpirv : readFile((passDir / source.fragmentFile).string());
     const bool useDescriptorHeaps = descriptorManager.descriptorBindingMode == DescriptorBindingMode::DescriptorHeaps;
 
     // link stage lets the driver optimize the mesh->fragment interface like a monolithic pipeline
@@ -64,7 +84,7 @@ void ShaderObjects::createMeshShaders()
             .codeType = vk::ShaderCodeTypeEXT::eSpirv,
             .codeSize = meshSpirv.size(),
             .pCode = meshSpirv.data(),
-            .pName = "meshMain",
+            .pName = source.meshEntry,
             .setLayoutCount = setLayoutCount,
             .pSetLayouts = setLayouts,
         },
@@ -74,7 +94,7 @@ void ShaderObjects::createMeshShaders()
             .codeType = vk::ShaderCodeTypeEXT::eSpirv,
             .codeSize = fragSpirv.size(),
             .pCode = fragSpirv.data(),
-            .pName = "fragMain",
+            .pName = source.fragmentEntry,
             .setLayoutCount = setLayoutCount,
             .pSetLayouts = setLayouts,
         },
@@ -82,20 +102,22 @@ void ShaderObjects::createMeshShaders()
 
     // linked stages must be created in one call
     std::vector<vk::raii::ShaderEXT> shaders = device.createShadersEXT(createInfos);
-    meshShader = std::move(shaders[0]);
-    fragmentShader = std::move(shaders[1]);
-    setDebugName(device, meshShader, "ShaderObject_MeshRaster");
-    setDebugName(device, fragmentShader, "ShaderObject_MeshFragment");
+    MeshShaderPair result{.mesh = std::move(shaders[0]), .fragment = std::move(shaders[1])};
+    setDebugName(device, result.mesh, std::format("ShaderObject_{}_Mesh", source.debugName));
+    setDebugName(device, result.fragment, std::format("ShaderObject_{}_Fragment", source.debugName));
+    return result;
 }
 
-void ShaderObjects::bindMeshState(const vk::raii::CommandBuffer& cmd) const
+void ShaderObjects::bindMeshState(const vk::raii::CommandBuffer& cmd, RasterVariant variant) const
 {
+    const MeshShaderPair& shaderPair = pair(variant);
     // with meshShader/taskShader/geometryShader enabled every graphics stage must be bound explicitly
     constexpr std::array stages = {
         vk::ShaderStageFlagBits::eVertex, vk::ShaderStageFlagBits::eGeometry, vk::ShaderStageFlagBits::eTaskEXT,
         vk::ShaderStageFlagBits::eMeshEXT, vk::ShaderStageFlagBits::eFragment,
     };
-    const std::array<vk::ShaderEXT, stages.size()> shaders = {nullptr, nullptr, nullptr, *meshShader, *fragmentShader};
+    const std::array<vk::ShaderEXT, stages.size()> shaders = {nullptr, nullptr, nullptr, *shaderPair.mesh,
+                                                              *shaderPair.fragment};
     cmd.bindShadersEXT(stages, shaders);
 
     // rasterization

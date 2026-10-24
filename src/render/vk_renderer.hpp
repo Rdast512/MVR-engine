@@ -21,6 +21,8 @@ public:
     void waitIdle() const;
 
     uint32_t currentFrame = 0;
+    // read once per recorded frame; the UI changes it between frames
+    DebugViewSettings debugView;
 
 private:
     void recordCommandBuffer(uint32_t imageIndex);
