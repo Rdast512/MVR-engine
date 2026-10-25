@@ -78,23 +78,3 @@ glm::vec4 transformBoundingSphere(const glm::mat4& matrix, const glm::vec4& sphe
                                                glm::dot(glm::vec3(matrix[2]), glm::vec3(matrix[2]))}));
     return {glm::vec3(matrix * glm::vec4(glm::vec3(sphere), 1.0f)), sphere.w * maxScale};
 }
-
-glm::vec4 mergeBoundingSpheres(const glm::vec4& a, const glm::vec4& b)
-{
-    if (a.w <= 0.0f) {
-        return b;
-    }
-    if (b.w <= 0.0f) {
-        return a;
-    }
-    const glm::vec3 offset = glm::vec3(b) - glm::vec3(a);
-    const float distance = glm::length(offset);
-    if (distance + b.w <= a.w) {
-        return a;
-    }
-    if (distance + a.w <= b.w) {
-        return b;
-    }
-    const float radius = (distance + a.w + b.w) * 0.5f;
-    return {glm::vec3(a) + offset * ((radius - a.w) / distance), radius};
-}

@@ -969,9 +969,7 @@ void ResourceManager::flushGpuAssets()
         .refCount = 0,
     };
 
-    for (uint32_t n = allocation.nodes.first; n < allocation.nodes.end(); ++n) {
-        allocation.localBounds = mergeBoundingSpheres(allocation.localBounds, geometryStore.nodeDraws[n].boundingSphere);
-    }
+    allocation.localBounds = geometryStore.nodeBoundingSphere(allocation.nodes.first, allocation.nodes.count);
     PackedScratch packed{
         .primitives = packScratchPrimitives(),
         .nodes = packScratchNodes(),

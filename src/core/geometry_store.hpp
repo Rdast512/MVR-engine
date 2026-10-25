@@ -66,8 +66,10 @@ public:
     // capacity for extraVertices more in all nine per-vertex arrays, and extraIndices more indices
     void reserveGeometry(size_t extraVertices, size_t extraIndices);
 
-    // sphere (AABB center, farthest vertex) over positions [firstVertex, +vertexCount); zero when empty
+    // enclosing sphere of positions [firstVertex, +vertexCount); zero when empty
     [[nodiscard]] glm::vec4 boundingSphere(uint32_t firstVertex, uint32_t vertexCount) const;
+    // enclosing sphere of the node spheres [firstNode, +nodeCount); zero when empty
+    [[nodiscard]] glm::vec4 nodeBoundingSphere(uint32_t firstNode, uint32_t nodeCount) const;
 
     // pack vertices[v] from positions/colors/uv0
     void packVertex(uint32_t v);

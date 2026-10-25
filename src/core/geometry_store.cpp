@@ -5,10 +5,7 @@
 
 #include <meshoptimizer.h>
 
-#include <algorithm>
-#include <cmath>
 #include <format>
-#include <span>
 
 namespace
 {
@@ -55,20 +52,21 @@ glm::vec4 GeometryStore::boundingSphere(uint32_t firstVertex, uint32_t vertexCou
     if (vertexCount == 0) {
         return glm::vec4{0.0f};
     }
-    const std::span<const glm::vec3> points(positions.data() + firstVertex, vertexCount);
-    glm::vec3 minCorner = points.front();
-    glm::vec3 maxCorner = points.front();
-    for (const glm::vec3& position : points) {
-        minCorner = glm::min(minCorner, position);
-        maxCorner = glm::max(maxCorner, position);
+    const meshopt_Bounds bounds =
+        meshopt_computeSphereBounds(&positions[firstVertex].x, vertexCount, sizeof(glm::vec3), nullptr, 0);
+    return glm::vec4{bounds.center[0], bounds.center[1], bounds.center[2], bounds.radius};
+}
+
+glm::vec4 GeometryStore::nodeBoundingSphere(uint32_t firstNode, uint32_t nodeCount) const
+{
+    if (nodeCount == 0) {
+        return glm::vec4{0.0f};
     }
-    const glm::vec3 center = (minCorner + maxCorner) * 0.5f;
-    float radiusSquared = 0.0f;
-    for (const glm::vec3& position : points) {
-        const glm::vec3 offset = position - center;
-        radiusSquared = std::max(radiusSquared, glm::dot(offset, offset));
-    }
-    return glm::vec4{center, std::sqrt(radiusSquared)};
+    // centers and radii are read in place from the NodeDraw rows
+    const glm::vec4& firstSphere = nodeDraws[firstNode].boundingSphere;
+    const meshopt_Bounds bounds =
+        meshopt_computeSphereBounds(&firstSphere.x, nodeCount, sizeof(NodeDraw), &firstSphere.w, sizeof(NodeDraw));
+    return glm::vec4{bounds.center[0], bounds.center[1], bounds.center[2], bounds.radius};
 }
 
 void GeometryStore::packVertex(uint32_t v)

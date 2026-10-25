@@ -326,7 +326,7 @@ f_specular = F · D · G1(NdotL) · G1(NdotV) / (4 · NdotL · NdotV)</pre>
 n  = normalize(float3(n.xy · scale, n.z))
 B  = cross(N, T) · tangent.w
 N  = normalize(T·n.x + B·n.y + N·n.z)</pre>
-            <p>OpenGL +Y. Never flip Y. No tangent means no normal map.</p>
+            <p>OpenGL +Y. Never flip Y. A file without tangents gets MikkTSpace-compatible ones generated at load, so a normal map always has a tangent frame.</p>
           </article>
           <article class="card">
             <h3>Occlusion (AO)</h3>

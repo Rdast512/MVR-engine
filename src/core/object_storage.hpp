@@ -71,5 +71,3 @@ public:
 [[nodiscard]] glm::mat4 computeModelMatrix(const Transform& transform);
 // radius scales by the largest axis, so the sphere stays conservative under non-uniform scale
 [[nodiscard]] glm::vec4 transformBoundingSphere(const glm::mat4& matrix, const glm::vec4& sphere);
-// smallest sphere enclosing both; a zero-radius empty sphere yields the other
-[[nodiscard]] glm::vec4 mergeBoundingSpheres(const glm::vec4& a, const glm::vec4& b);

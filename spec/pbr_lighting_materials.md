@@ -75,7 +75,7 @@ ao        = 1 + strength * (R - 1)          // 1 if no map
 emissive  = emissiveFactor * sample_srgb(emissiveTex).rgb
 ```
 
-UV: engine already stores `v' = 1 - v`. Normal: OpenGL +Y up, `scale` on XY then normalize, `B = cross(N,T)*tangent.w`.
+UV: engine already stores `v' = 1 - v`. Normal: OpenGL +Y up, `scale` on XY then normalize, `B = cross(N,T)*tangent.w`. Missing `TANGENT` on a normal-mapped primitive is generated at load (MikkTSpace-compatible `meshopt_generateTangents`, plan A4); missing `NORMAL` becomes flat normals. Normals and tangents are mesh-local: use the node instance's normal matrix and negate `tangent.w` on mirrored placements (`kNodeFlagFlipWinding`).
 
 Defaults if `pbrMetallicRoughness` omitted: **metallic 1, roughness 1, white**. That is a rough metal, not grey plastic.
 

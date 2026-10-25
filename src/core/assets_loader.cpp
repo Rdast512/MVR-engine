@@ -11,6 +11,7 @@
 #include <optional>
 #include <thread>
 #include <glm/gtc/quaternion.hpp>
+#include <meshoptimizer.h>
 
 namespace
 {
@@ -1325,6 +1326,16 @@ namespace
         }
     }
 
+    // drops zero-area triangles (equal positions) and repeats; opposite windings stay for double-sided use
+    static void filterRedundantTriangles(std::vector<uint32_t>& triIndices, const float* positions,
+                                         size_t vertexCount, size_t positionStride)
+    {
+        // in place is safe: the write cursor never passes the read cursor
+        const size_t kept = meshopt_filterIndexBuffer(triIndices.data(), triIndices.data(), triIndices.size(),
+                                                      positions, vertexCount, sizeof(glm::vec3), positionStride);
+        triIndices.resize(kept);
+    }
+
     static std::vector<uint32_t> toTriangleIndices(int32_t mode, const std::vector<uint32_t>& src)
     {
         if (src.size() < 3) {
@@ -1667,6 +1678,10 @@ namespace
                 }
             }
             std::vector<uint32_t> triIndices = toTriangleIndices(mode, srcIndices);
+            // a morph target can open a triangle that is degenerate in the base pose
+            if (posComps == 3 && prim.targets_count == 0) {
+                filterRedundantTriangles(triIndices, positions.data(), vertexCount, sizeof(glm::vec3));
+            }
             if (triIndices.empty()) {
                 logInfo(std::format("glTF mesh[{}].prim[{}] skipped: no triangles", mi, pi), "AssetLoader");
                 continue;
@@ -2081,37 +2096,46 @@ std::optional<EntityId> AssetsLoader::loadObjModel(const std::string& modelPath,
         return std::nullopt;
     }
 
-    std::unordered_map<GpuVertex, uint32_t> uniqueVertices{};
-    uint32_t indexCount = 0;
     const uint32_t firstVertex = static_cast<uint32_t>(geometryStore.positions.size());
     const uint32_t firstIndex = static_cast<uint32_t>(geometryStore.indices.size());
     const uint32_t firstPrimitive = static_cast<uint32_t>(geometryStore.primitiveDraws.size());
 
+    // one vertex per face corner; meshopt welds bitwise-identical corners in first-use order
+    std::vector<GpuVertex> corners;
     for (const auto& [name, mesh] : shapes) {
         for (const auto& index : mesh.indices) {
-            GpuVertex vertex{};
-
-            vertex.pos = {attrib.vertices[3 * index.vertex_index + 0], attrib.vertices[3 * index.vertex_index + 1],
-                          attrib.vertices[3 * index.vertex_index + 2]};
-
-            vertex.texCoord = {attrib.texcoords[2 * index.texcoord_index + 0],
-                               1.0f - attrib.texcoords[2 * index.texcoord_index + 1]};
-
-            vertex.color = {1.0f, 1.0f, 1.0f};
-
-            if (!uniqueVertices.contains(vertex)) {
-                const uint32_t id = static_cast<uint32_t>(geometryStore.positions.size());
-                uniqueVertices[vertex] = id;
-                geometryStore.resizeVertices(id + 1);
-                geometryStore.positions[id] = vertex.pos;
-                geometryStore.uv0[id] = vertex.texCoord;
-                geometryStore.colors[id] = glm::vec4{1.0f};
-                geometryStore.packVertex(id);
-            }
-            geometryStore.indices.push_back(uniqueVertices[vertex]);
-            ++indexCount;
+            corners.push_back(GpuVertex{
+                .pos = {attrib.vertices[3 * index.vertex_index + 0], attrib.vertices[3 * index.vertex_index + 1],
+                        attrib.vertices[3 * index.vertex_index + 2]},
+                .color = {1.0f, 1.0f, 1.0f},
+                .texCoord = {attrib.texcoords[2 * index.texcoord_index + 0],
+                             1.0f - attrib.texcoords[2 * index.texcoord_index + 1]},
+            });
         }
     }
+
+    std::vector<uint32_t> triIndices(corners.size());
+    const size_t uniqueCount = meshopt_generateVertexRemap(triIndices.data(), nullptr, corners.size(), corners.data(),
+                                                           corners.size(), sizeof(GpuVertex));
+    std::vector<GpuVertex> unique(uniqueCount);
+    meshopt_remapVertexBuffer(unique.data(), corners.data(), corners.size(), sizeof(GpuVertex), triIndices.data());
+    // unindexed input: the remap table is the welded index buffer
+    // pos is the first GpuVertex member
+    filterRedundantTriangles(triIndices, reinterpret_cast<const float*>(unique.data()), unique.size(),
+                             sizeof(GpuVertex));
+
+    geometryStore.resizeVertices(firstVertex + static_cast<uint32_t>(uniqueCount));
+    for (uint32_t v = 0; v < uniqueCount; ++v) {
+        const uint32_t id = firstVertex + v;
+        geometryStore.positions[id] = unique[v].pos;
+        geometryStore.uv0[id] = unique[v].texCoord;
+        geometryStore.colors[id] = glm::vec4{1.0f};
+        geometryStore.packVertex(id);
+    }
+    for (const uint32_t local : triIndices) {
+        geometryStore.indices.push_back(firstVertex + local);
+    }
+    const auto indexCount = static_cast<uint32_t>(triIndices.size());
 
     GpuMaterial gpu{};
     const auto objTexture = (std::filesystem::path(modelPath).parent_path() / TEXTURE_PATH.filename()).string();

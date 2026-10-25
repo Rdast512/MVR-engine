@@ -30,19 +30,6 @@ static_assert(sizeof(GpuVertex) == 32, "GpuVertex must stay 32 B for mesh BDA / 
 static_assert(offsetof(GpuVertex, color) == 12);
 static_assert(offsetof(GpuVertex, texCoord) == 24);
 
-namespace std
-{
-    template <>
-    struct hash<GpuVertex>
-    {
-        size_t operator()(GpuVertex const& vertex) const
-        {
-            return ((hash<glm::vec3>()(vertex.pos) ^ (hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
-                (hash<glm::vec2>()(vertex.texCoord) << 1);
-        }
-    };
-} // namespace std
-
 
 // GPU-friendly meshlet header (CPU layout matches mesh.slang GpuMeshletDesc / SSBO).
 struct alignas(16) GpuMeshletDesc
