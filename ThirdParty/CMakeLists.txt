@@ -93,9 +93,11 @@ set(SLANG_RELEASE_URL "https://github.com/shader-slang/slang/releases/download")
 if (WIN32)
     set(SLANG_OS_NAME "win")
     set(SLANG_ARTIFACT_NAME "slang-${SLANG_VERSION}-windows-x86_64.zip")
+    set(SLANG_ARTIFACT_SHA256 "e6dd32bbddf1720ebb4e679d55e9635ce792865a5bd84f3d2cd9af28647c0174")
 elseif (UNIX AND NOT APPLE)
     set(SLANG_OS_NAME "linux")
     set(SLANG_ARTIFACT_NAME "slang-${SLANG_VERSION}-linux-x86_64.zip")
+    set(SLANG_ARTIFACT_SHA256 "73681e314bd48c1396daf963a66647724519b152886961d8ca3b1b7e477cf640")
 else ()
     message(FATAL_ERROR "Unsupported OS for Slang.")
 endif ()
@@ -106,7 +108,8 @@ set(SLANG_DOWNLOAD_URL "${SLANG_RELEASE_URL}/${SLANG_TAG}/${SLANG_ARTIFACT_NAME}
 
 if (NOT EXISTS "${SLANG_EXTRACT_DIR}/README.md")
     message(STATUS "Downloading Slang from ${SLANG_DOWNLOAD_URL}")
-    file(DOWNLOAD ${SLANG_DOWNLOAD_URL} "${SLANG_DOWNLOAD_DIR}/${SLANG_ARTIFACT_NAME}" SHOW_PROGRESS STATUS download_status)
+    file(DOWNLOAD ${SLANG_DOWNLOAD_URL} "${SLANG_DOWNLOAD_DIR}/${SLANG_ARTIFACT_NAME}"
+            EXPECTED_HASH SHA256=${SLANG_ARTIFACT_SHA256} SHOW_PROGRESS STATUS download_status)
     list(GET download_status 0 error_code)
 
     if (NOT error_code EQUAL 0)
