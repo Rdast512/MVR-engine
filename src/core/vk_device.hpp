@@ -24,7 +24,8 @@ class Device
     void pickPhysicalDevice();
     // prefers dedicated transfer/compute families, then a shared one, then graphics
     void findQueueFamilies(std::span<const vk::QueueFamilyProperties> families);
-    // optional (NV) extensions are enabled only when supported, see HardwareCapabilities::has*
+    // optional (NV) extensions are enabled only when supported, see HardwareCapabilities::has*;
+    // GI cache tier: NRC extensions/features if present, else SHaRC, see HardwareCapabilities::giCache
     void createLogicalDevice();
     void queryCapabilities();
     void createQueues();

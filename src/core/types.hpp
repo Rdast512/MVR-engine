@@ -584,6 +584,14 @@ enum class DescriptorBindingMode : uint8_t
     DescriptorHeaps = 1,
 };
 
+// radiance cache tier chosen at device creation; values match shaders/gi/rtxgi.slang kGiCache*
+enum class GiCache : uint32_t
+{
+    None = 0,
+    Sharc = 1,
+    Nrc = 2,
+};
+
 struct HardwareCapabilities
 {
     // Core/core-promoted properties
@@ -625,6 +633,8 @@ struct HardwareCapabilities
     // optional NV extensions: enabled only when supported; property structs above stay zeroed otherwise
     bool hasClusterAccelerationStructure = false;
     bool hasPartitionedAccelerationStructure = false;
+    // NRC when its extensions and features exist, else SHaRC, else none
+    GiCache giCache = GiCache::None;
 };
 
 struct EngineContext

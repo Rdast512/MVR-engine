@@ -6,5 +6,6 @@
 #include "raytracing/trace.slang"
 #include "material/brdf.slang"
 #include "gi/rtxgi.slang"
+#include "gi/sharc.slang"
 
 #endif

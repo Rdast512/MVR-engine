@@ -1053,11 +1053,13 @@ void Engine::unloadModel(EntityId id)
 
 void Engine::cleanup()
 {
-    if (!initialized) {
+    // also runs after a failed initialize(): every step tears down only what exists
+    if (!device && window == nullptr && SDL_WasInit(0) == 0) {
         return;
     }
-    auto& deviceRef = device->vkdevice;
-    deviceRef.waitIdle();
+    if (device && *device->vkdevice) {
+        device->vkdevice.waitIdle();
+    }
 
     if (tracyContext) {
         tracyContext->shutdown();
@@ -1065,9 +1067,14 @@ void Engine::cleanup()
     }
 
 #if ENGINE_ENABLE_IMGUI
-    if (enableImGui) {
-        ImGui_ImplVulkan_Shutdown();
-        ImGui_ImplSDL3_Shutdown();
+    if (ImGui::GetCurrentContext() != nullptr) {
+        // backends register their user data only after a successful init
+        if (ImGui::GetIO().BackendRendererUserData != nullptr) {
+            ImGui_ImplVulkan_Shutdown();
+        }
+        if (ImGui::GetIO().BackendPlatformUserData != nullptr) {
+            ImGui_ImplSDL3_Shutdown();
+        }
         ImGui::DestroyContext();
         // clear() destroys the VkDescriptorPool. reset() is vkResetDescriptorPool and
         // leaves the raii handle (and its DeviceDispatcher*) alive past device.reset().
@@ -1098,9 +1105,11 @@ void Engine::cleanup()
     logInfo("Swap chain cleaned up", "Engine");
     allocator.reset();
     logInfo("Allocator cleaned up", "Engine");
-    SDL_DestroyWindow(window);
-    logInfo("Window destroyed", "Engine");
-    window = nullptr;
+    if (window != nullptr) {
+        SDL_DestroyWindow(window);
+        logInfo("Window destroyed", "Engine");
+        window = nullptr;
+    }
     SDL_Quit();
     device.reset();
     logInfo("Device cleaned up", "Engine");

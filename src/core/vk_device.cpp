@@ -14,6 +14,7 @@
 #include "vk_device.hpp"
 #include <array>
 #include <bit>
+#include <cstddef>
 #include <format>
 #include <optional>
 #include <span>
@@ -68,6 +69,169 @@ constexpr std::array kRequiredDeviceExtensions = {
     vk::EXTExtendedDynamicState3ExtensionName,
 };
 
+// NRC tier; without them the GI cache falls back to SHaRC
+constexpr std::array kNrcDeviceExtensions = {
+    vk::NVXBinaryImportExtensionName,
+    vk::NVXImageViewHandleExtensionName,
+};
+
+// a VkBool32 feature field, located by its struct's sType and byte offset so one table
+// both enables the feature and names it when the GPU lacks it
+struct FeatureBit
+{
+    vk::StructureType structType;
+    size_t offset;
+    std::string_view name;
+};
+
+#define ENGINE_FEATURE(Struct, field)                                                                                  \
+    FeatureBit                                                                                                         \
+    {                                                                                                                  \
+        vk::Struct::structureType, offsetof(vk::Struct, field), #Struct "::" #field                                    \
+    }
+#define ENGINE_CORE_FEATURE(field)                                                                                     \
+    FeatureBit                                                                                                         \
+    {                                                                                                                  \
+        vk::PhysicalDeviceFeatures2::structureType,                                                                    \
+            offsetof(vk::PhysicalDeviceFeatures2, features) + offsetof(vk::PhysicalDeviceFeatures, field),             \
+            "PhysicalDeviceFeatures::" #field                                                                          \
+    }
+
+// device creation fails without any of these
+constexpr std::array kRequiredFeatures = {
+    // required by robustBufferAccess2
+    ENGINE_CORE_FEATURE(robustBufferAccess),
+    ENGINE_CORE_FEATURE(geometryShader),
+    ENGINE_CORE_FEATURE(sampleRateShading),
+    ENGINE_CORE_FEATURE(multiDrawIndirect),
+    ENGINE_CORE_FEATURE(samplerAnisotropy),
+    // BC7 KTX2 textures from tools/gltf_ktx2
+    ENGINE_CORE_FEATURE(textureCompressionBC),
+    ENGINE_CORE_FEATURE(shaderInt64),
+    // mesh.slang: uint8_t* meshletTriangles via PhysicalStorageBuffer
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, storageBuffer8BitAccess),
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderInt8),
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, descriptorIndexing),
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderSampledImageArrayNonUniformIndexing),
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderStorageBufferArrayNonUniformIndexing),
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, descriptorBindingPartiallyBound),
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, descriptorBindingVariableDescriptorCount),
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, runtimeDescriptorArray),
+    // GpuVertex float3@0/12 packing with slang -fvk-use-scalar-layout
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, scalarBlockLayout),
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, bufferDeviceAddress),
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, vulkanMemoryModel),
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, vulkanMemoryModelDeviceScope),
+    // textureCompressionASTC_HDR stays off: rtx 2060 super not supported
+    ENGINE_FEATURE(PhysicalDeviceVulkan13Features, synchronization2),
+    ENGINE_FEATURE(PhysicalDeviceVulkan13Features, dynamicRendering),
+    ENGINE_FEATURE(PhysicalDeviceVulkan13Features, maintenance4),
+    ENGINE_FEATURE(PhysicalDeviceVulkan14Features, globalPriorityQuery),
+    ENGINE_FEATURE(PhysicalDeviceVulkan14Features, dynamicRenderingLocalRead),
+    ENGINE_FEATURE(PhysicalDeviceVulkan14Features, maintenance5),
+    ENGINE_FEATURE(PhysicalDeviceVulkan14Features, maintenance6),
+    ENGINE_FEATURE(PhysicalDeviceVulkan14Features, hostImageCopy),
+    ENGINE_FEATURE(PhysicalDeviceExtendedDynamicStateFeaturesEXT, extendedDynamicState),
+    // logicOp / patchControlPoints are not promoted and unused (mesh-only, no logic op)
+    ENGINE_FEATURE(PhysicalDeviceExtendedDynamicState2FeaturesEXT, extendedDynamicState2),
+    // states set by ShaderObjects::bindMeshState
+    ENGINE_FEATURE(PhysicalDeviceExtendedDynamicState3FeaturesEXT, extendedDynamicState3PolygonMode),
+    ENGINE_FEATURE(PhysicalDeviceExtendedDynamicState3FeaturesEXT, extendedDynamicState3RasterizationSamples),
+    ENGINE_FEATURE(PhysicalDeviceExtendedDynamicState3FeaturesEXT, extendedDynamicState3SampleMask),
+    ENGINE_FEATURE(PhysicalDeviceExtendedDynamicState3FeaturesEXT, extendedDynamicState3AlphaToCoverageEnable),
+    ENGINE_FEATURE(PhysicalDeviceExtendedDynamicState3FeaturesEXT, extendedDynamicState3ColorBlendEnable),
+    ENGINE_FEATURE(PhysicalDeviceExtendedDynamicState3FeaturesEXT, extendedDynamicState3ColorWriteMask),
+    ENGINE_FEATURE(PhysicalDeviceDescriptorHeapFeaturesEXT, descriptorHeap),
+    // advancedBlendCoherentOperations stays off
+    ENGINE_FEATURE(PhysicalDeviceMeshShaderFeaturesEXT, taskShader),
+    ENGINE_FEATURE(PhysicalDeviceMeshShaderFeaturesEXT, meshShader),
+    ENGINE_FEATURE(PhysicalDeviceMeshShaderFeaturesEXT, meshShaderQueries),
+    ENGINE_FEATURE(PhysicalDeviceDeviceGeneratedCommandsFeaturesEXT, deviceGeneratedCommands),
+    ENGINE_FEATURE(PhysicalDeviceMemoryPriorityFeaturesEXT, memoryPriority),
+    ENGINE_FEATURE(PhysicalDeviceMemoryDecompressionFeaturesEXT, memoryDecompression),
+    ENGINE_FEATURE(PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT, pageableDeviceLocalMemory),
+    // PresentTimingFeaturesEXT: extension enabled, feature not requested yet
+    ENGINE_FEATURE(PhysicalDeviceRayTracingInvocationReorderFeaturesEXT, rayTracingInvocationReorder),
+    ENGINE_FEATURE(PhysicalDeviceOpacityMicromapFeaturesEXT, micromap),
+    ENGINE_FEATURE(PhysicalDeviceShaderObjectFeaturesEXT, shaderObject),
+    ENGINE_FEATURE(PhysicalDeviceFragmentShadingRateFeaturesKHR, pipelineFragmentShadingRate),
+    ENGINE_FEATURE(PhysicalDeviceFragmentShadingRateFeaturesKHR, primitiveFragmentShadingRate),
+    ENGINE_FEATURE(PhysicalDeviceFragmentShadingRateFeaturesKHR, attachmentFragmentShadingRate),
+    ENGINE_FEATURE(PhysicalDeviceDeviceAddressCommandsFeaturesKHR, deviceAddressCommands),
+    ENGINE_FEATURE(PhysicalDeviceAccelerationStructureFeaturesKHR, accelerationStructure),
+    ENGINE_FEATURE(PhysicalDeviceRayTracingPipelineFeaturesKHR, rayTracingPipeline),
+    ENGINE_FEATURE(PhysicalDeviceRayTracingPipelineFeaturesKHR, rayTracingPipelineTraceRaysIndirect),
+    ENGINE_FEATURE(PhysicalDeviceRayTracingPipelineFeaturesKHR, rayTraversalPrimitiveCulling),
+    ENGINE_FEATURE(PhysicalDeviceRayQueryFeaturesKHR, rayQuery),
+    ENGINE_FEATURE(PhysicalDeviceRayTracingMaintenance1FeaturesKHR, rayTracingMaintenance1),
+    ENGINE_FEATURE(PhysicalDeviceRayTracingMaintenance1FeaturesKHR, rayTracingPipelineTraceRaysIndirect2),
+    ENGINE_FEATURE(PhysicalDeviceSwapchainMaintenance1FeaturesKHR, swapchainMaintenance1),
+    ENGINE_FEATURE(PhysicalDeviceMaintenance7FeaturesKHR, maintenance7),
+    ENGINE_FEATURE(PhysicalDeviceMaintenance8FeaturesKHR, maintenance8),
+    // maintenance9 stays off while using Khronos Best Practices (VVL #12449, SDK ≤1.4.357).
+    // BP ValidateImageInQueue does: qf_count = last_usage.queue_family_index + 1
+    // then qf_props.back(). On first image use last_usage is still
+    // VK_QUEUE_FAMILY_IGNORED (0xFFFFFFFF) → count wraps to 0 → empty
+    // vector .back() writes to 0xFFFFFFFFFFFFFFE0 (sizeof(VkQueueFamilyProperties2)
+    // element -1, pNext at +8). Submit queue family from getDeviceQueue is fine;
+    // IGNORED is VVL's "never used" sentinel, not an app QFOT barrier mistake.
+    // Re-enable when VVL skips IGNORED/UNDEFINED before that query.
+    ENGINE_FEATURE(PhysicalDeviceMaintenance10FeaturesKHR, maintenance10),
+    ENGINE_FEATURE(PhysicalDeviceCopyMemoryIndirectFeaturesKHR, indirectMemoryCopy),
+    ENGINE_FEATURE(PhysicalDeviceCopyMemoryIndirectFeaturesKHR, indirectMemoryToImageCopy),
+    ENGINE_FEATURE(PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR, presentModeFifoLatestReady),
+    ENGINE_FEATURE(PhysicalDeviceShaderUntypedPointersFeaturesKHR, shaderUntypedPointers),
+    ENGINE_FEATURE(PhysicalDeviceRobustness2FeaturesKHR, robustBufferAccess2),
+    ENGINE_FEATURE(PhysicalDeviceRobustness2FeaturesKHR, robustImageAccess2),
+    ENGINE_FEATURE(PhysicalDeviceRobustness2FeaturesKHR, nullDescriptor),
+    ENGINE_FEATURE(PhysicalDeviceFragmentShaderBarycentricFeaturesKHR, fragmentShaderBarycentric),
+};
+
+// enabled only with their NV extensions
+constexpr std::array kClusterAccelerationStructureFeatures = {
+    ENGINE_FEATURE(PhysicalDeviceClusterAccelerationStructureFeaturesNV, clusterAccelerationStructure),
+};
+constexpr std::array kPartitionedAccelerationStructureFeatures = {
+    ENGINE_FEATURE(PhysicalDevicePartitionedAccelerationStructureFeaturesNV, partitionedAccelerationStructure),
+};
+
+// NRC guide step 2.2; scalarBlockLayout, bufferDeviceAddress and memory budget are already required
+constexpr std::array kNrcFeatures = {
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, uniformBufferStandardLayout),
+};
+
+// SHaRC hash insertion uses 64-bit atomics, resolved entries store float16_t radiance
+constexpr std::array kSharcFeatures = {
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderBufferInt64Atomics),
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderFloat16),
+};
+
+#undef ENGINE_FEATURE
+#undef ENGINE_CORE_FEATURE
+
+using FeatureChain = vk::StructureChain<
+    vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features, vk::PhysicalDeviceVulkan12Features,
+    vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceVulkan14Features,
+    // EXT
+    vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, vk::PhysicalDeviceExtendedDynamicState2FeaturesEXT,
+    vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT, vk::PhysicalDeviceDescriptorHeapFeaturesEXT,
+    vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT, vk::PhysicalDeviceMeshShaderFeaturesEXT,
+    vk::PhysicalDeviceDeviceGeneratedCommandsFeaturesEXT, vk::PhysicalDeviceMemoryPriorityFeaturesEXT,
+    vk::PhysicalDeviceMemoryDecompressionFeaturesEXT, vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT,
+    vk::PhysicalDevicePresentTimingFeaturesEXT, vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT,
+    vk::PhysicalDeviceOpacityMicromapFeaturesEXT, vk::PhysicalDeviceShaderObjectFeaturesEXT,
+    // KHR
+    vk::PhysicalDeviceFragmentShadingRateFeaturesKHR, vk::PhysicalDeviceDeviceAddressCommandsFeaturesKHR,
+    vk::PhysicalDeviceAccelerationStructureFeaturesKHR, vk::PhysicalDeviceRayTracingPipelineFeaturesKHR,
+    vk::PhysicalDeviceRayQueryFeaturesKHR, vk::PhysicalDeviceRayTracingMaintenance1FeaturesKHR,
+    vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR, vk::PhysicalDeviceMaintenance7FeaturesKHR,
+    vk::PhysicalDeviceMaintenance8FeaturesKHR, vk::PhysicalDeviceMaintenance9FeaturesKHR,
+    vk::PhysicalDeviceMaintenance10FeaturesKHR, vk::PhysicalDeviceCopyMemoryIndirectFeaturesKHR,
+    vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR, vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR,
+    vk::PhysicalDeviceRobustness2FeaturesKHR, vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR,
+    vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV,
+    vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV>;
+
 using QueueFamilyChain = vk::StructureChain<vk::QueueFamilyProperties2, vk::QueueFamilyOwnershipTransferPropertiesKHR>;
 
 [[nodiscard]] bool isExtensionSupported(const std::vector<vk::ExtensionProperties>& available, std::string_view name)
@@ -76,30 +240,132 @@ using QueueFamilyChain = vk::StructureChain<vk::QueueFamilyProperties2, vk::Queu
                                { return name == extension.extensionName.data(); });
 }
 
-// Comma-separated list of unmet requirements; empty when the GPU is usable.
-// Other feature bits are still enforced by vkCreateDevice.
-[[nodiscard]] std::string missingRequirements(const vk::raii::PhysicalDevice& device)
+void appendMissingExtensions(const std::vector<vk::ExtensionProperties>& available,
+                             std::span<const char* const> extensions, std::vector<std::string_view>& missing)
 {
-    std::string missing;
-    const auto append = [&missing](std::string_view requirement)
-    { missing += std::format("{}{}", missing.empty() ? "" : ", ", requirement); };
-
-    const std::vector<vk::ExtensionProperties> available = device.enumerateDeviceExtensionProperties();
-    for (const char* extension : kRequiredDeviceExtensions) {
+    for (const char* extension : extensions) {
         if (!isExtensionSupported(available, extension)) {
-            append(extension);
+            missing.emplace_back(extension);
         }
     }
-    if (!device.getFeatures2().features.geometryShader) {
-        append("geometryShader");
+}
+
+[[nodiscard]] std::string joinNames(std::span<const std::string_view> names)
+{
+    std::string joined;
+    for (const std::string_view name : names) {
+        joined += std::format("{}{}", joined.empty() ? "" : ", ", name);
     }
-    // the descriptor heap feature struct may only be queried when its extension exists
-    if (isExtensionSupported(available, vk::EXTDescriptorHeapExtensionName) &&
-        !device.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceDescriptorHeapFeaturesEXT>()
-             .get<vk::PhysicalDeviceDescriptorHeapFeaturesEXT>()
-             .descriptorHeap) {
-        append("descriptorHeap");
+    return joined;
+}
+
+// logs every unmet requirement of an init step before failing it
+[[noreturn]] void failStep(std::string_view step, std::span<const std::string_view> missing)
+{
+    const std::string message = std::format("{} failed, missing: {}", step, joinNames(missing));
+    logError(message, "Device");
+    throw std::runtime_error(message);
+}
+
+// structs of unsupported extensions must not be in a feature query or create chain
+void unlinkUnsupportedFeatures(FeatureChain& chain, const std::vector<vk::ExtensionProperties>& available)
+{
+    if (!isExtensionSupported(available, vk::NVClusterAccelerationStructureExtensionName)) {
+        chain.unlink<vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV>();
     }
+    if (!isExtensionSupported(available, vk::NVPartitionedAccelerationStructureExtensionName)) {
+        chain.unlink<vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV>();
+    }
+}
+
+// field of bit inside its linked struct; nullptr when that struct is unlinked
+[[nodiscard]] vk::Bool32* findFeature(FeatureChain& chain, const FeatureBit& bit)
+{
+    auto* node = reinterpret_cast<vk::BaseOutStructure*>(&chain.get<vk::PhysicalDeviceFeatures2>());
+    for (; node != nullptr; node = node->pNext) {
+        if (node->sType == bit.structType) {
+            return reinterpret_cast<vk::Bool32*>(reinterpret_cast<std::byte*>(node) + bit.offset);
+        }
+    }
+    return nullptr;
+}
+
+void enableFeatures(FeatureChain& chain, std::span<const FeatureBit> bits)
+{
+    for (const FeatureBit& bit : bits) {
+        if (vk::Bool32* field = findFeature(chain, bit)) {
+            *field = vk::True;
+        }
+    }
+}
+
+void appendMissingFeatures(FeatureChain& supported, std::span<const FeatureBit> bits,
+                           std::vector<std::string_view>& missing)
+{
+    for (const FeatureBit& bit : bits) {
+        const vk::Bool32* field = findFeature(supported, bit);
+        if (field == nullptr || *field != vk::True) {
+            missing.push_back(bit.name);
+        }
+    }
+}
+
+// caller unlinks structs of absent extensions first
+void querySupportedFeatures(const vk::raii::PhysicalDevice& device, FeatureChain& supported)
+{
+    device.getDispatcher()->vkGetPhysicalDeviceFeatures2(
+        static_cast<VkPhysicalDevice>(*device),
+        reinterpret_cast<VkPhysicalDeviceFeatures2*>(&supported.get<vk::PhysicalDeviceFeatures2>()));
+}
+
+struct GiCacheSupport
+{
+    GiCache cache = GiCache::None;
+    bool hasSharc = false;
+};
+
+// NRC first, SHaRC as the fallback tier; logs what each tier is missing
+[[nodiscard]] GiCacheSupport selectGiCache(const std::vector<vk::ExtensionProperties>& available,
+                                           FeatureChain& supported)
+{
+    std::vector<std::string_view> nrcMissing;
+#if !defined(_WIN32)
+    nrcMissing.emplace_back("NRC runtime (Windows-only binaries)");
+#endif
+    appendMissingExtensions(available, kNrcDeviceExtensions, nrcMissing);
+    appendMissingFeatures(supported, kNrcFeatures, nrcMissing);
+    std::vector<std::string_view> sharcMissing;
+    appendMissingFeatures(supported, kSharcFeatures, sharcMissing);
+    const bool hasSharc = sharcMissing.empty();
+
+    if (nrcMissing.empty()) {
+        logInfo(std::format("GI cache: NRC{}", hasSharc ? " (SHaRC available alongside)" : ""), "Device");
+        return {GiCache::Nrc, hasSharc};
+    }
+    logInfo(std::format("GI cache: NRC unavailable, missing {}; falling back to SHaRC", joinNames(nrcMissing)),
+            "Device");
+    if (hasSharc) {
+        logInfo("GI cache: SHaRC", "Device");
+        return {GiCache::Sharc, true};
+    }
+    logError(std::format("GI cache disabled: SHaRC missing {}", joinNames(sharcMissing)), "Device");
+    return {};
+}
+
+// unmet extensions, then unmet features; empty when the GPU is usable
+[[nodiscard]] std::vector<std::string_view> missingRequirements(const vk::raii::PhysicalDevice& device)
+{
+    const std::vector<vk::ExtensionProperties> available = device.enumerateDeviceExtensionProperties();
+    std::vector<std::string_view> missing;
+    appendMissingExtensions(available, kRequiredDeviceExtensions, missing);
+    // feature structs of absent extensions may not be queried
+    if (!missing.empty()) {
+        return missing;
+    }
+    FeatureChain supported;
+    unlinkUnsupportedFeatures(supported, available);
+    querySupportedFeatures(device, supported);
+    appendMissingFeatures(supported, kRequiredFeatures, missing);
     return missing;
 }
 
@@ -171,13 +437,10 @@ void Device::createInstance()
     // WSI extensions required by SDL3
     Uint32 sdlExtensionCount = 0;
     const char* const* sdlExtensions = SDL_Vulkan_GetInstanceExtensions(&sdlExtensionCount);
-
-    // fail early with the missing name instead of a generic instance-creation error
-    const std::vector<vk::ExtensionProperties> extensionProperties = context.enumerateInstanceExtensionProperties();
-    for (uint32_t i = 0; i < sdlExtensionCount; ++i) {
-        if (!isExtensionSupported(extensionProperties, sdlExtensions[i])) {
-            throw std::runtime_error("Required SDL3 extension not supported: " + std::string(sdlExtensions[i]));
-        }
+    if (sdlExtensions == nullptr) {
+        const std::string message = std::format("SDL Vulkan instance extensions unavailable: {}", SDL_GetError());
+        logError(message, "Device");
+        throw std::runtime_error(message);
     }
 
     std::vector<const char*> extensions(sdlExtensions, sdlExtensions + sdlExtensionCount);
@@ -197,20 +460,23 @@ void Device::createInstance()
     }
     logInfo(std::format("Enabled instance extensions: {}", enabledNames), "Device");
 
-    // fail early on a missing layer instead of a cryptic driver error
     std::vector<char const*> requiredLayers;
     if (enableValidationLayers) {
         requiredLayers.assign(kValidationLayers.begin(), kValidationLayers.end());
     }
-    auto layerProperties = context.enumerateInstanceLayerProperties();
-    if (std::ranges::any_of(requiredLayers,
-                            [&layerProperties](auto const& requiredLayer)
-                            {
-                                return std::ranges::none_of(
-                                    layerProperties, [requiredLayer](auto const& layerProperty)
-                                    { return strcmp(layerProperty.layerName, requiredLayer) == 0; });
-                            })) {
-        throw std::runtime_error("One or more required layers are not supported!");
+
+    // every missing name up front instead of a generic instance-creation error
+    std::vector<std::string_view> missing;
+    appendMissingExtensions(context.enumerateInstanceExtensionProperties(), extensions, missing);
+    const std::vector<vk::LayerProperties> layerProperties = context.enumerateInstanceLayerProperties();
+    for (const char* layer : requiredLayers) {
+        if (std::ranges::none_of(layerProperties, [layer](const vk::LayerProperties& property)
+                                 { return strcmp(property.layerName, layer) == 0; })) {
+            missing.emplace_back(layer);
+        }
+    }
+    if (!missing.empty()) {
+        failStep("Vulkan instance creation", missing);
     }
 
 
@@ -223,7 +489,9 @@ void Device::createInstance()
     try {
         instance = vk::raii::Instance(context, createInfo);
     } catch (const vk::SystemError& err) {
-        throw std::runtime_error("Failed to create Vulkan instance: " + std::string(err.what()));
+        const std::string message = std::format("Failed to create Vulkan instance: {}", err.what());
+        logError(message, "Device");
+        throw std::runtime_error(message);
     }
 }
 
@@ -270,7 +538,9 @@ void Device::createSurface()
 {
     VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
     if (!SDL_Vulkan_CreateSurface(window, *instance, nullptr, &rawSurface)) {
-        throw std::runtime_error("Failed to create surface");
+        const std::string message = std::format("Failed to create surface: {}", SDL_GetError());
+        logError(message, "Device");
+        throw std::runtime_error(message);
     }
     surface = vk::raii::SurfaceKHR(instance, rawSurface);
 }
@@ -290,11 +560,14 @@ void Device::pickPhysicalDevice()
 
     std::optional<size_t> bestIndex;
     uint32_t bestScore = 0;
+    std::string rejections;
     for (size_t i = 0; i < devices.size(); ++i) {
         const vk::PhysicalDeviceProperties properties = devices[i].getProperties2().properties;
         const std::string_view name = properties.deviceName.data();
-        if (const std::string missing = missingRequirements(devices[i]); !missing.empty()) {
-            logInfo(std::format("Skipping GPU {}: missing {}", name, missing), "Device");
+        if (const std::vector<std::string_view> missing = missingRequirements(devices[i]); !missing.empty()) {
+            const std::string rejection = std::format("{}: missing {}", name, joinNames(missing));
+            logInfo(std::format("Skipping GPU {}", rejection), "Device");
+            rejections += std::format("\n  {}", rejection);
             continue;
         }
         // discrete first; max texture size as a rough capability tiebreak
@@ -306,7 +579,11 @@ void Device::pickPhysicalDevice()
         }
     }
     if (!bestIndex) {
-        throw std::runtime_error("No GPU supports the required Vulkan extensions and features (see log)");
+        const std::string message = devices.empty()
+            ? std::string("No Vulkan physical device found")
+            : std::format("No GPU supports the required Vulkan extensions and features:{}", rejections);
+        logError(message, "Device");
+        throw std::runtime_error(message);
     }
     physicalDevice = devices[*bestIndex];
     logInfo(std::format("Using physical device: {}",
@@ -329,7 +606,14 @@ void Device::findQueueFamilies(std::span<const vk::QueueFamilyProperties> famili
         graphicsPresent ? graphicsPresent
                         : findFamilyIf(families, [&](uint32_t family, vk::QueueFlags) { return supportsPresent(family); });
     if (!graphics || !present) {
-        throw std::runtime_error("Could not find a queue family for graphics or present");
+        std::vector<std::string_view> missing;
+        if (!graphics) {
+            missing.emplace_back("graphics queue family");
+        }
+        if (!present) {
+            missing.emplace_back("present queue family");
+        }
+        failStep("Queue family selection", missing);
     }
     graphicsIndex = *graphics;
     presentIndex = *present;
@@ -499,171 +783,34 @@ void Device::createLogicalDevice()
 
     queryCapabilities();
 
-    // fields set to true are required; device creation fails if unsupported
-    vk::StructureChain<
-        vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features, vk::PhysicalDeviceVulkan12Features,
-        vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceVulkan14Features,
-        // EXT
-        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT, vk::PhysicalDeviceExtendedDynamicState2FeaturesEXT,
-        vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT, vk::PhysicalDeviceDescriptorHeapFeaturesEXT,
-        vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT,
-        vk::PhysicalDeviceMeshShaderFeaturesEXT, vk::PhysicalDeviceDeviceGeneratedCommandsFeaturesEXT,
-        vk::PhysicalDeviceMemoryPriorityFeaturesEXT,
-        vk::PhysicalDeviceMemoryDecompressionFeaturesEXT, vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT,
-        vk::PhysicalDevicePresentTimingFeaturesEXT, vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT,
-        vk::PhysicalDeviceOpacityMicromapFeaturesEXT, vk::PhysicalDeviceShaderObjectFeaturesEXT,
-        // KHR
-        vk::PhysicalDeviceFragmentShadingRateFeaturesKHR, vk::PhysicalDeviceDeviceAddressCommandsFeaturesKHR,
-        vk::PhysicalDeviceAccelerationStructureFeaturesKHR, vk::PhysicalDeviceRayTracingPipelineFeaturesKHR,
-        vk::PhysicalDeviceRayQueryFeaturesKHR, vk::PhysicalDeviceRayTracingMaintenance1FeaturesKHR,
-        vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR,
-        vk::PhysicalDeviceMaintenance7FeaturesKHR, vk::PhysicalDeviceMaintenance8FeaturesKHR,
-        vk::PhysicalDeviceMaintenance9FeaturesKHR, vk::PhysicalDeviceMaintenance10FeaturesKHR,
-        vk::PhysicalDeviceCopyMemoryIndirectFeaturesKHR, vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR,
-        vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR, vk::PhysicalDeviceRobustness2FeaturesKHR,
-        vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR,
-        vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV,
-        vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV>
-        featureChain = {// vk::PhysicalDeviceFeatures2
-                        {.features =
-                             {
-                                 // required by robustBufferAccess2
-                                 .robustBufferAccess = true,
-                                 .geometryShader = true,
-                                 .sampleRateShading = true,
-                                 .multiDrawIndirect = true,
-                                 .samplerAnisotropy = true,
-                                 // BC7 KTX2 textures from tools/gltf_ktx2
-                                 .textureCompressionBC = true,
-                                 .shaderInt64 = true,
-                             }},
-                        // vk::PhysicalDeviceVulkan11Features
-                        {},
-                        // vk::PhysicalDeviceVulkan12Features
-                        // Designators must follow the struct field order (ISO C++).
-                        {
-                            // mesh.slang: uint8_t* meshletTriangles via PhysicalStorageBuffer
-                            .storageBuffer8BitAccess = true,
-                            .shaderInt8 = true,
-                            .descriptorIndexing = true,
-                            .shaderSampledImageArrayNonUniformIndexing = true,
-                            .shaderStorageBufferArrayNonUniformIndexing = true,
-                            .descriptorBindingPartiallyBound = true,
-                            .descriptorBindingVariableDescriptorCount = true,
-                            .runtimeDescriptorArray = true,
-                            // GpuVertex float3@0/12 packing with slang -fvk-use-scalar-layout
-                            .scalarBlockLayout = true,
-                            .bufferDeviceAddress = true,
-                            .vulkanMemoryModel = true,
-                            .vulkanMemoryModelDeviceScope = true,
-                        },
-                        // vk::PhysicalDeviceVulkan13Features
-                        {.synchronization2 = true,
-                         .textureCompressionASTC_HDR = false, // rtx 2060 super not supported
-                         .dynamicRendering = true,
-                         .maintenance4 = true},
-                        // vk::PhysicalDeviceVulkan14Features
-                        {.globalPriorityQuery = true,
-                         .dynamicRenderingLocalRead = true,
-                         .maintenance5 = true,
-                         .maintenance6 = true,
-                         .hostImageCopy = true},
-                        // vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
-                        {.extendedDynamicState = true},
-                        // vk::PhysicalDeviceExtendedDynamicState2FeaturesEXT
-                        // logicOp / patchControlPoints are not promoted and unused (mesh-only, no logic op)
-                        {.extendedDynamicState2 = true},
-                        // vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT
-                        // states set by ShaderObjects::bindMeshState
-                        {.extendedDynamicState3PolygonMode = true,
-                         .extendedDynamicState3RasterizationSamples = true,
-                         .extendedDynamicState3SampleMask = true,
-                         .extendedDynamicState3AlphaToCoverageEnable = true,
-                         .extendedDynamicState3ColorBlendEnable = true,
-                         .extendedDynamicState3ColorWriteMask = true},
-                        // vk::PhysicalDeviceDescriptorHeapFeaturesEXT (required, checked in pickPhysicalDevice)
-                        {.descriptorHeap = true},
-                        // vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT
-                        {.advancedBlendCoherentOperations = false},
-                        // vk::PhysicalDeviceMeshShaderFeaturesEXT
-                        {.taskShader = true, .meshShader = true, .meshShaderQueries = true},
-                        // vk::PhysicalDeviceDeviceGeneratedCommandsFeaturesEXT
-                        {.deviceGeneratedCommands = true},
-                        // vk::PhysicalDeviceMemoryPriorityFeaturesEXT
-                        {.memoryPriority = true},
-                        // vk::PhysicalDeviceMemoryDecompressionFeaturesEXT
-                        {.memoryDecompression = true},
-                        // vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT
-                        {.pageableDeviceLocalMemory = true},
-                        // vk::PhysicalDevicePresentTimingFeaturesEXT (extension enabled, feature not requested yet)
-                        {},
-                        // vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT
-                        {.rayTracingInvocationReorder = true},
-                        // vk::PhysicalDeviceOpacityMicromapFeaturesEXT
-                        {.micromap = true},
-                        // vk::PhysicalDeviceShaderObjectFeaturesEXT
-                        {.shaderObject = true},
-                        // vk::PhysicalDeviceFragmentShadingRateFeaturesKHR
-                        {.pipelineFragmentShadingRate = true,
-                         .primitiveFragmentShadingRate = true,
-                         .attachmentFragmentShadingRate = true},
-                        // vk::PhysicalDeviceDeviceAddressCommandsFeaturesKHR
-                        {.deviceAddressCommands = true},
-                        // vk::PhysicalDeviceAccelerationStructureFeaturesKHR
-                        {.accelerationStructure = true},
-                        // vk::PhysicalDeviceRayTracingPipelineFeaturesKHR
-                        {.rayTracingPipeline = true,
-                         .rayTracingPipelineTraceRaysIndirect = true,
-                         .rayTraversalPrimitiveCulling = true},
-                        // vk::PhysicalDeviceRayQueryFeaturesKHR
-                        {.rayQuery = true},
-                        // vk::PhysicalDeviceRayTracingMaintenance1FeaturesKHR
-                        {.rayTracingMaintenance1 = true, .rayTracingPipelineTraceRaysIndirect2 = true},
-                        // vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR
-                        {.swapchainMaintenance1 = true},
-                        // vk::PhysicalDeviceMaintenance7FeaturesKHR
-                        {.maintenance7 = true},
-                        // vk::PhysicalDeviceMaintenance8FeaturesKHR
-                        {.maintenance8 = true},
-                        // vk::PhysicalDeviceMaintenance9FeaturesKHR
-                        // Keep false while using Khronos Best Practices (VVL #12449, SDK ≤1.4.357).
-                        // BP ValidateImageInQueue does: qf_count = last_usage.queue_family_index + 1
-                        // then qf_props.back(). On first image use last_usage is still
-                        // VK_QUEUE_FAMILY_IGNORED (0xFFFFFFFF) → count wraps to 0 → empty
-                        // vector .back() writes to 0xFFFFFFFFFFFFFFE0 (sizeof(VkQueueFamilyProperties2)
-                        // element -1, pNext at +8). Submit queue family from getDeviceQueue is fine;
-                        // IGNORED is VVL's "never used" sentinel, not an app QFOT barrier mistake.
-                        // Re-enable when VVL skips IGNORED/UNDEFINED before that query.
-                        {.maintenance9 = false},
-                        // vk::PhysicalDeviceMaintenance10FeaturesKHR
-                        {.maintenance10 = true},
-                        // vk::PhysicalDeviceCopyMemoryIndirectFeaturesKHR
-                        {.indirectMemoryCopy = true, .indirectMemoryToImageCopy = true},
-                        // vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR
-                        {.presentModeFifoLatestReady = true},
-                        // vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR
-                        {.shaderUntypedPointers = true},
-                        // vk::PhysicalDeviceRobustness2FeaturesKHR
-                        {.robustBufferAccess2 = true, .robustImageAccess2 = true, .nullDescriptor = true},
-                        // vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR
-                        {.fragmentShaderBarycentric = true},
-                        // vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV
-                        {.clusterAccelerationStructure = true},
-                        // vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV
-                        {.partitionedAccelerationStructure = true}};
-    if (!capabilities.hasClusterAccelerationStructure) {
-        featureChain.unlink<vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV>();
-    }
-    if (!capabilities.hasPartitionedAccelerationStructure) {
-        featureChain.unlink<vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV>();
-    }
+    const std::vector<vk::ExtensionProperties> availableExtensions =
+        physicalDevice.enumerateDeviceExtensionProperties();
+    FeatureChain supportedFeatures;
+    unlinkUnsupportedFeatures(supportedFeatures, availableExtensions);
+    querySupportedFeatures(physicalDevice, supportedFeatures);
+    const GiCacheSupport giCacheSupport = selectGiCache(availableExtensions, supportedFeatures);
+    capabilities.giCache = giCacheSupport.cache;
 
+    // only listed bits are requested; everything else stays false
+    FeatureChain featureChain;
+    unlinkUnsupportedFeatures(featureChain, availableExtensions);
+    enableFeatures(featureChain, kRequiredFeatures);
     std::vector<const char*> enabledExtensions(kRequiredDeviceExtensions.begin(), kRequiredDeviceExtensions.end());
     if (capabilities.hasClusterAccelerationStructure) {
+        enableFeatures(featureChain, kClusterAccelerationStructureFeatures);
         enabledExtensions.push_back(vk::NVClusterAccelerationStructureExtensionName);
     }
     if (capabilities.hasPartitionedAccelerationStructure) {
+        enableFeatures(featureChain, kPartitionedAccelerationStructureFeatures);
         enabledExtensions.push_back(vk::NVPartitionedAccelerationStructureExtensionName);
+    }
+    // also under NRC, so both caches can run side by side (GI_CACHE_MODE both)
+    if (giCacheSupport.hasSharc) {
+        enableFeatures(featureChain, kSharcFeatures);
+    }
+    if (capabilities.giCache == GiCache::Nrc) {
+        enableFeatures(featureChain, kNrcFeatures);
+        enabledExtensions.insert(enabledExtensions.end(), kNrcDeviceExtensions.begin(), kNrcDeviceExtensions.end());
     }
 
     // one create info per distinct family; duplicates are a validation error.
@@ -686,7 +833,14 @@ void Device::createLogicalDevice()
                                           .enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size()),
                                           .ppEnabledExtensionNames = enabledExtensions.data()};
 
-    vkdevice = vk::raii::Device(physicalDevice, deviceCreateInfo);
+    // requirements were checked above; this only catches driver-side failures
+    try {
+        vkdevice = vk::raii::Device(physicalDevice, deviceCreateInfo);
+    } catch (const vk::SystemError& err) {
+        const std::string message = std::format("Failed to create logical device: {}", err.what());
+        logError(message, "Device");
+        throw std::runtime_error(message);
+    }
 
     setDebugName(vkdevice, instance, "Instance");
     setDebugName(vkdevice, physicalDevice, "PhysicalDevice");

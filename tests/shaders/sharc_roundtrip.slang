@@ -1,15 +1,6 @@
-// SHaRC update -> resolve -> query over BDA pointers, matching the engine binding model.
+// SHaRC update -> resolve -> query through the engine's gi/sharc.slang configuration (BDA buffers).
 // built once per pass: SHARC_UPDATE=1 (updateMain), SHARC_QUERY=1 (queryMain), neither (resolveMain)
-#ifndef SHARC_UPDATE
-#define SHARC_UPDATE 0
-#endif
-#ifndef SHARC_QUERY
-#define SHARC_QUERY 0
-#endif
-#define SHARC_ENABLE_GLSL 0
-#define SHARC_ENABLE_RESPONSIVE_LIGHTING 0
-#define RW_STRUCTURED_BUFFER(name, type) type* name
-#include "SharcCommon.h"
+#include "gi/sharc.slang"
 
 // scalar layout: must match SharcPush in tests/sharc_test.cpp
 struct SharcPush
