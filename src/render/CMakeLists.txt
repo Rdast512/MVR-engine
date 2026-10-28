@@ -3,6 +3,7 @@ set(RENDER_SOURCES
     vk_renderer.cpp
     vk_shader_objects.cpp
     vk_pbr.cpp
+    vk_postprocessing.cpp
 )
 
 add_library(engine_render SHARED ${RENDER_SOURCES})

@@ -67,7 +67,6 @@ add_subdirectory(util)
 add_subdirectory(core)
 add_subdirectory(render)
 add_subdirectory(scene)
-add_subdirectory(postprocessing)
 
 add_library(engine_runtime SHARED core/vk_engine.cpp core/vk_engine.hpp)
 target_compile_definitions(engine_runtime PRIVATE ENGINE_LOG_DLL=\"runtime\")
@@ -77,7 +76,6 @@ target_link_libraries(engine_runtime
         engine_core
         engine_render
         engine_util
-        engine_postprocessing
         engine_scene
         ThirdParty::all
 )
@@ -98,7 +96,7 @@ target_precompile_headers(engine PRIVATE ${PCH_HEADER})
 add_dependencies(engine Shaders)
 
 if (ENGINE_USE_MIMALLOC)
-    foreach (_miTarget engine_util engine_core engine_render engine_scene engine_postprocessing engine_runtime engine)
+    foreach (_miTarget engine_util engine_core engine_render engine_scene engine_runtime engine)
         target_link_libraries(${_miTarget} PRIVATE engine_mi_new_delete)
     endforeach ()
 
@@ -176,7 +174,7 @@ else()
         endif()
     endforeach()
 
-    foreach (_t engine engine_runtime engine_core engine_render engine_util engine_scene engine_postprocessing)
+    foreach (_t engine engine_runtime engine_core engine_render engine_util engine_scene)
         if (TARGET ${_t})
             set_target_properties(${_t} PROPERTIES
                 BUILD_WITH_INSTALL_RPATH TRUE
