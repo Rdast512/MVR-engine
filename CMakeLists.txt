@@ -129,6 +129,10 @@ endforeach ()
 # Compile units live in shaders/passes/ and each lists its slangc -entry names.
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/shaders)
 set(ENGINE_SLANG_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/shaders")
+set(ENGINE_SLANG_INCLUDE_ARGS -I ${ENGINE_SLANG_INCLUDE_DIR})
+foreach (_dir IN LISTS ENGINE_SLANG_THIRDPARTY_INCLUDE_DIRS)
+  list(APPEND ENGINE_SLANG_INCLUDE_ARGS -I ${_dir})
+endforeach ()
 
 if (WIN32)
   set(SLANGC_EXECUTABLE "${CMAKE_SOURCE_DIR}/ThirdParty/Slang-win/bin/slangc.exe")
@@ -205,6 +209,18 @@ set(ENGINE_SLANG_CONFIG_FLAGS
     "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:>>,-O0,-O2>"
 )
 
+# shared by engine passes and test shaders
+set(ENGINE_SLANG_FLAGS
+    -target spirv
+    -profile sm_6_9
+    -capability ${ENGINE_SLANG_CAPABILITY_STRING}
+    -matrix-layout-column-major
+    -fvk-use-entrypoint-name
+    -fvk-use-scalar-layout
+    ${ENGINE_SLANG_INCLUDE_ARGS}
+    ${ENGINE_SLANG_CONFIG_FLAGS}
+)
+
 set(COMPILED_SHADERS)
 
 function(engine_add_slang_pass rel_path)
@@ -224,7 +240,7 @@ function(engine_add_slang_pass rel_path)
     list(APPEND _entry_args -entry ${_e})
   endforeach ()
 
-  set(_depends "${_src}")
+  set(_depends "${_src}" ${ENGINE_SLANG_THIRDPARTY_HEADERS})
   foreach (_d IN LISTS ARG_DEPENDS)
     list(APPEND _depends "${ENGINE_SLANG_INCLUDE_DIR}/${_d}")
   endforeach ()
@@ -234,14 +250,7 @@ function(engine_add_slang_pass rel_path)
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_out_dir}
       COMMAND ${SLANGC_EXECUTABLE}
       ${_src}
-      -target spirv
-      -profile sm_6_9
-      -capability ${ENGINE_SLANG_CAPABILITY_STRING}
-      -matrix-layout-column-major
-      -fvk-use-entrypoint-name
-      -fvk-use-scalar-layout
-      -I ${ENGINE_SLANG_INCLUDE_DIR}
-      ${ENGINE_SLANG_CONFIG_FLAGS}
+      ${ENGINE_SLANG_FLAGS}
       ${_entry_args}
       -o ${_spv}
       DEPENDS ${_depends}
@@ -270,3 +279,6 @@ file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/textures" ENGINE_TEXTURES_DIR_PATH)
 
 add_subdirectory(src)
 add_subdirectory(tools)
+
+enable_testing()
+add_subdirectory(tests)

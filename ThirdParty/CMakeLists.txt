@@ -373,11 +373,6 @@ endif ()
 set_target_properties(Rtxdi PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(ThirdParty::rtxdi ALIAS Rtxdi)
 
-# --- SHaRC (shader headers; slang -I via INTERFACE_INCLUDE_DIRECTORIES) ---
-add_library(sharc INTERFACE)
-target_include_directories(sharc INTERFACE "${sharc_SOURCE_DIR}/include")
-add_library(ThirdParty::sharc ALIAS sharc)
-
 # --- OMM: CPU baker only ---
 # xxHash's min version predates CMP0077; without NEW its option() ignores the overrides below
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
@@ -422,12 +417,31 @@ set_target_properties(omm-lib PROPERTIES
 )
 add_library(ThirdParty::omm ALIAS omm-lib)
 
-# --- NRC: headers only. Bin/Lib export MSVC-mangled C++; the windows-gnu/libc++ toolchain cannot link them ---
+# --- NRC: Lib exports MSVC-mangled C++ the windows-gnu/libc++ toolchain cannot link ---
+# NrcLibrary binds NRC_Vulkan.dll at runtime instead
 if (WIN32)
         add_library(nrc INTERFACE)
-        target_include_directories(nrc INTERFACE "${nrc_SOURCE_DIR}/Include")
+        target_include_directories(nrc SYSTEM INTERFACE "${nrc_SOURCE_DIR}/Include")
         add_library(ThirdParty::nrc ALIAS nrc)
+        # nvrtc is delay-loaded and cudart loaded by name: both must sit next to the exe
+        file(GLOB _nrcDlls "${nrc_SOURCE_DIR}/Bin/x64/*.dll")
+        list(FILTER _nrcDlls EXCLUDE REGEX "NRC_D3D12\\.dll$")
+        set(ENGINE_NRC_RUNTIME_DLLS ${_nrcDlls} PARENT_SCOPE)
 endif ()
+
+# --- Shader-side headers (HLSL, slangc only) ---
+set(_slangIncludeDirs "${sharc_SOURCE_DIR}/include" "${rtxdi_SOURCE_DIR}/Include")
+if (WIN32)
+        list(APPEND _slangIncludeDirs "${nrc_SOURCE_DIR}/Include")
+endif ()
+set(_slangHeaders)
+foreach (_dir IN LISTS _slangIncludeDirs)
+        file(GLOB_RECURSE _dirHeaders "${_dir}/*.h" "${_dir}/*.hlsli")
+        list(APPEND _slangHeaders ${_dirHeaders})
+endforeach ()
+set(ENGINE_SLANG_THIRDPARTY_INCLUDE_DIRS ${_slangIncludeDirs} PARENT_SCOPE)
+# configure-time glob: a GIT_TAG bump reconfigures anyway
+set(ENGINE_SLANG_THIRDPARTY_HEADERS ${_slangHeaders} PARENT_SCOPE)
 
 # ------------------------------------------------------------------------------
 set(IMGUI_SOURCES
