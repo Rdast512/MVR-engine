@@ -139,7 +139,12 @@ public:
     void flushGpuAssets();
     [[nodiscard]] std::optional<ModelId> findModel(std::string_view key) const;
     // new entity drawing an uploaded model; nothing is loaded or uploaded except its light rows
-    EntityId instantiateModel(ModelId modelId, const Transform& transform);
+    EntityId instantiateModel(ModelId modelId, const Transform& transform)
+    {
+        return instantiateModel(modelId, std::span(&transform, 1));
+    }
+    // one entity per transform with a single layout rebuild; returns the first id, the rest follow it
+    EntityId instantiateModel(ModelId modelId, std::span<const Transform> transforms);
     // erases the entity; its model goes with its last entity (compaction, material release).
     // returns the texture references the caller must drop (TextureManager::release). GPU must be idle.
     [[nodiscard]] std::vector<uint32_t> eraseEntity(EntityId id);

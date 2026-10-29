@@ -20,4 +20,7 @@ constexpr uint32_t HEIGHT = 600;
 #define ENGINE_ENABLE_IMGUI 1
 
 inline const std::filesystem::path MODEL_PATH = std::filesystem::path(ENGINE_MODELS_DIR) / "Sponza";
+// many-instance test scene for the culling tiers
+inline const std::filesystem::path INSTANCE_FIELD_MODEL_PATH =
+    std::filesystem::path(ENGINE_MODELS_DIR) / "rabbit" / "bunny.glb";
 inline const std::filesystem::path TEXTURE_PATH = std::filesystem::path(ENGINE_MODELS_DIR) / "room" / "viking_room.png";

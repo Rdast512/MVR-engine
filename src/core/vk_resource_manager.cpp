@@ -1097,21 +1097,25 @@ void ResourceManager::uploadLights()
     assetBuffers[std::to_underlying(AssetBuffer::Lights)].usedBytes = bytes.size_bytes();
 }
 
-EntityId ResourceManager::instantiateModel(ModelId modelId, const Transform& transform)
+EntityId ResourceManager::instantiateModel(ModelId modelId, std::span<const Transform> transforms)
 {
     ZoneScopedN("ResourceManager::instantiateModel");
     const ModelAllocation& model = modelAllocations.at(modelId);
-    const EntityId entity = objectStorage.create(transform, model.meshletDraw, model.primitives.first,
-                                                 model.primitives.count, model.key);
-    attachEntity(entity, modelId);
-    materialStore.noteReuse(model.materialRefs);
+    const auto first = static_cast<EntityId>(objectStorage.size());
+    for (const Transform& transform : transforms) {
+        const EntityId entity = objectStorage.create(transform, model.meshletDraw, model.primitives.first,
+                                                     model.primitives.count, model.key);
+        attachEntity(entity, modelId);
+        materialStore.noteReuse(model.materialRefs);
+    }
     uploadLights();
     rebuildNodeInstanceLayout();
-    logInfo(std::format("instance entity {} of model {} '{}': {} entities share {} on GPU", entity, modelId, model.key,
-                         modelAllocations[modelId].refCount, formatBytes(modelGpuBytes(modelId))),
+    logInfo(std::format("instance entities [{}, {}) of model {} '{}': {} entities share {} on GPU", first,
+                         first + transforms.size(), modelId, model.key, model.refCount,
+                         formatBytes(modelGpuBytes(modelId))),
              "ResourceManager");
     tracyPlotResources();
-    return entity;
+    return first;
 }
 
 std::vector<uint32_t> ResourceManager::eraseEntity(EntityId id)

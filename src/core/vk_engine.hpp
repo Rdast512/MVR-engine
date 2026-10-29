@@ -58,6 +58,12 @@ class Engine
     // UI actions run after the ImGui frame so no panel iterates storage that changes under it
     bool hasPendingLoad = false;
     std::optional<EntityId> pendingUnload;
+    // instance field: side x side grid of INSTANCE_FIELD_MODEL_PATH centered on loadedModelPosition
+    int instanceFieldSide = 16;
+    // cell size in model bounding diameters
+    float instanceFieldSpacing = 1.5f;
+    bool hasPendingInstanceField = false;
+    bool hasPendingInstanceFieldClear = false;
     void createImGuiDescriptorPool();
     // stops ImGui from reading the mouse / changing the cursor while the game has focus
     void setImGuiInputEnabled(bool enabled);
@@ -68,9 +74,14 @@ class Engine
     void drawAssetsPanel() const;
     void drawDebugViewPanel();
     void drawCullingPanel();
+    void drawInstanceFieldPanel();
     void applyPendingModelActions();
     void loadSelectedModel();
     void unloadModel(EntityId id);
+    // loads the field model once, then instantiates the rest of the grid in one batch
+    void spawnInstanceField();
+    // erases every entity of the field model
+    void clearInstanceField();
     // waits idle, rebuilds swapchain-sized resources and the ImGui image count
     void recreateSwapchain();
 

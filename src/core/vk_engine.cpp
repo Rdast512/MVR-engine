@@ -13,8 +13,10 @@
 #include <cmath>
 #include <filesystem>
 #include <format>
+#include <numbers>
 #include <numeric>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -524,6 +526,7 @@ void Engine::drawImGui()
             drawAssetsPanel();
             drawDebugViewPanel();
             drawCullingPanel();
+            drawInstanceFieldPanel();
         }
         ImGui::End();
     }
@@ -649,36 +652,42 @@ void Engine::drawLoadedModelsPanel()
     ImGui::TableSetupColumn("##unload");
     ImGui::TableHeadersRow();
 
-    for (EntityId id = 0; id < storage.size(); ++id) {
-        ImGui::PushID(static_cast<int>(id));
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(std::filesystem::path(storage.names[id]).filename().string().c_str());
-        ImGui::SetItemTooltip("%s", storage.names[id].c_str());
-        const ModelId modelId = storage.modelIds[id];
-        const bool hasModel = modelId < resourceManager->modelAllocations.size();
-        const ModelAllocation* model = hasModel ? &resourceManager->modelAllocations[modelId] : nullptr;
-        ImGui::TableNextColumn();
-        ImGui::Text("%u", model != nullptr ? model->nodes.count : 0);
-        ImGui::SetItemTooltip("mesh placements; prims and meshlets are stored once per mesh");
-        ImGui::TableNextColumn();
-        ImGui::Text("%u", storage.primitiveCounts[id]);
-        ImGui::TableNextColumn();
-        ImGui::Text("%u", storage.meshletDraws[id].meshletCount);
-        ImGui::TableNextColumn();
-        ImGui::Text("%zu", model != nullptr ? model->textureRefs.size() : 0);
-        ImGui::TableNextColumn();
-        if (model != nullptr && model->refCount > 1) {
-            ImGui::Text("%.1f MiB x%u", toMiB(resourceManager->modelGpuBytes(modelId)), model->refCount);
-            ImGui::SetItemTooltip("geometry shared by %u entities loaded from the same file", model->refCount);
-        } else {
-            ImGui::Text("%.1f MiB", toMiB(hasModel ? resourceManager->modelGpuBytes(modelId) : 0));
+    // instance fields reach thousands of rows; only the visible ones are built
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(storage.size()));
+    while (clipper.Step()) {
+        for (auto id = static_cast<EntityId>(clipper.DisplayStart); id < static_cast<EntityId>(clipper.DisplayEnd);
+             ++id) {
+            ImGui::PushID(static_cast<int>(id));
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(std::filesystem::path(storage.names[id]).filename().string().c_str());
+            ImGui::SetItemTooltip("%s", storage.names[id].c_str());
+            const ModelId modelId = storage.modelIds[id];
+            const bool hasModel = modelId < resourceManager->modelAllocations.size();
+            const ModelAllocation* model = hasModel ? &resourceManager->modelAllocations[modelId] : nullptr;
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", model != nullptr ? model->nodes.count : 0);
+            ImGui::SetItemTooltip("mesh placements; prims and meshlets are stored once per mesh");
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", storage.primitiveCounts[id]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", storage.meshletDraws[id].meshletCount);
+            ImGui::TableNextColumn();
+            ImGui::Text("%zu", model != nullptr ? model->textureRefs.size() : 0);
+            ImGui::TableNextColumn();
+            if (model != nullptr && model->refCount > 1) {
+                ImGui::Text("%.1f MiB x%u", toMiB(resourceManager->modelGpuBytes(modelId)), model->refCount);
+                ImGui::SetItemTooltip("geometry shared by %u entities loaded from the same file", model->refCount);
+            } else {
+                ImGui::Text("%.1f MiB", toMiB(hasModel ? resourceManager->modelGpuBytes(modelId) : 0));
+            }
+            ImGui::TableNextColumn();
+            if (ImGui::SmallButton("Unload")) {
+                pendingUnload = id;
+            }
+            ImGui::PopID();
         }
-        ImGui::TableNextColumn();
-        if (ImGui::SmallButton("Unload")) {
-            pendingUnload = id;
-        }
-        ImGui::PopID();
     }
     ImGui::EndTable();
 #endif
@@ -827,6 +836,29 @@ void Engine::drawCullingPanel()
         ImGui::PlotLines(std::format("##gpuTimer{}", i).c_str(), samples.data(), static_cast<int>(samples.size()),
                          timer.historyOffset(), overlay.c_str(), 0.0f, FLT_MAX, {-FLT_MIN, kPlotHeight});
     }
+#endif
+}
+
+void Engine::drawInstanceFieldPanel()
+{
+#if ENGINE_ENABLE_IMGUI
+    if (!ImGui::CollapsingHeader("Instance field")) {
+        return;
+    }
+    constexpr int kMaxSide = 64;
+    ImGui::SliderInt("Grid side", &instanceFieldSide, 1, kMaxSide);
+    ImGui::SliderFloat("Spacing", &instanceFieldSpacing, 0.5f, 4.0f, "%.2f x diameter");
+    if (ImGui::Button("Spawn")) {
+        hasPendingInstanceField = true;
+    }
+    ImGui::SetItemTooltip("%s grid centered on the load Position; every instance shares one GPU model",
+                          INSTANCE_FIELD_MODEL_PATH.filename().string().c_str());
+    ImGui::SameLine();
+    if (ImGui::Button("Clear")) {
+        hasPendingInstanceFieldClear = true;
+    }
+    ImGui::SameLine();
+    ImGui::Text("%d instances", instanceFieldSide * instanceFieldSide);
 #endif
 }
 
@@ -1004,6 +1036,12 @@ void Engine::applyPendingModelActions()
     if (std::exchange(hasPendingLoad, false)) {
         loadSelectedModel();
     }
+    if (std::exchange(hasPendingInstanceFieldClear, false)) {
+        clearInstanceField();
+    }
+    if (std::exchange(hasPendingInstanceField, false)) {
+        spawnInstanceField();
+    }
 }
 
 void Engine::scanFolder()
@@ -1130,6 +1168,90 @@ void Engine::loadSelectedModel()
     resourceManager->ensureInstanceCapacity(scene->objectStorage.size());
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     loadStatus = std::format("Loaded {} in {:.2f} s", name, seconds);
+    isLoadStatusError = false;
+}
+
+void Engine::spawnInstanceField()
+{
+    ZoneScopedN("Engine::spawnInstanceField");
+    const auto start = std::chrono::steady_clock::now();
+    const std::optional<std::filesystem::path> modelFile = AssetsLoader::resolveModelPath(INSTANCE_FIELD_MODEL_PATH);
+    if (!modelFile) {
+        loadStatus = std::format("No instance field model at {}", INSTANCE_FIELD_MODEL_PATH.string());
+        isLoadStatusError = true;
+        return;
+    }
+    // frames in flight still read the node-instance buffers the layout rebuild replaces
+    device->vkdevice.waitIdle();
+    const glm::vec3 center = glm::make_vec3(&loadedModelPosition[0]);
+    std::optional<ModelId> model = resourceManager->findModel(modelFile->string());
+    std::optional<EntityId> loaded;
+    if (!model) {
+        try {
+            loaded = assetsLoader->loadModel(modelFile->string(), center);
+        } catch (const std::exception& error) {
+            logError(std::format("Instance field load failed: {}", error.what()), "Engine");
+        }
+        resourceManager->flushGpuAssets();
+        if (!loaded) {
+            loadStatus = std::format("Failed to load {}", modelFile->filename().string());
+            isLoadStatusError = true;
+            return;
+        }
+        model = scene->objectStorage.modelIds[*loaded];
+    }
+
+    const auto side = static_cast<uint32_t>(instanceFieldSide);
+    const float spacing = instanceFieldSpacing * 2.0f * resourceManager->modelAllocations[*model].localBounds.w;
+    const float half = 0.5f * static_cast<float>(side - 1);
+    std::vector<Transform> transforms;
+    transforms.reserve(side * side);
+    for (uint32_t z = 0; z < side; ++z) {
+        for (uint32_t x = 0; x < side; ++x) {
+            // golden-ratio yaw sequence: evenly spread facings for the cone test
+            const float turns = std::fmod(static_cast<float>(transforms.size()) * std::numbers::phi_v<float>, 1.0f);
+            const glm::vec3 offset{(static_cast<float>(x) - half) * spacing, 0.0f,
+                                   (static_cast<float>(z) - half) * spacing};
+            transforms.push_back(Transform{.position = center + offset,
+                                           .rotation = {0.0f, turns * 2.0f * std::numbers::pi_v<float>, 0.0f}});
+        }
+    }
+    // a fresh load already created one entity: it takes the first cell
+    std::span<const Transform> remaining = transforms;
+    if (loaded) {
+        scene->objectStorage.transforms[*loaded] = transforms.front();
+        remaining = remaining.subspan(1);
+    }
+    if (!remaining.empty()) {
+        resourceManager->instantiateModel(*model, remaining);
+    }
+    resourceManager->ensureInstanceCapacity(scene->objectStorage.size());
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    loadStatus = std::format("Spawned {} x {} in {:.3f} s", transforms.size(), modelFile->filename().string(), seconds);
+    isLoadStatusError = false;
+}
+
+void Engine::clearInstanceField()
+{
+    ZoneScopedN("Engine::clearInstanceField");
+    const std::optional<std::filesystem::path> modelFile = AssetsLoader::resolveModelPath(INSTANCE_FIELD_MODEL_PATH);
+    const std::optional<ModelId> model = modelFile ? resourceManager->findModel(modelFile->string()) : std::nullopt;
+    if (!model) {
+        return;
+    }
+    device->vkdevice.waitIdle();
+    ObjectStorage& storage = scene->objectStorage;
+    // the last erase drops the model and shifts later model ids onto it, so stop by count
+    const uint32_t count = resourceManager->modelAllocations[*model].refCount;
+    uint32_t erased = 0;
+    // from the back: an erase shifts only the ids after it
+    for (EntityId id = storage.size(); id-- > 0 && erased < count;) {
+        if (storage.modelIds[id] == *model) {
+            textureManager->release(resourceManager->eraseEntity(id));
+            ++erased;
+        }
+    }
+    loadStatus = std::format("Cleared {} instances", erased);
     isLoadStatusError = false;
 }
 
