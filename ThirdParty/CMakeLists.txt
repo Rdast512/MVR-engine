@@ -429,6 +429,61 @@ if (WIN32)
         set(ENGINE_NRC_RUNTIME_DLLS ${_nrcDlls} PARENT_SCOPE)
 endif ()
 
+# --- DLSS SDK (NGX): SR, RR (dlssd), FG (dlssg) ---
+# repo carries every platform's binaries (>1 GB); only Windows x64 files are fetched.
+# commit-pinned raw URLs are immutable, so no per-file hash
+if (WIN32)
+        set(DLSS_COMMIT 9981c6350dc58c0ce21f024fd65e31e851c31689) # v310.9.16
+        set(DLSS_DIR "${ENGINE_TP_SRC}/dlss/${DLSS_COMMIT}")
+        set(_dlssLib "lib/Windows_x86_64/x64/nvsdk_ngx_d.lib")
+        set(_dlssRuntimeDlls
+                lib/Windows_x86_64/rel/nvngx_dlss.dll
+                lib/Windows_x86_64/rel/nvngx_dlssd.dll
+                lib/Windows_x86_64/rel/nvngx_dlssg.dll
+        )
+        set(_dlssFiles ${_dlssLib} ${_dlssRuntimeDlls})
+        foreach (_header
+                nvsdk_ngx.h nvsdk_ngx_defs.h nvsdk_ngx_defs_vk.h nvsdk_ngx_defs_dlssd.h nvsdk_ngx_defs_dlssg.h
+                nvsdk_ngx_loader.h nvsdk_ngx_params.h nvsdk_ngx_params_dlssd.h nvsdk_ngx_params_dlssg.h
+                nvsdk_ngx_vk.h nvsdk_ngx_helpers_vk.h nvsdk_ngx_helpers_dlssd_vk.h nvsdk_ngx_helpers_dlssg_vk.h)
+                list(APPEND _dlssFiles "include/${_header}")
+        endforeach ()
+
+        foreach (_file IN LISTS _dlssFiles)
+                set(_dest "${DLSS_DIR}/${_file}")
+                if (EXISTS "${_dest}")
+                        continue()
+                endif ()
+                message(STATUS "Downloading DLSS ${_file}")
+                # .part + rename: an interrupted download must not pass the EXISTS check
+                file(DOWNLOAD "https://raw.githubusercontent.com/NVIDIA/DLSS/${DLSS_COMMIT}/${_file}" "${_dest}.part"
+                        STATUS _dlssStatus)
+                list(GET _dlssStatus 0 _dlssError)
+                if (NOT _dlssError EQUAL 0)
+                        list(GET _dlssStatus 1 _dlssMessage)
+                        file(REMOVE "${_dest}.part")
+                        message(FATAL_ERROR "Failed to download DLSS ${_file}: ${_dlssMessage}")
+                endif ()
+                file(RENAME "${_dest}.part" "${_dest}")
+        endforeach ()
+
+        # nvsdk_ngx_d.lib is MSVC /MD code: the shim supplies the static MSVC CRT pieces,
+        # vcruntime140.dll the C++ EH, UCRT the rest. msvcprt/OLDNAMES have no mingw equivalent
+        add_library(ngx_msvc_shim STATIC ngx_msvc_shim.cpp)
+        set_target_properties(ngx_msvc_shim PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        add_library(ngx INTERFACE)
+        target_include_directories(ngx SYSTEM INTERFACE "${DLSS_DIR}/include")
+        target_link_libraries(ngx INTERFACE "${DLSS_DIR}/${_dlssLib}" ngx_msvc_shim vcruntime140)
+        target_link_options(ngx INTERFACE
+                "LINKER:-Xlink=-nodefaultlib:msvcprt"
+                "LINKER:-Xlink=-nodefaultlib:OLDNAMES"
+        )
+        add_library(ThirdParty::ngx ALIAS ngx)
+        # NGX loads feature dlls from the application directory
+        list(TRANSFORM _dlssRuntimeDlls PREPEND "${DLSS_DIR}/")
+        set(ENGINE_DLSS_RUNTIME_DLLS ${_dlssRuntimeDlls} PARENT_SCOPE)
+endif ()
+
 # --- Shader-side headers (HLSL, slangc only) ---
 set(_slangIncludeDirs "${sharc_SOURCE_DIR}/include" "${rtxdi_SOURCE_DIR}/Include")
 if (WIN32)

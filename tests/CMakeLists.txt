@@ -39,4 +39,13 @@ if (WIN32)
     endif ()
     add_test(NAME nrc_library COMMAND nrc_library_test)
     set_tests_properties(nrc_library PROPERTIES SKIP_RETURN_CODE 77)
+
+    # --- DLSS: MSVC-built NGX lib linked through ngx_msvc_shim ---
+    add_executable(dlss_test dlss_test.cpp)
+    target_link_libraries(dlss_test PRIVATE ThirdParty::ngx engine_test_support)
+    add_custom_command(TARGET dlss_test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${ENGINE_DLSS_RUNTIME_DLLS} $<TARGET_FILE_DIR:dlss_test>
+        COMMENT "Copying DLSS feature DLLs...")
+    add_test(NAME dlss COMMAND dlss_test)
+    set_tests_properties(dlss PROPERTIES SKIP_RETURN_CODE 77)
 endif ()
