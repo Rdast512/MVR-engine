@@ -36,11 +36,18 @@ struct alignas(16) GpuMeshletDesc
 {
     uint32_t vertexOffset = 0; // into meshletVertices
     uint32_t triangleOffset = 0; // into meshletTriangles (first corner index)
-    uint32_t vertexCount = 0;
-    uint32_t triangleCount = 0;
+    uint8_t vertexCount = 0;   // <= 64
+    uint8_t triangleCount = 0; // <= 126
+    uint8_t pad0 = 0;
+    uint8_t pad1 = 0;
+    // normal cone in object space, snorm8 (x / 127); cutoff 127 never culls
+    std::array<int8_t, 3> coneAxis{};
+    int8_t coneCutoff = 127;
     glm::vec4 boundingSphere{0.0f}; // xyz = center, w = radius (object space)
 };
-static_assert(sizeof(GpuMeshletDesc) == 32, "GpuMeshletDesc must match mesh.slang (4x uint + float4, 32 B)");
+static_assert(sizeof(GpuMeshletDesc) == 32, "GpuMeshletDesc must match types.slang (32 B)");
+static_assert(offsetof(GpuMeshletDesc, coneAxis) == 12);
+static_assert(offsetof(GpuMeshletDesc, boundingSphere) == 16);
 
 // Per-entity range into the global meshlet arrays.
 struct MeshletDraw
@@ -196,15 +203,82 @@ struct GpuNodeInstance
 static_assert(sizeof(GpuNodeInstance) == 160);
 static_assert(offsetof(GpuNodeInstance, entityIndex) == 144);
 
-// one draw: a meshlet batch of one primitive placed by one node instance; written by DGC fill, later by culling
+// raster state a meshlet draws with; one DGC execute per group
+enum class MeshStateGroup : uint32_t
+{
+    SingleSided = 0,
+    // cull mode none, no cone culling
+    DoubleSided,
+    Count,
+};
+inline constexpr uint32_t kMeshStateGroupCount = std::to_underlying(MeshStateGroup::Count);
+
+// meshlets per cull workgroup and per GpuDrawRecord; the visible list packs the lane in kCullLaneBits
+inline constexpr uint32_t kCullGroupSize = 64;
+inline constexpr uint32_t kCullLaneBits = 6;
+static_assert(kCullGroupSize == 1u << kCullLaneBits);
+
+namespace DrawRecordFlag
+{
+    // MeshStateGroup in the low bits
+    inline constexpr uint32_t StateGroupMask = 0x3u;
+    // deformed positions (morph targets) leave the meshlet bounds
+    inline constexpr uint32_t SkipCulling = 1u << 2;
+} // namespace DrawRecordFlag
+static_assert(kMeshStateGroupCount - 1 <= DrawRecordFlag::StateGroupMask);
+
+// one cull work item: up to kCullGroupSize meshlets of one primitive placed by one node instance
 struct GpuDrawRecord
 {
     uint32_t nodeInstanceIndex = 0;
     uint32_t primitiveIndex = 0; // absolute row of GpuFrameRoot.primitives
     uint32_t meshletOffset = 0;  // first meshlet of the batch, relative to the primitive
-    uint32_t pad0 = 0;
+    uint32_t flags = 0;          // DrawRecordFlag
 };
 static_assert(sizeof(GpuDrawRecord) == 16);
+
+namespace CullFlag
+{
+    inline constexpr uint32_t Frustum = 1u << 0;
+    // normal cone backface test, single-sided group only
+    inline constexpr uint32_t Cone = 1u << 1;
+    inline constexpr uint32_t Stats = 1u << 2;
+} // namespace CullFlag
+
+// per frame slot, host-written: what the cull pass tests against and where it writes
+struct GpuCullView
+{
+    // world space, inside when dot(xyz, p) + w >= 0: left, right, bottom, top, near, far
+    std::array<glm::vec4, 6> frustumPlanes{};
+    glm::vec3 cameraPos{0.0f};
+    uint32_t flags = 0; // CullFlag
+    // uint[]: (draw record << kCullLaneBits) | lane, one region per MeshStateGroup
+    vk::DeviceAddress visibleMeshlets = 0;
+    vk::DeviceAddress counters = 0;  // GpuCullCounters
+    vk::DeviceAddress sequences = 0; // MeshDgcSequence[], one region per MeshStateGroup
+    uint32_t drawRecordCount = 0;
+    uint32_t maxMeshletsPerSequence = 0;
+    std::array<uint32_t, kMeshStateGroupCount> groupVisibleOffset{};
+    std::array<uint32_t, kMeshStateGroupCount> groupSequenceOffset{};
+};
+static_assert(sizeof(GpuCullView) == 160);
+static_assert(offsetof(GpuCullView, visibleMeshlets) == 112);
+static_assert(offsetof(GpuCullView, groupVisibleOffset) == 144);
+
+// per frame slot, zeroed before the cull pass
+struct GpuCullCounters
+{
+    std::array<uint32_t, kMeshStateGroupCount> visibleMeshlets{};
+    // DGC sequenceCountAddress of each group's execute
+    std::array<uint32_t, kMeshStateGroupCount> sequenceCount{};
+    // CullFlag::Stats only
+    uint32_t testedMeshlets = 0;
+    uint32_t frustumCulled = 0;
+    uint32_t coneCulled = 0;
+    uint32_t unculledMeshlets = 0;
+};
+static_assert(sizeof(GpuCullCounters) == 32);
+static_assert(offsetof(GpuCullCounters, sequenceCount) == 8);
 
 // CPU authoring form of KHR PBR-next + texture-transform; uploaded packed as GpuMaterialExtension
 struct MaterialUvTransform
@@ -552,8 +626,10 @@ struct GpuFrameRoot
     vk::DeviceAddress tlas = 0;
     // GpuNodeInstance[nodeInstanceCount] of this frame slot
     vk::DeviceAddress nodeInstances = 0;
-    // GpuDrawRecord[drawRecordCount] of this frame slot; MeshPushData::drawIndex indexes it
+    // GpuDrawRecord[drawRecordCount] of this frame slot
     vk::DeviceAddress drawRecords = 0;
+    // GpuCullView::visibleMeshlets of this frame slot; MeshPushData::firstVisible indexes it
+    vk::DeviceAddress visibleMeshlets = 0;
     uint32_t lightCount = 0;
     uint32_t instanceCount = 0;
     uint32_t primitiveCount = 0;
@@ -562,8 +638,8 @@ struct GpuFrameRoot
     // DebugViewSettings::packed()
     uint32_t debugView = 0;
 };
-static_assert(sizeof(GpuFrameRoot) == 104);
-static_assert(offsetof(GpuFrameRoot, lightCount) == 80);
+static_assert(sizeof(GpuFrameRoot) == 112);
+static_assert(offsetof(GpuFrameRoot, lightCount) == 88);
 
 
 struct EngineSettings

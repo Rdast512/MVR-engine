@@ -8,8 +8,8 @@
 // one DGC sequence: everything else is reached through the frame root
 struct MeshPushData {
     vk::DeviceAddress frameRoot;
-    // row of GpuFrameRoot::drawRecords: node instance, primitive, meshlet offset
-    uint32_t drawIndex;
+    // row of GpuFrameRoot::visibleMeshlets drawn by mesh workgroup 0
+    uint32_t firstVisible;
     // groups in this batch
     uint32_t meshletCount;
 };
@@ -17,6 +17,29 @@ struct MeshPushData {
 // MeshPushData must match shaders/types.slang MeshPushData (16 bytes).
 static_assert(std::is_trivially_copyable_v<MeshPushData>);
 static_assert(offsetof(MeshPushData, frameRoot) == 0);
-static_assert(offsetof(MeshPushData, drawIndex) == 8);
+static_assert(offsetof(MeshPushData, firstVisible) == 8);
 static_assert(offsetof(MeshPushData, meshletCount) == 12);
 static_assert(sizeof(MeshPushData) == 16);
+
+// written by buildMeshSequences (shaders/types.slang MeshDgcSequence); packed size is 28, the 32 B stride keeps
+// the frame root BDA in pushData 8-byte aligned for every sequence
+struct alignas(16) MeshDgcSequence
+{
+    MeshPushData pushData;
+    vk::DrawMeshTasksIndirectCommandEXT draw;
+};
+
+static_assert(std::is_trivially_copyable_v<MeshDgcSequence>);
+static_assert(offsetof(MeshDgcSequence, pushData) == 0);
+static_assert(offsetof(MeshDgcSequence, draw) == sizeof(MeshPushData));
+static_assert(sizeof(MeshDgcSequence) == 32);
+
+// meshlet cull dispatches; must match shaders/types.slang CullPushData
+struct CullPushData {
+    vk::DeviceAddress frameRoot;
+    // GpuCullView of the frame slot
+    vk::DeviceAddress cullView;
+};
+
+static_assert(std::is_trivially_copyable_v<CullPushData>);
+static_assert(sizeof(CullPushData) == 16);

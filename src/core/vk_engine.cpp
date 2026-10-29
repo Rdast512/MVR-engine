@@ -13,6 +13,7 @@
 #include <cmath>
 #include <filesystem>
 #include <format>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <utility>
@@ -522,6 +523,7 @@ void Engine::drawImGui()
             drawLoadedModelsPanel();
             drawAssetsPanel();
             drawDebugViewPanel();
+            drawCullingPanel();
         }
         ImGui::End();
     }
@@ -724,6 +726,93 @@ void Engine::drawDebugViewPanel()
     case DebugViewCategory::Lighting:
     case DebugViewCategory::Upscaling:
         break;
+    }
+#endif
+}
+
+void Engine::drawCullingPanel()
+{
+#if ENGINE_ENABLE_IMGUI
+    if (!ImGui::CollapsingHeader("Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    MeshletCulling& culling = renderer->getCulling();
+    MeshletCullSettings& settings = culling.settings;
+
+    ImGui::Checkbox("Frustum", &settings.isFrustumEnabled);
+    ImGui::SameLine();
+    ImGui::Checkbox("Normal cone", &settings.isConeEnabled);
+    ImGui::SetItemTooltip("meshlet backface test; double-sided materials skip it");
+    ImGui::SameLine();
+    ImGui::Checkbox("Counters", &settings.isStatsEnabled);
+    ImGui::SetItemTooltip("per-test counters cost a few wave atomics per meshlet group");
+    ImGui::Checkbox("Freeze culling camera", &settings.isCameraFrozen);
+    ImGui::SetItemTooltip("cull against the view at the moment of freezing; fly out to inspect the result");
+
+    int perSequence = static_cast<int>(settings.maxMeshletsPerSequence);
+    constexpr int kPerSequenceStep = 16;
+    constexpr int kPerSequenceFastStep = 256;
+    if (ImGui::InputInt("Meshlets / sequence", &perSequence, kPerSequenceStep, kPerSequenceFastStep)) {
+        settings.maxMeshletsPerSequence = static_cast<uint32_t>(std::max(perSequence, 0));
+    }
+    ImGui::SetItemTooltip("0 = device limit. Small values force many DGC sequences per execute "
+                          "(driver 616.92 dropped sequences past 96 in one execute)");
+
+    const MeshletCullStats& stats = culling.getStats();
+    const auto percent = [&](uint32_t value) {
+        return stats.totalMeshlets == 0 ? 0.0f : 100.0f * static_cast<float>(value) / static_cast<float>(stats.totalMeshlets);
+    };
+    const uint32_t visible = std::reduce(stats.visibleMeshlets.begin(), stats.visibleMeshlets.end(), 0u);
+
+    constexpr ImGuiTableFlags kTableFlags =
+        ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("##cullStats", 3, kTableFlags)) {
+        ImGui::TableSetupColumn("Meshlets");
+        ImGui::TableSetupColumn("Count");
+        ImGui::TableSetupColumn("%");
+        ImGui::TableHeadersRow();
+        const auto row = [&](const char* label, uint32_t value, bool hasPercent) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(label);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", value);
+            ImGui::TableNextColumn();
+            if (hasPercent) {
+                ImGui::Text("%.1f", percent(value));
+            }
+        };
+        row("Total", stats.totalMeshlets, false);
+        row("Visible", visible, true);
+        row("  single-sided", stats.visibleMeshlets[std::to_underlying(MeshStateGroup::SingleSided)], true);
+        row("  double-sided", stats.visibleMeshlets[std::to_underlying(MeshStateGroup::DoubleSided)], true);
+        if (settings.isStatsEnabled) {
+            row("Frustum culled", stats.frustumCulled, true);
+            row("Cone culled", stats.coneCulled, true);
+            row("Not tested (morph)", stats.unculledMeshlets, true);
+        }
+        ImGui::EndTable();
+    }
+    ImGui::Text("Draw records %u, %u meshlets / sequence", stats.drawRecords, stats.meshletsPerSequence);
+    ImGui::Text("DGC sequences: single %u, double %u",
+                stats.sequences[std::to_underlying(MeshStateGroup::SingleSided)],
+                stats.sequences[std::to_underlying(MeshStateGroup::DoubleSided)]);
+
+    ImGui::SeparatorText("Timings");
+    ImGui::Text("CPU prepare %.3f ms", stats.cpuPrepareMs);
+    ImGui::SetItemTooltip("draw records + cull view, written on the CPU every frame");
+    const GpuTimer& timer = renderer->getGpuTimer();
+    if (!timer.isSupported()) {
+        ImGui::TextDisabled("GPU timestamps not supported on the graphics queue");
+        return;
+    }
+    constexpr float kPlotHeight = 32.0f;
+    for (size_t i = 0; i < kGpuTimerScopeCount; ++i) {
+        const auto scope = static_cast<GpuTimerScope>(i);
+        const std::string overlay = std::format("{} {:.3f} ms", gpuTimerScopeName(scope), timer.averageMs(scope));
+        const auto& samples = timer.history(scope);
+        ImGui::PlotLines(std::format("##gpuTimer{}", i).c_str(), samples.data(), static_cast<int>(samples.size()),
+                         timer.historyOffset(), overlay.c_str(), 0.0f, FLT_MAX, {-FLT_MIN, kPlotHeight});
     }
 #endif
 }

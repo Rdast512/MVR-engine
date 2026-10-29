@@ -4,7 +4,7 @@
 #include "types.slang"
 #include "core/binding.slang"
 
-// everything a draw needs, resolved from the push data through the frame root
+// everything one visible meshlet needs, resolved from the push data through the frame root
 struct DrawContext
 {
     GpuFrameRoot root;
@@ -12,13 +12,17 @@ struct DrawContext
     GpuNodeInstance nodeInstance;
     GpuModel model;
     GpuPrimitive primitive;
+    uint meshletIndex; // relative to the primitive
 };
 
-DrawContext loadDrawContext(MeshPushData push)
+// groupId: mesh workgroup within the sequence's batch
+DrawContext loadDrawContext(MeshPushData push, uint groupId)
 {
     DrawContext draw;
     draw.root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
-    draw.record = bdaPtr<GpuDrawRecord>(draw.root.drawRecords)[push.drawIndex];
+    const uint visible = bdaPtr<uint>(draw.root.visibleMeshlets)[push.firstVisible + groupId];
+    draw.record = bdaPtr<GpuDrawRecord>(draw.root.drawRecords)[visible >> kCullLaneBits];
+    draw.meshletIndex = draw.record.meshletOffset + (visible & kCullLaneMask);
     draw.nodeInstance = bdaPtr<GpuNodeInstance>(draw.root.nodeInstances)[draw.record.nodeInstanceIndex];
     draw.model = bdaPtr<GpuModel>(draw.root.models)[draw.nodeInstance.modelIndex];
     draw.primitive = bdaPtr<GpuPrimitive>(draw.root.primitives)[draw.record.primitiveIndex];
@@ -31,20 +35,20 @@ GpuCameraData loadCamera(GpuFrameRoot root)
 }
 
 // material rows are shared by all models, so the id is absolute
-uint materialRow(DrawContext draw)
+uint materialRow(GpuPrimitive primitive)
 {
-    return draw.primitive.materialId == kNoneIndex ? 0 : draw.primitive.materialId;
+    return primitive.materialId == kNoneIndex ? 0 : primitive.materialId;
 }
 
-GpuMaterial loadMaterial(DrawContext draw)
+GpuMaterial loadMaterial(GpuFrameRoot root, uint row)
 {
-    return bdaPtr<GpuMaterial>(draw.root.materials)[materialRow(draw)];
+    return bdaPtr<GpuMaterial>(root.materials)[row];
 }
 
 // parallel to loadMaterial: extension rows share the material row index
-GpuMaterialExtension loadMaterialExtension(DrawContext draw)
+GpuMaterialExtension loadMaterialExtension(GpuFrameRoot root, uint row)
 {
-    return bdaPtr<GpuMaterialExtension>(draw.root.pbrExtensions)[materialRow(draw)];
+    return bdaPtr<GpuMaterialExtension>(root.pbrExtensions)[row];
 }
 
 // lights are stored in model space; the owning instance places them in the world

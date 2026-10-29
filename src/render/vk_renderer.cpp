@@ -13,8 +13,9 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, ResourceManager& resour
                    DescriptorManager& descriptorManager, ShaderObjects& shaderObjects, Camera& camera,
                    VkTracyContext* tracyContext, bool imguiEnabled) :
     device(device), swapChain(swapChain), resourceManager(resourceManager), descriptorManager(descriptorManager),
-    shaderObjects(shaderObjects), camera(camera), dgc(device, resourceManager, descriptorManager, shaderObjects),
-    tracyContext(tracyContext), imguiEnabled(imguiEnabled)
+    camera(camera), dgc(device, resourceManager, descriptorManager, shaderObjects),
+    culling(device, resourceManager, shaderObjects, dgc), gpuTimer(device), tracyContext(tracyContext),
+    imguiEnabled(imguiEnabled)
 {
     dgc.init();
 }
@@ -51,8 +52,9 @@ void Renderer::drawFrame()
             ;
     }
 
-    // after the fence: this slot's camera buffer is no longer read by the GPU
+    // after the fence: this slot's camera buffer and query results are no longer touched by the GPU
     camera.updateCameraData(currentFrame);
+    gpuTimer.collect(currentFrame);
 
     vk::Result result{};
     uint32_t imageIndex{0};
@@ -176,25 +178,36 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
                                              .pColorAttachments = &colorAttachmentInfo,
                                              .pDepthAttachment = &depthAttachmentInfo};
 
-    dgc.updateSequences(currentFrame);
+    // also sizes the DGC buffers for this slot
+    culling.prepareFrame(currentFrame, camera);
+    gpuTimer.begin(cmd, currentFrame);
     const RasterVariant rasterVariant = debugView.rasterVariant();
+
+    cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
+    cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
+    {
+        ZoneScopedN("MeshletCull");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneMeshletCull, *cmd, "GPU_MeshletCull", gpuTrace);
+#endif
+        culling.recordCull(cmd);
+        gpuTimer.end(cmd, GpuTimerScope::Cull);
+    }
 
     {
         ZoneScopedN("DgcPreprocess");
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneDgcPreprocess, *cmd, "GPU_DgcPreprocess", gpuTrace);
 #endif
-        shaderObjects.bindMeshState(cmd, rasterVariant);
-        // shader objects require the *WithCount variants
-        cmd.setViewportWithCount(vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChain.swapChainExtent.width),
-                                              static_cast<float>(swapChain.swapChainExtent.height), 0.0f, 1.0f));
-        cmd.setScissorWithCount(vk::Rect2D(vk::Offset2D(0, 0), swapChain.swapChainExtent));
-        cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
-        cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
-
-        // bind once: preprocess snapshots this state; it persists into the render pass
+        // preprocess takes its state from the per-group state command buffers
         dgc.recordPreprocess(cmd, rasterVariant);
+        gpuTimer.end(cmd, GpuTimerScope::Preprocess);
     }
+
+    // shader objects require the *WithCount variants
+    cmd.setViewportWithCount(vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChain.swapChainExtent.width),
+                                          static_cast<float>(swapChain.swapChainExtent.height), 0.0f, 1.0f));
+    cmd.setScissorWithCount(vk::Rect2D(vk::Offset2D(0, 0), swapChain.swapChainExtent));
 
     cmd.beginRendering(renderingInfo);
     {
@@ -203,6 +216,7 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
         TracyVkNamedZone(gpuCtx, gpuZoneDrawCalls, *cmd, "GPU_DrawCalls", gpuTrace);
 #endif
         dgc.recordExecute(cmd, rasterVariant);
+        gpuTimer.end(cmd, GpuTimerScope::Draw);
     }
 
 #if ENGINE_ENABLE_IMGUI

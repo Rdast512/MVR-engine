@@ -8,6 +8,13 @@ static const uint kMaxMeshletVertices = 64;
 static const uint kMaxMeshletTriangles = 126;
 static const uint kGroupSize = 32;
 
+// must match src/core/types.hpp kCullGroupSize / kCullLaneBits / kMeshStateGroupCount
+static const uint kCullGroupSize = 64;
+static const uint kCullLaneBits = 6;
+static const uint kCullLaneMask = kCullGroupSize - 1;
+static const uint kMeshStateGroupCount = 2;
+static const uint kMeshStateGroupDoubleSided = 1;
+
 struct GpuCameraData
 {
     float4x4 view;
@@ -77,6 +84,7 @@ static const uint kDebugViewMeshlets = 1u;
 static const uint kDebugViewTriangles = 2u;
 static const uint kDebugViewPrimitives = 3u;
 static const uint kDebugViewNodeInstances = 4u;
+static const uint kDebugViewStateGroups = 5u;
 static const uint kDebugViewModeMask = 0xffu;
 static const uint kDebugViewFlagEdges = 1u << 8;
 
@@ -103,12 +111,46 @@ struct GpuNodeInstance
     uint flags;
 };
 
+// DrawRecordFlag
+static const uint kDrawRecordStateGroupMask = 0x3u;
+static const uint kDrawRecordSkipCulling = 1u << 2;
+
+// one cull work item: up to kCullGroupSize meshlets of one primitive placed by one node instance
 struct GpuDrawRecord
 {
     uint nodeInstanceIndex;
     uint primitiveIndex; // absolute row of GpuFrameRoot.primitives
     uint meshletOffset;  // relative to the primitive
-    uint pad0;
+    uint flags;          // kDrawRecord*
+};
+
+// CullFlag
+static const uint kCullFrustum = 1u << 0;
+static const uint kCullCone = 1u << 1;
+static const uint kCullStats = 1u << 2;
+
+struct GpuCullView
+{
+    float4 frustumPlanes[6]; // world space, inside when dot(xyz, p) + w >= 0
+    float3 cameraPos;
+    uint flags; // kCull*
+    uint64_t visibleMeshlets; // uint[]: (draw record << kCullLaneBits) | lane
+    uint64_t counters;        // GpuCullCounters
+    uint64_t sequences;       // MeshDgcSequence[]
+    uint drawRecordCount;
+    uint maxMeshletsPerSequence;
+    uint groupVisibleOffset[kMeshStateGroupCount];
+    uint groupSequenceOffset[kMeshStateGroupCount];
+};
+
+struct GpuCullCounters
+{
+    uint visibleMeshlets[kMeshStateGroupCount];
+    uint sequenceCount[kMeshStateGroupCount];
+    uint testedMeshlets;
+    uint frustumCulled;
+    uint coneCulled;
+    uint unculledMeshlets;
 };
 
 // delta offsets relative to the model's morph slices, kNoneIndex = absent
@@ -145,8 +187,15 @@ struct GpuMeshletDesc
 {
     uint vertexOffset;
     uint triangleOffset;
-    uint vertexCount;
-    uint triangleCount;
+    uint8_t vertexCount;
+    uint8_t triangleCount;
+    uint8_t pad0;
+    uint8_t pad1;
+    // normal cone in object space, snorm8 (x / 127)
+    int8_t coneAxisX;
+    int8_t coneAxisY;
+    int8_t coneAxisZ;
+    int8_t coneCutoff;
     float4 boundingSphere;
 };
 
@@ -273,12 +322,27 @@ struct GpuMaterialExtension
     GpuTextureRef diffuseTransmissionColor;
 };
 
-// MeshPushData: 24 B, matches src/render/push_data.hpp
+// 16 B, matches src/render/push_data.hpp
 struct MeshPushData
 {
     uint64_t frameRoot;
-    uint drawIndex;    // row of GpuFrameRoot.drawRecords
+    uint firstVisible; // row of GpuFrameRoot.visibleMeshlets for group 0
     uint meshletCount; // groups in this batch
+};
+
+// one DGC sequence: PUSH_DATA + DRAW_MESH_TASKS, 32 B stride
+struct MeshDgcSequence
+{
+    MeshPushData push;
+    uint3 groupCount;
+    uint pad0;
+};
+
+// 16 B, matches src/render/push_data.hpp
+struct CullPushData
+{
+    uint64_t frameRoot;
+    uint64_t cullView; // GpuCullView
 };
 
 struct MeshVertexOut
@@ -286,6 +350,8 @@ struct MeshVertexOut
     float4 pos          : SV_Position;
     float3 fragColor    : COLOR;
     float2 fragTexCoord : TEXCOORD;
+    // same for every vertex of a meshlet
+    nointerpolation uint materialRow : MATERIAL_ROW;
 };
 
 // per-frame root, matches GpuFrameRoot in src/core/types.hpp
@@ -301,6 +367,7 @@ struct GpuFrameRoot
     uint64_t tlas;
     uint64_t nodeInstances; // GpuNodeInstance[nodeInstanceCount]
     uint64_t drawRecords;   // GpuDrawRecord[drawRecordCount]
+    uint64_t visibleMeshlets; // uint[]: (draw record << kCullLaneBits) | lane
     uint lightCount;
     uint instanceCount;
     uint primitiveCount;

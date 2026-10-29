@@ -4,6 +4,8 @@
 #include "core/vk_swapchain.hpp"
 #include "scene/vk_camera.hpp"
 #include "vk_dgc.hpp"
+#include "vk_gpu_timer.hpp"
+#include "vk_meshlet_culling.hpp"
 #include "vk_shader_objects.hpp"
 
 class VkTracyContext;
@@ -24,6 +26,9 @@ public:
     // read once per recorded frame; the UI changes it between frames
     DebugViewSettings debugView;
 
+    [[nodiscard]] MeshletCulling& getCulling() noexcept { return culling; }
+    [[nodiscard]] const GpuTimer& getGpuTimer() const noexcept { return gpuTimer; }
+
 private:
     void recordCommandBuffer(uint32_t imageIndex);
 
@@ -31,9 +36,11 @@ private:
     SwapChain& swapChain;
     ResourceManager& resourceManager;
     DescriptorManager& descriptorManager;
-    ShaderObjects& shaderObjects;
     Camera& camera;
     DeviceGeneratedCommands dgc;
+    // after dgc: writes into its sequence buffers
+    MeshletCulling culling;
+    GpuTimer gpuTimer;
     VkTracyContext* tracyContext = nullptr;
     // unused when imgui is compiled out
     [[maybe_unused]] bool imguiEnabled = false;

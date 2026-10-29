@@ -19,9 +19,29 @@ struct MeshDebugVertexOut
 
 struct MeshDebugPrimitiveOut
 {
-    // (model-relative meshlet << kTriangleIdBits) | triangle
+    // the id the active debug mode colors by
     uint primitiveId : SV_PrimitiveID;
 };
+
+// the fragment stage only sees the id, so the mode is resolved per triangle here
+uint debugId(uint mode, DrawContext draw, uint triangle)
+{
+    // model-relative: instances of one model show the same meshlet colors
+    const uint meshletId = draw.primitive.firstMeshlet + draw.meshletIndex;
+    switch (mode)
+    {
+    case kDebugViewMeshlets:
+        return meshletId;
+    case kDebugViewPrimitives:
+        return draw.record.primitiveIndex;
+    case kDebugViewNodeInstances:
+        return draw.record.nodeInstanceIndex;
+    case kDebugViewStateGroups:
+        return draw.record.flags & kDrawRecordStateGroupMask;
+    default:
+        return (meshletId << kTriangleIdBits) | triangle;
+    }
+}
 
 [shader("mesh")]
 [numthreads(kGroupSize, 1, 1)]
@@ -33,23 +53,11 @@ void meshDebugMain(
     out indices uint3 tris[kMaxMeshletTriangles],
     out primitives MeshDebugPrimitiveOut prims[kMaxMeshletTriangles])
 {
-    DrawContext draw = loadDrawContext(push);
-    const uint meshletIndex = draw.record.meshletOffset + gid;
-    if (gid >= push.meshletCount || meshletIndex >= draw.primitive.meshletCount)
-    {
-        SetMeshOutputCounts(0, 0);
-        return;
-    }
-
-    GpuMeshletDesc meshlet = loadMeshlet(draw, meshletIndex);
-    const uint vertCount = min(meshlet.vertexCount, kMaxMeshletVertices);
-    const uint primCount = min(meshlet.triangleCount, kMaxMeshletTriangles);
+    DrawContext draw = loadDrawContext(push, gid);
+    GpuMeshletDesc meshlet = loadMeshlet(draw);
+    const uint vertCount = min(uint(meshlet.vertexCount), kMaxMeshletVertices);
+    const uint primCount = min(uint(meshlet.triangleCount), kMaxMeshletTriangles);
     SetMeshOutputCounts(vertCount, primCount);
-
-    if (vertCount == 0)
-    {
-        return;
-    }
 
     const GpuCameraData camera = loadCamera(draw.root);
     const float4x4 modelView = mul(camera.view, draw.nodeInstance.worldMatrix);
@@ -61,12 +69,11 @@ void meshDebugMain(
         verts[vi].viewPos = viewPos.xyz;
     }
 
-    // model-relative: instances of one model show the same meshlet colors
-    const uint meshletId = draw.primitive.firstMeshlet + meshletIndex;
+    const uint mode = draw.root.debugView & kDebugViewModeMask;
     for (uint ti = gtid; ti < primCount; ti += kGroupSize)
     {
         tris[ti] = loadFrontFacingTriangle(draw, meshlet, ti);
-        prims[ti].primitiveId = (meshletId << kTriangleIdBits) | ti;
+        prims[ti].primitiveId = debugId(mode, draw, ti);
     }
 }
 
@@ -87,27 +94,12 @@ float3 idColor(uint id)
     return lerp(float3(1.0, 1.0, 1.0), rgb, saturation);
 }
 
-uint debugId(uint mode, uint primitiveId)
-{
-    switch (mode)
-    {
-    case kDebugViewMeshlets:
-        return primitiveId >> kTriangleIdBits;
-    case kDebugViewPrimitives:
-        return loadDrawContext(push).record.primitiveIndex;
-    case kDebugViewNodeInstances:
-        return loadDrawContext(push).record.nodeInstanceIndex;
-    default:
-        return primitiveId;
-    }
-}
-
 [shader("fragment")]
 float4 fragDebugMain(MeshDebugVertexOut vertIn, uint primitiveId : SV_PrimitiveID,
                      float3 barycentrics : SV_Barycentrics) : SV_TARGET
 {
     const uint debugView = bdaPtr<GpuFrameRoot>(push.frameRoot)[0].debugView;
-    float3 color = idColor(debugId(debugView & kDebugViewModeMask, primitiveId));
+    float3 color = idColor(primitiveId);
 
     // flat headlight from the face normal keeps the shape readable under flat colors
     const float3 faceNormal = normalize(cross(ddx(vertIn.viewPos), ddy(vertIn.viewPos)));

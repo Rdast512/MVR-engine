@@ -13,6 +13,7 @@ enum class DebugView : uint32_t
     Triangles,
     Primitives,
     NodeInstances,
+    StateGroups,
     // reserved, not implemented yet
     LightingAlbedo,
     LightingNormals,
@@ -59,6 +60,7 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"Triangles", DebugViewCategory::Geometry, true},
     {"Primitives", DebugViewCategory::Geometry, true},
     {"Node instances", DebugViewCategory::Geometry, true},
+    {"State groups", DebugViewCategory::Geometry, true},
     {"Albedo", DebugViewCategory::Lighting, false},
     {"Normals", DebugViewCategory::Lighting, false},
     {"Lighting only", DebugViewCategory::Lighting, false},

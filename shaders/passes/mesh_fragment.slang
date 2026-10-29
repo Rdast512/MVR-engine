@@ -7,6 +7,6 @@
 [shader("fragment")]
 float4 fragMain(MeshVertexOut vertIn) : SV_TARGET
 {
-    DrawContext draw = loadDrawContext(push);
-    return sampleBaseColor(loadMaterial(draw), vertIn.fragTexCoord, vertIn.fragColor);
+    const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
+    return sampleBaseColor(loadMaterial(root, vertIn.materialRow), vertIn.fragTexCoord, vertIn.fragColor);
 }

@@ -6,6 +6,7 @@
 
 [[vk::push_constant]] ConstantBuffer<MeshPushData> push;
 
+// one workgroup per visible meshlet; the cull pass already dropped empty and culled ones
 [shader("mesh")]
 [numthreads(kGroupSize, 1, 1)]
 [outputtopology("triangle")]
@@ -15,25 +16,14 @@ void meshMain(
     out vertices MeshVertexOut verts[kMaxMeshletVertices],
     out indices uint3 tris[kMaxMeshletTriangles])
 {
-    DrawContext draw = loadDrawContext(push);
-    const uint meshletIndex = draw.record.meshletOffset + gid;
-    if (gid >= push.meshletCount || meshletIndex >= draw.primitive.meshletCount)
-    {
-        SetMeshOutputCounts(0, 0);
-        return;
-    }
-
-    GpuMeshletDesc meshlet = loadMeshlet(draw, meshletIndex);
-    const uint vertCount = min(meshlet.vertexCount, kMaxMeshletVertices);
-    const uint primCount = min(meshlet.triangleCount, kMaxMeshletTriangles);
+    DrawContext draw = loadDrawContext(push, gid);
+    GpuMeshletDesc meshlet = loadMeshlet(draw);
+    const uint vertCount = min(uint(meshlet.vertexCount), kMaxMeshletVertices);
+    const uint primCount = min(uint(meshlet.triangleCount), kMaxMeshletTriangles);
     SetMeshOutputCounts(vertCount, primCount);
 
-    if (vertCount == 0)
-    {
-        return;
-    }
-
     float4x4 mvp = objectToClip(loadCamera(draw.root), draw.nodeInstance.worldMatrix);
+    const uint material = materialRow(draw.primitive);
 
     for (uint vi = gtid; vi < vertCount; vi += kGroupSize)
     {
@@ -41,6 +31,7 @@ void meshMain(
         verts[vi].pos = mul(mvp, float4(v.pos, 1.0));
         verts[vi].fragColor = v.color;
         verts[vi].fragTexCoord = v.texCoord;
+        verts[vi].materialRow = material;
     }
 
     for (uint ti = gtid; ti < primCount; ti += kGroupSize)

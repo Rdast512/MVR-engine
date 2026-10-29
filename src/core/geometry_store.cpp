@@ -11,7 +11,9 @@ namespace
 {
     constexpr size_t kMeshletMaxVertices = 64;
     constexpr size_t kMeshletMaxTriangles = 126;
-    constexpr float kMeshletConeWeight = 0.0f;
+    static_assert(kMeshletMaxVertices <= UINT8_MAX && kMeshletMaxTriangles <= UINT8_MAX, "GpuMeshletDesc stores 8-bit counts");
+    // trades meshlet size for tighter normal cones (meshoptimizer recommends 0.25 with cone culling)
+    constexpr float kMeshletConeWeight = 0.25f;
 } // namespace
 
 void GeometryStore::resizeVertices(uint32_t newCount)
@@ -131,8 +133,10 @@ MeshletBuild GeometryStore::buildMeshlets(uint32_t firstIndex, uint32_t indexCou
         build.meshlets.push_back(GpuMeshletDesc{
             .vertexOffset = m.vertex_offset,
             .triangleOffset = m.triangle_offset,
-            .vertexCount = m.vertex_count,
-            .triangleCount = m.triangle_count,
+            .vertexCount = static_cast<uint8_t>(m.vertex_count),
+            .triangleCount = static_cast<uint8_t>(m.triangle_count),
+            .coneAxis = {bounds.cone_axis_s8[0], bounds.cone_axis_s8[1], bounds.cone_axis_s8[2]},
+            .coneCutoff = bounds.cone_cutoff_s8,
             .boundingSphere = glm::vec4{bounds.center[0], bounds.center[1], bounds.center[2], bounds.radius},
         });
     }

@@ -38,6 +38,12 @@ ShaderObjects::ShaderObjects(ResourceManager& resourceManager, DescriptorManager
 void ShaderObjects::init()
 {
     createMeshShaders();
+    createCullShaders();
+}
+
+bool ShaderObjects::usesDescriptorHeaps() const
+{
+    return descriptorManager.descriptorBindingMode == DescriptorBindingMode::DescriptorHeaps;
 }
 
 void ShaderObjects::createMeshShaders()
@@ -58,13 +64,45 @@ void ShaderObjects::createMeshShaders()
     });
 }
 
+void ShaderObjects::createCullShaders()
+{
+    cullShaders.cullMeshlets = createComputeShader("meshlet_cull.spv", "cullMeshlets", "CullMeshlets");
+    cullShaders.buildMeshSequences = createComputeShader("meshlet_cull.spv", "buildMeshSequences", "BuildMeshSequences");
+}
+
+vk::raii::ShaderEXT ShaderObjects::createComputeShader(std::string_view file, const char* entry,
+                                                       std::string_view debugName) const
+{
+    const auto spirv = readFile((std::filesystem::path(ENGINE_SHADER_DIR) / "passes" / file).string());
+    const bool useDescriptorHeaps = usesDescriptorHeaps();
+    const vk::ShaderCreateInfoEXT createInfo{
+        .flags = useDescriptorHeaps ? vk::ShaderCreateFlagBitsEXT::eDescriptorHeap : vk::ShaderCreateFlagsEXT{},
+        .stage = vk::ShaderStageFlagBits::eCompute,
+        .codeType = vk::ShaderCodeTypeEXT::eSpirv,
+        .codeSize = spirv.size(),
+        .pCode = spirv.data(),
+        .pName = entry,
+        .setLayoutCount = useDescriptorHeaps ? 0u : 1u,
+        .pSetLayouts = useDescriptorHeaps ? nullptr : &*descriptorManager.descriptorSetLayout,
+    };
+    vk::raii::ShaderEXT shader = device.createShaderEXT(createInfo);
+    setDebugName(device, shader, std::format("ShaderObject_{}_Compute", debugName));
+    return shader;
+}
+
+void ShaderObjects::bindComputeShader(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader)
+{
+    constexpr vk::ShaderStageFlagBits stage = vk::ShaderStageFlagBits::eCompute;
+    cmd.bindShadersEXT(stage, *shader);
+}
+
 ShaderObjects::MeshShaderPair ShaderObjects::createMeshShaderPair(const MeshShaderSource& source) const
 {
     const auto passDir = std::filesystem::path(ENGINE_SHADER_DIR) / "passes";
     const auto meshSpirv = readFile((passDir / source.meshFile).string());
     const auto fragSpirv =
         source.fragmentFile == source.meshFile ? meshSpirv : readFile((passDir / source.fragmentFile).string());
-    const bool useDescriptorHeaps = descriptorManager.descriptorBindingMode == DescriptorBindingMode::DescriptorHeaps;
+    const bool useDescriptorHeaps = usesDescriptorHeaps();
 
     // link stage lets the driver optimize the mesh->fragment interface like a monolithic pipeline
     vk::ShaderCreateFlagsEXT linkFlags = vk::ShaderCreateFlagBitsEXT::eLinkStage;
@@ -108,7 +146,8 @@ ShaderObjects::MeshShaderPair ShaderObjects::createMeshShaderPair(const MeshShad
     return result;
 }
 
-void ShaderObjects::bindMeshState(const vk::raii::CommandBuffer& cmd, RasterVariant variant) const
+void ShaderObjects::bindMeshState(const vk::raii::CommandBuffer& cmd, RasterVariant variant,
+                                  MeshStateGroup group) const
 {
     const MeshShaderPair& shaderPair = pair(variant);
     // with meshShader/taskShader/geometryShader enabled every graphics stage must be bound explicitly
@@ -123,7 +162,7 @@ void ShaderObjects::bindMeshState(const vk::raii::CommandBuffer& cmd, RasterVari
     // rasterization
     cmd.setRasterizerDiscardEnable(vk::False);
     cmd.setPolygonModeEXT(vk::PolygonMode::eFill);
-    cmd.setCullMode(vk::CullModeFlagBits::eBack);
+    cmd.setCullMode(group == MeshStateGroup::DoubleSided ? vk::CullModeFlagBits::eNone : vk::CullModeFlagBits::eBack);
     cmd.setFrontFace(vk::FrontFace::eCounterClockwise);
     cmd.setDepthBiasEnable(vk::False);
     // pipelineFragmentShadingRate is enabled, so the rate is required state

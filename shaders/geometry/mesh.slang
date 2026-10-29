@@ -6,9 +6,9 @@
 #include "core/frame.slang"
 
 // meshlet data is model-relative: every table is indexed from the model's slice
-GpuMeshletDesc loadMeshlet(DrawContext draw, uint meshletIndex)
+GpuMeshletDesc loadMeshlet(DrawContext draw)
 {
-    return bdaPtr<GpuMeshletDesc>(draw.model.meshlets)[draw.primitive.firstMeshlet + meshletIndex];
+    return bdaPtr<GpuMeshletDesc>(draw.model.meshlets)[draw.primitive.firstMeshlet + draw.meshletIndex];
 }
 
 // model-relative vertex id of a meshlet corner

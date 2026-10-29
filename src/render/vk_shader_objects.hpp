@@ -10,7 +10,8 @@
 
 class DescriptorManager;
 
-// linked mesh + fragment VK_EXT_shader_object pairs, one per RasterVariant; all raster state is dynamic
+// linked mesh + fragment VK_EXT_shader_object pairs, one per RasterVariant, plus the unlinked compute shaders;
+// all raster state is dynamic
 class ShaderObjects
 {
 public:
@@ -20,10 +21,12 @@ public:
 
     void init();
     void createMeshShaders();
+    void createCullShaders();
 
     // binds the variant's shaders and every state a monolithic pipeline would bake; viewport/scissor stay with the
-    // caller. state is identical across variants
-    void bindMeshState(const vk::raii::CommandBuffer& cmd, RasterVariant variant) const;
+    // caller. only the cull mode differs between state groups
+    void bindMeshState(const vk::raii::CommandBuffer& cmd, RasterVariant variant, MeshStateGroup group) const;
+    static void bindComputeShader(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader);
 
     const vk::raii::Device& device;
     ResourceManager& resourceManager;
@@ -36,6 +39,14 @@ public:
 
     // indexed by RasterVariant
     std::array<MeshShaderPair, kRasterVariantCount> meshShaders;
+
+    // passes/meshlet_cull.slang
+    struct CullShaders
+    {
+        vk::raii::ShaderEXT cullMeshlets = nullptr;
+        vk::raii::ShaderEXT buildMeshSequences = nullptr;
+    };
+    CullShaders cullShaders;
 
     [[nodiscard]] const MeshShaderPair& pair(RasterVariant variant) const
     {
@@ -54,4 +65,8 @@ private:
     };
 
     [[nodiscard]] MeshShaderPair createMeshShaderPair(const MeshShaderSource& source) const;
+    // file under ENGINE_SHADER_DIR/passes
+    [[nodiscard]] vk::raii::ShaderEXT createComputeShader(std::string_view file, const char* entry,
+                                                          std::string_view debugName) const;
+    [[nodiscard]] bool usesDescriptorHeaps() const;
 };

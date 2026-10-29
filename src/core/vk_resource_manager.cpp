@@ -318,6 +318,7 @@ void ResourceManager::writeFrameRoot(uint32_t frameSlot, uint32_t debugView)
         .tlas = 0,
         .nodeInstances = nodeInstanceBuffers[frameSlot].address,
         .drawRecords = drawRecordBuffers[frameSlot].address,
+        .visibleMeshlets = visibleMeshletAddresses[frameSlot],
         .lightCount = lightStore.uploadedCount(),
         .instanceCount = objectStorage.size(),
         .primitiveCount = uploadedCount(AssetBuffer::Primitives),

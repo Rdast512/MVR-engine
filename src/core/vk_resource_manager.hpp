@@ -231,6 +231,8 @@ public:
     HostBuffer modelTable;
     uint32_t modelTableCapacity = 0;
     std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> cameraAddresses{};
+    // set by the meshlet cull pass before the frame root is written
+    std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> visibleMeshletAddresses{};
 
 private:
     // bytes written at dstOffset of an asset buffer; the buffer grows (x2) when the write passes its capacity
