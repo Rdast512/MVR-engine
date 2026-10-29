@@ -739,7 +739,11 @@ void Engine::drawCullingPanel()
     MeshletCulling& culling = renderer->getCulling();
     MeshletCullSettings& settings = culling.settings;
 
+    ImGui::Checkbox("Instance frustum", &settings.isInstanceFrustumEnabled);
+    ImGui::SetItemTooltip("node-instance sphere test before any meshlet is tested");
+    ImGui::SameLine();
     ImGui::Checkbox("Frustum", &settings.isFrustumEnabled);
+    ImGui::SetItemTooltip("meshlet sphere test");
     ImGui::SameLine();
     ImGui::Checkbox("Normal cone", &settings.isConeEnabled);
     ImGui::SetItemTooltip("meshlet backface test; double-sided materials skip it");
@@ -787,20 +791,29 @@ void Engine::drawCullingPanel()
         row("  single-sided", stats.visibleMeshlets[std::to_underlying(MeshStateGroup::SingleSided)], true);
         row("  double-sided", stats.visibleMeshlets[std::to_underlying(MeshStateGroup::DoubleSided)], true);
         if (settings.isStatsEnabled) {
+            // every meshlet of a surviving instance is tested or skipped, so the rest went with its instance
+            row("Instance culled", stats.totalMeshlets - stats.testedMeshlets - stats.unculledMeshlets, true);
             row("Frustum culled", stats.frustumCulled, true);
             row("Cone culled", stats.coneCulled, true);
             row("Not tested (morph)", stats.unculledMeshlets, true);
         }
         ImGui::EndTable();
     }
-    ImGui::Text("Draw records %u, %u meshlets / sequence", stats.drawRecords, stats.meshletsPerSequence);
+    if (settings.isStatsEnabled) {
+        ImGui::Text("Instances %u, culled %u", stats.instances, stats.instancesCulled);
+    } else {
+        ImGui::Text("Instances %u", stats.instances);
+    }
+    ImGui::Text("Draw records %u / %u, %u meshlets / sequence", stats.visibleDrawRecords, stats.drawRecords,
+                stats.meshletsPerSequence);
+    ImGui::SetItemTooltip("records of visible instances / all records; the meshlet cull dispatches one group each");
     ImGui::Text("DGC sequences: single %u, double %u",
                 stats.sequences[std::to_underlying(MeshStateGroup::SingleSided)],
                 stats.sequences[std::to_underlying(MeshStateGroup::DoubleSided)]);
 
     ImGui::SeparatorText("Timings");
     ImGui::Text("CPU prepare %.3f ms", stats.cpuPrepareMs);
-    ImGui::SetItemTooltip("draw records + cull view, written on the CPU every frame");
+    ImGui::SetItemTooltip("cull view every frame; draw record templates only when the scene layout changes");
     const GpuTimer& timer = renderer->getGpuTimer();
     if (!timer.isSupported()) {
         ImGui::TextDisabled("GPU timestamps not supported on the graphics queue");

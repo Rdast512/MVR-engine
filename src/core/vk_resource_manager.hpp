@@ -148,9 +148,6 @@ public:
 
     // per-frame Tracy plots for resource usage
     void tracyPlotResources() const;
-    // count rows of this frame slot's draw-record buffer, grown if needed (the slot must not be in flight);
-    // the frame root written afterwards points at it
-    [[nodiscard]] GpuDrawRecord* mapDrawRecords(uint32_t frameSlot, uint32_t count);
 
     [[nodiscard]] vk::DeviceAddress frameRootAddress(uint32_t frameSlot) const noexcept
     {
@@ -221,17 +218,16 @@ public:
     // first node-instance row per entity (entity-major); rebuilt whenever entities or models change
     std::vector<uint32_t> entityNodeInstanceFirst;
     uint32_t nodeInstanceCount = 0;
-    // GpuDrawRecord[] per frame slot, filled by mapDrawRecords callers
-    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> drawRecordBuffers;
-    std::array<uint32_t, MAX_FRAMES_IN_FLIGHT> drawRecordCapacity{};
-    std::array<uint32_t, MAX_FRAMES_IN_FLIGHT> drawRecordCount{};
+    // bumped by every node-instance layout rebuild; consumers cache per-layout data against it
+    uint32_t nodeInstanceLayoutGeneration = 0;
     // one GpuFrameRoot per frame-in-flight, rewritten every frame
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> frameRoots;
     // GpuModel[modelTableCapacity], rows rewritten in place after every flush and erase (GPU idle)
     HostBuffer modelTable;
     uint32_t modelTableCapacity = 0;
     std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> cameraAddresses{};
-    // set by the meshlet cull pass before the frame root is written
+    // set by the cull passes before the frame root is written
+    std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> drawRecordAddresses{};
     std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> visibleMeshletAddresses{};
 
 private:

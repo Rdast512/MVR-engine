@@ -227,7 +227,8 @@ namespace DrawRecordFlag
 } // namespace DrawRecordFlag
 static_assert(kMeshStateGroupCount - 1 <= DrawRecordFlag::StateGroupMask);
 
-// one cull work item: up to kCullGroupSize meshlets of one primitive placed by one node instance
+// one meshlet cull work item: up to kCullGroupSize meshlets of one primitive placed by one node instance.
+// built once per scene layout as templates; the instance pass copies those of visible instances
 struct GpuDrawRecord
 {
     uint32_t nodeInstanceIndex = 0;
@@ -237,15 +238,29 @@ struct GpuDrawRecord
 };
 static_assert(sizeof(GpuDrawRecord) == 16);
 
+// one node instance for the instance pass; its draw record templates are contiguous
+struct GpuInstanceCullItem
+{
+    uint32_t nodeInstanceIndex = 0;
+    uint32_t firstDrawRecord = 0; // row of GpuCullView::drawRecordTemplates
+    uint32_t drawRecordCount = 0;
+    // DrawRecordFlag::SkipCulling when any of its primitives is morphed
+    uint32_t flags = 0;
+};
+static_assert(sizeof(GpuInstanceCullItem) == 16);
+
 namespace CullFlag
 {
+    // meshlet sphere against the frustum
     inline constexpr uint32_t Frustum = 1u << 0;
     // normal cone backface test, single-sided group only
     inline constexpr uint32_t Cone = 1u << 1;
     inline constexpr uint32_t Stats = 1u << 2;
+    // node instance sphere against the frustum
+    inline constexpr uint32_t InstanceFrustum = 1u << 3;
 } // namespace CullFlag
 
-// per frame slot, host-written: what the cull pass tests against and where it writes
+// per frame slot, host-written: what the cull passes test against and where they read and write
 struct GpuCullView
 {
     // world space, inside when dot(xyz, p) + w >= 0: left, right, bottom, top, near, far
@@ -256,29 +271,37 @@ struct GpuCullView
     vk::DeviceAddress visibleMeshlets = 0;
     vk::DeviceAddress counters = 0;  // GpuCullCounters
     vk::DeviceAddress sequences = 0; // MeshDgcSequence[], one region per MeshStateGroup
-    uint32_t drawRecordCount = 0;
+    vk::DeviceAddress instanceItems = 0;       // GpuInstanceCullItem[instanceCount]
+    vk::DeviceAddress drawRecordTemplates = 0; // GpuDrawRecord[], copied to GpuFrameRoot::drawRecords
+    uint32_t instanceCount = 0;
     uint32_t maxMeshletsPerSequence = 0;
     std::array<uint32_t, kMeshStateGroupCount> groupVisibleOffset{};
     std::array<uint32_t, kMeshStateGroupCount> groupSequenceOffset{};
 };
-static_assert(sizeof(GpuCullView) == 160);
+static_assert(sizeof(GpuCullView) == 176);
 static_assert(offsetof(GpuCullView, visibleMeshlets) == 112);
-static_assert(offsetof(GpuCullView, groupVisibleOffset) == 144);
+static_assert(offsetof(GpuCullView, instanceItems) == 136);
+static_assert(offsetof(GpuCullView, groupVisibleOffset) == 160);
 
-// per frame slot, zeroed before the cull pass
+// per frame slot, reset to kInitialCullCounters before the cull passes
 struct GpuCullCounters
 {
     std::array<uint32_t, kMeshStateGroupCount> visibleMeshlets{};
     // DGC sequenceCountAddress of each group's execute
     std::array<uint32_t, kMeshStateGroupCount> sequenceCount{};
+    // VkDispatchIndirectCommand of the meshlet cull: x = draw records of visible instances
+    std::array<uint32_t, 3> meshletDispatch{0, 1, 1};
     // CullFlag::Stats only
+    uint32_t instancesCulled = 0;
     uint32_t testedMeshlets = 0;
     uint32_t frustumCulled = 0;
     uint32_t coneCulled = 0;
     uint32_t unculledMeshlets = 0;
 };
-static_assert(sizeof(GpuCullCounters) == 32);
+static_assert(sizeof(GpuCullCounters) == 48);
 static_assert(offsetof(GpuCullCounters, sequenceCount) == 8);
+static_assert(offsetof(GpuCullCounters, meshletDispatch) == 16);
+inline constexpr GpuCullCounters kInitialCullCounters{};
 
 // CPU authoring form of KHR PBR-next + texture-transform; uploaded packed as GpuMaterialExtension
 struct MaterialUvTransform
@@ -626,7 +649,7 @@ struct GpuFrameRoot
     vk::DeviceAddress tlas = 0;
     // GpuNodeInstance[nodeInstanceCount] of this frame slot
     vk::DeviceAddress nodeInstances = 0;
-    // GpuDrawRecord[drawRecordCount] of this frame slot
+    // GpuDrawRecord[] of this frame slot, written by the instance cull pass (count in GpuCullCounters)
     vk::DeviceAddress drawRecords = 0;
     // GpuCullView::visibleMeshlets of this frame slot; MeshPushData::firstVisible indexes it
     vk::DeviceAddress visibleMeshlets = 0;
@@ -634,7 +657,7 @@ struct GpuFrameRoot
     uint32_t instanceCount = 0;
     uint32_t primitiveCount = 0;
     uint32_t nodeInstanceCount = 0;
-    uint32_t drawRecordCount = 0;
+    uint32_t pad0 = 0;
     // DebugViewSettings::packed()
     uint32_t debugView = 0;
 };

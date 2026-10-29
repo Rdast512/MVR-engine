@@ -66,6 +66,7 @@ void ShaderObjects::createMeshShaders()
 
 void ShaderObjects::createCullShaders()
 {
+    cullShaders.cullInstances = createComputeShader("meshlet_cull.spv", "cullInstances", "CullInstances");
     cullShaders.cullMeshlets = createComputeShader("meshlet_cull.spv", "cullMeshlets", "CullMeshlets");
     cullShaders.buildMeshSequences = createComputeShader("meshlet_cull.spv", "buildMeshSequences", "BuildMeshSequences");
 }

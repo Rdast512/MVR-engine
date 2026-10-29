@@ -1,7 +1,7 @@
 #include "types.slang"
 #include "core/binding.slang"
 
-// meshlet cull: draw records -> per state group visible lists -> DGC sequences + counts
+// instances -> draw records -> per state group visible lists -> DGC sequences + counts
 
 [[vk::push_constant]] ConstantBuffer<CullPushData> push;
 
@@ -68,7 +68,49 @@ uint waveAppend(inout uint counter, bool predicate)
     return WaveReadLaneFirst(base) + WavePrefixCountBits(predicate);
 }
 
-// one workgroup per draw record, one lane per meshlet; the dispatch covers exactly drawRecordCount groups
+groupshared uint instanceRecordBase;
+
+// one workgroup per node instance: a visible instance appends its draw record templates, all lanes copying
+[shader("compute")]
+[numthreads(kCullGroupSize, 1, 1)]
+void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
+    const GpuCullView view = bdaPtr<GpuCullView>(push.cullView)[0];
+    GpuCullCounters* counters = bdaPtr<GpuCullCounters>(view.counters);
+    const GpuInstanceCullItem item = bdaPtr<GpuInstanceCullItem>(view.instanceItems)[groupId.x];
+
+    // group-uniform: every lane tests the same sphere
+    if ((view.flags & kCullInstanceFrustum) != 0 && (item.flags & kDrawRecordSkipCulling) == 0)
+    {
+        const float4 sphere = bdaPtr<GpuNodeInstance>(root.nodeInstances)[item.nodeInstanceIndex].boundingSphere;
+        if (isOutsideFrustum(view, sphere.xyz, sphere.w))
+        {
+            if (lane == 0 && (view.flags & kCullStats) != 0)
+            {
+                InterlockedAdd(counters.instancesCulled, 1);
+            }
+            return;
+        }
+    }
+
+    // the dispatch x of the meshlet cull doubles as the append counter
+    if (lane == 0)
+    {
+        InterlockedAdd(counters.meshletDispatch[0], item.drawRecordCount, instanceRecordBase);
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    const uint base = instanceRecordBase;
+    GpuDrawRecord* templates = bdaPtr<GpuDrawRecord>(view.drawRecordTemplates) + item.firstDrawRecord;
+    GpuDrawRecord* records = bdaPtr<GpuDrawRecord>(root.drawRecords) + base;
+    for (uint r = lane; r < item.drawRecordCount; r += kCullGroupSize)
+    {
+        records[r] = templates[r];
+    }
+}
+
+// one workgroup per draw record, one lane per meshlet; dispatched indirectly from GpuCullCounters.meshletDispatch
 [shader("compute")]
 [numthreads(kCullGroupSize, 1, 1)]
 void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)

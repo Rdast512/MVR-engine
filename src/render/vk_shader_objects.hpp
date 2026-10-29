@@ -43,6 +43,7 @@ public:
     // passes/meshlet_cull.slang
     struct CullShaders
     {
+        vk::raii::ShaderEXT cullInstances = nullptr;
         vk::raii::ShaderEXT cullMeshlets = nullptr;
         vk::raii::ShaderEXT buildMeshSequences = nullptr;
     };

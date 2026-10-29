@@ -63,7 +63,6 @@ namespace
     constexpr const char* kFrameRootTracyName = "GPU/FrameRoot";
     constexpr const char* kModelTableTracyName = "GPU/ModelTable";
     constexpr const char* kNodeInstanceTracyName = "GPU/NodeInstances";
-    constexpr const char* kDrawRecordTracyName = "GPU/DrawRecords";
 
     // GpuNode stores the affine part as rows; glm is column-major
     [[nodiscard]] std::array<glm::vec4, 3> affineRows(const glm::mat4& matrix)
@@ -317,13 +316,12 @@ void ResourceManager::writeFrameRoot(uint32_t frameSlot, uint32_t debugView)
         .lights = asset(AssetBuffer::Lights).address,
         .tlas = 0,
         .nodeInstances = nodeInstanceBuffers[frameSlot].address,
-        .drawRecords = drawRecordBuffers[frameSlot].address,
+        .drawRecords = drawRecordAddresses[frameSlot],
         .visibleMeshlets = visibleMeshletAddresses[frameSlot],
         .lightCount = lightStore.uploadedCount(),
         .instanceCount = objectStorage.size(),
         .primitiveCount = uploadedCount(AssetBuffer::Primitives),
         .nodeInstanceCount = nodeInstanceCount,
-        .drawRecordCount = drawRecordCount[frameSlot],
         .debugView = debugView,
     };
 }
@@ -404,7 +402,6 @@ ResourceManager::~ResourceManager()
     destroyHostBuffer(modelTable, kModelTableTracyName);
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         destroyHostBuffer(nodeInstanceBuffers[i], kNodeInstanceTracyName);
-        destroyHostBuffer(drawRecordBuffers[i], kDrawRecordTracyName);
     }
     for (size_t i = 0; i < kAssetBufferCount; ++i) {
         destroyAssetBuffer(static_cast<AssetBuffer>(i));
@@ -771,6 +768,7 @@ void ResourceManager::rebuildNodeInstanceLayout()
         }
     }
     nodeInstanceCount = rows;
+    ++nodeInstanceLayoutGeneration;
     if (rows <= nodeInstanceCapacity && nodeInstanceBuffers[0].memory != nullptr) {
         return;
     }
@@ -814,20 +812,6 @@ void ResourceManager::writeNodeInstances(uint32_t frameSlot)
             };
         }
     }
-}
-
-GpuDrawRecord* ResourceManager::mapDrawRecords(uint32_t frameSlot, uint32_t count)
-{
-    if (count > drawRecordCapacity[frameSlot] || drawRecordBuffers[frameSlot].memory == nullptr) {
-        // only this slot is replaced; its previous frame finished before recording started
-        drawRecordCapacity[frameSlot] = std::max({count, drawRecordCapacity[frameSlot] * 2, 64u});
-        destroyHostBuffer(drawRecordBuffers[frameSlot], kDrawRecordTracyName);
-        createHostBuffer(drawRecordBuffers[frameSlot],
-                         sizeof(GpuDrawRecord) * static_cast<vk::DeviceSize>(drawRecordCapacity[frameSlot]),
-                         std::format("DrawRecords_{}", frameSlot), kDrawRecordTracyName);
-    }
-    drawRecordCount[frameSlot] = count;
-    return static_cast<GpuDrawRecord*>(drawRecordBuffers[frameSlot].mapped);
 }
 
 std::vector<GpuLight> ResourceManager::packScratchLights() const

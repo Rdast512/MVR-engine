@@ -22,7 +22,7 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
 {
     switch (scope) {
     case GpuTimerScope::Cull:
-        return "Meshlet cull";
+        return "Instance + meshlet cull";
     case GpuTimerScope::Preprocess:
         return "DGC preprocess";
     case GpuTimerScope::Draw:

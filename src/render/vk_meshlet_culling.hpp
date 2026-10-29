@@ -9,11 +9,13 @@
 #include "vk_shader_objects.hpp"
 
 #include <array>
+#include <vector>
 #include <vulkan/vulkan_raii.hpp>
 
 // read once per recorded frame; the UI changes them between frames
 struct MeshletCullSettings
 {
+    bool isInstanceFrustumEnabled = true;
     bool isFrustumEnabled = true;
     bool isConeEnabled = true;
     bool isStatsEnabled = true;
@@ -26,13 +28,17 @@ struct MeshletCullSettings
 // one retired frame: CPU-side totals plus the GPU counters read back after its fence
 struct MeshletCullStats
 {
+    uint32_t instances = 0;
     uint32_t drawRecords = 0;
     uint32_t totalMeshlets = 0;
     uint32_t meshletsPerSequence = 0;
     std::array<uint32_t, kMeshStateGroupCount> groupMeshlets{};
+    // draw records of the instances that passed the instance tier
+    uint32_t visibleDrawRecords = 0;
     std::array<uint32_t, kMeshStateGroupCount> visibleMeshlets{};
     std::array<uint32_t, kMeshStateGroupCount> sequences{};
     // zero unless MeshletCullSettings::isStatsEnabled
+    uint32_t instancesCulled = 0;
     uint32_t testedMeshlets = 0;
     uint32_t frustumCulled = 0;
     uint32_t coneCulled = 0;
@@ -40,7 +46,8 @@ struct MeshletCullStats
     float cpuPrepareMs = 0.0f;
 };
 
-// meshlet frustum + normal cone culling in compute: draw records -> per state group visible lists -> DGC sequences
+// GPU culling in compute: node instances (frustum) -> draw records -> meshlets (frustum + normal cone) ->
+// per state group visible lists -> DGC sequences
 class MeshletCulling
 {
 public:
@@ -53,7 +60,8 @@ public:
     MeshletCulling(MeshletCulling&&) = delete;
     MeshletCulling& operator=(MeshletCulling&&) = delete;
 
-    // after the slot's fence: reads back its counters, writes draw records and the cull view, sizes the DGC buffers
+    // after the slot's fence: reads back its counters, refreshes its templates when the scene layout changed,
+    // writes the cull view and sizes the DGC buffers
     void prepareFrame(uint32_t frameSlot, const Camera& camera);
     // outside the render pass, before DGC preprocess; heaps must be bound
     void recordCull(const vk::raii::CommandBuffer& cmd) const;
@@ -63,14 +71,34 @@ public:
     MeshletCullSettings settings;
 
 private:
-    // per frame slot; sized on growth only, while the slot is not in flight
+    static constexpr uint32_t kNoGeneration = ~0u;
+
+    // built once per node-instance layout, uploaded to every frame slot
+    struct SceneTemplates
+    {
+        std::vector<GpuInstanceCullItem> instances;
+        std::vector<GpuDrawRecord> drawRecords;
+        std::array<uint32_t, kMeshStateGroupCount> groupMeshlets{};
+        // ResourceManager::nodeInstanceLayoutGeneration it was built from
+        uint32_t generation = kNoGeneration;
+    };
+    // per frame slot; replaced only while the slot is not in flight
     struct FrameBuffers
     {
         HostBuffer cullView;
-        // GpuCullCounters in host-visible VRAM: atomics stay on the device, the CPU reads 32 B after the fence
+        // GpuCullCounters in host-visible VRAM: atomics stay on the device, the CPU reads 48 B after the fence
         HostBuffer counters;
+        HostBuffer instanceItems;
+        HostBuffer drawRecordTemplates;
+        uint32_t instanceCapacity = 0;
+        // also the capacity of drawRecords
+        uint32_t drawRecordCapacity = 0;
+        // written by cullInstances
+        DeviceBuffer drawRecords;
         DeviceBuffer visibleMeshlets;
         uint32_t visibleCapacity = 0;
+        // SceneTemplates::generation of the uploaded templates
+        uint32_t generation = kNoGeneration;
     };
     // what prepareFrame recorded into a slot, paired with its counters on readback
     struct RecordedFrame
@@ -78,16 +106,11 @@ private:
         MeshletCullStats totals;
         bool hasResults = false;
     };
-    struct GroupTotals
-    {
-        uint32_t drawRecords = 0;
-        std::array<uint32_t, kMeshStateGroupCount> meshlets{};
-    };
 
     void readBackCounters(uint32_t frameSlot);
-    [[nodiscard]] GroupTotals writeDrawRecords(uint32_t frameSlot) const;
-    void ensureVisibleCapacity(uint32_t frameSlot, uint32_t meshletCount);
-    void writeCullView(uint32_t frameSlot, const Camera& camera, const GroupTotals& totals, uint32_t perSequence);
+    void buildTemplates();
+    void uploadTemplates(uint32_t frameSlot);
+    void writeCullView(uint32_t frameSlot, const Camera& camera, uint32_t perSequence);
     [[nodiscard]] uint32_t meshletsPerSequence(uint32_t totalMeshlets) const;
     [[nodiscard]] MeshStateGroup stateGroupOf(const PrimitiveDraw& primitive) const;
     void createFrameBuffers();
@@ -98,13 +121,13 @@ private:
     ShaderObjects& shaderObjects;
     DeviceGeneratedCommands& dgc;
 
+    SceneTemplates templates;
     std::array<FrameBuffers, MAX_FRAMES_IN_FLIGHT> frames;
     std::array<RecordedFrame, MAX_FRAMES_IN_FLIGHT> recorded{};
     MeshletCullStats stats;
 
     // set by prepareFrame for recordCull
     uint32_t frame = 0;
-    uint32_t drawRecordCount = 0;
 
     // captured on the frame the camera froze
     glm::mat4 frozenViewProj{1.0f};

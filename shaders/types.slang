@@ -115,7 +115,7 @@ struct GpuNodeInstance
 static const uint kDrawRecordStateGroupMask = 0x3u;
 static const uint kDrawRecordSkipCulling = 1u << 2;
 
-// one cull work item: up to kCullGroupSize meshlets of one primitive placed by one node instance
+// one meshlet cull work item: up to kCullGroupSize meshlets of one primitive placed by one node instance
 struct GpuDrawRecord
 {
     uint nodeInstanceIndex;
@@ -124,20 +124,32 @@ struct GpuDrawRecord
     uint flags;          // kDrawRecord*
 };
 
+// one node instance for the instance pass; its draw record templates are contiguous
+struct GpuInstanceCullItem
+{
+    uint nodeInstanceIndex;
+    uint firstDrawRecord; // row of GpuCullView.drawRecordTemplates
+    uint drawRecordCount;
+    uint flags;           // kDrawRecordSkipCulling when any primitive is morphed
+};
+
 // CullFlag
 static const uint kCullFrustum = 1u << 0;
 static const uint kCullCone = 1u << 1;
 static const uint kCullStats = 1u << 2;
+static const uint kCullInstanceFrustum = 1u << 3;
 
 struct GpuCullView
 {
     float4 frustumPlanes[6]; // world space, inside when dot(xyz, p) + w >= 0
     float3 cameraPos;
     uint flags; // kCull*
-    uint64_t visibleMeshlets; // uint[]: (draw record << kCullLaneBits) | lane
-    uint64_t counters;        // GpuCullCounters
-    uint64_t sequences;       // MeshDgcSequence[]
-    uint drawRecordCount;
+    uint64_t visibleMeshlets;     // uint[]: (draw record << kCullLaneBits) | lane
+    uint64_t counters;            // GpuCullCounters
+    uint64_t sequences;           // MeshDgcSequence[]
+    uint64_t instanceItems;       // GpuInstanceCullItem[instanceCount]
+    uint64_t drawRecordTemplates; // GpuDrawRecord[], copied to GpuFrameRoot.drawRecords
+    uint instanceCount;
     uint maxMeshletsPerSequence;
     uint groupVisibleOffset[kMeshStateGroupCount];
     uint groupSequenceOffset[kMeshStateGroupCount];
@@ -147,6 +159,8 @@ struct GpuCullCounters
 {
     uint visibleMeshlets[kMeshStateGroupCount];
     uint sequenceCount[kMeshStateGroupCount];
+    uint meshletDispatch[3]; // VkDispatchIndirectCommand: x = draw records of visible instances
+    uint instancesCulled;
     uint testedMeshlets;
     uint frustumCulled;
     uint coneCulled;
@@ -366,13 +380,13 @@ struct GpuFrameRoot
     uint64_t lights;        // GpuLight[lightCount]
     uint64_t tlas;
     uint64_t nodeInstances; // GpuNodeInstance[nodeInstanceCount]
-    uint64_t drawRecords;   // GpuDrawRecord[drawRecordCount]
+    uint64_t drawRecords;     // GpuDrawRecord[], written by the instance cull pass
     uint64_t visibleMeshlets; // uint[]: (draw record << kCullLaneBits) | lane
     uint lightCount;
     uint instanceCount;
     uint primitiveCount;
     uint nodeInstanceCount;
-    uint drawRecordCount;
+    uint pad0;
     uint debugView; // kDebugView* mode in the low byte, kDebugViewFlag* above
 };
 
