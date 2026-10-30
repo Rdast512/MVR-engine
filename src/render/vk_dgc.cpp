@@ -177,9 +177,9 @@ void DeviceGeneratedCommands::prepareFrame(uint32_t frameSlot,
     groupMaxSequences = maxSequences;
     counters = countersAddress;
     std::exclusive_scan(maxSequences.begin(), maxSequences.end(), groupOffsets.begin(), 0u);
-    const uint32_t total = groupOffsets.back() + maxSequences.back();
-    if (total > 0) {
-        ensureFrameCapacity(frameSlot, total);
+    phaseSequences = groupOffsets.back() + maxSequences.back();
+    if (phaseSequences > 0) {
+        ensureFrameCapacity(frameSlot, phaseSequences * kCullPhaseCount);
     }
 }
 
@@ -238,7 +238,7 @@ void DeviceGeneratedCommands::allocatePreprocessBuffer(uint32_t frameSlot, uint3
         return;
     }
     const vk::DeviceSize regionStride = alignUp(regionSize, kPreprocessRegionAlignment);
-    const vk::DeviceSize preprocessSize = regionStride * kMeshStateGroupCount;
+    const vk::DeviceSize preprocessSize = regionStride * kCullPhaseCount * kMeshStateGroupCount;
 
     vk::raii::Buffer buffer({});
     VmaAllocation memory = nullptr;
@@ -271,27 +271,30 @@ void DeviceGeneratedCommands::destroyFrameResources(uint32_t frameSlot)
     preprocessGroupStrides[frameSlot] = 0;
 }
 
-vk::GeneratedCommandsInfoEXT DeviceGeneratedCommands::generatedCommandsInfo(MeshStateGroup group,
+vk::GeneratedCommandsInfoEXT DeviceGeneratedCommands::generatedCommandsInfo(CullPhase phase, MeshStateGroup group,
                                                                             RasterVariant variant) const
 {
     const uint32_t index = std::to_underlying(group);
+    const uint32_t region = std::to_underlying(phase) * kMeshStateGroupCount + index;
     const vk::DeviceAddress preprocessBase = preprocessAddresses[frame];
+    const vk::DeviceAddress phaseCounters = counters + std::to_underlying(phase) * sizeof(GpuCullCounters);
     return vk::GeneratedCommandsInfoEXT{
         .pNext = &generatedShaderInfos[std::to_underlying(variant)],
         .shaderStages = shaderStages,
         .indirectExecutionSet = nullptr,
         .indirectCommandsLayout = *layout,
-        .indirectAddress = sequenceAddresses[frame] + groupOffsets[index] * sizeof(MeshDgcSequence),
+        .indirectAddress = sequenceAddresses[frame] + groupSequenceOffset(phase, group) * sizeof(MeshDgcSequence),
         .indirectAddressSize = static_cast<vk::DeviceSize>(groupMaxSequences[index]) * sizeof(MeshDgcSequence),
-        .preprocessAddress = preprocessBase == 0 ? 0 : preprocessBase + index * preprocessGroupStrides[frame],
+        .preprocessAddress = preprocessBase == 0 ? 0 : preprocessBase + region * preprocessGroupStrides[frame],
         .preprocessSize = preprocessGroupStrides[frame],
         .maxSequenceCount = groupMaxSequences[index],
-        .sequenceCountAddress = counters + offsetof(GpuCullCounters, sequenceCount) + index * sizeof(uint32_t),
+        .sequenceCountAddress = phaseCounters + offsetof(GpuCullCounters, sequenceCount) + index * sizeof(uint32_t),
         .maxDrawCount = 1,
     };
 }
 
-void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd, RasterVariant variant) const
+void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd, RasterVariant variant,
+                                               CullPhase phase) const
 {
     ZoneScopedN("DeviceGeneratedCommands::recordPreprocess");
     bool hasWork = false;
@@ -300,7 +303,8 @@ void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd, Ras
         if (groupMaxSequences[std::to_underlying(group)] == 0) {
             continue;
         }
-        cmd.preprocessGeneratedCommandsEXT(generatedCommandsInfo(group, variant), *stateCommandBuffer(variant, group));
+        cmd.preprocessGeneratedCommandsEXT(generatedCommandsInfo(phase, group, variant),
+                                           *stateCommandBuffer(variant, group));
         hasWork = true;
     }
     if (!hasWork) {
@@ -316,7 +320,8 @@ void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd, Ras
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &preprocessBarrier});
 }
 
-void DeviceGeneratedCommands::recordExecute(vk::raii::CommandBuffer& cmd, RasterVariant variant) const
+void DeviceGeneratedCommands::recordExecute(vk::raii::CommandBuffer& cmd, RasterVariant variant,
+                                            CullPhase phase) const
 {
     ZoneScopedN("DeviceGeneratedCommands::recordExecute");
     for (const MeshStateGroup group : kMeshStateGroups) {
@@ -324,6 +329,6 @@ void DeviceGeneratedCommands::recordExecute(vk::raii::CommandBuffer& cmd, Raster
             continue;
         }
         shaderObjects.bindMeshState(cmd, variant, group);
-        cmd.executeGeneratedCommandsEXT(vk::True, generatedCommandsInfo(group, variant));
+        cmd.executeGeneratedCommandsEXT(vk::True, generatedCommandsInfo(phase, group, variant));
     }
 }

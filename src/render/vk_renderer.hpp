@@ -5,6 +5,7 @@
 #include "scene/vk_camera.hpp"
 #include "vk_dgc.hpp"
 #include "vk_gpu_timer.hpp"
+#include "vk_hiz.hpp"
 #include "vk_meshlet_culling.hpp"
 #include "vk_shader_objects.hpp"
 
@@ -18,7 +19,7 @@ public:
              VkTracyContext* tracyContext = nullptr, bool imguiEnabled = false);
 
     void setTracyContext(VkTracyContext* tracyContextIn);
-    void rebuildSwapchainResources() const;
+    void rebuildSwapchainResources();
     void drawFrame();
     void waitIdle() const;
 
@@ -28,18 +29,24 @@ public:
 
     [[nodiscard]] MeshletCulling& getCulling() noexcept { return culling; }
     [[nodiscard]] const GpuTimer& getGpuTimer() const noexcept { return gpuTimer; }
+    [[nodiscard]] uint32_t getHiZMipCount() const noexcept { return hiz.mipCount(); }
 
 private:
     void recordCommandBuffer(uint32_t imageIndex);
+    // DebugView::HiZPyramid: covers the late pass with the pyramid the late phase tested against
+    void recordHiZView(const vk::raii::CommandBuffer& cmd) const;
+    void recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase, uint32_t imageIndex, RasterVariant rasterVariant);
 
     Device& device;
     SwapChain& swapChain;
     ResourceManager& resourceManager;
     DescriptorManager& descriptorManager;
     Camera& camera;
+    const ShaderObjects& shaderObjects;
     DeviceGeneratedCommands dgc;
     // after dgc: writes into its sequence buffers
     MeshletCulling culling;
+    HiZPyramid hiz;
     GpuTimer gpuTimer;
     VkTracyContext* tracyContext = nullptr;
     // unused when imgui is compiled out

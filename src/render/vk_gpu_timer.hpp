@@ -11,22 +11,41 @@
 // consecutive GPU spans of one frame; each ends where the next begins
 enum class GpuTimerScope : uint32_t
 {
-    Cull = 0,
-    Preprocess,
-    Draw,
+    EarlyCull = 0,
+    EarlyPreprocess,
+    EarlyDraw,
+    EarlyHiZ,
+    LateCull,
+    LatePreprocess,
+    LateDraw,
+    Ui,
+    LateHiZ,
     Count,
 };
 inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::Count);
 
+// also the Tracy plot names
 [[nodiscard]] constexpr const char* gpuTimerScopeName(GpuTimerScope scope)
 {
     switch (scope) {
-    case GpuTimerScope::Cull:
-        return "Instance + meshlet cull";
-    case GpuTimerScope::Preprocess:
-        return "DGC preprocess";
-    case GpuTimerScope::Draw:
-        return "Mesh draw";
+    case GpuTimerScope::EarlyCull:
+        return "Early cull";
+    case GpuTimerScope::EarlyPreprocess:
+        return "Early DGC preprocess";
+    case GpuTimerScope::EarlyDraw:
+        return "Early mesh draw";
+    case GpuTimerScope::EarlyHiZ:
+        return "Early Hi-Z build";
+    case GpuTimerScope::LateCull:
+        return "Late cull";
+    case GpuTimerScope::LatePreprocess:
+        return "Late DGC preprocess";
+    case GpuTimerScope::LateDraw:
+        return "Late mesh draw";
+    case GpuTimerScope::Ui:
+        return "ImGui";
+    case GpuTimerScope::LateHiZ:
+        return "Late Hi-Z build";
     case GpuTimerScope::Count:
         break;
     }

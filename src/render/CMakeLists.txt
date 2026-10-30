@@ -1,6 +1,7 @@
 set(RENDER_SOURCES
     vk_dgc.cpp
     vk_gpu_timer.cpp
+    vk_hiz.cpp
     vk_meshlet_culling.cpp
     vk_renderer.cpp
     vk_shader_objects.cpp

@@ -43,3 +43,33 @@ struct CullPushData {
 
 static_assert(std::is_trivially_copyable_v<CullPushData>);
 static_assert(sizeof(CullPushData) == 16);
+
+// hi-z build dispatches; must match shaders/types.slang HiZPushData
+struct HiZPushData {
+    // resource heap: depth for mip 0, the pyramid's full-chain view otherwise
+    uint32_t srcImage;
+    // resource heap: storage view of the written mip
+    uint32_t dstImage;
+    // sampler heap
+    uint32_t maxSampler;
+    uint32_t srcMip;
+    vk::Extent2D srcSize;
+    vk::Extent2D dstSize;
+};
+
+static_assert(std::is_trivially_copyable_v<HiZPushData>);
+static_assert(offsetof(HiZPushData, srcSize) == 16);
+static_assert(sizeof(HiZPushData) == 32);
+
+// Hi-Z pyramid debug view; must match shaders/types.slang HiZViewPushData
+struct HiZViewPushData {
+    // resource heap, full mip chain
+    uint32_t pyramid;
+    uint32_t mip;
+    float nearZ;
+    float farZ;
+    vk::Extent2D screenSize;
+};
+
+static_assert(std::is_trivially_copyable_v<HiZViewPushData>);
+static_assert(sizeof(HiZViewPushData) == 24);

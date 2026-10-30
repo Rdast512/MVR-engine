@@ -15,6 +15,7 @@ Camera::Camera(SwapChain& swapChain) : swapChain(swapChain)
 
 void Camera::focusOn(const glm::vec3& target, float distance)
 {
+    isCutPending = true;
     // above and behind so the model stays clear of nearPlane
     const float safeDistance = glm::max(distance, nearPlane * 4.0f);
     cameraData.cameraPos = target + glm::vec3(safeDistance * 0.55f, safeDistance * 0.4f, safeDistance * 0.85f);
@@ -101,6 +102,8 @@ void Camera::updateCameraData(uint8_t currentImage)
 
     updateVectors();
 
+    isCutFrame = isCutPending || projDirty;
+    isCutPending = false;
     if (projDirty) {
         updateProjection();
     }

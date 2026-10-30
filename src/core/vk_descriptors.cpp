@@ -79,6 +79,13 @@ void DescriptorManager::createHeaps()
 
 void DescriptorManager::writeImageDescriptor(TextureAsset& textureAsset, const vk::ImageViewCreateInfo& imageViewCreateInfo)
 {
+    textureAsset.descriptorHeapIndex = writeImageDescriptor(imageViewCreateInfo, vk::DescriptorType::eSampledImage,
+                                                            vk::ImageLayout::eShaderReadOnlyOptimal);
+}
+
+uint32_t DescriptorManager::writeImageDescriptor(const vk::ImageViewCreateInfo& imageViewCreateInfo,
+                                                 vk::DescriptorType type, vk::ImageLayout layout)
+{
     // size is the array stride; spec guarantees imageDescriptorAlignment <= imageDescriptorSize
     const bool reuseSlot = !freeImageSlots.empty();
     const vk::DeviceSize currentResOffset = reuseSlot
@@ -92,7 +99,7 @@ void DescriptorManager::writeImageDescriptor(TextureAsset& textureAsset, const v
     if (reuseSlot) {
         freeImageSlots.pop_back();
     }
-    writeImageAt(currentResOffset, imageViewCreateInfo);
+    writeImageAt(currentResOffset, imageViewCreateInfo, type, layout);
 
     // next texture needs a fresh slot
     if (!reuseSlot) {
@@ -100,23 +107,24 @@ void DescriptorManager::writeImageDescriptor(TextureAsset& textureAsset, const v
     }
 
     const uint32_t heapIndex = static_cast<uint32_t>(currentResOffset / imageDescriptorSize);
-    textureAsset.descriptorHeapIndex = heapIndex;
 
-    logInfo(std::format("Descriptor heap image write: offset={} size={} align={} index={} nextOffset={}",
-                         currentResOffset, imageDescriptorSize, imageDescriptorAlignment, heapIndex,
-                         textureDescriptorOffset),
+    logInfo(std::format("Descriptor heap image write: type={} offset={} size={} align={} index={} nextOffset={}",
+                         vk::to_string(type), currentResOffset, imageDescriptorSize, imageDescriptorAlignment,
+                         heapIndex, textureDescriptorOffset),
              "DescriptorHeap");
+    return heapIndex;
 }
 
 
-void DescriptorManager::writeImageAt(vk::DeviceSize offset, const vk::ImageViewCreateInfo& imageViewCreateInfo) const
+void DescriptorManager::writeImageAt(vk::DeviceSize offset, const vk::ImageViewCreateInfo& imageViewCreateInfo,
+                                     vk::DescriptorType type, vk::ImageLayout layout) const
 {
     const vk::ImageDescriptorInfoEXT descriptorImageInfo{
         .pView = &imageViewCreateInfo,
-        .layout = vk::ImageLayout::eShaderReadOnlyOptimal,
+        .layout = layout,
     };
     const vk::ResourceDescriptorInfoEXT imageInfo{
-        .type = vk::DescriptorType::eSampledImage,
+        .type = type,
         .data = vk::ResourceDescriptorDataEXT{&descriptorImageInfo},
     };
     const vk::HostAddressRangeEXT imageWrite{

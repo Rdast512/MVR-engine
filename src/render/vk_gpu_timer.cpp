@@ -33,10 +33,8 @@ void GpuTimer::collect(uint32_t frameSlot)
     for (size_t scope = 0; scope < kGpuTimerScopeCount; ++scope) {
         const float ms = static_cast<float>(ticks[scope + 1] - ticks[scope]) * timestampPeriodNs * 1e-6f;
         histories[scope][historyHead] = ms;
+        TracyPlot(gpuTimerScopeName(static_cast<GpuTimerScope>(scope)), static_cast<double>(ms));
     }
-    TracyPlot("GPU/CullMs", static_cast<double>(histories[0][historyHead]));
-    TracyPlot("GPU/PreprocessMs", static_cast<double>(histories[1][historyHead]));
-    TracyPlot("GPU/DrawMs", static_cast<double>(histories[2][historyHead]));
     historyHead = (historyHead + 1) % kHistorySize;
     historyCount = std::min(historyCount + 1, kHistorySize);
 }

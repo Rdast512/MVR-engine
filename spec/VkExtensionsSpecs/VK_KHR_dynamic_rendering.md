@@ -258,7 +258,7 @@ When adding pipelines (shadow, post, UI), always pair formats with the recording
 
 - `UseDynamicRendering = true`
 - `RenderPass = VK_NULL_HANDLE`
-- Formats match swapchain color + depth (note MSAA: ImGui init uses `device->msaaSamples`)
+- Formats match swapchain color + depth (single-sample: ImGui init uses `VK_SAMPLE_COUNT_1_BIT`)
 
 ImGui draws **inside** the same `beginRendering`/`endRendering` scope after main geometry.
 

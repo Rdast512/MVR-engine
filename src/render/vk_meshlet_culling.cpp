@@ -17,6 +17,8 @@ namespace
     constexpr const char* kCullViewTracyName = "GPU/CullView";
     constexpr const char* kCullCountersTracyName = "GPU/CullCounters";
     constexpr const char* kInstanceItemsTracyName = "GPU/InstanceCullItems";
+    constexpr const char* kInstanceCandidatesTracyName = "GPU/InstanceCandidates";
+    constexpr const char* kMeshletCandidatesTracyName = "GPU/MeshletCandidates";
     constexpr const char* kDrawRecordTemplatesTracyName = "GPU/DrawRecordTemplates";
     constexpr const char* kDrawRecordsTracyName = "GPU/DrawRecords";
     constexpr const char* kVisibleMeshletsTracyName = "GPU/VisibleMeshlets";
@@ -85,11 +87,11 @@ void MeshletCulling::createFrameBuffers()
 {
     const VmaAllocator allocator = resourceManager.allocator.allocator;
     for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
-        createMappedBuffer(frames[slot].cullView, sizeof(GpuCullView), vk::BufferUsageFlagBits2::eStorageBuffer,
+        createMappedBuffer(frames[slot].cullView, sizeof(PhaseCullViews), vk::BufferUsageFlagBits2::eStorageBuffer,
                            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
                            device, allocator, std::format("CullView_{}", slot), kCullViewTracyName);
         // indirect: the meshlet dispatch and the DGC sequence counts are read from here
-        createMappedBuffer(frames[slot].counters, sizeof(GpuCullCounters),
+        createMappedBuffer(frames[slot].counters, sizeof(kInitialCullCounters),
                            vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eIndirectBuffer |
                                vk::BufferUsageFlagBits2::eTransferDst,
                            vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible |
@@ -107,23 +109,32 @@ void MeshletCulling::destroyFrameBuffers()
         destroyVmaBuffer(allocator, buffers.counters.buffer, buffers.counters.memory, kCullCountersTracyName);
         destroyVmaBuffer(allocator, buffers.instanceItems.buffer, buffers.instanceItems.memory,
                          kInstanceItemsTracyName);
+        destroyVmaBuffer(allocator, buffers.instanceCandidates.buffer, buffers.instanceCandidates.memory,
+                         kInstanceCandidatesTracyName);
         destroyVmaBuffer(allocator, buffers.drawRecordTemplates.buffer, buffers.drawRecordTemplates.memory,
                          kDrawRecordTemplatesTracyName);
         destroyVmaBuffer(allocator, buffers.drawRecords.buffer, buffers.drawRecords.memory, kDrawRecordsTracyName);
         destroyVmaBuffer(allocator, buffers.visibleMeshlets.buffer, buffers.visibleMeshlets.memory,
                          kVisibleMeshletsTracyName);
+        destroyVmaBuffer(allocator, buffers.meshletCandidates.buffer, buffers.meshletCandidates.memory,
+                         kMeshletCandidatesTracyName);
     }
 }
 
-void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera)
+void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera, const HiZPyramid& hiz)
 {
     ZoneScopedN("MeshletCulling::prepareFrame");
     const auto start = std::chrono::steady_clock::now();
     frame = frameSlot;
     readBackCounters(frameSlot);
 
-    if (templates.generation != resourceManager.nodeInstanceLayoutGeneration) {
+    const bool isLayoutChanged = templates.generation != resourceManager.nodeInstanceLayoutGeneration;
+    if (isLayoutChanged) {
         buildTemplates();
+    }
+    const OcclusionHistory history = occlusionHistory(camera, hiz, isLayoutChanged);
+    if (history != OcclusionHistory::Valid && history != OcclusionHistory::Disabled) {
+        ++fallbackFrames;
     }
     if (frames[frameSlot].generation != templates.generation) {
         uploadTemplates(frameSlot);
@@ -133,12 +144,14 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera)
 
     // every template may survive, so the per-group meshlet totals bound the visible lists and sequences
     const uint32_t totalMeshlets = std::reduce(templates.groupMeshlets.begin(), templates.groupMeshlets.end(), 0u);
+    // one visible region of totalMeshlets rows per phase
+    resourceManager.lateVisibleBases[frameSlot] = totalMeshlets * std::to_underlying(CullPhase::Late);
     const uint32_t perSequence = meshletsPerSequence(totalMeshlets);
     std::array<uint32_t, kMeshStateGroupCount> maxSequences{};
     std::ranges::transform(templates.groupMeshlets, maxSequences.begin(),
                            [perSequence](uint32_t meshlets) { return divideRoundUp(meshlets, perSequence); });
     dgc.prepareFrame(frameSlot, maxSequences, frames[frameSlot].counters.address);
-    writeCullView(frameSlot, camera, perSequence);
+    writeCullView(frameSlot, camera, hiz, history, perSequence);
 
     recorded[frameSlot] = RecordedFrame{
         .totals =
@@ -148,6 +161,8 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera)
                 .totalMeshlets = totalMeshlets,
                 .meshletsPerSequence = perSequence,
                 .groupMeshlets = templates.groupMeshlets,
+                .history = history,
+                .fallbackFrames = fallbackFrames,
                 .cpuPrepareMs =
                     std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count(),
             },
@@ -162,24 +177,21 @@ void MeshletCulling::readBackCounters(uint32_t frameSlot)
         return;
     }
     // the slot's fence has signaled, so its counters are final
-    const GpuCullCounters counters = *static_cast<const GpuCullCounters*>(frames[frameSlot].counters.mapped);
     stats = record.totals;
-    stats.visibleDrawRecords = counters.meshletDispatch[0];
-    stats.visibleMeshlets = counters.visibleMeshlets;
-    stats.sequences = counters.sequenceCount;
-    stats.instancesCulled = counters.instancesCulled;
-    stats.testedMeshlets = counters.testedMeshlets;
-    stats.frustumCulled = counters.frustumCulled;
-    stats.coneCulled = counters.coneCulled;
-    stats.unculledMeshlets = counters.unculledMeshlets;
+    stats.phases = *static_cast<const decltype(kInitialCullCounters)*>(frames[frameSlot].counters.mapped);
 
-    TracyPlot("Culling/VisibleMeshlets",
-              static_cast<double>(std::reduce(stats.visibleMeshlets.begin(), stats.visibleMeshlets.end(), 0u)));
+    [[maybe_unused]] const GpuCullCounters& early = stats.phase(CullPhase::Early);
+    [[maybe_unused]] const GpuCullCounters& late = stats.phase(CullPhase::Late);
     TracyPlot("Culling/TotalMeshlets", static_cast<double>(stats.totalMeshlets));
-    TracyPlot("Culling/InstancesCulled", static_cast<double>(stats.instancesCulled));
-    TracyPlot("Culling/VisibleDrawRecords", static_cast<double>(stats.visibleDrawRecords));
-    TracyPlot("Culling/FrustumCulled", static_cast<double>(stats.frustumCulled));
-    TracyPlot("Culling/ConeCulled", static_cast<double>(stats.coneCulled));
+    TracyPlot("Culling/EarlyVisibleMeshlets", static_cast<double>(visibleMeshletCount(early)));
+    TracyPlot("Culling/LateVisibleMeshlets", static_cast<double>(visibleMeshletCount(late)));
+    TracyPlot("Culling/MeshletCandidates", static_cast<double>(late.meshletCandidateCount));
+    TracyPlot("Culling/InstanceCandidates", static_cast<double>(late.instanceDispatch[0]));
+    TracyPlot("Culling/FrustumCulled", static_cast<double>(early.frustumCulled + late.frustumCulled));
+    TracyPlot("Culling/ConeCulled", static_cast<double>(early.coneCulled + late.coneCulled));
+    // late is the final verdict: early-occluded meshlets are re-tested there
+    TracyPlot("Culling/MeshletsOccluded", static_cast<double>(late.occlusionCulled));
+    TracyPlot("Culling/HistoryValid", stats.history == OcclusionHistory::Valid ? 1.0 : 0.0);
 }
 
 MeshStateGroup MeshletCulling::stateGroupOf(const PrimitiveDraw& primitive) const
@@ -266,6 +278,11 @@ void MeshletCulling::uploadTemplates(uint32_t frameSlot)
         createMappedBuffer(buffers.instanceItems, sizeof(GpuInstanceCullItem) * vk::DeviceSize{buffers.instanceCapacity},
                            vk::BufferUsageFlagBits2::eStorageBuffer, kHostProperties, device, allocator,
                            std::format("InstanceCullItems_{}", frameSlot), kInstanceItemsTracyName);
+        destroyVmaBuffer(allocator, buffers.instanceCandidates.buffer, buffers.instanceCandidates.memory,
+                         kInstanceCandidatesTracyName);
+        createDeviceBuffer(buffers.instanceCandidates, sizeof(uint32_t) * vk::DeviceSize{buffers.instanceCapacity},
+                           device, allocator, std::format("InstanceCandidates_{}", frameSlot),
+                           kInstanceCandidatesTracyName);
     }
 
     const auto recordCount = static_cast<uint32_t>(templates.drawRecords.size());
@@ -278,17 +295,29 @@ void MeshletCulling::uploadTemplates(uint32_t frameSlot)
         createMappedBuffer(buffers.drawRecordTemplates, size, vk::BufferUsageFlagBits2::eStorageBuffer, kHostProperties,
                            device, allocator, std::format("DrawRecordTemplates_{}", frameSlot),
                            kDrawRecordTemplatesTracyName);
-        createDeviceBuffer(buffers.drawRecords, size, device, allocator, std::format("DrawRecords_{}", frameSlot),
-                           kDrawRecordsTracyName);
+        // one region per phase: an instance draws in at most one of them
+        createDeviceBuffer(buffers.drawRecords, size * kCullPhaseCount, device, allocator,
+                           std::format("DrawRecords_{}", frameSlot), kDrawRecordsTracyName);
     }
 
+    // one region per phase
     const uint32_t totalMeshlets = std::reduce(templates.groupMeshlets.begin(), templates.groupMeshlets.end(), 0u);
-    if (totalMeshlets > buffers.visibleCapacity || buffers.visibleMeshlets.memory == nullptr) {
-        buffers.visibleCapacity = grownCapacity(totalMeshlets, buffers.visibleCapacity, kMinVisibleCapacity);
+    const uint32_t visibleRows = totalMeshlets * kCullPhaseCount;
+    if (visibleRows > buffers.visibleCapacity || buffers.visibleMeshlets.memory == nullptr) {
+        buffers.visibleCapacity = grownCapacity(visibleRows, buffers.visibleCapacity, kMinVisibleCapacity);
         destroyVmaBuffer(allocator, buffers.visibleMeshlets.buffer, buffers.visibleMeshlets.memory,
                          kVisibleMeshletsTracyName);
         createDeviceBuffer(buffers.visibleMeshlets, sizeof(uint32_t) * vk::DeviceSize{buffers.visibleCapacity}, device,
                            allocator, std::format("VisibleMeshlets_{}", frameSlot), kVisibleMeshletsTracyName);
+    }
+    if (totalMeshlets > buffers.meshletCandidateCapacity || buffers.meshletCandidates.memory == nullptr) {
+        buffers.meshletCandidateCapacity =
+            grownCapacity(totalMeshlets, buffers.meshletCandidateCapacity, kMinVisibleCapacity);
+        destroyVmaBuffer(allocator, buffers.meshletCandidates.buffer, buffers.meshletCandidates.memory,
+                         kMeshletCandidatesTracyName);
+        createDeviceBuffer(buffers.meshletCandidates,
+                           sizeof(uint32_t) * vk::DeviceSize{buffers.meshletCandidateCapacity}, device, allocator,
+                           std::format("MeshletCandidates_{}", frameSlot), kMeshletCandidatesTracyName);
     }
 
     // write-combined memory: one sequential copy each, never read back
@@ -314,7 +343,30 @@ uint32_t MeshletCulling::meshletsPerSequence(uint32_t totalMeshlets) const
     return std::max(perSequence, divideRoundUp(totalMeshlets, maxSequences));
 }
 
-void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, uint32_t perSequence)
+// first match wins, so the reported reason is the most fundamental one
+OcclusionHistory MeshletCulling::occlusionHistory(const Camera& camera, const HiZPyramid& hiz,
+                                                  bool isLayoutChanged) const
+{
+    if (!settings.isOcclusionEnabled) {
+        return OcclusionHistory::Disabled;
+    }
+    if (!hiz.hasContent()) {
+        return OcclusionHistory::NoPyramid;
+    }
+    if (camera.isCut()) {
+        return OcclusionHistory::CameraCut;
+    }
+    if (isLayoutChanged) {
+        return OcclusionHistory::SceneChanged;
+    }
+    if (settings.isCameraFrozen) {
+        return OcclusionHistory::CameraFrozen;
+    }
+    return OcclusionHistory::Valid;
+}
+
+void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, const HiZPyramid& hiz,
+                                   OcclusionHistory history, uint32_t perSequence)
 {
     if (settings.isCameraFrozen && !wasCameraFrozen) {
         frozenViewProj = camera.cameraData.viewProj;
@@ -325,12 +377,13 @@ void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, uin
     const glm::vec3& position = settings.isCameraFrozen ? frozenPosition : camera.cameraData.cameraPos;
 
     const FrameBuffers& buffers = frames[frameSlot];
-    GpuCullView view{
+    const GpuCullView view{
         .frustumPlanes = frustumPlanes(viewProj),
         .cameraPos = position,
         .flags = (settings.isFrustumEnabled ? CullFlag::Frustum : 0u) | (settings.isConeEnabled ? CullFlag::Cone : 0u) |
                  (settings.isStatsEnabled ? CullFlag::Stats : 0u) |
-                 (settings.isInstanceFrustumEnabled ? CullFlag::InstanceFrustum : 0u),
+                 (settings.isInstanceFrustumEnabled ? CullFlag::InstanceFrustum : 0u) |
+                 (settings.isOcclusionEnabled ? CullFlag::Occlusion : 0u),
         .visibleMeshlets = buffers.visibleMeshlets.address,
         .counters = buffers.counters.address,
         .sequences = dgc.sequenceAddress(),
@@ -338,39 +391,75 @@ void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, uin
         .drawRecordTemplates = buffers.drawRecordTemplates.address,
         .instanceCount = static_cast<uint32_t>(templates.instances.size()),
         .maxMeshletsPerSequence = perSequence,
+        .hizPyramid = hiz.pyramidHeapIndex(),
+        .hizMaxSampler = hiz.maxSamplerHeapIndex(),
+        .hizSize = hiz.size(),
+        .instanceCandidates = buffers.instanceCandidates.address,
+        .meshletCandidates = buffers.meshletCandidates.address,
     };
-    std::exclusive_scan(templates.groupMeshlets.begin(), templates.groupMeshlets.end(),
-                        view.groupVisibleOffset.begin(), 0u);
-    for (uint32_t group = 0; group < kMeshStateGroupCount; ++group) {
-        view.groupSequenceOffset[group] = dgc.groupSequenceOffset(static_cast<MeshStateGroup>(group));
+    const uint32_t phaseVisibleRows =
+        std::reduce(templates.groupMeshlets.begin(), templates.groupMeshlets.end(), 0u);
+    PhaseCullViews views{};
+    for (uint32_t phase = 0; phase < kCullPhaseCount; ++phase) {
+        GpuCullView& phaseView = views[phase];
+        phaseView = view;
+        const bool isLate = static_cast<CullPhase>(phase) == CullPhase::Late;
+        phaseView.counters += phase * sizeof(GpuCullCounters);
+        phaseView.flags |= isLate ? CullFlag::LatePhase : 0u;
+        // without history the early phase draws everything that survives frustum + cone; no candidates follow
+        if (!isLate && history != OcclusionHistory::Valid) {
+            phaseView.flags &= ~CullFlag::Occlusion;
+        }
+        phaseView.lateCounters =
+            isLate ? 0 : buffers.counters.address + std::to_underlying(CullPhase::Late) * sizeof(GpuCullCounters);
+        phaseView.drawRecordBase = phase * static_cast<uint32_t>(templates.drawRecords.size());
+        // the pyramid follows the render camera, not a frozen cull camera
+        phaseView.occlusionViewProj = isLate ? camera.cameraData.viewProj : camera.cameraData.prevViewProj;
+        std::exclusive_scan(templates.groupMeshlets.begin(), templates.groupMeshlets.end(),
+                            phaseView.groupVisibleOffset.begin(), phase * phaseVisibleRows);
+        for (uint32_t group = 0; group < kMeshStateGroupCount; ++group) {
+            phaseView.groupSequenceOffset[group] =
+                dgc.groupSequenceOffset(static_cast<CullPhase>(phase), static_cast<MeshStateGroup>(group));
+        }
     }
-    *static_cast<GpuCullView*>(buffers.cullView.mapped) = view;
+    *static_cast<PhaseCullViews*>(buffers.cullView.mapped) = views;
 }
 
-void MeshletCulling::recordCull(const vk::raii::CommandBuffer& cmd) const
+void MeshletCulling::recordCull(const vk::raii::CommandBuffer& cmd, CullPhase phase) const
 {
     ZoneScopedN("MeshletCulling::recordCull");
     const FrameBuffers& buffers = frames[frame];
-    // one write: zeroes plus the y = z = 1 of the meshlet dispatch
-    cmd.updateBuffer<GpuCullCounters>(*buffers.counters.buffer, 0, kInitialCullCounters);
-
-    const vk::MemoryBarrier2 resetBarrier{
-        .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
-        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
+    const bool isEarly = phase == CullPhase::Early;
+    const vk::DeviceSize countersOffset = std::to_underlying(phase) * sizeof(GpuCullCounters);
+    if (isEarly) {
+        // one write for both phases: zeroes plus the y = z = 1 of each indirect dispatch
+        cmd.updateBuffer<std::array<GpuCullCounters, kCullPhaseCount>>(*buffers.counters.buffer, 0,
+                                                                        kInitialCullCounters);
+    }
+    // early: counter reset and the previous frame's late pyramid. late: candidates and their count from the early
+    // instance cull, and the early pyramid
+    const vk::MemoryBarrier2 inputBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eTransfer | vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite | vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eDrawIndirect | vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eIndirectCommandRead | vk::AccessFlagBits2::eShaderStorageRead |
+                         vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eShaderSampledRead,
     };
-    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &resetBarrier});
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &inputBarrier});
 
     if (!templates.instances.empty()) {
         const CullPushData push{
             .frameRoot = resourceManager.frameRootAddress(frame),
-            .cullView = buffers.cullView.address,
+            .cullView = buffers.cullView.address + std::to_underlying(phase) * sizeof(GpuCullView),
         };
         cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
 
         ShaderObjects::bindComputeShader(cmd, shaderObjects.cullShaders.cullInstances);
-        cmd.dispatch(static_cast<uint32_t>(templates.instances.size()), 1, 1);
+        if (isEarly) {
+            cmd.dispatch(static_cast<uint32_t>(templates.instances.size()), 1, 1);
+        } else {
+            cmd.dispatchIndirect(*buffers.counters.buffer, countersOffset + offsetof(GpuCullCounters, instanceDispatch));
+        }
 
         // draw records feed the meshlet cull, their count its indirect dispatch
         const vk::MemoryBarrier2 instanceBarrier{
@@ -382,16 +471,24 @@ void MeshletCulling::recordCull(const vk::raii::CommandBuffer& cmd) const
         };
         cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &instanceBarrier});
 
-        ShaderObjects::bindComputeShader(cmd, shaderObjects.cullShaders.cullMeshlets);
-        cmd.dispatchIndirect(*buffers.counters.buffer, offsetof(GpuCullCounters, meshletDispatch));
-
+        // visible appends of the late meshlet passes, then the counts read by buildMeshSequences
         const vk::MemoryBarrier2 cullBarrier{
             .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
             .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
             .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-            .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
         };
+        ShaderObjects::bindComputeShader(cmd, shaderObjects.cullShaders.cullMeshlets);
+        cmd.dispatchIndirect(*buffers.counters.buffer, countersOffset + offsetof(GpuCullCounters, meshletDispatch));
         cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &cullBarrier});
+
+        // the early meshlet cull wrote the candidates and their dispatch; inputBarrier made them visible
+        if (!isEarly) {
+            ShaderObjects::bindComputeShader(cmd, shaderObjects.cullShaders.cullMeshletCandidates);
+            cmd.dispatchIndirect(*buffers.counters.buffer,
+                                 countersOffset + offsetof(GpuCullCounters, meshletCandidateDispatch));
+            cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &cullBarrier});
+        }
 
         ShaderObjects::bindComputeShader(cmd, shaderObjects.cullShaders.buildMeshSequences);
         cmd.dispatch(1, 1, 1);

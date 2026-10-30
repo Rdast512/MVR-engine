@@ -13,7 +13,6 @@
  */
 #include "vk_device.hpp"
 #include <array>
-#include <bit>
 #include <cstddef>
 #include <format>
 #include <optional>
@@ -122,6 +121,8 @@ constexpr std::array kRequiredFeatures = {
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, bufferDeviceAddress),
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, vulkanMemoryModel),
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, vulkanMemoryModelDeviceScope),
+    // hi-z max-reduction sampler
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, samplerFilterMinmax),
     // textureCompressionASTC_HDR stays off: rtx 2060 super not supported
     ENGINE_FEATURE(PhysicalDeviceVulkan13Features, synchronization2),
     ENGINE_FEATURE(PhysicalDeviceVulkan13Features, dynamicRendering),
@@ -545,14 +546,6 @@ void Device::createSurface()
     surface = vk::raii::SurfaceKHR(instance, rawSurface);
 }
 
-vk::SampleCountFlagBits Device::getMaxUsableSampleCount() const
-{
-    const vk::PhysicalDeviceLimits& limits = capabilities.properties2.properties.limits;
-    // only counts usable by both attachment types; e1 is always set, so bit_floor is never 0
-    const vk::SampleCountFlags counts = limits.framebufferColorSampleCounts & limits.framebufferDepthSampleCounts;
-    return static_cast<vk::SampleCountFlagBits>(std::bit_floor(static_cast<uint32_t>(counts)));
-}
-
 
 void Device::pickPhysicalDevice()
 {
@@ -846,8 +839,6 @@ void Device::createLogicalDevice()
     setDebugName(vkdevice, physicalDevice, "PhysicalDevice");
     setDebugName(vkdevice, surface, "WindowSurface");
     setDebugName(vkdevice, vkdevice, "LogicalDevice");
-
-    msaaSamples = getMaxUsableSampleCount();
 
     createQueues();
 }

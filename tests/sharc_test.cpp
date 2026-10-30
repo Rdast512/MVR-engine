@@ -8,9 +8,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <string>
-#include <vector>
 
 using test::check;
 
@@ -55,110 +53,6 @@ namespace
     {
         return {static_cast<float>(probe + 1) * 0.1f, static_cast<float>(probe % 5 + 1) * 0.1f,
                 static_cast<float>(hit + 1) * 0.1f};
-    }
-
-    struct HostBuffer
-    {
-        VkBuffer buffer = VK_NULL_HANDLE;
-        VkDeviceMemory memory = VK_NULL_HANDLE;
-        void* mapped = nullptr;
-        VkDeviceAddress address = 0;
-    };
-
-    // host-visible so the test can zero and read back without staging
-    HostBuffer createBuffer(const test::VulkanContext& vulkan, VkDeviceSize size)
-    {
-        HostBuffer result;
-        VkBufferCreateInfo bufferInfo{};
-        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = size;
-        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-        vkCreateBuffer(vulkan.device, &bufferInfo, nullptr, &result.buffer);
-
-        VkMemoryRequirements requirements{};
-        vkGetBufferMemoryRequirements(vulkan.device, result.buffer, &requirements);
-        VkPhysicalDeviceMemoryProperties memoryProps{};
-        vkGetPhysicalDeviceMemoryProperties(vulkan.gpu, &memoryProps);
-        constexpr VkMemoryPropertyFlags kHostFlags =
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        uint32_t memoryType = UINT32_MAX;
-        for (uint32_t i = 0; i < memoryProps.memoryTypeCount; ++i) {
-            const VkMemoryPropertyFlags flags = memoryProps.memoryTypes[i].propertyFlags;
-            if ((requirements.memoryTypeBits & (1u << i)) && (flags & kHostFlags) == kHostFlags) {
-                memoryType = i;
-                if (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
-                    break;
-                }
-            }
-        }
-
-        VkMemoryAllocateFlagsInfo flagsInfo{};
-        flagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-        flagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
-        VkMemoryAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocInfo.pNext = &flagsInfo;
-        allocInfo.allocationSize = requirements.size;
-        allocInfo.memoryTypeIndex = memoryType;
-        vkAllocateMemory(vulkan.device, &allocInfo, nullptr, &result.memory);
-        vkBindBufferMemory(vulkan.device, result.buffer, result.memory, 0);
-        vkMapMemory(vulkan.device, result.memory, 0, VK_WHOLE_SIZE, 0, &result.mapped);
-        // SHaRC requires zero-initialized buffers
-        std::memset(result.mapped, 0, size);
-
-        VkBufferDeviceAddressInfo addressInfo{};
-        addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-        addressInfo.buffer = result.buffer;
-        result.address = vkGetBufferDeviceAddress(vulkan.device, &addressInfo);
-        return result;
-    }
-
-    void destroyBuffer(const test::VulkanContext& vulkan, HostBuffer& buffer)
-    {
-        vkDestroyBuffer(vulkan.device, buffer.buffer, nullptr);
-        vkFreeMemory(vulkan.device, buffer.memory, nullptr);
-    }
-
-    std::vector<uint32_t> readSpirv(const std::string& path)
-    {
-        std::ifstream file(path, std::ios::binary | std::ios::ate);
-        if (!file) {
-            return {};
-        }
-        std::vector<uint32_t> code(static_cast<size_t>(file.tellg()) / sizeof(uint32_t));
-        file.seekg(0);
-        file.read(reinterpret_cast<char*>(code.data()), static_cast<std::streamsize>(code.size() * sizeof(uint32_t)));
-        return code;
-    }
-
-    VkPipeline createPipeline(const test::VulkanContext& vulkan, VkPipelineLayout layout, const char* entry)
-    {
-        const std::string path = std::string(SHARC_TEST_SHADER_DIR) + "/" + entry + ".spv";
-        const std::vector<uint32_t> code = readSpirv(path);
-        if (code.empty()) {
-            std::printf("  missing %s\n", path.c_str());
-            return VK_NULL_HANDLE;
-        }
-
-        VkShaderModuleCreateInfo moduleInfo{};
-        moduleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-        moduleInfo.codeSize = code.size() * sizeof(uint32_t);
-        moduleInfo.pCode = code.data();
-        VkShaderModule module = VK_NULL_HANDLE;
-        vkCreateShaderModule(vulkan.device, &moduleInfo, nullptr, &module);
-
-        VkComputePipelineCreateInfo pipelineInfo{};
-        pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        pipelineInfo.stage.module = module;
-        pipelineInfo.stage.pName = entry;
-        pipelineInfo.layout = layout;
-        VkPipeline pipeline = VK_NULL_HANDLE;
-        const VkResult result =
-            vkCreateComputePipelines(vulkan.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
-        vkDestroyShaderModule(vulkan.device, module, nullptr);
-        return result == VK_SUCCESS ? pipeline : VK_NULL_HANDLE;
     }
 
     void barrier(VkCommandBuffer cmd, VkPipelineStageFlags dstStage, VkAccessFlags dstAccess)
@@ -225,17 +119,21 @@ int main()
     VkPipelineLayout layout = VK_NULL_HANDLE;
     vkCreatePipelineLayout(vulkan.device, &layoutInfo, nullptr, &layout);
 
-    const std::array<VkPipeline, 3> pipelines = {createPipeline(vulkan, layout, "updateMain"),
-                                                 createPipeline(vulkan, layout, "resolveMain"),
-                                                 createPipeline(vulkan, layout, "queryMain")};
+    const auto createPipeline = [&](const char* entry) {
+        return test::createComputePipeline(vulkan, layout, std::string(SHARC_TEST_SHADER_DIR) + "/" + entry + ".spv",
+                                           entry);
+    };
+    const std::array<VkPipeline, 3> pipelines = {createPipeline("updateMain"), createPipeline("resolveMain"),
+                                                 createPipeline("queryMain")};
     const bool hasPipelines = check(pipelines[0] != VK_NULL_HANDLE && pipelines[1] != VK_NULL_HANDLE &&
                                         pipelines[2] != VK_NULL_HANDLE,
                                     "update / resolve / query pipelines created");
 
-    HostBuffer hashEntries = createBuffer(vulkan, kCapacity * kHashEntryStride);
-    HostBuffer accumulation = createBuffer(vulkan, kCapacity * kAccumulationStride);
-    HostBuffer resolved = createBuffer(vulkan, kCapacity * kResolvedStride);
-    HostBuffer results = createBuffer(vulkan, kQueryCount * 4 * sizeof(float));
+    // SHaRC requires zero-initialized buffers, which createHostBuffer guarantees
+    test::HostBuffer hashEntries = test::createHostBuffer(vulkan, kCapacity * kHashEntryStride);
+    test::HostBuffer accumulation = test::createHostBuffer(vulkan, kCapacity * kAccumulationStride);
+    test::HostBuffer resolved = test::createHostBuffer(vulkan, kCapacity * kResolvedStride);
+    test::HostBuffer results = test::createHostBuffer(vulkan, kQueryCount * 4 * sizeof(float));
 
     if (hasPipelines) {
         const SharcPush push{hashEntries.address, accumulation.address, resolved.address, results.address,
@@ -265,8 +163,8 @@ int main()
         verifyResults(static_cast<const float*>(results.mapped));
     }
 
-    for (HostBuffer* buffer : {&hashEntries, &accumulation, &resolved, &results}) {
-        destroyBuffer(vulkan, *buffer);
+    for (test::HostBuffer* buffer : {&hashEntries, &accumulation, &resolved, &results}) {
+        test::destroyHostBuffer(vulkan, *buffer);
     }
     for (VkPipeline pipeline : pipelines) {
         vkDestroyPipeline(vulkan.device, pipeline, nullptr);

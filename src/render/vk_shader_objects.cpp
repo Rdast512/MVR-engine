@@ -29,9 +29,8 @@ namespace
     }
 } // namespace
 
-ShaderObjects::ShaderObjects(ResourceManager& resourceManager, DescriptorManager& descriptorManager,
-                             const vk::raii::Device& device) :
-    device(device), resourceManager(resourceManager), descriptorManager(descriptorManager)
+ShaderObjects::ShaderObjects(DescriptorManager& descriptorManager, const vk::raii::Device& device) :
+    device(device), descriptorManager(descriptorManager)
 {
 }
 
@@ -39,6 +38,7 @@ void ShaderObjects::init()
 {
     createMeshShaders();
     createCullShaders();
+    createHiZShaders();
 }
 
 bool ShaderObjects::usesDescriptorHeaps() const
@@ -62,13 +62,28 @@ void ShaderObjects::createMeshShaders()
         .fragmentEntry = "fragDebugMain",
         .debugName = "MeshDebug",
     });
+    hizView = createMeshShaderPair({
+        .meshFile = "hiz_view.spv",
+        .fragmentFile = "hiz_view.spv",
+        .meshEntry = "hizViewMesh",
+        .fragmentEntry = "hizViewFrag",
+        .debugName = "HiZView",
+    });
 }
 
 void ShaderObjects::createCullShaders()
 {
     cullShaders.cullInstances = createComputeShader("meshlet_cull.spv", "cullInstances", "CullInstances");
     cullShaders.cullMeshlets = createComputeShader("meshlet_cull.spv", "cullMeshlets", "CullMeshlets");
+    cullShaders.cullMeshletCandidates =
+        createComputeShader("meshlet_cull.spv", "cullMeshletCandidates", "CullMeshletCandidates");
     cullShaders.buildMeshSequences = createComputeShader("meshlet_cull.spv", "buildMeshSequences", "BuildMeshSequences");
+}
+
+void ShaderObjects::createHiZShaders()
+{
+    hizShaders.fromDepth = createComputeShader("hiz_build.spv", "hizFromDepth", "HiZFromDepth");
+    hizShaders.downsample = createComputeShader("hiz_build.spv", "hizDownsample", "HiZDownsample");
 }
 
 vk::raii::ShaderEXT ShaderObjects::createComputeShader(std::string_view file, const char* entry,
@@ -150,7 +165,19 @@ ShaderObjects::MeshShaderPair ShaderObjects::createMeshShaderPair(const MeshShad
 void ShaderObjects::bindMeshState(const vk::raii::CommandBuffer& cmd, RasterVariant variant,
                                   MeshStateGroup group) const
 {
-    const MeshShaderPair& shaderPair = pair(variant);
+    bindShaderPair(cmd, pair(variant));
+    setRasterState(cmd, group == MeshStateGroup::DoubleSided ? vk::CullModeFlagBits::eNone : vk::CullModeFlagBits::eBack,
+                   true);
+}
+
+void ShaderObjects::bindHiZViewState(const vk::raii::CommandBuffer& cmd) const
+{
+    bindShaderPair(cmd, hizView);
+    setRasterState(cmd, vk::CullModeFlagBits::eNone, false);
+}
+
+void ShaderObjects::bindShaderPair(const vk::raii::CommandBuffer& cmd, const MeshShaderPair& shaderPair)
+{
     // with meshShader/taskShader/geometryShader enabled every graphics stage must be bound explicitly
     constexpr std::array stages = {
         vk::ShaderStageFlagBits::eVertex, vk::ShaderStageFlagBits::eGeometry, vk::ShaderStageFlagBits::eTaskEXT,
@@ -159,11 +186,15 @@ void ShaderObjects::bindMeshState(const vk::raii::CommandBuffer& cmd, RasterVari
     const std::array<vk::ShaderEXT, stages.size()> shaders = {nullptr, nullptr, nullptr, *shaderPair.mesh,
                                                               *shaderPair.fragment};
     cmd.bindShadersEXT(stages, shaders);
+}
 
+void ShaderObjects::setRasterState(const vk::raii::CommandBuffer& cmd, vk::CullModeFlags cullMode,
+                                   bool isDepthEnabled)
+{
     // rasterization
     cmd.setRasterizerDiscardEnable(vk::False);
     cmd.setPolygonModeEXT(vk::PolygonMode::eFill);
-    cmd.setCullMode(group == MeshStateGroup::DoubleSided ? vk::CullModeFlagBits::eNone : vk::CullModeFlagBits::eBack);
+    cmd.setCullMode(cullMode);
     cmd.setFrontFace(vk::FrontFace::eCounterClockwise);
     cmd.setDepthBiasEnable(vk::False);
     // pipelineFragmentShadingRate is enabled, so the rate is required state
@@ -171,15 +202,14 @@ void ShaderObjects::bindMeshState(const vk::raii::CommandBuffer& cmd, RasterVari
                                            vk::FragmentShadingRateCombinerOpKHR::eKeep});
 
     // multisample
-    const vk::SampleCountFlagBits samples = resourceManager.msaaSamples;
     constexpr vk::SampleMask allSamples = ~0u;
-    cmd.setRasterizationSamplesEXT(samples);
-    cmd.setSampleMaskEXT(samples, allSamples);
+    cmd.setRasterizationSamplesEXT(vk::SampleCountFlagBits::e1);
+    cmd.setSampleMaskEXT(vk::SampleCountFlagBits::e1, allSamples);
     cmd.setAlphaToCoverageEnableEXT(vk::False);
 
     // depth / stencil
-    cmd.setDepthTestEnable(vk::True);
-    cmd.setDepthWriteEnable(vk::True);
+    cmd.setDepthTestEnable(isDepthEnabled ? vk::True : vk::False);
+    cmd.setDepthWriteEnable(isDepthEnabled ? vk::True : vk::False);
     cmd.setDepthCompareOp(vk::CompareOp::eLess);
     cmd.setStencilTestEnable(vk::False);
 

@@ -133,7 +133,6 @@ public:
     // grows/recreates the per-frame GpuObjectUB arrays to fit entityCount entries
     void ensureInstanceCapacity(uint32_t entityCount);
     void createUniformBuffers();
-    void createColorResources();
     // append load scratch to device-local SSBOs as one model, then drop CPU bulk arrays.
     // scratch without a new entity (failed load) is discarded
     void flushGpuAssets();
@@ -176,7 +175,6 @@ public:
     vk::Format findSupportedFormat(const std::vector<vk::Format> &candidates, vk::ImageTiling tiling,
                                    vk::FormatFeatureFlags features);
     vk::Format findDepthFormat();
-    static bool hasStencilComponent(vk::Format format);
     void updateSwapChainExtent(vk::Extent2D newExtent);
     void updateSwapChainImageFormat(vk::Format newFormat) { swapChainImageFormat = newFormat; }
 
@@ -193,7 +191,6 @@ public:
     LightStore &lightStore;
     uint32_t graphicsIndex;
     uint32_t transferIndex;
-    vk::SampleCountFlagBits msaaSamples;
     vk::Extent2D swapChainExtent{};
     uint32_t swapChainImageCount = 0;
     vk::Format swapChainImageFormat = vk::Format::eUndefined;
@@ -206,7 +203,6 @@ public:
     vk::raii::CommandPool transferCommandPool = nullptr;
     std::vector<vk::raii::CommandBuffer> commandBuffers;
     std::vector<vk::raii::CommandBuffer> transferCommandBuffer;
-    AttachmentImage colorAttachment;
     AttachmentImage depthAttachment;
 
     std::array<DeviceBuffer, kAssetBufferCount> assetBuffers;
@@ -234,6 +230,7 @@ public:
     // set by the cull passes before the frame root is written
     std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> drawRecordAddresses{};
     std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> visibleMeshletAddresses{};
+    std::array<uint32_t, MAX_FRAMES_IN_FLIGHT> lateVisibleBases{};
 
 private:
     // bytes written at dstOffset of an asset buffer; the buffer grows (x2) when the write passes its capacity
@@ -255,9 +252,7 @@ private:
     struct AttachmentDesc {
         vk::Format format;
         vk::ImageUsageFlags usage;
-        vk::ImageAspectFlags viewAspect;
-        // packed depth/stencil barriers need both aspects (VUID-VkImageMemoryBarrier2-image-03320)
-        vk::ImageAspectFlags barrierAspect;
+        vk::ImageAspectFlags aspect;
         vk::ImageLayout layout;
         const char* debugName;
         const char* tracyName;

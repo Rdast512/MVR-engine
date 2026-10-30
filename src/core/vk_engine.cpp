@@ -254,7 +254,7 @@ void Engine::initialize()
     }
 #endif
 
-    shaderObjects = std::make_unique<ShaderObjects>(*resourceManager, *descriptorManager, device->vkdevice);
+    shaderObjects = std::make_unique<ShaderObjects>(*descriptorManager, device->vkdevice);
     shaderObjects->init();
 
     renderer = std::make_unique<Renderer>(*device, *swapChain, *resourceManager, *descriptorManager, *shaderObjects,
@@ -286,7 +286,7 @@ void Engine::initialize()
         imguiPipelineRenderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
         initInfo.PipelineInfoMain.RenderPass = VK_NULL_HANDLE;
         initInfo.PipelineInfoMain.Subpass = 0;
-        initInfo.PipelineInfoMain.MSAASamples = static_cast<VkSampleCountFlagBits>(device->msaaSamples);
+        initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
         initInfo.PipelineInfoMain.PipelineRenderingCreateInfo = imguiPipelineRenderingInfo;
         if (!ImGui_ImplVulkan_Init(&initInfo)) {
             throw std::runtime_error("ImGui_ImplVulkan_Init failed");
@@ -731,6 +731,18 @@ void Engine::drawDebugViewPanel()
         ImGui::SetItemTooltip("barycentric wireframe over the debug colors");
         ImGui::TextDisabled("meshlet colors are per model: instances match");
         break;
+    case DebugViewCategory::Culling:
+        if (settings.view == DebugView::HiZPyramid) {
+            const int lastMip = static_cast<int>(renderer->getHiZMipCount()) - 1;
+            int mip = std::min(static_cast<int>(settings.hizMip), lastMip);
+            if (ImGui::SliderInt("Mip", &mip, 0, lastMip)) {
+                settings.hizMip = static_cast<uint32_t>(mip);
+            }
+            ImGui::TextDisabled("pyramid built from the early phase: what the late phase tests against");
+        } else {
+            ImGui::TextDisabled("blue: drawn early; orange: recovered by the late phase");
+        }
+        break;
     case DebugViewCategory::Lit:
     case DebugViewCategory::Lighting:
     case DebugViewCategory::Upscaling:
@@ -759,8 +771,12 @@ void Engine::drawCullingPanel()
     ImGui::SameLine();
     ImGui::Checkbox("Counters", &settings.isStatsEnabled);
     ImGui::SetItemTooltip("per-test counters cost a few wave atomics per meshlet group");
+    ImGui::Checkbox("Occlusion", &settings.isOcclusionEnabled);
+    ImGui::SetItemTooltip("hi-z test of instances and meshlets against the previous (early) or fresh (late) pyramid");
+    ImGui::SameLine();
     ImGui::Checkbox("Freeze culling camera", &settings.isCameraFrozen);
-    ImGui::SetItemTooltip("cull against the view at the moment of freezing; fly out to inspect the result");
+    ImGui::SetItemTooltip("cull against the view at the moment of freezing; fly out to inspect the result. "
+                          "occlusion falls back to off while frozen");
 
     int perSequence = static_cast<int>(settings.maxMeshletsPerSequence);
     constexpr int kPerSequenceStep = 16;
@@ -772,53 +788,97 @@ void Engine::drawCullingPanel()
                           "(driver 616.92 dropped sequences past 96 in one execute)");
 
     const MeshletCullStats& stats = culling.getStats();
-    const auto percent = [&](uint32_t value) {
-        return stats.totalMeshlets == 0 ? 0.0f : 100.0f * static_cast<float>(value) / static_cast<float>(stats.totalMeshlets);
-    };
-    const uint32_t visible = std::reduce(stats.visibleMeshlets.begin(), stats.visibleMeshlets.end(), 0u);
+    const GpuCullCounters& early = stats.phase(CullPhase::Early);
+    const GpuCullCounters& late = stats.phase(CullPhase::Late);
+    const uint32_t earlyVisible = visibleMeshletCount(early);
+    const uint32_t lateVisible = visibleMeshletCount(late);
 
+    ImGui::Text("Occlusion history: %s, fallback frames %u", occlusionHistoryName(stats.history),
+                stats.fallbackFrames);
+    ImGui::SetItemTooltip("without history the early phase skips occlusion and the late phase gets no candidates");
+
+    // rows: early, late, frame total (empty cells where a test does not run in that phase)
+    constexpr int64_t kNone = -1;
     constexpr ImGuiTableFlags kTableFlags =
         ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp;
-    if (ImGui::BeginTable("##cullStats", 3, kTableFlags)) {
-        ImGui::TableSetupColumn("Meshlets");
-        ImGui::TableSetupColumn("Count");
-        ImGui::TableSetupColumn("%");
+    const auto cell = [](int64_t value) {
+        ImGui::TableNextColumn();
+        if (value != kNone) {
+            ImGui::Text("%lld", static_cast<long long>(value));
+        }
+    };
+    const auto row = [&](const char* label, int64_t earlyValue, int64_t lateValue, int64_t total,
+                         const char* tooltip = nullptr) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(label);
+        if (tooltip != nullptr) {
+            ImGui::SetItemTooltip("%s", tooltip);
+        }
+        cell(earlyValue);
+        cell(lateValue);
+        cell(total);
+    };
+    const auto sum = [](uint32_t lhs, uint32_t rhs) { return static_cast<int64_t>(lhs) + rhs; };
+
+    if (ImGui::BeginTable("##cullInstances", 4, kTableFlags)) {
+        ImGui::TableSetupColumn("Instances");
+        ImGui::TableSetupColumn("Early");
+        ImGui::TableSetupColumn("Late");
+        ImGui::TableSetupColumn("Frame");
         ImGui::TableHeadersRow();
-        const auto row = [&](const char* label, uint32_t value, bool hasPercent) {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(label);
-            ImGui::TableNextColumn();
-            ImGui::Text("%u", value);
-            ImGui::TableNextColumn();
-            if (hasPercent) {
-                ImGui::Text("%.1f", percent(value));
-            }
-        };
-        row("Total", stats.totalMeshlets, false);
-        row("Visible", visible, true);
-        row("  single-sided", stats.visibleMeshlets[std::to_underlying(MeshStateGroup::SingleSided)], true);
-        row("  double-sided", stats.visibleMeshlets[std::to_underlying(MeshStateGroup::DoubleSided)], true);
+        row("Tested", stats.instances, late.instanceDispatch[0], stats.instances,
+            "late: candidates occluded early, re-tested against the fresh pyramid");
         if (settings.isStatsEnabled) {
-            // every meshlet of a surviving instance is tested or skipped, so the rest went with its instance
-            row("Instance culled", stats.totalMeshlets - stats.testedMeshlets - stats.unculledMeshlets, true);
-            row("Frustum culled", stats.frustumCulled, true);
-            row("Cone culled", stats.coneCulled, true);
-            row("Not tested (morph)", stats.unculledMeshlets, true);
+            row("Frustum culled", early.instancesCulled, kNone, early.instancesCulled);
+            row("Occluded", early.instancesOccluded, late.instancesOccluded, late.instancesOccluded,
+                "early: became candidates; frame: still occluded after the late re-test");
+            row("Drawn", early.instancesDrawn, late.instancesDrawn, sum(early.instancesDrawn, late.instancesDrawn));
+        }
+        row("Draw records", early.meshletDispatch[0], late.meshletDispatch[0],
+            sum(early.meshletDispatch[0], late.meshletDispatch[0]));
+        ImGui::EndTable();
+    }
+
+    if (ImGui::BeginTable("##cullMeshlets", 4, kTableFlags)) {
+        ImGui::TableSetupColumn("Meshlets");
+        ImGui::TableSetupColumn("Early");
+        ImGui::TableSetupColumn("Late");
+        ImGui::TableSetupColumn("Frame");
+        ImGui::TableHeadersRow();
+        row("Total", kNone, kNone, stats.totalMeshlets);
+        if (settings.isStatsEnabled) {
+            row("Tested", early.testedMeshlets, late.testedMeshlets, sum(early.testedMeshlets, late.testedMeshlets),
+                "meshlets of drawn instances; late: of recovered instances");
+            row("Candidates re-tested", kNone, late.meshletCandidateCount, kNone,
+                "early-occluded meshlets of early-drawn instances; only the occlusion test is redone");
+            row("Frustum culled", early.frustumCulled, late.frustumCulled, sum(early.frustumCulled, late.frustumCulled));
+            row("Cone culled", early.coneCulled, late.coneCulled, sum(early.coneCulled, late.coneCulled));
+            row("Occluded", early.occlusionCulled, late.occlusionCulled, late.occlusionCulled,
+                "early: became candidates; frame: still occluded after the late re-test");
+            row("Not tested (morph)", early.unculledMeshlets, late.unculledMeshlets,
+                sum(early.unculledMeshlets, late.unculledMeshlets));
+        }
+        row("Visible", earlyVisible, lateVisible, sum(earlyVisible, lateVisible));
+        for (const MeshStateGroup group : {MeshStateGroup::SingleSided, MeshStateGroup::DoubleSided}) {
+            const auto index = std::to_underlying(group);
+            row(group == MeshStateGroup::SingleSided ? "  single-sided" : "  double-sided",
+                early.visibleMeshlets[index], late.visibleMeshlets[index],
+                sum(early.visibleMeshlets[index], late.visibleMeshlets[index]));
+        }
+        for (const MeshStateGroup group : {MeshStateGroup::SingleSided, MeshStateGroup::DoubleSided}) {
+            const auto index = std::to_underlying(group);
+            row(group == MeshStateGroup::SingleSided ? "DGC sequences single" : "DGC sequences double",
+                early.sequenceCount[index], late.sequenceCount[index],
+                sum(early.sequenceCount[index], late.sequenceCount[index]));
         }
         ImGui::EndTable();
     }
-    if (settings.isStatsEnabled) {
-        ImGui::Text("Instances %u, culled %u", stats.instances, stats.instancesCulled);
-    } else {
-        ImGui::Text("Instances %u", stats.instances);
+    if (stats.totalMeshlets > 0) {
+        ImGui::Text("Drawn %.1f%% of meshlets, %u per sequence",
+                    100.0f * static_cast<float>(earlyVisible + lateVisible) / static_cast<float>(stats.totalMeshlets),
+                    stats.meshletsPerSequence);
     }
-    ImGui::Text("Draw records %u / %u, %u meshlets / sequence", stats.visibleDrawRecords, stats.drawRecords,
-                stats.meshletsPerSequence);
-    ImGui::SetItemTooltip("records of visible instances / all records; the meshlet cull dispatches one group each");
-    ImGui::Text("DGC sequences: single %u, double %u",
-                stats.sequences[std::to_underlying(MeshStateGroup::SingleSided)],
-                stats.sequences[std::to_underlying(MeshStateGroup::DoubleSided)]);
 
     ImGui::SeparatorText("Timings");
     ImGui::Text("CPU prepare %.3f ms", stats.cpuPrepareMs);
@@ -828,6 +888,12 @@ void Engine::drawCullingPanel()
         ImGui::TextDisabled("GPU timestamps not supported on the graphics queue");
         return;
     }
+    float gpuTotalMs = 0.0f;
+    for (size_t i = 0; i < kGpuTimerScopeCount; ++i) {
+        gpuTotalMs += timer.averageMs(static_cast<GpuTimerScope>(i));
+    }
+    ImGui::Text("GPU total %.3f ms (rolling %zu frames)", gpuTotalMs, GpuTimer::kHistorySize);
+    ImGui::SetItemTooltip("sum of the scopes below: begin of the early cull to the end of the late Hi-Z build");
     constexpr float kPlotHeight = 32.0f;
     for (size_t i = 0; i < kGpuTimerScopeCount; ++i) {
         const auto scope = static_cast<GpuTimerScope>(i);

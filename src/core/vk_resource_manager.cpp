@@ -57,7 +57,6 @@ namespace
         {"NodeBuffer", "GPU/Nodes", "Vulkan/NodeBytes", "Vulkan/NodeCapacityBytes", sizeof(GpuNode)},
     }};
 
-    constexpr const char* kColorTracyName = "GPU/ColorMSAA";
     constexpr const char* kDepthTracyName = "GPU/Depth";
     constexpr const char* kInstanceUboTracyName = "GPU/InstanceUBO";
     constexpr const char* kFrameRootTracyName = "GPU/FrameRoot";
@@ -206,8 +205,7 @@ ResourceManager::ResourceManager(const Device &deviceWrapper,
       materialStore(materialStoreIn),
       lightStore(lightStoreIn),
       graphicsIndex(deviceWrapper.graphicsIndex),
-      transferIndex(deviceWrapper.transferIndex),
-      msaaSamples(deviceWrapper.msaaSamples)
+      transferIndex(deviceWrapper.transferIndex)
 {
     logInfo("Initialized", "ResourceManager");
 }
@@ -322,6 +320,7 @@ void ResourceManager::writeFrameRoot(uint32_t frameSlot, uint32_t debugView)
         .instanceCount = objectStorage.size(),
         .primitiveCount = uploadedCount(AssetBuffer::Primitives),
         .nodeInstanceCount = nodeInstanceCount,
+        .lateVisibleBase = lateVisibleBases[frameSlot],
         .debugView = debugView,
     };
 }
@@ -406,7 +405,6 @@ ResourceManager::~ResourceManager()
     for (size_t i = 0; i < kAssetBufferCount; ++i) {
         destroyAssetBuffer(static_cast<AssetBuffer>(i));
     }
-    destroyAttachment(colorAttachment, kColorTracyName);
     destroyAttachment(depthAttachment, kDepthTracyName);
 }
 
@@ -805,6 +803,7 @@ void ResourceManager::writeNodeInstances(uint32_t frameSlot)
                 .worldMatrix = world,
                 .prevWorldMatrix = prevEntityMatrix * node.localToModel,
                 .boundingSphere = transformBoundingSphere(entityMatrix, node.boundingSphere),
+                .prevBoundingSphere = transformBoundingSphere(prevEntityMatrix, node.boundingSphere),
                 .entityIndex = id,
                 .modelIndex = modelId,
                 .nodeIndex = k,
@@ -1381,49 +1380,33 @@ void ResourceManager::destroyAttachment(AttachmentImage& target, const char* tra
 void ResourceManager::createAttachment(AttachmentImage& target, const AttachmentDesc& desc)
 {
     destroyAttachment(target, desc.tracyName);
-    allocator.createImage2D(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, desc.format, desc.usage,
-                            target.image, target.memory, std::format("{}Memory", desc.debugName));
+    allocator.createImage2D(swapChainExtent.width, swapChainExtent.height, 1, vk::SampleCountFlagBits::e1,
+                            desc.format, desc.usage, target.image, target.memory,
+                            std::format("{}Memory", desc.debugName));
     setDebugName(device, target.image, desc.debugName);
-    // approx footprint: 4 B/pixel * samples
-    const vk::DeviceSize approxBytes = static_cast<vk::DeviceSize>(swapChainExtent.width) * swapChainExtent.height *
-        static_cast<uint32_t>(msaaSamples) * 4u;
+    // approx footprint: 4 B/pixel
+    const vk::DeviceSize approxBytes = static_cast<vk::DeviceSize>(swapChainExtent.width) * swapChainExtent.height * 4u;
     tracyResourceAlloc(static_cast<VkImage>(*target.image), static_cast<size_t>(approxBytes), desc.tracyName);
 
     vk::raii::CommandBuffer& cmd = commandBuffers[0];
     cmd.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     transitionImageLayout(&cmd, target.image, vk::ImageLayout::eUndefined, desc.layout,
-                          {.aspectMask = desc.barrierAspect,
+                          {.aspectMask = desc.aspect,
                            .baseMipLevel = 0,
                            .levelCount = 1,
                            .baseArrayLayer = 0,
                            .layerCount = 1});
     submitAndWait(cmd, graphicsQueue);
-    target.view = createImageView(target.image, desc.format, desc.viewAspect, 1);
-}
-
-void ResourceManager::createColorResources()
-{
-    logInfo("createColorResources() started", "ResourceManager");
-    if (swapChainImageFormat == vk::Format::eUndefined) {
-        return;
-    }
-    createAttachment(colorAttachment,
-                     {.format = swapChainImageFormat,
-                      .usage = vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment,
-                      .viewAspect = vk::ImageAspectFlagBits::eColor,
-                      .barrierAspect = vk::ImageAspectFlagBits::eColor,
-                      .layout = vk::ImageLayout::eColorAttachmentOptimal,
-                      .debugName = "ColorImage",
-                      .tracyName = kColorTracyName});
+    target.view = createImageView(target.image, desc.format, desc.aspect, 1);
 }
 
 vk::Format ResourceManager::findDepthFormat()
 {
     logInfo("findDepthFormat() started", "ResourceManager");
-    // D32 last (BestPractices-NVIDIA-CreateImage-Depth32Format)
-    return findSupportedFormat(
-        {vk::Format::eD24UnormS8Uint, vk::Format::eD16Unorm, vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint},
-        vk::ImageTiling::eOptimal, vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+    // hi-z reads depth as R32_SFLOAT; no stencil user
+    return findSupportedFormat({vk::Format::eD32Sfloat}, vk::ImageTiling::eOptimal,
+                               vk::FormatFeatureFlagBits::eDepthStencilAttachment |
+                                   vk::FormatFeatureFlagBits::eSampledImage);
 }
 
 void ResourceManager::updateSwapChainExtent(const vk::Extent2D newExtent)
@@ -1437,23 +1420,12 @@ void ResourceManager::createDepthResources()
     const vk::Format depthFormat = findDepthFormat();
     logInfo(std::format("Depth format selected: {}", vk::to_string(depthFormat)), "ResourceManager");
 
-    // view stays depth-only; barriers cover stencil too when separateDepthStencilLayouts is off
-    vk::ImageAspectFlags barrierAspect = vk::ImageAspectFlagBits::eDepth;
-    if (hasStencilComponent(depthFormat)) {
-        barrierAspect |= vk::ImageAspectFlagBits::eStencil;
-    }
+    // sampled by the hi-z build
     createAttachment(depthAttachment,
                      {.format = depthFormat,
-                      .usage = vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                      .viewAspect = vk::ImageAspectFlagBits::eDepth,
-                      .barrierAspect = barrierAspect,
+                      .usage = vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled,
+                      .aspect = vk::ImageAspectFlagBits::eDepth,
                       .layout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
                       .debugName = "DepthImage",
                       .tracyName = kDepthTracyName});
-}
-
-bool ResourceManager::hasStencilComponent(vk::Format format)
-{
-    return format == vk::Format::eD32SfloatS8Uint || format == vk::Format::eD24UnormS8Uint ||
-           format == vk::Format::eD16UnormS8Uint;
 }

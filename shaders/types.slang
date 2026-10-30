@@ -85,6 +85,7 @@ static const uint kDebugViewTriangles = 2u;
 static const uint kDebugViewPrimitives = 3u;
 static const uint kDebugViewNodeInstances = 4u;
 static const uint kDebugViewStateGroups = 5u;
+static const uint kDebugViewCullPhase = 6u;
 static const uint kDebugViewModeMask = 0xffu;
 static const uint kDebugViewFlagEdges = 1u << 8;
 
@@ -105,6 +106,7 @@ struct GpuNodeInstance
     float4x4 worldMatrix;
     float4x4 prevWorldMatrix;
     float4 boundingSphere; // world space
+    float4 prevBoundingSphere; // world space under prevWorldMatrix
     uint entityIndex;
     uint modelIndex;
     uint nodeIndex;
@@ -138,6 +140,8 @@ static const uint kCullFrustum = 1u << 0;
 static const uint kCullCone = 1u << 1;
 static const uint kCullStats = 1u << 2;
 static const uint kCullInstanceFrustum = 1u << 3;
+static const uint kCullOcclusion = 1u << 4;
+static const uint kCullLatePhase = 1u << 5;
 
 struct GpuCullView
 {
@@ -153,6 +157,15 @@ struct GpuCullView
     uint maxMeshletsPerSequence;
     uint groupVisibleOffset[kMeshStateGroupCount];
     uint groupSequenceOffset[kMeshStateGroupCount];
+    float4x4 occlusionViewProj; // early: previous frame's, late: current
+    uint hizPyramid;            // resource heap, full mip chain
+    uint hizMaxSampler;         // sampler heap
+    uint2 hizSize;              // mip 0
+    uint64_t instanceCandidates; // uint[]: instance items occluded early, re-tested late
+    uint64_t lateCounters;       // GpuCullCounters counting the candidates; early view only
+    uint drawRecordBase;         // first GpuFrameRoot.drawRecords row of this phase
+    uint pad0;
+    uint64_t meshletCandidates;  // uint[]: visible-list entries occluded early, re-tested late
 };
 
 struct GpuCullCounters
@@ -160,11 +173,17 @@ struct GpuCullCounters
     uint visibleMeshlets[kMeshStateGroupCount];
     uint sequenceCount[kMeshStateGroupCount];
     uint meshletDispatch[3]; // VkDispatchIndirectCommand: x = draw records of visible instances
-    uint instancesCulled;
+    uint instanceDispatch[3]; // VkDispatchIndirectCommand: x = late candidates
+    uint meshletCandidateDispatch[3]; // VkDispatchIndirectCommand: x = groups of kCullGroupSize candidates
+    uint meshletCandidateCount;
+    uint instancesCulled; // frustum
+    uint instancesDrawn;
+    uint instancesOccluded;
     uint testedMeshlets;
     uint frustumCulled;
     uint coneCulled;
     uint unculledMeshlets;
+    uint occlusionCulled; // early: became candidates, late: still occluded
 };
 
 // delta offsets relative to the model's morph slices, kNoneIndex = absent
@@ -359,6 +378,27 @@ struct CullPushData
     uint64_t cullView; // GpuCullView
 };
 
+// 24 B, matches src/render/push_data.hpp
+struct HiZViewPushData
+{
+    uint pyramid; // resource heap, full mip chain
+    uint mip;
+    float nearZ;
+    float farZ;
+    uint2 screenSize;
+};
+
+// 32 B, matches src/render/push_data.hpp
+struct HiZPushData
+{
+    uint srcImage; // resource heap: depth for mip 0, the pyramid's full-chain view otherwise
+    uint dstImage; // resource heap: storage view of the written mip
+    uint maxSampler; // sampler heap: max reduction, clamp to edge
+    uint srcMip;
+    uint2 srcSize;
+    uint2 dstSize;
+};
+
 struct MeshVertexOut
 {
     float4 pos          : SV_Position;
@@ -386,7 +426,7 @@ struct GpuFrameRoot
     uint instanceCount;
     uint primitiveCount;
     uint nodeInstanceCount;
-    uint pad0;
+    uint lateVisibleBase; // first visibleMeshlets row of the late phase
     uint debugView; // kDebugView* mode in the low byte, kDebugViewFlag* above
 };
 

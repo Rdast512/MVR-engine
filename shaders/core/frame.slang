@@ -13,6 +13,7 @@ struct DrawContext
     GpuModel model;
     GpuPrimitive primitive;
     uint meshletIndex; // relative to the primitive
+    uint visibleRow;   // row of root.visibleMeshlets; >= root.lateVisibleBase in the late phase
 };
 
 // groupId: mesh workgroup within the sequence's batch
@@ -20,7 +21,8 @@ DrawContext loadDrawContext(MeshPushData push, uint groupId)
 {
     DrawContext draw;
     draw.root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
-    const uint visible = bdaPtr<uint>(draw.root.visibleMeshlets)[push.firstVisible + groupId];
+    draw.visibleRow = push.firstVisible + groupId;
+    const uint visible = bdaPtr<uint>(draw.root.visibleMeshlets)[draw.visibleRow];
     draw.record = bdaPtr<GpuDrawRecord>(draw.root.drawRecords)[visible >> kCullLaneBits];
     draw.meshletIndex = draw.record.meshletOffset + (visible & kCullLaneMask);
     draw.nodeInstance = bdaPtr<GpuNodeInstance>(draw.root.nodeInstances)[draw.record.nodeInstanceIndex];

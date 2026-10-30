@@ -30,6 +30,25 @@ add_test(NAME sharc COMMAND sharc_test)
 # 77: no Vulkan instance or GPU
 set_tests_properties(sharc PROPERTIES SKIP_RETURN_CODE 77)
 
+# --- Hi-Z: screen footprint of known spheres (shaders/core/hiz.slang) ---
+set(_hizShader "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hiz_footprint.slang")
+set(_hizShaderDir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+set(_hizSpirv "${_hizShaderDir}/footprintMain.spv")
+add_custom_command(
+    OUTPUT ${_hizSpirv}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${_hizShaderDir}
+    COMMAND ${SLANGC_EXECUTABLE} ${_hizShader} ${ENGINE_SLANG_FLAGS} -entry footprintMain -o ${_hizSpirv}
+    DEPENDS ${_hizShader} ${ENGINE_SLANG_INCLUDE_DIR}/core/hiz.slang ${ENGINE_SLANG_INCLUDE_DIR}/core/binding.slang
+    COMMENT "Compiling Hi-Z test shader footprintMain"
+    VERBATIM
+)
+
+add_executable(hiz_footprint_test hiz_footprint_test.cpp ${_hizSpirv})
+target_compile_definitions(hiz_footprint_test PRIVATE HIZ_TEST_SHADER_DIR="${_hizShaderDir}")
+target_link_libraries(hiz_footprint_test PRIVATE engine_test_support)
+add_test(NAME hiz_footprint COMMAND hiz_footprint_test)
+set_tests_properties(hiz_footprint PROPERTIES SKIP_RETURN_CODE 77)
+
 # --- NRC: Windows-only binaries ---
 if (WIN32)
     add_executable(nrc_library_test nrc_library_test.cpp)

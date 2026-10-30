@@ -195,13 +195,15 @@ struct GpuNodeInstance
     glm::mat4 worldMatrix{1.0f};
     glm::mat4 prevWorldMatrix{1.0f};
     glm::vec4 boundingSphere{0.0f}; // world space
+    // world space under prevWorldMatrix: the early occlusion test matches the previous pyramid
+    glm::vec4 prevBoundingSphere{0.0f};
     uint32_t entityIndex = 0;
     uint32_t modelIndex = 0;
     uint32_t nodeIndex = 0; // model-relative
     uint32_t flags = 0;     // NodeFlag
 };
-static_assert(sizeof(GpuNodeInstance) == 160);
-static_assert(offsetof(GpuNodeInstance, entityIndex) == 144);
+static_assert(sizeof(GpuNodeInstance) == 176);
+static_assert(offsetof(GpuNodeInstance, entityIndex) == 160);
 
 // raster state a meshlet draws with; one DGC execute per group
 enum class MeshStateGroup : uint32_t
@@ -212,6 +214,16 @@ enum class MeshStateGroup : uint32_t
     Count,
 };
 inline constexpr uint32_t kMeshStateGroupCount = std::to_underlying(MeshStateGroup::Count);
+
+// two-phase occlusion: early draws what passes against the previous pyramid, late what the fresh one recovers.
+// each phase has its own GpuCullView, GpuCullCounters, visible list region and DGC sequences
+enum class CullPhase : uint32_t
+{
+    Early = 0,
+    Late,
+    Count,
+};
+inline constexpr uint32_t kCullPhaseCount = std::to_underlying(CullPhase::Count);
 
 // meshlets per cull workgroup and per GpuDrawRecord; the visible list packs the lane in kCullLaneBits
 inline constexpr uint32_t kCullGroupSize = 64;
@@ -258,6 +270,11 @@ namespace CullFlag
     inline constexpr uint32_t Stats = 1u << 2;
     // node instance sphere against the frustum
     inline constexpr uint32_t InstanceFrustum = 1u << 3;
+    // hi-z test of instances and meshlets against GpuCullView::occlusionViewProj (shaders/core/hiz.slang)
+    inline constexpr uint32_t Occlusion = 1u << 4;
+    // set on the late view: instances come from the candidate list and skip the frustum test; meshlets are tested
+    // with current transforms
+    inline constexpr uint32_t LatePhase = 1u << 5;
 } // namespace CullFlag
 
 // per frame slot, host-written: what the cull passes test against and where they read and write
@@ -277,13 +294,30 @@ struct GpuCullView
     uint32_t maxMeshletsPerSequence = 0;
     std::array<uint32_t, kMeshStateGroupCount> groupVisibleOffset{};
     std::array<uint32_t, kMeshStateGroupCount> groupSequenceOffset{};
+    // early: previous frame's viewProj against the pyramid it built; late: current viewProj and fresh pyramid
+    glm::mat4 occlusionViewProj{1.0f};
+    uint32_t hizPyramid = 0;    // resource heap, full mip chain
+    uint32_t hizMaxSampler = 0; // sampler heap
+    vk::Extent2D hizSize{};     // mip 0
+    // uint[]: GpuInstanceCullItem rows occluded in the early phase, re-tested by the late one
+    vk::DeviceAddress instanceCandidates = 0;
+    // GpuCullCounters whose instanceDispatch counts the candidates (the late phase's); early view only
+    vk::DeviceAddress lateCounters = 0;
+    // first row of GpuFrameRoot::drawRecords this phase appends to
+    uint32_t drawRecordBase = 0;
+    uint32_t pad0 = 0;
+    // uint[]: visible-list entries of meshlets occluded in the early phase, re-tested by the late one
+    vk::DeviceAddress meshletCandidates = 0;
 };
-static_assert(sizeof(GpuCullView) == 176);
+static_assert(sizeof(GpuCullView) == 288);
+static_assert(offsetof(GpuCullView, meshletCandidates) == 280);
+static_assert(offsetof(GpuCullView, instanceCandidates) == 256);
+static_assert(offsetof(GpuCullView, occlusionViewProj) == 176);
 static_assert(offsetof(GpuCullView, visibleMeshlets) == 112);
 static_assert(offsetof(GpuCullView, instanceItems) == 136);
 static_assert(offsetof(GpuCullView, groupVisibleOffset) == 160);
 
-// per frame slot, reset to kInitialCullCounters before the cull passes
+// one per CullPhase, back to back per frame slot; reset to kInitialCullCounters before the early cull
 struct GpuCullCounters
 {
     std::array<uint32_t, kMeshStateGroupCount> visibleMeshlets{};
@@ -291,17 +325,28 @@ struct GpuCullCounters
     std::array<uint32_t, kMeshStateGroupCount> sequenceCount{};
     // VkDispatchIndirectCommand of the meshlet cull: x = draw records of visible instances
     std::array<uint32_t, 3> meshletDispatch{0, 1, 1};
+    // VkDispatchIndirectCommand of the late instance cull: x = candidates; late phase only
+    std::array<uint32_t, 3> instanceDispatch{0, 1, 1};
+    // VkDispatchIndirectCommand of the late meshlet candidate cull: x = groups of kCullGroupSize; late phase only
+    std::array<uint32_t, 3> meshletCandidateDispatch{0, 1, 1};
+    uint32_t meshletCandidateCount = 0;
     // CullFlag::Stats only
-    uint32_t instancesCulled = 0;
+    uint32_t instancesCulled = 0; // frustum
+    uint32_t instancesDrawn = 0;
+    uint32_t instancesOccluded = 0;
     uint32_t testedMeshlets = 0;
     uint32_t frustumCulled = 0;
     uint32_t coneCulled = 0;
     uint32_t unculledMeshlets = 0;
+    // early: became candidates; late: still occluded
+    uint32_t occlusionCulled = 0;
 };
-static_assert(sizeof(GpuCullCounters) == 48);
+static_assert(sizeof(GpuCullCounters) == 88);
+static_assert(offsetof(GpuCullCounters, meshletCandidateDispatch) == 40);
+static_assert(offsetof(GpuCullCounters, instanceDispatch) == 28);
 static_assert(offsetof(GpuCullCounters, sequenceCount) == 8);
 static_assert(offsetof(GpuCullCounters, meshletDispatch) == 16);
-inline constexpr GpuCullCounters kInitialCullCounters{};
+inline constexpr std::array<GpuCullCounters, kCullPhaseCount> kInitialCullCounters{};
 
 // CPU authoring form of KHR PBR-next + texture-transform; uploaded packed as GpuMaterialExtension
 struct MaterialUvTransform
@@ -657,7 +702,8 @@ struct GpuFrameRoot
     uint32_t instanceCount = 0;
     uint32_t primitiveCount = 0;
     uint32_t nodeInstanceCount = 0;
-    uint32_t pad0 = 0;
+    // first visibleMeshlets row of the late phase
+    uint32_t lateVisibleBase = 0;
     // DebugViewSettings::packed()
     uint32_t debugView = 0;
 };

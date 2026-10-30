@@ -14,6 +14,10 @@ enum class DebugView : uint32_t
     Primitives,
     NodeInstances,
     StateGroups,
+    // early phase blue, late phase orange
+    CullPhase,
+    // fullscreen pyramid mip the late phase tested against
+    HiZPyramid,
     // reserved, not implemented yet
     LightingAlbedo,
     LightingNormals,
@@ -27,6 +31,7 @@ enum class DebugViewCategory : uint8_t
 {
     Lit,
     Geometry,
+    Culling,
     Lighting,
     Upscaling,
 };
@@ -38,6 +43,8 @@ enum class DebugViewCategory : uint8_t
         return "Lit";
     case DebugViewCategory::Geometry:
         return "Geometry";
+    case DebugViewCategory::Culling:
+        return "Culling";
     case DebugViewCategory::Lighting:
         return "Lighting";
     case DebugViewCategory::Upscaling:
@@ -61,6 +68,8 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"Primitives", DebugViewCategory::Geometry, true},
     {"Node instances", DebugViewCategory::Geometry, true},
     {"State groups", DebugViewCategory::Geometry, true},
+    {"Cull phase", DebugViewCategory::Culling, true},
+    {"Hi-Z pyramid", DebugViewCategory::Culling, true},
     {"Albedo", DebugViewCategory::Lighting, false},
     {"Normals", DebugViewCategory::Lighting, false},
     {"Lighting only", DebugViewCategory::Lighting, false},
@@ -85,8 +94,10 @@ inline constexpr size_t kRasterVariantCount = std::to_underlying(RasterVariant::
 
 [[nodiscard]] constexpr RasterVariant rasterVariantFor(DebugView view)
 {
-    return debugViewInfo(view).category == DebugViewCategory::Geometry ? RasterVariant::GeometryDebug
-                                                                       : RasterVariant::Lit;
+    const DebugViewCategory category = debugViewInfo(view).category;
+    return category == DebugViewCategory::Geometry || category == DebugViewCategory::Culling
+        ? RasterVariant::GeometryDebug
+        : RasterVariant::Lit;
 }
 
 struct DebugViewSettings
@@ -97,6 +108,8 @@ struct DebugViewSettings
     DebugView view = DebugView::Lit;
     // barycentric triangle edges over geometry views
     bool showEdges = false;
+    // DebugView::HiZPyramid; clamped to the last mip
+    uint32_t hizMip = 0;
 
     [[nodiscard]] RasterVariant rasterVariant() const { return rasterVariantFor(view); }
 

@@ -39,6 +39,8 @@
 
 #define VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE 1
 #define VULKAN_HPP_NO_STD_MODULE
+// acquire / present return eErrorOutOfDateKHR instead of throwing, so the renderer can recreate the swapchain
+#define VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
 #include <vulkan/vulkan_raii.hpp>
 #include <vulkan/vk_platform.h>
 #include "vma/vk_mem_alloc.h"

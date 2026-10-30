@@ -9,7 +9,9 @@ class DescriptorManager
     void createHeaps();
     void createHeapDescriptors();
     void createHeapBuffers(vk::DeviceSize resourceHeapSize, vk::DeviceSize samplerHeapSize);
-    void writeImageAt(vk::DeviceSize offset, const vk::ImageViewCreateInfo& imageViewCreateInfo) const;
+    void writeImageAt(vk::DeviceSize offset, const vk::ImageViewCreateInfo& imageViewCreateInfo,
+                      vk::DescriptorType type = vk::DescriptorType::eSampledImage,
+                      vk::ImageLayout layout = vk::ImageLayout::eShaderReadOnlyOptimal) const;
     // rewritten into freed image slots so a stale index samples it instead of a destroyed image
     std::optional<vk::ImageViewCreateInfo> fallbackImageView;
     vk::DeviceSize minResourceHeapReservedRange = 0;
@@ -37,6 +39,9 @@ public:
     [[nodiscard]] auto getTextureDescriptorIndex() const -> uint32_t;
     [[nodiscard]] auto getSamplerDescriptorIndex() const -> uint32_t;
     void writeImageDescriptor(TextureAsset& textureAsset, const vk::ImageViewCreateInfo& imageViewCreateInfo);
+    // sampled or storage image; returns the heap index
+    [[nodiscard]] uint32_t writeImageDescriptor(const vk::ImageViewCreateInfo& imageViewCreateInfo,
+                                                vk::DescriptorType type, vk::ImageLayout layout);
     // slot is reused by a later writeImageDescriptor; no in-flight frame may still sample it
     void freeImageDescriptor(uint32_t heapIndex);
     // the view must outlive every later freeImageDescriptor call

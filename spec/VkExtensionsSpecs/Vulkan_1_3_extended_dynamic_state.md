@@ -241,7 +241,7 @@ Do not fold EDS3 enablement into this core doc’s “always on” story. Featur
 ### Implementation recipe
 
 1. **Do not re-add EDS1/EDS2 extension strings.** Core 1.3 commands are enough. The chained `ExtendedDynamicStateFeaturesEXT{ .extendedDynamicState = true }` is optional/redundant — do not treat it as permission to list the extension.
-2. **Keep the current consumed path.** Dynamic rendering + Synchronization2 already wrap draws. Viewport/scissor are set after `bindPipeline` inside `beginRendering` (MSAA color resolves into the swapchain). That is the correct baseline.
+2. **Keep the current consumed path.** Dynamic rendering + Synchronization2 already wrap draws. Viewport/scissor are set after `bindPipeline` inside `beginRendering` (single-sample color renders straight into the swapchain). That is the correct baseline.
 3. **Expand core dynamic states only when pipeline churn hurts.** Add `eCullMode` / depth enables / topology to `pDynamicState` and call the core `set*` commands in `vk_renderer.cpp`. Do not mark every state dynamic.
 4. **Leave EDS3 as the extension it is.** Limited use today. Feature bits are not fully chained. Wireframe (`setPolygonModeEXT`) and dynamic blend live in [VK_EXT_extended_dynamic_state3.md](./VK_EXT_extended_dynamic_state3.md).
 5. **Unrelated enablement.** `dynamicRenderingLocalRead` is on but unused. FSR is enabled, properties in `HardwareCapabilities::fragmentShadingRate`, unused. Advanced blend properties cached; `advancedBlendCoherentOperations` **explicitly false**. ASTC HDR **false** (GPU-gated). None of these require EDS1/2 work.

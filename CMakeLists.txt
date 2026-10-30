@@ -270,7 +270,13 @@ engine_add_slang_pass(passes/mesh_debug.slang
     ENTRIES meshDebugMain fragDebugMain
     DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang geometry/mesh.slang)
 engine_add_slang_pass(passes/meshlet_cull.slang
-    ENTRIES cullInstances cullMeshlets buildMeshSequences
+    ENTRIES cullInstances cullMeshlets cullMeshletCandidates buildMeshSequences
+    DEPENDS types.slang core/binding.slang core/hiz.slang)
+engine_add_slang_pass(passes/hiz_view.slang
+    ENTRIES hizViewMesh hizViewFrag
+    DEPENDS types.slang core/binding.slang)
+engine_add_slang_pass(passes/hiz_build.slang
+    ENTRIES hizFromDepth hizDownsample
     DEPENDS types.slang core/binding.slang)
 
 add_custom_target(Shaders ALL DEPENDS ${COMPILED_SHADERS})

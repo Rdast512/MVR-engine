@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
 
 namespace test
 {
@@ -50,4 +51,19 @@ namespace test
         uint32_t queueFamily = 0;
         VkCommandPool commandPool = VK_NULL_HANDLE;
     };
+
+    // host-visible, zeroed storage buffer with a device address; the test reads results without staging
+    struct HostBuffer
+    {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        void* mapped = nullptr;
+        VkDeviceAddress address = 0;
+    };
+    [[nodiscard]] HostBuffer createHostBuffer(const VulkanContext& vulkan, VkDeviceSize size);
+    void destroyHostBuffer(const VulkanContext& vulkan, HostBuffer& buffer);
+
+    // VK_NULL_HANDLE when the SPIR-V file is missing or creation fails
+    [[nodiscard]] VkPipeline createComputePipeline(const VulkanContext& vulkan, VkPipelineLayout layout,
+                                                   const std::string& spirvPath, const char* entry);
 }

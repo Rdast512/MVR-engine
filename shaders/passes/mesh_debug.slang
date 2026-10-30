@@ -38,6 +38,8 @@ uint debugId(uint mode, DrawContext draw, uint triangle)
         return draw.record.nodeInstanceIndex;
     case kDebugViewStateGroups:
         return draw.record.flags & kDrawRecordStateGroupMask;
+    case kDebugViewCullPhase:
+        return draw.visibleRow >= draw.root.lateVisibleBase ? 1 : 0;
     default:
         return (meshletId << kTriangleIdBits) | triangle;
     }
@@ -99,7 +101,10 @@ float4 fragDebugMain(MeshDebugVertexOut vertIn, uint primitiveId : SV_PrimitiveI
                      float3 barycentrics : SV_Barycentrics) : SV_TARGET
 {
     const uint debugView = bdaPtr<GpuFrameRoot>(push.frameRoot)[0].debugView;
-    float3 color = idColor(primitiveId);
+    // phases get fixed colors: early blue, late orange
+    float3 color = (debugView & kDebugViewModeMask) == kDebugViewCullPhase
+        ? (primitiveId == 0 ? float3(0.25, 0.5, 1.0) : float3(1.0, 0.55, 0.1))
+        : idColor(primitiveId);
 
     // flat headlight from the face normal keeps the shape readable under flat colors
     const float3 faceNormal = normalize(cross(ddx(vertIn.viewPos), ddy(vertIn.viewPos)));

@@ -15,21 +15,22 @@ class DescriptorManager;
 class ShaderObjects
 {
 public:
-    ShaderObjects(ResourceManager& resourceManager, DescriptorManager& descriptorManager,
-                  const vk::raii::Device& device);
+    ShaderObjects(DescriptorManager& descriptorManager, const vk::raii::Device& device);
     ~ShaderObjects() = default;
 
     void init();
     void createMeshShaders();
     void createCullShaders();
+    void createHiZShaders();
 
     // binds the variant's shaders and every state a monolithic pipeline would bake; viewport/scissor stay with the
     // caller. only the cull mode differs between state groups
     void bindMeshState(const vk::raii::CommandBuffer& cmd, RasterVariant variant, MeshStateGroup group) const;
+    // fullscreen Hi-Z mip view: no culling, no depth; push HiZViewPushData, then draw one mesh task
+    void bindHiZViewState(const vk::raii::CommandBuffer& cmd) const;
     static void bindComputeShader(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader);
 
     const vk::raii::Device& device;
-    ResourceManager& resourceManager;
     DescriptorManager& descriptorManager;
     struct MeshShaderPair
     {
@@ -45,9 +46,20 @@ public:
     {
         vk::raii::ShaderEXT cullInstances = nullptr;
         vk::raii::ShaderEXT cullMeshlets = nullptr;
+        vk::raii::ShaderEXT cullMeshletCandidates = nullptr;
         vk::raii::ShaderEXT buildMeshSequences = nullptr;
     };
     CullShaders cullShaders;
+
+    // passes/hiz_build.slang
+    struct HiZShaders
+    {
+        vk::raii::ShaderEXT fromDepth = nullptr;
+        vk::raii::ShaderEXT downsample = nullptr;
+    };
+    HiZShaders hizShaders;
+    // passes/hiz_view.slang
+    MeshShaderPair hizView;
 
     [[nodiscard]] const MeshShaderPair& pair(RasterVariant variant) const
     {
@@ -66,6 +78,9 @@ private:
     };
 
     [[nodiscard]] MeshShaderPair createMeshShaderPair(const MeshShaderSource& source) const;
+    static void bindShaderPair(const vk::raii::CommandBuffer& cmd, const MeshShaderPair& shaderPair);
+    // every state a monolithic pipeline would bake, except viewport/scissor
+    static void setRasterState(const vk::raii::CommandBuffer& cmd, vk::CullModeFlags cullMode, bool isDepthEnabled);
     // file under ENGINE_SHADER_DIR/passes
     [[nodiscard]] vk::raii::ShaderEXT createComputeShader(std::string_view file, const char* entry,
                                                           std::string_view debugName) const;

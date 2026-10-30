@@ -29,8 +29,6 @@ class Device
     void createLogicalDevice();
     void queryCapabilities();
     void createQueues();
-    // highest count supported by both color and depth attachments
-    [[nodiscard]] vk::SampleCountFlagBits getMaxUsableSampleCount() const;
 
 public:
     /**
@@ -69,9 +67,6 @@ public:
 
     /// Unique queue family indices used by this device (passed to resource sharing mode setup).
     std::vector<uint32_t> queueFamilyIndices;
-
-    /// Maximum MSAA sample count supported by both colour and depth attachments on this GPU.
-    vk::SampleCountFlagBits msaaSamples = vk::SampleCountFlagBits::e1;
 
     uint32_t transferIndex = 0; ///< Queue family index of the transfer queue (always valid; may equal graphicsIndex).
     uint32_t computeIndex = 0; ///< Queue family index of the compute queue (always valid; may equal graphicsIndex).

@@ -41,6 +41,10 @@ public:
 
     void updateCameraData(uint8_t currentImage);
 
+    // after updateCameraData: first frame, focusOn or a projection change; prevViewProj does not match the
+    // previous frame's image then
+    [[nodiscard]] bool isCut() const noexcept { return isCutFrame; }
+
     // stable gpu handles, accessed directly
     VmaAllocator allocator = nullptr;
     SwapChain& swapChain;
@@ -68,6 +72,9 @@ private:
     float nearPlane = 0.1f;
     float farPlane = 1000.0f;
     bool projDirty = true;
+    // set by focusOn, consumed by updateCameraData
+    bool isCutPending = true;
+    bool isCutFrame = true;
 
     static constexpr float kPitchLimit = glm::radians(89.0f);
     static constexpr float kMouseSensitivity = 0.002f; // rad/pixel
