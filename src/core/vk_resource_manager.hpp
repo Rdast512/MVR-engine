@@ -231,6 +231,9 @@ public:
     std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> drawRecordAddresses{};
     std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> visibleMeshletAddresses{};
     std::array<uint32_t, MAX_FRAMES_IN_FLIGHT> lateVisibleBases{};
+    std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> cullCounterAddresses{};
+    std::array<uint32_t, MAX_FRAMES_IN_FLIGHT> triangleCullFlags{};
+    float subpixelSnap = 0.0f;
 
 private:
     // bytes written at dstOffset of an asset buffer; the buffer grows (x2) when the write passes its capacity

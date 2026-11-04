@@ -322,6 +322,9 @@ void ResourceManager::writeFrameRoot(uint32_t frameSlot, uint32_t debugView)
         .nodeInstanceCount = nodeInstanceCount,
         .lateVisibleBase = lateVisibleBases[frameSlot],
         .debugView = debugView,
+        .cullCounters = cullCounterAddresses[frameSlot],
+        .triangleCull = triangleCullFlags[frameSlot],
+        .subpixelSnap = subpixelSnap,
     };
 }
 

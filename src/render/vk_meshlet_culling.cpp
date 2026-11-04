@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <numeric>
@@ -141,6 +142,15 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera, cons
     }
     resourceManager.drawRecordAddresses[frameSlot] = frames[frameSlot].drawRecords.address;
     resourceManager.visibleMeshletAddresses[frameSlot] = frames[frameSlot].visibleMeshlets.address;
+    resourceManager.cullCounterAddresses[frameSlot] = frames[frameSlot].counters.address;
+    const bool isTriangleCulling = settings.isTriangleBackfaceEnabled || settings.isSmallTriangleEnabled;
+    resourceManager.triangleCullFlags[frameSlot] =
+        (settings.isTriangleBackfaceEnabled ? TriangleCullFlag::Backface : 0u) |
+        (settings.isSmallTriangleEnabled ? TriangleCullFlag::Small : 0u) |
+        (settings.isStatsEnabled && isTriangleCulling ? TriangleCullFlag::Stats : 0u);
+    // round-to-nearest onto a 2^-bits grid moves a vertex by at most half a step
+    const uint32_t subPixelBits = device.capabilities.properties2.properties.limits.subPixelPrecisionBits;
+    resourceManager.subpixelSnap = std::ldexp(1.0f, -static_cast<int>(subPixelBits) - 1);
 
     // every template may survive, so the per-group meshlet totals bound the visible lists and sequences
     const uint32_t totalMeshlets = std::reduce(templates.groupMeshlets.begin(), templates.groupMeshlets.end(), 0u);
@@ -192,6 +202,8 @@ void MeshletCulling::readBackCounters(uint32_t frameSlot)
     // late is the final verdict: early-occluded meshlets are re-tested there
     TracyPlot("Culling/MeshletsOccluded", static_cast<double>(late.occlusionCulled));
     TracyPlot("Culling/HistoryValid", stats.history == OcclusionHistory::Valid ? 1.0 : 0.0);
+    TracyPlot("Culling/TrianglesBackface", static_cast<double>(early.trianglesBackface + late.trianglesBackface));
+    TracyPlot("Culling/TrianglesSmall", static_cast<double>(early.trianglesSmall + late.trianglesSmall));
 }
 
 MeshStateGroup MeshletCulling::stateGroupOf(const PrimitiveDraw& primitive) const
@@ -500,8 +512,21 @@ void MeshletCulling::recordCull(const vk::raii::CommandBuffer& cmd, CullPhase ph
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eTransferWrite,
         .dstStageMask = vk::PipelineStageFlagBits2::eCommandPreprocessEXT | vk::PipelineStageFlagBits2::eDrawIndirect |
                         vk::PipelineStageFlagBits2::eMeshShaderEXT,
+        // storage write: the mesh shaders add triangle counts to the counters reset above
         .dstAccessMask = vk::AccessFlagBits2::eCommandPreprocessReadEXT | vk::AccessFlagBits2::eIndirectCommandRead |
-                         vk::AccessFlagBits2::eShaderStorageRead,
+                         vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &outputBarrier});
+}
+
+// a fence wait alone does not make device writes visible to the host
+void MeshletCulling::recordCounterReadback(const vk::raii::CommandBuffer& cmd)
+{
+    const vk::MemoryBarrier2 readbackBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eMeshShaderEXT,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &readbackBarrier});
 }

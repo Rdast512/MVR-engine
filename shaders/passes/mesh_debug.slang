@@ -3,6 +3,7 @@
 #include "core/frame.slang"
 #include "core/math.slang"
 #include "geometry/mesh.slang"
+#include "geometry/triangle_cull.slang"
 
 // geometry debug views: same meshlet path as mesh_raster, colored by id instead of material
 
@@ -21,7 +22,11 @@ struct MeshDebugPrimitiveOut
 {
     // the id the active debug mode colors by
     uint primitiveId : SV_PrimitiveID;
+    bool cull : SV_CullPrimitive;
 };
+
+// mesh outputs are write-only, so the triangle tests read the corners from here
+groupshared float4 clipCorners[kMaxMeshletVertices];
 
 // the fragment stage only sees the id, so the mode is resolved per triangle here
 uint debugId(uint mode, DrawContext draw, uint triangle)
@@ -67,15 +72,41 @@ void meshDebugMain(
     for (uint vi = gtid; vi < vertCount; vi += kGroupSize)
     {
         const float4 viewPos = mul(modelView, float4(loadMeshletCorner(draw, meshlet, vi).pos, 1.0));
-        verts[vi].pos = mul(camera.proj, viewPos);
+        const float4 clip = mul(camera.proj, viewPos);
+        verts[vi].pos = clip;
         verts[vi].viewPos = viewPos.xyz;
+        clipCorners[vi] = clip;
     }
 
+    // same tests as mesh_raster, so the geometry views show what the lit view draws
+    const uint triangleCull = draw.root.triangleCull;
+    const bool isCulling = (triangleCull & (kTriangleCullBackface | kTriangleCullSmall)) != 0;
+    if (isCulling)
+    {
+        GroupMemoryBarrierWithGroupSync();
+    }
+    const bool isDoubleSided = (draw.record.flags & kDrawRecordStateGroupMask) == kMeshStateGroupDoubleSided;
+
     const uint mode = draw.root.debugView & kDebugViewModeMask;
+    uint backface = 0;
+    uint small = 0;
     for (uint ti = gtid; ti < primCount; ti += kGroupSize)
     {
-        tris[ti] = loadFrontFacingTriangle(draw, meshlet, ti);
+        const uint3 tri = loadFrontFacingTriangle(draw, meshlet, ti);
+        tris[ti] = tri;
         prims[ti].primitiveId = debugId(mode, draw, ti);
+        const uint reason = isCulling
+            ? triangleCullReason(clipCorners[tri.x], clipCorners[tri.y], clipCorners[tri.z], triangleCull,
+                                 isDoubleSided, camera.renderTargetSize, draw.root.subpixelSnap)
+            : kTriangleKept;
+        prims[ti].cull = reason != kTriangleKept;
+        backface += reason == kTriangleBackface ? 1 : 0;
+        small += reason == kTriangleSmall ? 1 : 0;
+    }
+    if ((triangleCull & kTriangleCullStats) != 0)
+    {
+        const uint tested = gtid < primCount ? (primCount - gtid + kGroupSize - 1) / kGroupSize : 0;
+        countTriangles(draw, tested, backface, small);
     }
 }
 

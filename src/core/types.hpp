@@ -277,6 +277,17 @@ namespace CullFlag
     inline constexpr uint32_t LatePhase = 1u << 5;
 } // namespace CullFlag
 
+// GpuFrameRoot::triangleCull: per-triangle tests in the mesh shaders (shaders/geometry/triangle_cull.slang)
+namespace TriangleCullFlag
+{
+    // signed screen area; the double-sided group skips it
+    inline constexpr uint32_t Backface = 1u << 0;
+    // bounding box misses every pixel center
+    inline constexpr uint32_t Small = 1u << 1;
+    // triangle counters in GpuCullCounters
+    inline constexpr uint32_t Stats = 1u << 2;
+} // namespace TriangleCullFlag
+
 // per frame slot, host-written: what the cull passes test against and where they read and write
 struct GpuCullView
 {
@@ -340,8 +351,12 @@ struct GpuCullCounters
     uint32_t unculledMeshlets = 0;
     // early: became candidates; late: still occluded
     uint32_t occlusionCulled = 0;
+    // mesh shader, TriangleCullFlag::Stats only
+    uint32_t trianglesTested = 0;
+    uint32_t trianglesBackface = 0;
+    uint32_t trianglesSmall = 0;
 };
-static_assert(sizeof(GpuCullCounters) == 88);
+static_assert(sizeof(GpuCullCounters) == 100);
 static_assert(offsetof(GpuCullCounters, meshletCandidateDispatch) == 40);
 static_assert(offsetof(GpuCullCounters, instanceDispatch) == 28);
 static_assert(offsetof(GpuCullCounters, sequenceCount) == 8);
@@ -706,8 +721,15 @@ struct GpuFrameRoot
     uint32_t lateVisibleBase = 0;
     // DebugViewSettings::packed()
     uint32_t debugView = 0;
+    // GpuCullCounters[kCullPhaseCount] of this frame slot; the mesh shaders add their triangle counts
+    vk::DeviceAddress cullCounters = 0;
+    // TriangleCullFlag
+    uint32_t triangleCull = 0;
+    // pixels a vertex may move when snapped to the subpixel grid (subPixelPrecisionBits)
+    float subpixelSnap = 0.0f;
 };
-static_assert(sizeof(GpuFrameRoot) == 112);
+static_assert(sizeof(GpuFrameRoot) == 128);
+static_assert(offsetof(GpuFrameRoot, cullCounters) == 112);
 static_assert(offsetof(GpuFrameRoot, lightCount) == 88);
 
 

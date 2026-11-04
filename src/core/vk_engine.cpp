@@ -777,6 +777,11 @@ void Engine::drawCullingPanel()
     ImGui::Checkbox("Freeze culling camera", &settings.isCameraFrozen);
     ImGui::SetItemTooltip("cull against the view at the moment of freezing; fly out to inspect the result. "
                           "occlusion falls back to off while frozen");
+    ImGui::Checkbox("Triangle backface", &settings.isTriangleBackfaceEnabled);
+    ImGui::SetItemTooltip("per-triangle signed-area test in the mesh shader; double-sided materials skip it");
+    ImGui::SameLine();
+    ImGui::Checkbox("Small triangles", &settings.isSmallTriangleEnabled);
+    ImGui::SetItemTooltip("per-triangle test in the mesh shader: culls triangles whose bounds miss every pixel center");
 
     int perSequence = static_cast<int>(settings.maxMeshletsPerSequence);
     constexpr int kPerSequenceStep = 16;
@@ -872,6 +877,21 @@ void Engine::drawCullingPanel()
                 early.sequenceCount[index], late.sequenceCount[index],
                 sum(early.sequenceCount[index], late.sequenceCount[index]));
         }
+        ImGui::EndTable();
+    }
+    const bool isTriangleCulling = settings.isTriangleBackfaceEnabled || settings.isSmallTriangleEnabled;
+    if (settings.isStatsEnabled && isTriangleCulling && ImGui::BeginTable("##cullTriangles", 4, kTableFlags)) {
+        ImGui::TableSetupColumn("Triangles");
+        ImGui::TableSetupColumn("Early");
+        ImGui::TableSetupColumn("Late");
+        ImGui::TableSetupColumn("Frame");
+        ImGui::TableHeadersRow();
+        row("Tested", early.trianglesTested, late.trianglesTested, sum(early.trianglesTested, late.trianglesTested),
+            "triangles of visible meshlets");
+        row("Backface culled", early.trianglesBackface, late.trianglesBackface,
+            sum(early.trianglesBackface, late.trianglesBackface));
+        row("Small culled", early.trianglesSmall, late.trianglesSmall, sum(early.trianglesSmall, late.trianglesSmall),
+            "front-facing triangles that cover no pixel center");
         ImGui::EndTable();
     }
     if (stats.totalMeshlets > 0) {

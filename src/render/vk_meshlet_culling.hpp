@@ -24,6 +24,9 @@ struct MeshletCullSettings
     bool isStatsEnabled = true;
     // keeps culling against the camera captured when it was frozen; fly out to inspect the result
     bool isCameraFrozen = false;
+    // per-triangle tests in the mesh shaders; off by default until measured (meshlet_culling_options.md 2D)
+    bool isTriangleBackfaceEnabled = false;
+    bool isSmallTriangleEnabled = false;
     // 0 = device maxMeshWorkGroupCount; small values force many DGC sequences per execute
     uint32_t maxMeshletsPerSequence = 0;
 };
@@ -110,6 +113,8 @@ public:
     // outside the render pass, before the phase's DGC preprocess; heaps must be bound. early first: it resets the
     // counters of both phases
     void recordCull(const vk::raii::CommandBuffer& cmd, CullPhase phase) const;
+    // after the late raster: makes the counters of both phases visible to readBackCounters
+    static void recordCounterReadback(const vk::raii::CommandBuffer& cmd);
 
     [[nodiscard]] const MeshletCullStats& getStats() const noexcept { return stats; }
 

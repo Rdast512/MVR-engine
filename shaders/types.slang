@@ -143,6 +143,11 @@ static const uint kCullInstanceFrustum = 1u << 3;
 static const uint kCullOcclusion = 1u << 4;
 static const uint kCullLatePhase = 1u << 5;
 
+// GpuFrameRoot.triangleCull, matches TriangleCullFlag in src/core/types.hpp
+static const uint kTriangleCullBackface = 1u << 0;
+static const uint kTriangleCullSmall = 1u << 1;
+static const uint kTriangleCullStats = 1u << 2;
+
 struct GpuCullView
 {
     float4 frustumPlanes[6]; // world space, inside when dot(xyz, p) + w >= 0
@@ -184,6 +189,9 @@ struct GpuCullCounters
     uint coneCulled;
     uint unculledMeshlets;
     uint occlusionCulled; // early: became candidates, late: still occluded
+    uint trianglesTested; // mesh shader, kTriangleCullStats only
+    uint trianglesBackface;
+    uint trianglesSmall;
 };
 
 // delta offsets relative to the model's morph slices, kNoneIndex = absent
@@ -428,6 +436,9 @@ struct GpuFrameRoot
     uint nodeInstanceCount;
     uint lateVisibleBase; // first visibleMeshlets row of the late phase
     uint debugView; // kDebugView* mode in the low byte, kDebugViewFlag* above
+    uint64_t cullCounters; // GpuCullCounters[kCullPhaseCount]; the mesh shader adds its triangle counts
+    uint triangleCull;     // kTriangleCull*
+    float subpixelSnap;    // pixels a vertex may move when snapped to the subpixel grid
 };
 
 #endif

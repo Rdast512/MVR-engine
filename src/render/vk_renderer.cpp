@@ -189,6 +189,7 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
 #endif
         recordPhase(cmd, CullPhase::Late, imageIndex, rasterVariant);
     }
+    MeshletCulling::recordCounterReadback(cmd);
 
     {
         ZoneScopedN("TransitionToPresent");

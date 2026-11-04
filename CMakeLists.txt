@@ -270,13 +270,15 @@ endfunction()
 
 engine_add_slang_pass(passes/mesh_raster.slang
     ENTRIES meshMain
-    DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang geometry/mesh.slang)
+    DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang geometry/mesh.slang
+            geometry/triangle_cull.slang)
 engine_add_slang_pass(passes/mesh_fragment.slang
     ENTRIES fragMain
     DEPENDS types.slang core/binding.slang core/frame.slang material/pbr.slang)
 engine_add_slang_pass(passes/mesh_debug.slang
     ENTRIES meshDebugMain fragDebugMain
-    DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang geometry/mesh.slang)
+    DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang geometry/mesh.slang
+            geometry/triangle_cull.slang)
 engine_add_slang_pass(passes/meshlet_cull.slang
     ENTRIES cullInstances cullMeshlets cullMeshletCandidates buildMeshSequences
     DEPENDS types.slang core/binding.slang core/hiz.slang)
