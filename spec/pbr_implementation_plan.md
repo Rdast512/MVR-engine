@@ -6,6 +6,7 @@ description: Task plan for glTF metallic-roughness PBR built only on NVIDIA RTX 
 # Plan: PBR on RTXDI + RTXGI NRC + OMM + DLSS-RR
 
 **Date:** 2026-10-25 · **Verified against:** working tree on `fd67395d1`, Slang `2026.14.1`, Vulkan SDK `1.4.363.0`, meshoptimizer `v1.3`
+**Superseded in part (2026-10-31):** [docs/engine_spec.md](../docs/engine_spec.md) is the target architecture. Its §17 lists the decisions here it overrides: vis buffer instead of the raster G-buffer, an SER RT pipeline for shaded rays, cluster-based RT (CLAS) instead of per-primitive BLAS, GPU TLAS, SHaRC + NRC, emissive lights, per-cluster OMM. Tasks not listed there stay valid.
 **Status:** Phase A is partly in place (frame root, model table, shared material table, node instances, debug view field); no lighting code exists. See §3.
 
 | Doc | Role |

@@ -3,8 +3,10 @@ cmake_minimum_required(VERSION 3.29)
 # Compiler launcher must be set before project() so try_compile is cached too.
 find_program(CCACHE_PROGRAM ccache HINTS "C:/msys64/clang64/bin" "C:/msys64/usr/bin")
 if (CCACHE_PROGRAM)
-  set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
-  set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+  # without this sloppiness every TU that uses a PCH is uncacheable ("Could not use precompiled header")
+  set(_ccacheLauncher "${CCACHE_PROGRAM}" "sloppiness=pch_defines,time_macros,include_file_mtime,include_file_ctime")
+  set(CMAKE_C_COMPILER_LAUNCHER ${_ccacheLauncher})
+  set(CMAKE_CXX_COMPILER_LAUNCHER ${_ccacheLauncher})
 endif ()
 
 project(engine)
@@ -60,7 +62,8 @@ if (WIN32)
   engine_add_config_compile_options(RelWithDebInfo
       -O2 -g -gdwarf -gcodeview -march=native -mtune=native -pthread)
   engine_add_config_link_options(Debug -pthread)
-  engine_add_config_link_options(Release -pthread -flto=thin)
+  # the cache lets a relink re-optimize only the modules that changed
+  engine_add_config_link_options(Release -pthread -flto=thin "-Wl,--thinlto-cache-dir=${CMAKE_BINARY_DIR}/thinlto-cache")
   engine_add_config_link_options(RelWithDebInfo -pthread)
   add_link_options("$<$<CONFIG:Debug,RelWithDebInfo>:-Wl,--pdb=>")
 else ()
@@ -76,6 +79,11 @@ else ()
 endif ()
 
 add_compile_definitions($<$<NOT:$<CONFIG:Debug>>:NDEBUG>)
+
+# ccache can only cache PCH users when the PCH carries no timestamp
+if (CCACHE_PROGRAM)
+  add_compile_options("$<$<COMPILE_LANG_AND_ID:CXX,Clang>:SHELL:-Xclang -fno-pch-timestamp>")
+endif ()
 
 # ASan/UBSan are Debug-only. Release/RelWithDebInfo never get -fsanitize even if
 # ENABLE_SANITIZERS is ON (CLion cache). Release presets force the option OFF.
