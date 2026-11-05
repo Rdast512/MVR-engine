@@ -1788,7 +1788,7 @@ namespace
             builds[i] = geometry.buildMeshlets(draw.firstIndex, draw.indexCount, draw.firstVertex, draw.vertexCount);
         });
         for (size_t i = 0; i < count; ++i) {
-            geometry.primitiveDraws[firstPrimitive + i].meshlets = geometry.appendMeshlets(std::move(builds[i]));
+            geometry.appendMeshlets(std::move(builds[i]), geometry.primitiveDraws[firstPrimitive + i]);
         }
         logInfo(std::format("glTF built {} meshlets for {} primitives on {} threads",
                              geometry.meshlets.size() - firstMeshlet, count, threads),
@@ -1825,6 +1825,7 @@ namespace
             uint32_t first = 0;
             uint32_t count = 0;
             glm::vec4 boundingSphere{0.0f}; // mesh space
+            BoundingBox box;                 // mesh space
         };
         std::vector<MeshPrimitives> meshPrimitives(model.meshes_count);
         const uint32_t firstPrimitive = static_cast<uint32_t>(geometry.primitiveDraws.size());
@@ -1843,8 +1844,9 @@ namespace
             }
             const PrimitiveDraw& first = geometry.primitiveDraws[range.first];
             const PrimitiveDraw& last = geometry.primitiveDraws[range.first + range.count - 1];
-            range.boundingSphere =
-                geometry.boundingSphere(first.firstVertex, last.firstVertex + last.vertexCount - first.firstVertex);
+            const uint32_t vertexCount = last.firstVertex + last.vertexCount - first.firstVertex;
+            range.boundingSphere = geometry.boundingSphere(first.firstVertex, vertexCount);
+            range.box = geometry.boundingBox(first.firstVertex, vertexCount);
         }
         for (const GltfMeshInstance& instance : instances) {
             const MeshPrimitives& range = meshPrimitives[instance.mesh];
@@ -1854,6 +1856,7 @@ namespace
             geometry.nodeDraws.push_back(NodeDraw{
                 .localToModel = instance.world,
                 .boundingSphere = transformBoundingSphere(instance.world, range.boundingSphere),
+                .meshBounds = range.box,
                 .firstPrimitive = range.first,
                 .primitiveCount = range.count,
                 .flags = glm::determinant(glm::mat3(instance.world)) < 0.0f ? NodeFlag::FlipWinding : 0u,
@@ -2152,11 +2155,12 @@ std::optional<EntityId> AssetsLoader::loadObjModel(const std::string& modelPath,
     draw.vertexCount = static_cast<uint32_t>(geometryStore.positions.size()) - firstVertex;
     draw.firstIndex = firstIndex;
     draw.indexCount = indexCount;
-    draw.meshlets = geometryStore.buildMeshletsForRange(firstIndex, indexCount, firstVertex, draw.vertexCount);
+    geometryStore.buildMeshletsForRange(firstIndex, indexCount, firstVertex, draw.vertexCount, draw);
     geometryStore.primitiveDraws.push_back(draw);
     geometryStore.nodeDraws.push_back(NodeDraw{
         .localToModel = glm::mat4{1.0f},
         .boundingSphere = geometryStore.boundingSphere(firstVertex, draw.vertexCount),
+        .meshBounds = geometryStore.boundingBox(firstVertex, draw.vertexCount),
         .firstPrimitive = firstPrimitive,
         .primitiveCount = 1,
         .flags = 0,

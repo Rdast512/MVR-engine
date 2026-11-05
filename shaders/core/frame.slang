@@ -4,16 +4,18 @@
 #include "types.slang"
 #include "core/binding.slang"
 
-// everything one visible meshlet needs, resolved from the push data through the frame root
+// everything one visible meshlet needs, resolved from its render-list entry {node instance, meshlet} alone: the
+// meshlet names its primitive, the primitive its material
 struct DrawContext
 {
     GpuFrameRoot root;
-    GpuDrawRecord record;
+    GpuVisibleMeshlet visible;
     GpuNodeInstance nodeInstance;
     GpuModel model;
+    uint primitiveRow; // row of the model's primitives slice
     GpuPrimitive primitive;
-    uint meshletIndex; // relative to the primitive
-    uint visibleRow;   // row of root.visibleMeshlets; >= root.lateVisibleBase in the late phase
+    bool isDoubleSided; // the material's, which also picked the state group (MeshletCulling::stateGroupOf)
+    uint visibleRow;    // row of root.visibleMeshlets; >= root.lateVisibleBase in the late phase
 };
 
 // groupId: mesh workgroup within the sequence's batch
@@ -22,12 +24,15 @@ DrawContext loadDrawContext(MeshPushData push, uint groupId)
     DrawContext draw;
     draw.root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
     draw.visibleRow = push.firstVisible + groupId;
-    const uint visible = bdaPtr<uint>(draw.root.visibleMeshlets)[draw.visibleRow];
-    draw.record = bdaPtr<GpuDrawRecord>(draw.root.drawRecords)[visible >> kCullLaneBits];
-    draw.meshletIndex = draw.record.meshletOffset + (visible & kCullLaneMask);
-    draw.nodeInstance = bdaPtr<GpuNodeInstance>(draw.root.nodeInstances)[draw.record.nodeInstanceIndex];
+    draw.visible = bdaPtr<GpuVisibleMeshlet>(draw.root.visibleMeshlets)[draw.visibleRow];
+    draw.nodeInstance = bdaPtr<GpuNodeInstance>(draw.root.nodeInstances)[draw.visible.nodeInstanceIndex];
     draw.model = bdaPtr<GpuModel>(draw.root.models)[draw.nodeInstance.modelIndex];
-    draw.primitive = bdaPtr<GpuPrimitive>(draw.root.primitives)[draw.record.primitiveIndex];
+    draw.primitiveRow = bdaPtr<uint>(draw.model.meshletPrimitives)[draw.visible.meshletRow];
+    draw.primitive = bdaPtr<GpuPrimitive>(draw.model.primitives)[draw.primitiveRow];
+    // materialRow below; kNoneIndex is the default material, row 0
+    const uint material = draw.primitive.materialId == kNoneIndex ? 0 : draw.primitive.materialId;
+    GpuMaterial* materialRef = bdaPtr<GpuMaterial>(draw.root.materials) + material;
+    draw.isDoubleSided = (materialRef.flags & kMaterialFlagDoubleSided) != 0;
     return draw;
 }
 

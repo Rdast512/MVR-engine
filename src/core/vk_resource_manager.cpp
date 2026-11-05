@@ -29,6 +29,12 @@ namespace
         {"VertexBuffer", "GPU/Vertices", "Vulkan/VertexBytes", "Vulkan/VertexCapacityBytes", sizeof(GpuVertex)},
         {"MeshletBuffer", "GPU/Meshlets", "Vulkan/MeshletBytes", "Vulkan/MeshletCapacityBytes",
          sizeof(GpuMeshletDesc)},
+        {"MeshletBoundsBuffer", "GPU/MeshletBounds", "Vulkan/MeshletBoundsBytes", "Vulkan/MeshletBoundsCapacityBytes",
+         sizeof(GpuMeshletBounds)},
+        {"MeshletGroupBuffer", "GPU/MeshletGroups", "Vulkan/MeshletGroupBytes", "Vulkan/MeshletGroupCapacityBytes",
+         sizeof(GpuMeshletGroup)},
+        {"MeshletPrimitiveBuffer", "GPU/MeshletPrimitives", "Vulkan/MeshletPrimitiveBytes",
+         "Vulkan/MeshletPrimitiveCapacityBytes", sizeof(uint32_t)},
         {"MeshletVertexBuffer", "GPU/MeshletVertices", "Vulkan/MeshletVertexBytes",
          "Vulkan/MeshletVertexCapacityBytes", sizeof(uint32_t)},
         {"MeshletTriangleBuffer", "GPU/MeshletTriangles", "Vulkan/MeshletTriangleBytes",
@@ -265,6 +271,9 @@ void ResourceManager::rebuildModelTable()
         GpuModel model{
             .vertices = slice(AssetBuffer::Vertices),
             .meshlets = slice(AssetBuffer::Meshlets),
+            .meshletBounds = slice(AssetBuffer::MeshletBounds),
+            .meshletGroups = slice(AssetBuffer::MeshletGroups),
+            .meshletPrimitives = slice(AssetBuffer::MeshletPrimitives),
             .meshletVertices = slice(AssetBuffer::MeshletVertices),
             .meshletTriangles = slice(AssetBuffer::MeshletTriangles),
             .normals = slice(AssetBuffer::Normals),
@@ -279,6 +288,7 @@ void ResourceManager::rebuildModelTable()
             .morphTargets = slice(AssetBuffer::MorphTargets),
             .morphWeights = slice(AssetBuffer::MorphWeights),
             .nodes = slice(AssetBuffer::Nodes),
+            .primitives = slice(AssetBuffer::Primitives),
             .nodeCount = modelAllocations[id].nodes.count,
         };
         const std::array<std::pair<vk::DeviceAddress, uint32_t>, 7> streams{{
@@ -642,6 +652,10 @@ std::span<const std::byte> ResourceManager::scratchBytes(AssetBuffer id, const P
     switch (id) {
     case AssetBuffer::Vertices:         return std::as_bytes(std::span(geometryStore.vertices));
     case AssetBuffer::Meshlets:         return std::as_bytes(std::span(geometryStore.meshlets));
+    case AssetBuffer::MeshletBounds:    return std::as_bytes(std::span(geometryStore.meshletBounds));
+    case AssetBuffer::MeshletPrimitives: return std::as_bytes(std::span(packed.meshletPrimitives));
+    case AssetBuffer::MeshletGroups:
+        return std::as_bytes(std::span(geometryStore.meshletGroups).subspan(geometryStore.flushedGroupCount));
     case AssetBuffer::MeshletVertices:  return std::as_bytes(std::span(geometryStore.meshletVertices));
     case AssetBuffer::MeshletTriangles: return std::as_bytes(std::span(geometryStore.meshletTriangles));
     case AssetBuffer::Normals:          return optionalStream(geometryStore.normals, GpuModelAttribute::Normals);
@@ -733,7 +747,20 @@ std::vector<GpuPrimitive> ResourceManager::packScratchPrimitives() const
             .morphCount = draw.morphCount,
             .morphWeightFirst =
                 hasMorphWeights ? draw.morphWeightFirst - geometryStore.flushedMorphWeightCount : kNoneIndex,
+            .firstGroup = draw.firstGroup - geometryStore.flushedGroupCount,
+            .groupCount = draw.groupCount,
         });
+    }
+    return packed;
+}
+
+// before remapScratchOffsets: meshlet ranges are still scratch-relative, which is the model's slice
+std::vector<uint32_t> ResourceManager::packScratchMeshletPrimitives() const
+{
+    std::vector<uint32_t> packed(geometryStore.meshlets.size(), 0);
+    for (uint32_t p = geometryStore.flushedPrimitiveCount; p < geometryStore.primitiveDraws.size(); ++p) {
+        const MeshletDraw& range = geometryStore.primitiveDraws[p].meshlets;
+        std::fill_n(packed.begin() + range.firstMeshlet, range.meshletCount, p - geometryStore.flushedPrimitiveCount);
     }
     return packed;
 }
@@ -752,6 +779,10 @@ std::vector<GpuNode> ResourceManager::packScratchNodes() const
             .primitiveCount = node.primitiveCount,
             .flags = node.flags,
             .pad0 = 0,
+            .bboxMin = node.meshBounds.bboxMin,
+            .pad1 = 0,
+            .bboxMax = node.meshBounds.bboxMax,
+            .pad2 = 0,
         });
     }
     return packed;
@@ -805,8 +836,6 @@ void ResourceManager::writeNodeInstances(uint32_t frameSlot)
             rows[entityNodeInstanceFirst[id] + k] = GpuNodeInstance{
                 .worldMatrix = world,
                 .prevWorldMatrix = prevEntityMatrix * node.localToModel,
-                .boundingSphere = transformBoundingSphere(entityMatrix, node.boundingSphere),
-                .prevBoundingSphere = transformBoundingSphere(prevEntityMatrix, node.boundingSphere),
                 .entityIndex = id,
                 .modelIndex = modelId,
                 .nodeIndex = k,
@@ -947,6 +976,8 @@ void ResourceManager::flushGpuAssets()
                      static_cast<uint32_t>(geometryStore.auxBlobs.size()) - geometryStore.flushedAuxBlobCount},
         .nodes = {geometryStore.flushedNodeCount,
                   static_cast<uint32_t>(geometryStore.nodeDraws.size()) - geometryStore.flushedNodeCount},
+        .meshletGroups = {geometryStore.flushedGroupCount,
+                          static_cast<uint32_t>(geometryStore.meshletGroups.size()) - geometryStore.flushedGroupCount},
         .key = objectStorage.names[entity],
         .meshletDraw = {},
         .localBounds = glm::vec4{0.0f},
@@ -960,6 +991,7 @@ void ResourceManager::flushGpuAssets()
     PackedScratch packed{
         .primitives = packScratchPrimitives(),
         .nodes = packScratchNodes(),
+        .meshletPrimitives = packScratchMeshletPrimitives(),
         .morphTargets =
             packMorphTargets(std::span(geometryStore.morphTargets).subspan(geometryStore.flushedMorphTargetCount)),
         .materialRows = {},
@@ -1247,7 +1279,9 @@ void ResourceManager::rebaseCatalog(ModelId modelId, const ModelAllocation& remo
     eraseSlice(geometry.morphWeights, removed.morphWeights);
     eraseSlice(geometry.auxBlobs, removed.auxBlobs);
     eraseSlice(geometry.nodeDraws, removed.nodes);
+    eraseSlice(geometry.meshletGroups, removed.meshletGroups);
     geometry.flushedNodeCount -= removed.nodes.count;
+    geometry.flushedGroupCount -= removed.meshletGroups.count;
     geometry.flushedPrimitiveCount -= removed.primitives.count;
     geometry.flushedMorphTargetCount -= removed.morphTargets.count;
     geometry.flushedMorphWeightCount -= removed.morphWeights.count;
@@ -1260,6 +1294,7 @@ void ResourceManager::rebaseCatalog(ModelId modelId, const ModelAllocation& remo
         shift(draw.firstIndex, gpuRange(AssetBuffer::Indices));
         shift(draw.morphFirst, removed.morphTargets);
         shift(draw.morphWeightFirst, removed.morphWeights);
+        shift(draw.firstGroup, removed.meshletGroups);
     }
     for (NodeDraw& node : geometry.nodeDraws) {
         shift(node.firstPrimitive, removed.primitives);
@@ -1288,6 +1323,7 @@ void ResourceManager::rebaseCatalog(ModelId modelId, const ModelAllocation& remo
         shift(allocation.morphWeights.first, removed.morphWeights);
         shift(allocation.auxBlobs.first, removed.auxBlobs);
         shift(allocation.nodes.first, removed.nodes);
+        shift(allocation.meshletGroups.first, removed.meshletGroups);
         shift(allocation.meshletDraw.firstMeshlet, gpuRange(AssetBuffer::Meshlets));
     }
 }

@@ -54,7 +54,7 @@ void meshMain(
     {
         GroupMemoryBarrierWithGroupSync();
     }
-    const bool isDoubleSided = (draw.record.flags & kDrawRecordStateGroupMask) == kMeshStateGroupDoubleSided;
+    const bool isDoubleSided = draw.isDoubleSided;
 
     uint backface = 0;
     uint small = 0;

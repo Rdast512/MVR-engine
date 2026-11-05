@@ -21,8 +21,11 @@ struct MeshletCullSettings
     bool isConeEnabled = true;
     // hi-z test of node instances: early against the previous pyramid, late re-tests the candidates
     bool isOcclusionEnabled = true;
+    // lossless: instances and meshlets whose conservative screen rect holds no pixel center
+    bool isSubPixelEnabled = true;
     bool isStatsEnabled = true;
-    // keeps culling against the camera captured when it was frozen; fly out to inspect the result
+    // keeps culling against the camera captured when it was frozen, and occlusion against the pyramid of that frame
+    // (vk_lod_clusters' freeze): the pyramid is not rebuilt while frozen. Fly out to inspect the result
     bool isCameraFrozen = false;
     // per-triangle tests in the mesh shaders; off by default until measured (meshlet_culling_options.md 2D)
     bool isTriangleBackfaceEnabled = false;
@@ -40,7 +43,6 @@ enum class OcclusionHistory : uint32_t
     NoPyramid,      // first frame or resize: the pyramid was recreated
     CameraCut,      // teleport or projection change
     SceneChanged,   // node-instance layout changed
-    CameraFrozen,   // the pyramid follows the render camera, not the frozen cull camera
 };
 
 [[nodiscard]] constexpr const char* occlusionHistoryName(OcclusionHistory history)
@@ -56,8 +58,6 @@ enum class OcclusionHistory : uint32_t
         return "camera cut";
     case OcclusionHistory::SceneChanged:
         return "scene changed";
-    case OcclusionHistory::CameraFrozen:
-        return "camera frozen";
     }
     return "";
 }
@@ -71,6 +71,8 @@ struct MeshletCullStats
     uint32_t meshletsPerSequence = 0;
     std::array<uint32_t, kMeshStateGroupCount> groupMeshlets{};
     OcclusionHistory history = OcclusionHistory::Valid;
+    // the culling camera is frozen and the pyramid holds the freeze frame's depth
+    bool isPyramidFrozen = false;
     // frames recorded with an invalid history since startup (Disabled excluded)
     uint32_t fallbackFrames = 0;
     // indexed by CullPhase; the per-test fields are zero unless MeshletCullSettings::isStatsEnabled
@@ -93,8 +95,9 @@ struct MeshletCullStats
 }
 
 // GPU culling in compute: node instances (frustum + hi-z) -> draw records -> meshlets (frustum + normal cone + hi-z)
-// -> per state group visible lists -> DGC sequences. runs once per CullPhase: instances and meshlets occluded early
-// become candidates the late phase re-tests against the fresh pyramid
+// -> per state group visible lists -> DGC sequences. runs once per CullPhase: instances occluded early become
+// candidates, meshlets occluded early bits in their record's reject mask; the late phase re-tests both against the
+// fresh pyramid
 class MeshletCulling
 {
 public:
@@ -117,6 +120,10 @@ public:
     static void recordCounterReadback(const vk::raii::CommandBuffer& cmd);
 
     [[nodiscard]] const MeshletCullStats& getStats() const noexcept { return stats; }
+
+    // frozen culling camera with a pyramid of the freeze frame: the renderer skips both builds so it stays
+
+    [[nodiscard]] bool isPyramidFrozen() const noexcept { return isPyramidFrozenThisFrame; }
 
     MeshletCullSettings settings;
 
@@ -153,9 +160,8 @@ private:
         // one region per phase
         DeviceBuffer visibleMeshlets;
         uint32_t visibleCapacity = 0;
-        // visible-list entries occluded early; capacity is the scene's meshlet total
-        DeviceBuffer meshletCandidates;
-        uint32_t meshletCandidateCapacity = 0;
+        // uint per early draw record (capacity drawRecordCapacity): meshlets occluded early, re-tested late
+        DeviceBuffer rejectMasks;
         // SceneTemplates::generation of the uploaded templates
         uint32_t generation = kNoGeneration;
     };
@@ -191,9 +197,12 @@ private:
     // set by prepareFrame for recordCull
     uint32_t frame = 0;
 
-    // captured on the frame the camera froze
+    // captured on the frame the camera froze; that frame still builds both pyramids, so its late pyramid holds the
+    // depth seen through frozenViewProj
     glm::mat4 frozenViewProj{1.0f};
     glm::vec3 frozenPosition{0.0f};
     bool wasCameraFrozen = false;
+    // set by prepareFrame: frozen since an earlier frame, so this frame skips both pyramid builds
+    bool isPyramidFrozenThisFrame = false;
     uint32_t fallbackFrames = 0;
 };

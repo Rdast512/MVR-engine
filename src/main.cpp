@@ -1,5 +1,6 @@
 #include "./core/vk_engine.hpp"
 #include "./util/debug.hpp"
+#include "logger.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <span>
@@ -50,6 +51,12 @@ void requireMimalloc(const void* ptr, const char* what)
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv)
 {
+#if ENGINE_LOG_TO_FILE
+    // before anything prints and before vkCreateInstance loads the layers
+    if (!redirectStdStreamsToLogFile()) {
+        std::cerr << "could not open logs/engine.log, logging to the console\n";
+    }
+#endif
 #if ENGINE_USE_MIMALLOC
     (void)mi_version();
 

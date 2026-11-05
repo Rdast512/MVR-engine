@@ -1,19 +1,10 @@
 #include "types.slang"
 #include "core/binding.slang"
-#include "core/hiz.slang"
+#include "core/culling.slang"
 
 // instances -> draw records -> per state group visible lists -> DGC sequences + counts; run once per CullPhase
 
 [[vk::push_constant]] ConstantBuffer<CullPushData> push;
-
-// largest axis scale of the affine part: the world radius of a unit sphere
-float maxAxisScale(float4x4 world)
-{
-    const float3 c0 = float3(world[0][0], world[1][0], world[2][0]);
-    const float3 c1 = float3(world[0][1], world[1][1], world[2][1]);
-    const float3 c2 = float3(world[0][2], world[1][2], world[2][2]);
-    return sqrt(max(dot(c0, c0), max(dot(c1, c1), dot(c2, c2))));
-}
 
 // backfacing is affine invariant, so the cone test runs in object space and stays exact under non-uniform scale
 float3 worldToObject(float4x4 world, float3 position)
@@ -26,26 +17,12 @@ float3 worldToObject(float4x4 world, float3 position)
     return float3(dot(r0, offset), dot(cross(c2, c0), offset), dot(cross(c0, c1), offset)) / dot(c0, r0);
 }
 
-// sphere in mesh space under world, against the view's pyramid and occlusionViewProj
-bool isSphereOccluded(GpuCullView view, float4x4 world, float4 sphere)
+// object-space box under world, against the view's pyramid and occlusionViewProj
+bool isBoxOccluded(GpuCullView view, float4x4 world, float3 bboxMin, float3 bboxMax)
 {
-    const float3 center = mul(world, float4(sphere.xyz, 1.0)).xyz;
-    const float radius = sphere.w * maxAxisScale(world);
-    const HiZFootprint footprint = hizFootprint(view.occlusionViewProj, center, radius, view.hizSize);
-    return isHiZOccluded(footprint, view.hizPyramid, view.hizMaxSampler);
-}
-
-bool isOutsideFrustum(GpuCullView view, float3 center, float radius)
-{
-    [unroll]
-    for (uint i = 0; i < 6; ++i)
-    {
-        if (dot(view.frustumPlanes[i].xyz, center) + view.frustumPlanes[i].w < -radius)
-        {
-            return true;
-        }
-    }
-    return false;
+    ClipBounds bounds;
+    intersectFrustum(view.occlusionViewProj, bboxMin, bboxMax, world, bounds);
+    return isHiZOccluded(bounds, view.hizSize, view.hizPyramid, view.hizMaxSampler);
 }
 
 // meshoptimizer sphere form: no apex needed, no singularity at the center
@@ -79,6 +56,7 @@ uint waveAppend(inout uint counter, bool predicate)
 }
 
 groupshared uint instanceRecordBase;
+groupshared uint groupRejectMask;
 
 // early: one workgroup per instance item; occluded ones become late candidates.
 // late: one per candidate (dispatched indirectly), re-tested against the fresh pyramid.
@@ -95,15 +73,21 @@ void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     const uint itemIndex = isLate ? bdaPtr<uint>(view.instanceCandidates)[groupId.x] : groupId.x;
     const GpuInstanceCullItem item = bdaPtr<GpuInstanceCullItem>(view.instanceItems)[itemIndex];
 
-    // group-uniform: every lane tests the same sphere
+    // group-uniform: every lane tests the same box, the node's mesh box under the instance matrix
     if ((item.flags & kDrawRecordSkipCulling) == 0)
     {
         GpuNodeInstance* instance = bdaPtr<GpuNodeInstance>(root.nodeInstances) + item.nodeInstanceIndex;
-        // candidates already passed it
-        if (!isLate && (view.flags & kCullInstanceFrustum) != 0)
+        GpuModel* model = bdaPtr<GpuModel>(root.models) + instance.modelIndex;
+        GpuNode* node = bdaPtr<GpuNode>(model.nodes) + instance.nodeIndex;
+        const float3 bboxMin = node.bboxMin;
+        const float3 bboxMax = node.bboxMax;
+        // candidates already passed both
+        if (!isLate && (view.flags & (kCullInstanceFrustum | kCullSubPixel)) != 0)
         {
-            const float4 sphere = instance.boundingSphere;
-            if (isOutsideFrustum(view, sphere.xyz, sphere.w))
+            ClipBounds bounds;
+            const bool isInFrustum =
+                intersectFrustum(view.cullViewProj, bboxMin, bboxMax, instance.worldMatrix, bounds);
+            if ((view.flags & kCullInstanceFrustum) != 0 && !isInFrustum)
             {
                 if (lane == 0 && isStats)
                 {
@@ -111,13 +95,20 @@ void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
                 }
                 return;
             }
+            // final, so a sub-pixel instance never becomes a candidate
+            if ((view.flags & kCullSubPixel) != 0 && isSubPixel(bounds, view.targetSize, view.subpixelSnap))
+            {
+                if (lane == 0 && isStats)
+                {
+                    InterlockedAdd(counters.instancesSubPixel, 1);
+                }
+                return;
+            }
         }
         if ((view.flags & kCullOcclusion) != 0)
         {
             // early: where the instance was when the previous pyramid was drawn
-            const float4 sphere = isLate ? instance.boundingSphere : instance.prevBoundingSphere;
-            const HiZFootprint footprint = hizFootprint(view.occlusionViewProj, sphere.xyz, sphere.w, view.hizSize);
-            if (isHiZOccluded(footprint, view.hizPyramid, view.hizMaxSampler))
+            if (isBoxOccluded(view, isLate ? instance.worldMatrix : instance.prevWorldMatrix, bboxMin, bboxMax))
             {
                 if (lane == 0)
                 {
@@ -158,10 +149,11 @@ void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     }
 }
 
-// one workgroup per draw record of the phase, one lane per meshlet; dispatched indirectly from
-// GpuCullCounters.meshletDispatch
+// one workgroup per draw record of the phase, i.e. per meshlet group, one lane per meshlet; dispatched indirectly from
+// GpuCullCounters.meshletDispatch. The group box is tested first: a group verdict holds for all its meshlets, since
+// their boxes lie inside it
 [shader("compute")]
-[numthreads(kCullGroupSize, 1, 1)]
+[numthreads(kMeshletGroupMaxSize, 1, 1)]
 void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
 {
     const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
@@ -174,113 +166,180 @@ void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     const GpuPrimitive primitive = bdaPtr<GpuPrimitive>(root.primitives)[record.primitiveIndex];
     const uint group = record.flags & kDrawRecordStateGroupMask;
     const uint meshletIndex = record.meshletOffset + lane;
+    GpuNodeInstance* instance = bdaPtr<GpuNodeInstance>(root.nodeInstances) + record.nodeInstanceIndex;
+    GpuModel* model = bdaPtr<GpuModel>(root.models) + instance.modelIndex;
+    const GpuMeshletGroup meshletGroup =
+        bdaPtr<GpuMeshletGroup>(model.meshletGroups)[primitive.firstGroup + record.groupOffset];
 
-    const bool isPresent = meshletIndex < primitive.meshletCount;
-    const bool isTested = isPresent && (record.flags & kDrawRecordSkipCulling) == 0;
+    const bool isPresent = lane < meshletGroup.meshletCount;
+    const bool isGroupTested = (record.flags & kDrawRecordSkipCulling) == 0;
+    const bool isTested = isPresent && isGroupTested;
+    const float4x4 world = instance.worldMatrix;
+    // early: where the bounds were when the previous pyramid was drawn
+    const float4x4 occlusionWorld = isLate ? world : instance.prevWorldMatrix;
+
+    // group-uniform; same order as the meshlet tests below, without the cone
+    bool isGroupFrustumCulled = false;
+    bool isGroupSubPixel = false;
+    bool isGroupOccluded = false;
+    if (isGroupTested)
+    {
+        ClipBounds groupBounds = clipBoundsBegin();
+        if ((view.flags & (kCullFrustum | kCullSubPixel)) != 0)
+        {
+            const bool isInFrustum =
+                intersectFrustum(view.cullViewProj, meshletGroup.bboxMin, meshletGroup.bboxMax, world, groupBounds);
+            isGroupFrustumCulled = (view.flags & kCullFrustum) != 0 && !isInFrustum;
+        }
+        if (!isGroupFrustumCulled && (view.flags & kCullSubPixel) != 0)
+        {
+            isGroupSubPixel = isSubPixel(groupBounds, view.targetSize, view.subpixelSnap);
+        }
+        if (!isGroupFrustumCulled && !isGroupSubPixel && (view.flags & kCullOcclusion) != 0)
+        {
+            isGroupOccluded = isBoxOccluded(view, occlusionWorld, meshletGroup.bboxMin, meshletGroup.bboxMax);
+        }
+    }
+
     bool isFrustumCulled = false;
     bool isConeCulled = false;
+    bool isSubPixelCulled = false;
     bool isOccluded = false;
     if (isTested)
     {
-        GpuNodeInstance* instance = bdaPtr<GpuNodeInstance>(root.nodeInstances) + record.nodeInstanceIndex;
-        const float4x4 world = instance.worldMatrix;
-        const uint64_t meshlets = bdaPtr<GpuModel>(root.models)[instance.modelIndex].meshlets;
-        const GpuMeshletDesc meshlet = bdaPtr<GpuMeshletDesc>(meshlets)[primitive.firstMeshlet + meshletIndex];
+        const uint row = primitive.firstMeshlet + meshletIndex;
+        const GpuMeshletDesc meshlet = bdaPtr<GpuMeshletDesc>(model.meshlets)[row];
+        const GpuMeshletBounds box = bdaPtr<GpuMeshletBounds>(model.meshletBounds)[row];
 
-        if ((view.flags & kCullFrustum) != 0)
+        // one projection for the frustum and sub-pixel tests, skipped when the group decided both
+        ClipBounds bounds = clipBoundsBegin();
+        isFrustumCulled = isGroupFrustumCulled;
+        if (!isFrustumCulled && !isGroupSubPixel && (view.flags & (kCullFrustum | kCullSubPixel)) != 0)
         {
-            const float3 center = mul(world, float4(meshlet.boundingSphere.xyz, 1.0)).xyz;
-            isFrustumCulled = isOutsideFrustum(view, center, meshlet.boundingSphere.w * maxAxisScale(world));
+            const bool isInFrustum = intersectFrustum(view.cullViewProj, box.bboxMin, box.bboxMax, world, bounds);
+            isFrustumCulled = (view.flags & kCullFrustum) != 0 && !isInFrustum;
         }
         // double-sided faces are visible from behind
         if (!isFrustumCulled && (view.flags & kCullCone) != 0 && group != kMeshStateGroupDoubleSided)
         {
             isConeCulled = isConeBackfacing(meshlet, worldToObject(world, view.cameraPos));
         }
-        // early: where the meshlet was when the previous pyramid was drawn
-        if (!isFrustumCulled && !isConeCulled && (view.flags & kCullOcclusion) != 0)
+        // final in either phase, so a sub-pixel meshlet never becomes a candidate
+        if (!isFrustumCulled && !isConeCulled && (view.flags & kCullSubPixel) != 0)
         {
-            isOccluded = isSphereOccluded(view, isLate ? world : instance.prevWorldMatrix, meshlet.boundingSphere);
+            isSubPixelCulled = isGroupSubPixel || isSubPixel(bounds, view.targetSize, view.subpixelSnap);
+        }
+        if (!isFrustumCulled && !isConeCulled && !isSubPixelCulled && (view.flags & kCullOcclusion) != 0)
+        {
+            isOccluded =
+                isGroupOccluded || isBoxOccluded(view, occlusionWorld, box.bboxMin, box.bboxMax);
         }
     }
 
-    const uint entry = (recordIndex << kCullLaneBits) | lane;
-    const bool isVisible = isPresent && !isFrustumCulled && !isConeCulled && !isOccluded;
+    const bool isVisible = isPresent && !isFrustumCulled && !isConeCulled && !isSubPixelCulled && !isOccluded;
     // every lane of a group shares the record, so the state group is wave-uniform
     const uint slot = waveAppend(counters.visibleMeshlets[group], isVisible);
     if (isVisible)
     {
-        bdaPtr<uint>(view.visibleMeshlets)[view.groupVisibleOffset[group] + slot] = entry;
+        GpuVisibleMeshlet entry;
+        entry.nodeInstanceIndex = record.nodeInstanceIndex;
+        entry.meshletRow = primitive.firstMeshlet + meshletIndex;
+        bdaPtr<GpuVisibleMeshlet>(view.visibleMeshlets)[view.groupVisibleOffset[group] + slot] = entry;
     }
 
-    // capacity is the scene's meshlet total and each meshlet is tested once early, so the list cannot overflow
+    // reject list (vk_lod_clusters rejectClusterMasks): one bit per meshlet that passed frustum, cone and sub-pixel
+    // but failed occlusion. Written for every early record, zero included, so the mask needs no clear. The
+    // reference also drops a mask whose union box left the current frustum; here the early frustum test already
+    // used the current (or frozen) matrix the late phase uses, so every set bit is inside it
     if (!isLate)
     {
-        GpuCullCounters* lateCounters = bdaPtr<GpuCullCounters>(view.lateCounters);
-        const uint candidate = waveAppend(lateCounters.meshletCandidateCount, isOccluded);
+        if (lane == 0)
+        {
+            groupRejectMask = 0;
+        }
+        GroupMemoryBarrierWithGroupSync();
         if (isOccluded)
         {
-            bdaPtr<uint>(view.meshletCandidates)[candidate] = entry;
-            // the first candidate of every kCullGroupSize opens a late workgroup
-            if (candidate % kCullGroupSize == 0)
-            {
-                InterlockedAdd(lateCounters.meshletCandidateDispatch[0], 1);
-            }
+            InterlockedOr(groupRejectMask, 1u << lane);
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if (lane == 0)
+        {
+            bdaPtr<uint>(view.rejectMasks)[groupId.x] = groupRejectMask;
         }
     }
 
     if ((view.flags & kCullStats) != 0)
     {
+        if (lane == 0 && isGroupTested)
+        {
+            InterlockedAdd(counters.groupsTested, 1);
+            if (isGroupFrustumCulled || isGroupSubPixel || isGroupOccluded)
+            {
+                InterlockedAdd(counters.groupsCulled, 1);
+            }
+        }
         waveCount(counters.testedMeshlets, isTested);
         waveCount(counters.frustumCulled, isFrustumCulled);
         waveCount(counters.coneCulled, isConeCulled);
+        waveCount(counters.meshletsSubPixel, isSubPixelCulled);
         waveCount(counters.unculledMeshlets, isPresent && !isTested);
         waveCount(counters.occlusionCulled, isOccluded);
     }
 }
 
-// late only: one lane per early-occluded meshlet of an early-drawn instance; frustum and cone already passed,
-// so only the occlusion test is redone, with current transforms against the fresh pyramid
+// late only (traversal_reject_clusters): one workgroup per early record, dispatched with the early phase's
+// meshletDispatch, one lane per meshlet. Only the meshlets set in the record's reject mask are re-tested, and only
+// for occlusion: frustum, cone and sub-pixel passed early with the same matrices. Current transforms, fresh pyramid
 [shader("compute")]
-[numthreads(kCullGroupSize, 1, 1)]
-void cullMeshletCandidates(uint3 id : SV_DispatchThreadID)
+[numthreads(kMeshletGroupMaxSize, 1, 1)]
+void cullRejectedMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
     const GpuCullView view = bdaPtr<GpuCullView>(push.cullView)[0];
+    const uint rejectMask = bdaPtr<uint>(view.rejectMasks)[groupId.x];
+    // most groups are either drawn or culled whole early
+    if (rejectMask == 0)
+    {
+        return;
+    }
+    const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
     GpuCullCounters* counters = bdaPtr<GpuCullCounters>(view.counters);
 
-    const bool isPresent = id.x < counters.meshletCandidateCount;
-    uint entry = 0;
-    uint group = 0;
+    const uint recordIndex = view.rejectRecordBase + groupId.x;
+    const GpuDrawRecord record = bdaPtr<GpuDrawRecord>(root.drawRecords)[recordIndex];
+    const GpuPrimitive primitive = bdaPtr<GpuPrimitive>(root.primitives)[record.primitiveIndex];
+    GpuNodeInstance* instance = bdaPtr<GpuNodeInstance>(root.nodeInstances) + record.nodeInstanceIndex;
+    GpuModel* model = bdaPtr<GpuModel>(root.models) + instance.modelIndex;
+    const uint group = record.flags & kDrawRecordStateGroupMask;
+    const float4x4 world = instance.worldMatrix;
+
+    // group-uniform: a group box still occluded keeps all its bits occluded
+    const GpuMeshletGroup meshletGroup =
+        bdaPtr<GpuMeshletGroup>(model.meshletGroups)[primitive.firstGroup + record.groupOffset];
+    const bool isGroupOccluded = isBoxOccluded(view, world, meshletGroup.bboxMin, meshletGroup.bboxMax);
+
+    const bool isRejected = (rejectMask & (1u << lane)) != 0;
     bool isOccluded = false;
-    if (isPresent)
+    if (isRejected)
     {
-        entry = bdaPtr<uint>(view.meshletCandidates)[id.x];
-        const GpuDrawRecord record = bdaPtr<GpuDrawRecord>(root.drawRecords)[entry >> kCullLaneBits];
-        const GpuPrimitive primitive = bdaPtr<GpuPrimitive>(root.primitives)[record.primitiveIndex];
-        GpuNodeInstance* instance = bdaPtr<GpuNodeInstance>(root.nodeInstances) + record.nodeInstanceIndex;
-        const uint64_t meshlets = bdaPtr<GpuModel>(root.models)[instance.modelIndex].meshlets;
-        const uint meshletIndex = primitive.firstMeshlet + record.meshletOffset + (entry & kCullLaneMask);
-        const GpuMeshletDesc meshlet = bdaPtr<GpuMeshletDesc>(meshlets)[meshletIndex];
-        group = record.flags & kDrawRecordStateGroupMask;
-        isOccluded = isSphereOccluded(view, instance.worldMatrix, meshlet.boundingSphere);
+        const uint row = primitive.firstMeshlet + record.meshletOffset + lane;
+        const GpuMeshletBounds box = bdaPtr<GpuMeshletBounds>(model.meshletBounds)[row];
+        isOccluded = isGroupOccluded || isBoxOccluded(view, world, box.bboxMin, box.bboxMax);
     }
 
-    const bool isVisible = isPresent && !isOccluded;
-    // candidates mix records, so the state group varies per lane: one append per group
-    [unroll]
-    for (uint g = 0; g < kMeshStateGroupCount; ++g)
+    const bool isVisible = isRejected && !isOccluded;
+    const uint slot = waveAppend(counters.visibleMeshlets[group], isVisible);
+    if (isVisible)
     {
-        const bool isInGroup = isVisible && group == g;
-        const uint slot = waveAppend(counters.visibleMeshlets[g], isInGroup);
-        if (isInGroup)
-        {
-            bdaPtr<uint>(view.visibleMeshlets)[view.groupVisibleOffset[g] + slot] = entry;
-        }
+        GpuVisibleMeshlet entry;
+        entry.nodeInstanceIndex = record.nodeInstanceIndex;
+        entry.meshletRow = primitive.firstMeshlet + record.meshletOffset + lane;
+        bdaPtr<GpuVisibleMeshlet>(view.visibleMeshlets)[view.groupVisibleOffset[group] + slot] = entry;
     }
 
     if ((view.flags & kCullStats) != 0)
     {
+        waveCount(counters.meshletsRetested, isRejected);
         waveCount(counters.occlusionCulled, isOccluded);
     }
 }

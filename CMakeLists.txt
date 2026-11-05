@@ -79,6 +79,8 @@ else ()
 endif ()
 
 add_compile_definitions($<$<NOT:$<CONFIG:Debug>>:NDEBUG>)
+# Release writes stdout and stderr (engine logs, validation layers) to logs/engine.log next to the executable
+add_compile_definitions($<$<CONFIG:Release>:ENGINE_LOG_TO_FILE=1>)
 
 # ccache can only cache PCH users when the PCH carries no timestamp
 if (CCACHE_PROGRAM)
@@ -271,17 +273,17 @@ endfunction()
 engine_add_slang_pass(passes/mesh_raster.slang
     ENTRIES meshMain
     DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang geometry/mesh.slang
-            geometry/triangle_cull.slang)
+            geometry/triangle_cull.slang core/culling.slang)
 engine_add_slang_pass(passes/mesh_fragment.slang
     ENTRIES fragMain
     DEPENDS types.slang core/binding.slang core/frame.slang material/pbr.slang)
 engine_add_slang_pass(passes/mesh_debug.slang
     ENTRIES meshDebugMain fragDebugMain
     DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang geometry/mesh.slang
-            geometry/triangle_cull.slang)
+            geometry/triangle_cull.slang core/culling.slang)
 engine_add_slang_pass(passes/meshlet_cull.slang
-    ENTRIES cullInstances cullMeshlets cullMeshletCandidates buildMeshSequences
-    DEPENDS types.slang core/binding.slang core/hiz.slang)
+    ENTRIES cullInstances cullMeshlets cullRejectedMeshlets buildMeshSequences
+    DEPENDS types.slang core/binding.slang core/culling.slang)
 engine_add_slang_pass(passes/hiz_view.slang
     ENTRIES hizViewMesh hizViewFrag
     DEPENDS types.slang core/binding.slang)

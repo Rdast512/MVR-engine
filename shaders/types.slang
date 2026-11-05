@@ -7,11 +7,11 @@ static const uint kNoneIndex = 0xffffffffu;
 static const uint kMaxMeshletVertices = 64;
 static const uint kMaxMeshletTriangles = 126;
 static const uint kGroupSize = 32;
+// must match src/core/types.hpp kMeshletGroupMaxSize
+static const uint kMeshletGroupMaxSize = 32;
 
-// must match src/core/types.hpp kCullGroupSize / kCullLaneBits / kMeshStateGroupCount
+// must match src/core/types.hpp kCullGroupSize / kMeshStateGroupCount
 static const uint kCullGroupSize = 64;
-static const uint kCullLaneBits = 6;
-static const uint kCullLaneMask = kCullGroupSize - 1;
 static const uint kMeshStateGroupCount = 2;
 static const uint kMeshStateGroupDoubleSided = 1;
 
@@ -58,6 +58,9 @@ struct GpuModel
 {
     uint64_t vertices;
     uint64_t meshlets;
+    uint64_t meshletBounds; // GpuMeshletBounds[], parallel to meshlets
+    uint64_t meshletGroups; // GpuMeshletGroup[]
+    uint64_t meshletPrimitives; // uint per meshlet: its row of primitives
     uint64_t meshletVertices;
     uint64_t meshletTriangles;
     uint64_t normals;
@@ -72,6 +75,7 @@ struct GpuModel
     uint64_t morphTargets; // GpuMorphTarget[]
     uint64_t morphWeights; // float[], glTF default weights
     uint64_t nodes;        // GpuNode[nodeCount]
+    uint64_t primitives;   // GpuPrimitive[], the model's slice of GpuFrameRoot.primitives
     uint attributeMask;
     uint nodeCount;
 };
@@ -98,6 +102,10 @@ struct GpuNode
     uint primitiveCount;
     uint flags;
     uint pad0;
+    float3 bboxMin; // mesh space, tested under GpuNodeInstance.worldMatrix
+    uint pad1;
+    float3 bboxMax;
+    uint pad2;
 };
 
 // one entity x node, transforms precomputed per frame
@@ -105,8 +113,6 @@ struct GpuNodeInstance
 {
     float4x4 worldMatrix;
     float4x4 prevWorldMatrix;
-    float4 boundingSphere; // world space
-    float4 prevBoundingSphere; // world space under prevWorldMatrix
     uint entityIndex;
     uint modelIndex;
     uint nodeIndex;
@@ -117,13 +123,24 @@ struct GpuNodeInstance
 static const uint kDrawRecordStateGroupMask = 0x3u;
 static const uint kDrawRecordSkipCulling = 1u << 2;
 
-// one meshlet cull work item: up to kCullGroupSize meshlets of one primitive placed by one node instance
+// one render-list entry (vk_lod_clusters ClusterInfo); must match src/core/types.hpp
+struct GpuVisibleMeshlet
+{
+    uint nodeInstanceIndex;
+    uint meshletRow; // row of the model's GpuMeshletDesc slice
+};
+
+// GpuMaterial.flags; must match GpuMaterialFlag in src/core/types.hpp
+static const uint kMaterialFlagDoubleSided = 1u << 2;
+
+// one meshlet cull work item: one GpuMeshletGroup of one primitive placed by one node instance
 struct GpuDrawRecord
 {
     uint nodeInstanceIndex;
     uint primitiveIndex; // absolute row of GpuFrameRoot.primitives
-    uint meshletOffset;  // relative to the primitive
+    uint meshletOffset;  // the group's first meshlet, relative to the primitive
     uint flags;          // kDrawRecord*
+    uint groupOffset;    // relative to GpuPrimitive.firstGroup
 };
 
 // one node instance for the instance pass; its draw record templates are contiguous
@@ -142,6 +159,7 @@ static const uint kCullStats = 1u << 2;
 static const uint kCullInstanceFrustum = 1u << 3;
 static const uint kCullOcclusion = 1u << 4;
 static const uint kCullLatePhase = 1u << 5;
+static const uint kCullSubPixel = 1u << 6;
 
 // GpuFrameRoot.triangleCull, matches TriangleCullFlag in src/core/types.hpp
 static const uint kTriangleCullBackface = 1u << 0;
@@ -150,10 +168,9 @@ static const uint kTriangleCullStats = 1u << 2;
 
 struct GpuCullView
 {
-    float4 frustumPlanes[6]; // world space, inside when dot(xyz, p) + w >= 0
     float3 cameraPos;
     uint flags; // kCull*
-    uint64_t visibleMeshlets;     // uint[]: (draw record << kCullLaneBits) | lane
+    uint64_t visibleMeshlets;     // GpuVisibleMeshlet[], one region per state group
     uint64_t counters;            // GpuCullCounters
     uint64_t sequences;           // MeshDgcSequence[]
     uint64_t instanceItems;       // GpuInstanceCullItem[instanceCount]
@@ -169,8 +186,12 @@ struct GpuCullView
     uint64_t instanceCandidates; // uint[]: instance items occluded early, re-tested late
     uint64_t lateCounters;       // GpuCullCounters counting the candidates; early view only
     uint drawRecordBase;         // first GpuFrameRoot.drawRecords row of this phase
-    uint pad0;
-    uint64_t meshletCandidates;  // uint[]: visible-list entries occluded early, re-tested late
+    uint rejectRecordBase;       // first row of the early phase's records, which rejectMasks is indexed by
+    uint64_t rejectMasks;        // uint per early draw record: meshlets occluded early, re-tested late
+    float4x4 cullViewProj;       // frustum and sub-pixel tests: current, or the frozen cull camera
+    float2 targetSize;           // render target in pixels
+    float subpixelSnap;          // pixels a vertex may move when snapped to the subpixel grid
+    uint pad1;
 };
 
 struct GpuCullCounters
@@ -179,8 +200,7 @@ struct GpuCullCounters
     uint sequenceCount[kMeshStateGroupCount];
     uint meshletDispatch[3]; // VkDispatchIndirectCommand: x = draw records of visible instances
     uint instanceDispatch[3]; // VkDispatchIndirectCommand: x = late candidates
-    uint meshletCandidateDispatch[3]; // VkDispatchIndirectCommand: x = groups of kCullGroupSize candidates
-    uint meshletCandidateCount;
+    uint meshletsRetested; // late, kCullStats only: reject-mask bits re-tested
     uint instancesCulled; // frustum
     uint instancesDrawn;
     uint instancesOccluded;
@@ -188,10 +208,14 @@ struct GpuCullCounters
     uint frustumCulled;
     uint coneCulled;
     uint unculledMeshlets;
-    uint occlusionCulled; // early: became candidates, late: still occluded
+    uint occlusionCulled; // early: set in the reject masks, late: still occluded
     uint trianglesTested; // mesh shader, kTriangleCullStats only
     uint trianglesBackface;
     uint trianglesSmall;
+    uint instancesSubPixel; // kCullStats only
+    uint meshletsSubPixel;
+    uint groupsTested; // kCullStats only
+    uint groupsCulled; // whole group by its box: frustum, sub-pixel or occluded
 };
 
 // delta offsets relative to the model's morph slices, kNoneIndex = absent
@@ -215,6 +239,8 @@ struct GpuPrimitive
     uint morphFirst;       // rows of model.morphTargets
     uint morphCount;
     uint morphWeightFirst; // row of model.morphWeights, kNoneIndex = no default weights
+    uint firstGroup;       // rows of model.meshletGroups
+    uint groupCount;
 };
 
 struct GpuVertex
@@ -238,6 +264,24 @@ struct GpuMeshletDesc
     int8_t coneAxisZ;
     int8_t coneCutoff;
     float4 boundingSphere;
+};
+
+// a run of a primitive's meshlets culled as one box first
+struct GpuMeshletGroup
+{
+    float3 bboxMin; // object space, union of the meshlet boxes
+    uint firstMeshlet; // relative to the primitive
+    float3 bboxMax;
+    uint meshletCount; // <= kMeshletGroupMaxSize
+};
+
+// object-space box of one meshlet, parallel to GpuMeshletDesc
+struct GpuMeshletBounds
+{
+    float3 bboxMin;
+    float shortestEdge; // shortest and longest triangle edge, object space
+    float3 bboxMax;
+    float longestEdge;
 };
 
 struct GpuMaterial
@@ -429,7 +473,7 @@ struct GpuFrameRoot
     uint64_t tlas;
     uint64_t nodeInstances; // GpuNodeInstance[nodeInstanceCount]
     uint64_t drawRecords;     // GpuDrawRecord[], written by the instance cull pass
-    uint64_t visibleMeshlets; // uint[]: (draw record << kCullLaneBits) | lane
+    uint64_t visibleMeshlets; // GpuVisibleMeshlet[]
     uint lightCount;
     uint instanceCount;
     uint primitiveCount;

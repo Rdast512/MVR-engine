@@ -49,6 +49,49 @@ static_assert(sizeof(GpuMeshletDesc) == 32, "GpuMeshletDesc must match types.sla
 static_assert(offsetof(GpuMeshletDesc, coneAxis) == 12);
 static_assert(offsetof(GpuMeshletDesc, boundingSphere) == 16);
 
+// object-space box of one meshlet, parallel to GpuMeshletDesc (BBox in vk_lod_clusters)
+struct GpuMeshletBounds
+{
+    glm::vec3 bboxMin{0.0f};
+    // shortest and longest triangle edge, object space; for a later software-raster threshold
+    float shortestEdge = 0.0f;
+    glm::vec3 bboxMax{0.0f};
+    float longestEdge = 0.0f;
+};
+static_assert(sizeof(GpuMeshletBounds) == 32, "GpuMeshletBounds must match types.slang (32 B)");
+static_assert(offsetof(GpuMeshletBounds, bboxMax) == 16);
+
+// meshlets per GpuMeshletGroup, per GpuDrawRecord and per meshlet-cull workgroup (vk_lod_clusters' group size)
+inline constexpr uint32_t kMeshletGroupMaxSize = 32;
+
+// a run of a primitive's meshlets that are close in space (meshopt_partitionClusters), culled as one box before its
+// meshlets are tested; the unit a cluster LOD level will be built from
+struct GpuMeshletGroup
+{
+    glm::vec3 bboxMin{0.0f}; // object space, union of the meshlet boxes
+    uint32_t firstMeshlet = 0; // relative to the primitive
+    glm::vec3 bboxMax{0.0f};
+    uint32_t meshletCount = 0; // <= kMeshletGroupMaxSize
+};
+static_assert(sizeof(GpuMeshletGroup) == 32, "GpuMeshletGroup must match types.slang (32 B)");
+static_assert(offsetof(GpuMeshletGroup, bboxMax) == 16);
+
+// one render-list entry (vk_lod_clusters ClusterInfo): the meshlet is identified by its model-relative row, which
+// stays the same across draw records, phases and, later, LOD levels
+struct GpuVisibleMeshlet
+{
+    uint32_t nodeInstanceIndex = 0;
+    uint32_t meshletRow = 0; // row of the model's GpuMeshletDesc slice
+};
+static_assert(sizeof(GpuVisibleMeshlet) == 8);
+
+// axis-aligned box; empty when bboxMin > bboxMax
+struct BoundingBox
+{
+    glm::vec3 bboxMin{0.0f};
+    glm::vec3 bboxMax{0.0f};
+};
+
 // Per-entity range into the global meshlet arrays.
 struct MeshletDraw
 {
@@ -71,6 +114,9 @@ struct PrimitiveDraw
     uint32_t morphCount = 0;
     // kNoneIndex: the mesh has no default weights (all zero)
     uint32_t morphWeightFirst = kNoneIndex;
+    // catalog-absolute rows of GeometryStore::meshletGroups; the groups cover the meshlets in order
+    uint32_t firstGroup = 0;
+    uint32_t groupCount = 0;
 };
 
 namespace NodeFlag
@@ -85,6 +131,8 @@ struct NodeDraw
     glm::mat4 localToModel{1.0f};
     // model space: the mesh's sphere moved by localToModel
     glm::vec4 boundingSphere{0.0f};
+    // mesh space: the box of the mesh's vertices, tested under localToModel
+    BoundingBox meshBounds;
     // catalog-absolute row of the mesh's first PrimitiveDraw
     uint32_t firstPrimitive = 0;
     uint32_t primitiveCount = 0;
@@ -170,8 +218,11 @@ struct GpuPrimitive
     uint32_t morphCount = 0;
     // row of the model's morph weight slice, kNoneIndex = no default weights
     uint32_t morphWeightFirst = kNoneIndex;
+    // rows of the model's GpuMeshletGroup slice
+    uint32_t firstGroup = 0;
+    uint32_t groupCount = 0;
 };
-static_assert(sizeof(GpuPrimitive) == 40);
+static_assert(sizeof(GpuPrimitive) == 48);
 static_assert(offsetof(GpuPrimitive, morphFirst) == 28);
 
 // GPU mirror of NodeDraw, model-relative; read by culling and ray tracing, the raster path uses GpuNodeInstance
@@ -185,25 +236,29 @@ struct GpuNode
     uint32_t primitiveCount = 0;
     uint32_t flags = 0;
     uint32_t pad0 = 0;
+    // mesh space; the cull passes test it under GpuNodeInstance::worldMatrix
+    glm::vec3 bboxMin{0.0f};
+    uint32_t pad1 = 0;
+    glm::vec3 bboxMax{0.0f};
+    uint32_t pad2 = 0;
 };
-static_assert(sizeof(GpuNode) == 80);
+static_assert(sizeof(GpuNode) == 112);
 static_assert(offsetof(GpuNode, firstPrimitive) == 64);
+static_assert(offsetof(GpuNode, bboxMin) == 80);
 
 // one entity x node, rewritten every frame: transforms are precomputed so shaders read one matrix
 struct GpuNodeInstance
 {
     glm::mat4 worldMatrix{1.0f};
+    // the early occlusion test places the bounds where the previous pyramid saw them
     glm::mat4 prevWorldMatrix{1.0f};
-    glm::vec4 boundingSphere{0.0f}; // world space
-    // world space under prevWorldMatrix: the early occlusion test matches the previous pyramid
-    glm::vec4 prevBoundingSphere{0.0f};
     uint32_t entityIndex = 0;
     uint32_t modelIndex = 0;
     uint32_t nodeIndex = 0; // model-relative
     uint32_t flags = 0;     // NodeFlag
 };
-static_assert(sizeof(GpuNodeInstance) == 176);
-static_assert(offsetof(GpuNodeInstance, entityIndex) == 160);
+static_assert(sizeof(GpuNodeInstance) == 144);
+static_assert(offsetof(GpuNodeInstance, entityIndex) == 128);
 
 // raster state a meshlet draws with; one DGC execute per group
 enum class MeshStateGroup : uint32_t
@@ -225,10 +280,8 @@ enum class CullPhase : uint32_t
 };
 inline constexpr uint32_t kCullPhaseCount = std::to_underlying(CullPhase::Count);
 
-// meshlets per cull workgroup and per GpuDrawRecord; the visible list packs the lane in kCullLaneBits
+// workgroup size of the instance cull pass and buildMeshSequences
 inline constexpr uint32_t kCullGroupSize = 64;
-inline constexpr uint32_t kCullLaneBits = 6;
-static_assert(kCullGroupSize == 1u << kCullLaneBits);
 
 namespace DrawRecordFlag
 {
@@ -239,16 +292,17 @@ namespace DrawRecordFlag
 } // namespace DrawRecordFlag
 static_assert(kMeshStateGroupCount - 1 <= DrawRecordFlag::StateGroupMask);
 
-// one meshlet cull work item: up to kCullGroupSize meshlets of one primitive placed by one node instance.
+// one meshlet cull work item: one GpuMeshletGroup of one primitive placed by one node instance.
 // built once per scene layout as templates; the instance pass copies those of visible instances
 struct GpuDrawRecord
 {
     uint32_t nodeInstanceIndex = 0;
     uint32_t primitiveIndex = 0; // absolute row of GpuFrameRoot.primitives
-    uint32_t meshletOffset = 0;  // first meshlet of the batch, relative to the primitive
+    uint32_t meshletOffset = 0;  // the group's first meshlet, relative to the primitive (read by the mesh shaders)
     uint32_t flags = 0;          // DrawRecordFlag
+    uint32_t groupOffset = 0;    // the group, relative to GpuPrimitive::firstGroup
 };
-static_assert(sizeof(GpuDrawRecord) == 16);
+static_assert(sizeof(GpuDrawRecord) == 20);
 
 // one node instance for the instance pass; its draw record templates are contiguous
 struct GpuInstanceCullItem
@@ -270,11 +324,13 @@ namespace CullFlag
     inline constexpr uint32_t Stats = 1u << 2;
     // node instance sphere against the frustum
     inline constexpr uint32_t InstanceFrustum = 1u << 3;
-    // hi-z test of instances and meshlets against GpuCullView::occlusionViewProj (shaders/core/hiz.slang)
+    // hi-z test of instances and meshlets against GpuCullView::occlusionViewProj (shaders/core/culling.slang)
     inline constexpr uint32_t Occlusion = 1u << 4;
     // set on the late view: instances come from the candidate list and skip the frustum test; meshlets are tested
     // with current transforms
     inline constexpr uint32_t LatePhase = 1u << 5;
+    // instances and meshlets whose screen rect holds no pixel center (shaders/core/culling.slang isSubPixel)
+    inline constexpr uint32_t SubPixel = 1u << 6;
 } // namespace CullFlag
 
 // GpuFrameRoot::triangleCull: per-triangle tests in the mesh shaders (shaders/geometry/triangle_cull.slang)
@@ -291,11 +347,9 @@ namespace TriangleCullFlag
 // per frame slot, host-written: what the cull passes test against and where they read and write
 struct GpuCullView
 {
-    // world space, inside when dot(xyz, p) + w >= 0: left, right, bottom, top, near, far
-    std::array<glm::vec4, 6> frustumPlanes{};
     glm::vec3 cameraPos{0.0f};
     uint32_t flags = 0; // CullFlag
-    // uint[]: (draw record << kCullLaneBits) | lane, one region per MeshStateGroup
+    // GpuVisibleMeshlet[], one region per MeshStateGroup
     vk::DeviceAddress visibleMeshlets = 0;
     vk::DeviceAddress counters = 0;  // GpuCullCounters
     vk::DeviceAddress sequences = 0; // MeshDgcSequence[], one region per MeshStateGroup
@@ -316,17 +370,25 @@ struct GpuCullView
     vk::DeviceAddress lateCounters = 0;
     // first row of GpuFrameRoot::drawRecords this phase appends to
     uint32_t drawRecordBase = 0;
-    uint32_t pad0 = 0;
-    // uint[]: visible-list entries of meshlets occluded in the early phase, re-tested by the late one
-    vk::DeviceAddress meshletCandidates = 0;
+    // first row of the early phase's draw records; rejectMasks is indexed relative to it
+    uint32_t rejectRecordBase = 0;
+    // uint per early draw record: bit i = meshlet i of its group failed only occlusion; written early, read late
+    vk::DeviceAddress rejectMasks = 0;
+    // frustum and sub-pixel tests: current viewProj, or the frozen cull camera's
+    glm::mat4 cullViewProj{1.0f};
+    glm::vec2 targetSize{0.0f}; // render target in pixels
+    // pixels a vertex may move when snapped to the subpixel grid (subPixelPrecisionBits)
+    float subpixelSnap = 0.0f;
+    uint32_t pad1 = 0;
 };
-static_assert(sizeof(GpuCullView) == 288);
-static_assert(offsetof(GpuCullView, meshletCandidates) == 280);
-static_assert(offsetof(GpuCullView, instanceCandidates) == 256);
-static_assert(offsetof(GpuCullView, occlusionViewProj) == 176);
-static_assert(offsetof(GpuCullView, visibleMeshlets) == 112);
-static_assert(offsetof(GpuCullView, instanceItems) == 136);
-static_assert(offsetof(GpuCullView, groupVisibleOffset) == 160);
+static_assert(sizeof(GpuCullView) == 272);
+static_assert(offsetof(GpuCullView, cullViewProj) == 192);
+static_assert(offsetof(GpuCullView, rejectMasks) == 184);
+static_assert(offsetof(GpuCullView, instanceCandidates) == 160);
+static_assert(offsetof(GpuCullView, occlusionViewProj) == 80);
+static_assert(offsetof(GpuCullView, visibleMeshlets) == 16);
+static_assert(offsetof(GpuCullView, instanceItems) == 40);
+static_assert(offsetof(GpuCullView, groupVisibleOffset) == 64);
 
 // one per CullPhase, back to back per frame slot; reset to kInitialCullCounters before the early cull
 struct GpuCullCounters
@@ -338,9 +400,8 @@ struct GpuCullCounters
     std::array<uint32_t, 3> meshletDispatch{0, 1, 1};
     // VkDispatchIndirectCommand of the late instance cull: x = candidates; late phase only
     std::array<uint32_t, 3> instanceDispatch{0, 1, 1};
-    // VkDispatchIndirectCommand of the late meshlet candidate cull: x = groups of kCullGroupSize; late phase only
-    std::array<uint32_t, 3> meshletCandidateDispatch{0, 1, 1};
-    uint32_t meshletCandidateCount = 0;
+    // late phase, CullFlag::Stats only: reject-mask bits re-tested against the fresh pyramid
+    uint32_t meshletsRetested = 0;
     // CullFlag::Stats only
     uint32_t instancesCulled = 0; // frustum
     uint32_t instancesDrawn = 0;
@@ -349,15 +410,21 @@ struct GpuCullCounters
     uint32_t frustumCulled = 0;
     uint32_t coneCulled = 0;
     uint32_t unculledMeshlets = 0;
-    // early: became candidates; late: still occluded
+    // early: set in the reject masks; late: still occluded
     uint32_t occlusionCulled = 0;
     // mesh shader, TriangleCullFlag::Stats only
     uint32_t trianglesTested = 0;
     uint32_t trianglesBackface = 0;
     uint32_t trianglesSmall = 0;
+    // CullFlag::Stats only
+    uint32_t instancesSubPixel = 0;
+    uint32_t meshletsSubPixel = 0;
+    // meshlet groups (draw records) whose box was tested, and those culled whole by it; CullFlag::Stats only
+    uint32_t groupsTested = 0;
+    uint32_t groupsCulled = 0;
 };
-static_assert(sizeof(GpuCullCounters) == 100);
-static_assert(offsetof(GpuCullCounters, meshletCandidateDispatch) == 40);
+static_assert(sizeof(GpuCullCounters) == 104);
+static_assert(offsetof(GpuCullCounters, meshletsRetested) == 40);
 static_assert(offsetof(GpuCullCounters, instanceDispatch) == 28);
 static_assert(offsetof(GpuCullCounters, sequenceCount) == 8);
 static_assert(offsetof(GpuCullCounters, meshletDispatch) == 16);
@@ -670,6 +737,9 @@ struct GpuModel
 {
     vk::DeviceAddress vertices = 0;
     vk::DeviceAddress meshlets = 0;
+    vk::DeviceAddress meshletBounds = 0; // GpuMeshletBounds[], parallel to meshlets
+    vk::DeviceAddress meshletGroups = 0; // GpuMeshletGroup[]
+    vk::DeviceAddress meshletPrimitives = 0; // uint per meshlet: its row of the primitives slice
     vk::DeviceAddress meshletVertices = 0;
     vk::DeviceAddress meshletTriangles = 0;
     vk::DeviceAddress normals = 0;
@@ -684,11 +754,16 @@ struct GpuModel
     vk::DeviceAddress morphTargets = 0;
     vk::DeviceAddress morphWeights = 0;
     vk::DeviceAddress nodes = 0;
+    vk::DeviceAddress primitives = 0; // GpuPrimitive[], the model's slice of GpuFrameRoot::primitives
     uint32_t attributeMask = 0;
     uint32_t nodeCount = 0;
 };
-static_assert(sizeof(GpuModel) == 136);
-static_assert(offsetof(GpuModel, attributeMask) == 128);
+static_assert(sizeof(GpuModel) == 168);
+static_assert(offsetof(GpuModel, meshletBounds) == 16);
+static_assert(offsetof(GpuModel, meshletGroups) == 24);
+static_assert(offsetof(GpuModel, meshletPrimitives) == 32);
+static_assert(offsetof(GpuModel, primitives) == 152);
+static_assert(offsetof(GpuModel, attributeMask) == 160);
 
 // per-frame entry point for every shader: the only address the push data carries
 struct GpuFrameRoot
@@ -711,7 +786,7 @@ struct GpuFrameRoot
     vk::DeviceAddress nodeInstances = 0;
     // GpuDrawRecord[] of this frame slot, written by the instance cull pass (count in GpuCullCounters)
     vk::DeviceAddress drawRecords = 0;
-    // GpuCullView::visibleMeshlets of this frame slot; MeshPushData::firstVisible indexes it
+    // GpuVisibleMeshlet[]: GpuCullView::visibleMeshlets of this frame slot; MeshPushData::firstVisible indexes it
     vk::DeviceAddress visibleMeshlets = 0;
     uint32_t lightCount = 0;
     uint32_t instanceCount = 0;

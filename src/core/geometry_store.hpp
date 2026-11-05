@@ -11,6 +11,8 @@
 struct MeshletBuild
 {
     std::vector<GpuMeshletDesc> meshlets;
+    std::vector<GpuMeshletBounds> bounds; // parallel to meshlets
+    std::vector<GpuMeshletGroup> groups;  // firstMeshlet relative to this build
     std::vector<uint32_t> vertices;
     std::vector<uint8_t> triangles;
 };
@@ -32,9 +34,12 @@ public:
     std::vector<GpuVertex> vertices;
 
     std::vector<GpuMeshletDesc> meshlets;
+    std::vector<GpuMeshletBounds> meshletBounds; // parallel to meshlets
     std::vector<uint32_t> meshletVertices;
     std::vector<uint8_t> meshletTriangles;
     std::vector<PrimitiveDraw> primitiveDraws;
+    // catalog, kept after the upload: the cull templates build one draw record per group
+    std::vector<GpuMeshletGroup> meshletGroups;
     // mesh placements; a mesh's primitives appear once in primitiveDraws however many nodes place it
     std::vector<NodeDraw> nodeDraws;
 
@@ -60,6 +65,7 @@ public:
     uint32_t flushedMorphWeightCount = 0;
     uint32_t flushedAuxBlobCount = 0;
     uint32_t flushedNodeCount = 0;
+    uint32_t flushedGroupCount = 0;
 
     // grow SoA + packed GpuVertex to newCount; new verts get default attrs
     void resizeVertices(uint32_t newCount);
@@ -68,6 +74,8 @@ public:
 
     // enclosing sphere of positions [firstVertex, +vertexCount); zero when empty
     [[nodiscard]] glm::vec4 boundingSphere(uint32_t firstVertex, uint32_t vertexCount) const;
+    // box of positions [firstVertex, +vertexCount); zero when empty
+    [[nodiscard]] BoundingBox boundingBox(uint32_t firstVertex, uint32_t vertexCount) const;
     // enclosing sphere of the node spheres [firstNode, +nodeCount); zero when empty
     [[nodiscard]] glm::vec4 nodeBoundingSphere(uint32_t firstNode, uint32_t nodeCount) const;
 
@@ -78,10 +86,11 @@ public:
     // indices in [firstIndex, +indexCount) must reference vertices in [firstVertex, +vertexCount)
     [[nodiscard]] MeshletBuild buildMeshlets(uint32_t firstIndex, uint32_t indexCount, uint32_t firstVertex,
                                              uint32_t vertexCount) const;
-    // rebases a build onto the meshlet arrays; call in primitive order for deterministic offsets
-    [[nodiscard]] MeshletDraw appendMeshlets(MeshletBuild&& build);
-    [[nodiscard]] MeshletDraw buildMeshletsForRange(uint32_t firstIndex, uint32_t indexCount, uint32_t firstVertex,
-                                                    uint32_t vertexCount);
+    // rebases a build onto the meshlet arrays and sets draw's meshlet and group ranges; call in primitive order for
+    // deterministic offsets
+    void appendMeshlets(MeshletBuild&& build, PrimitiveDraw& draw);
+    void buildMeshletsForRange(uint32_t firstIndex, uint32_t indexCount, uint32_t firstVertex, uint32_t vertexCount,
+                               PrimitiveDraw& draw);
 
     // drop load scratch after GPU append; catalog (primitiveDraws, nodeDraws, morphTargets, weights, aux) stays
     void clearScratch();

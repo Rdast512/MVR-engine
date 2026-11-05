@@ -341,7 +341,8 @@ void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase, uint32
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneHiZBuild, *cmd, "GPU_HiZBuild", gpuTrace);
 #endif
-        hiz.recordBuild(cmd);
+        // a frozen culling camera keeps the pyramid of its freeze frame
+        hiz.recordBuild(cmd, culling.isPyramidFrozen());
         gpuTimer.end(cmd, scope(GpuTimerScope::EarlyHiZ, GpuTimerScope::LateHiZ));
     }
 }

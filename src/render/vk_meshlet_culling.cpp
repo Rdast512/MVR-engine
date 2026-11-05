@@ -19,27 +19,13 @@ namespace
     constexpr const char* kCullCountersTracyName = "GPU/CullCounters";
     constexpr const char* kInstanceItemsTracyName = "GPU/InstanceCullItems";
     constexpr const char* kInstanceCandidatesTracyName = "GPU/InstanceCandidates";
-    constexpr const char* kMeshletCandidatesTracyName = "GPU/MeshletCandidates";
+    constexpr const char* kRejectMasksTracyName = "GPU/RejectMasks";
     constexpr const char* kDrawRecordTemplatesTracyName = "GPU/DrawRecordTemplates";
     constexpr const char* kDrawRecordsTracyName = "GPU/DrawRecords";
     constexpr const char* kVisibleMeshletsTracyName = "GPU/VisibleMeshlets";
     // first allocation of the growable buffers, in elements
     constexpr uint32_t kMinCapacity = 64;
     constexpr uint32_t kMinVisibleCapacity = 1024;
-
-    // Gribb-Hartmann on a [0, 1] depth projection; normalized so distances are in world units
-    std::array<glm::vec4, 6> frustumPlanes(const glm::mat4& viewProj)
-    {
-        const glm::mat4 rows = glm::transpose(viewProj);
-        std::array<glm::vec4, 6> planes{
-            rows[3] + rows[0], rows[3] - rows[0], rows[3] + rows[1],
-            rows[3] - rows[1], rows[2],           rows[3] - rows[2],
-        };
-        for (glm::vec4& plane : planes) {
-            plane /= glm::length(glm::vec3(plane));
-        }
-        return planes;
-    }
 
     void createMappedBuffer(HostBuffer& target, vk::DeviceSize size, vk::BufferUsageFlags2 usage,
                             vk::MemoryPropertyFlags properties, const Device& device, VmaAllocator allocator,
@@ -117,8 +103,7 @@ void MeshletCulling::destroyFrameBuffers()
         destroyVmaBuffer(allocator, buffers.drawRecords.buffer, buffers.drawRecords.memory, kDrawRecordsTracyName);
         destroyVmaBuffer(allocator, buffers.visibleMeshlets.buffer, buffers.visibleMeshlets.memory,
                          kVisibleMeshletsTracyName);
-        destroyVmaBuffer(allocator, buffers.meshletCandidates.buffer, buffers.meshletCandidates.memory,
-                         kMeshletCandidatesTracyName);
+        destroyVmaBuffer(allocator, buffers.rejectMasks.buffer, buffers.rejectMasks.memory, kRejectMasksTracyName);
     }
 }
 
@@ -133,6 +118,15 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera, cons
     if (isLayoutChanged) {
         buildTemplates();
     }
+    // a freeze starts when newly set, or again when the pyramid lost its content (resize): that frame captures the
+    // view and still builds both pyramids; later frozen frames keep the late one
+    const bool isFreezeStart = settings.isCameraFrozen && (!wasCameraFrozen || !hiz.hasContent());
+    if (isFreezeStart) {
+        frozenViewProj = camera.cameraData.viewProj;
+        frozenPosition = camera.cameraData.cameraPos;
+    }
+    wasCameraFrozen = settings.isCameraFrozen;
+    isPyramidFrozenThisFrame = settings.isCameraFrozen && !isFreezeStart;
     const OcclusionHistory history = occlusionHistory(camera, hiz, isLayoutChanged);
     if (history != OcclusionHistory::Valid && history != OcclusionHistory::Disabled) {
         ++fallbackFrames;
@@ -172,6 +166,7 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera, cons
                 .meshletsPerSequence = perSequence,
                 .groupMeshlets = templates.groupMeshlets,
                 .history = history,
+                .isPyramidFrozen = isPyramidFrozenThisFrame,
                 .fallbackFrames = fallbackFrames,
                 .cpuPrepareMs =
                     std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count(),
@@ -195,10 +190,12 @@ void MeshletCulling::readBackCounters(uint32_t frameSlot)
     TracyPlot("Culling/TotalMeshlets", static_cast<double>(stats.totalMeshlets));
     TracyPlot("Culling/EarlyVisibleMeshlets", static_cast<double>(visibleMeshletCount(early)));
     TracyPlot("Culling/LateVisibleMeshlets", static_cast<double>(visibleMeshletCount(late)));
-    TracyPlot("Culling/MeshletCandidates", static_cast<double>(late.meshletCandidateCount));
+    TracyPlot("Culling/MeshletsRetested", static_cast<double>(late.meshletsRetested));
     TracyPlot("Culling/InstanceCandidates", static_cast<double>(late.instanceDispatch[0]));
     TracyPlot("Culling/FrustumCulled", static_cast<double>(early.frustumCulled + late.frustumCulled));
     TracyPlot("Culling/ConeCulled", static_cast<double>(early.coneCulled + late.coneCulled));
+    TracyPlot("Culling/SubPixelCulled", static_cast<double>(early.instancesSubPixel + late.instancesSubPixel +
+                                                            early.meshletsSubPixel + late.meshletsSubPixel));
     // late is the final verdict: early-occluded meshlets are re-tested there
     TracyPlot("Culling/MeshletsOccluded", static_cast<double>(late.occlusionCulled));
     TracyPlot("Culling/HistoryValid", stats.history == OcclusionHistory::Valid ? 1.0 : 0.0);
@@ -245,14 +242,14 @@ void MeshletCulling::buildTemplates()
                 const uint32_t flags =
                     std::to_underlying(group) | (primitive.morphCount > 0 ? DrawRecordFlag::SkipCulling : 0u);
                 item.flags |= flags & DrawRecordFlag::SkipCulling;
-                const uint32_t meshletCount = primitive.meshlets.meshletCount;
-                templates.groupMeshlets[std::to_underlying(group)] += meshletCount;
-                for (uint32_t offset = 0; offset < meshletCount; offset += kCullGroupSize) {
+                templates.groupMeshlets[std::to_underlying(group)] += primitive.meshlets.meshletCount;
+                for (uint32_t g = 0; g < primitive.groupCount; ++g) {
                     templates.drawRecords.push_back(GpuDrawRecord{
                         .nodeInstanceIndex = item.nodeInstanceIndex,
                         .primitiveIndex = p,
-                        .meshletOffset = offset,
+                        .meshletOffset = geometry.meshletGroups[primitive.firstGroup + g].firstMeshlet,
                         .flags = flags,
+                        .groupOffset = g,
                     });
                 }
             }
@@ -310,6 +307,10 @@ void MeshletCulling::uploadTemplates(uint32_t frameSlot)
         // one region per phase: an instance draws in at most one of them
         createDeviceBuffer(buffers.drawRecords, size * kCullPhaseCount, device, allocator,
                            std::format("DrawRecords_{}", frameSlot), kDrawRecordsTracyName);
+        destroyVmaBuffer(allocator, buffers.rejectMasks.buffer, buffers.rejectMasks.memory, kRejectMasksTracyName);
+        static_assert(kMeshletGroupMaxSize <= 32, "one uint reject mask per draw record");
+        createDeviceBuffer(buffers.rejectMasks, sizeof(uint32_t) * vk::DeviceSize{buffers.drawRecordCapacity}, device,
+                           allocator, std::format("RejectMasks_{}", frameSlot), kRejectMasksTracyName);
     }
 
     // one region per phase
@@ -319,17 +320,8 @@ void MeshletCulling::uploadTemplates(uint32_t frameSlot)
         buffers.visibleCapacity = grownCapacity(visibleRows, buffers.visibleCapacity, kMinVisibleCapacity);
         destroyVmaBuffer(allocator, buffers.visibleMeshlets.buffer, buffers.visibleMeshlets.memory,
                          kVisibleMeshletsTracyName);
-        createDeviceBuffer(buffers.visibleMeshlets, sizeof(uint32_t) * vk::DeviceSize{buffers.visibleCapacity}, device,
+        createDeviceBuffer(buffers.visibleMeshlets, sizeof(GpuVisibleMeshlet) * vk::DeviceSize{buffers.visibleCapacity}, device,
                            allocator, std::format("VisibleMeshlets_{}", frameSlot), kVisibleMeshletsTracyName);
-    }
-    if (totalMeshlets > buffers.meshletCandidateCapacity || buffers.meshletCandidates.memory == nullptr) {
-        buffers.meshletCandidateCapacity =
-            grownCapacity(totalMeshlets, buffers.meshletCandidateCapacity, kMinVisibleCapacity);
-        destroyVmaBuffer(allocator, buffers.meshletCandidates.buffer, buffers.meshletCandidates.memory,
-                         kMeshletCandidatesTracyName);
-        createDeviceBuffer(buffers.meshletCandidates,
-                           sizeof(uint32_t) * vk::DeviceSize{buffers.meshletCandidateCapacity}, device, allocator,
-                           std::format("MeshletCandidates_{}", frameSlot), kMeshletCandidatesTracyName);
     }
 
     // write-combined memory: one sequential copy each, never read back
@@ -365,14 +357,12 @@ OcclusionHistory MeshletCulling::occlusionHistory(const Camera& camera, const Hi
     if (!hiz.hasContent()) {
         return OcclusionHistory::NoPyramid;
     }
-    if (camera.isCut()) {
+    // a frozen pyramid does not follow the render camera, so its cuts do not matter
+    if (camera.isCut() && !isPyramidFrozenThisFrame) {
         return OcclusionHistory::CameraCut;
     }
     if (isLayoutChanged) {
         return OcclusionHistory::SceneChanged;
-    }
-    if (settings.isCameraFrozen) {
-        return OcclusionHistory::CameraFrozen;
     }
     return OcclusionHistory::Valid;
 }
@@ -380,22 +370,17 @@ OcclusionHistory MeshletCulling::occlusionHistory(const Camera& camera, const Hi
 void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, const HiZPyramid& hiz,
                                    OcclusionHistory history, uint32_t perSequence)
 {
-    if (settings.isCameraFrozen && !wasCameraFrozen) {
-        frozenViewProj = camera.cameraData.viewProj;
-        frozenPosition = camera.cameraData.cameraPos;
-    }
-    wasCameraFrozen = settings.isCameraFrozen;
     const glm::mat4& viewProj = settings.isCameraFrozen ? frozenViewProj : camera.cameraData.viewProj;
     const glm::vec3& position = settings.isCameraFrozen ? frozenPosition : camera.cameraData.cameraPos;
 
     const FrameBuffers& buffers = frames[frameSlot];
     const GpuCullView view{
-        .frustumPlanes = frustumPlanes(viewProj),
         .cameraPos = position,
         .flags = (settings.isFrustumEnabled ? CullFlag::Frustum : 0u) | (settings.isConeEnabled ? CullFlag::Cone : 0u) |
                  (settings.isStatsEnabled ? CullFlag::Stats : 0u) |
                  (settings.isInstanceFrustumEnabled ? CullFlag::InstanceFrustum : 0u) |
-                 (settings.isOcclusionEnabled ? CullFlag::Occlusion : 0u),
+                 (settings.isOcclusionEnabled ? CullFlag::Occlusion : 0u) |
+                 (settings.isSubPixelEnabled ? CullFlag::SubPixel : 0u),
         .visibleMeshlets = buffers.visibleMeshlets.address,
         .counters = buffers.counters.address,
         .sequences = dgc.sequenceAddress(),
@@ -407,7 +392,12 @@ void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, con
         .hizMaxSampler = hiz.maxSamplerHeapIndex(),
         .hizSize = hiz.size(),
         .instanceCandidates = buffers.instanceCandidates.address,
-        .meshletCandidates = buffers.meshletCandidates.address,
+        // the early phase's records start at row 0 (drawRecordBase below)
+        .rejectRecordBase = 0,
+        .rejectMasks = buffers.rejectMasks.address,
+        .cullViewProj = viewProj,
+        .targetSize = camera.cameraData.renderTargetSize,
+        .subpixelSnap = resourceManager.subpixelSnap,
     };
     const uint32_t phaseVisibleRows =
         std::reduce(templates.groupMeshlets.begin(), templates.groupMeshlets.end(), 0u);
@@ -425,8 +415,11 @@ void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, con
         phaseView.lateCounters =
             isLate ? 0 : buffers.counters.address + std::to_underlying(CullPhase::Late) * sizeof(GpuCullCounters);
         phaseView.drawRecordBase = phase * static_cast<uint32_t>(templates.drawRecords.size());
-        // the pyramid follows the render camera, not a frozen cull camera
-        phaseView.occlusionViewProj = isLate ? camera.cameraData.viewProj : camera.cameraData.prevViewProj;
+        // the matrix the tested pyramid was built with: early the previous frame's, late this frame's; frozen, the
+        // freeze frame's in both phases, so the late re-test repeats the early answer
+        phaseView.occlusionViewProj = isPyramidFrozenThisFrame ? frozenViewProj
+                                      : isLate                 ? camera.cameraData.viewProj
+                                                               : camera.cameraData.prevViewProj;
         std::exclusive_scan(templates.groupMeshlets.begin(), templates.groupMeshlets.end(),
                             phaseView.groupVisibleOffset.begin(), phase * phaseVisibleRows);
         for (uint32_t group = 0; group < kMeshStateGroupCount; ++group) {
@@ -494,11 +487,13 @@ void MeshletCulling::recordCull(const vk::raii::CommandBuffer& cmd, CullPhase ph
         cmd.dispatchIndirect(*buffers.counters.buffer, countersOffset + offsetof(GpuCullCounters, meshletDispatch));
         cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &cullBarrier});
 
-        // the early meshlet cull wrote the candidates and their dispatch; inputBarrier made them visible
+        // one workgroup per early record: the early meshlet cull wrote the reject masks, the early instance cull the
+        // record count; inputBarrier made both visible
         if (!isEarly) {
-            ShaderObjects::bindComputeShader(cmd, shaderObjects.cullShaders.cullMeshletCandidates);
+            ShaderObjects::bindComputeShader(cmd, shaderObjects.cullShaders.cullRejectedMeshlets);
             cmd.dispatchIndirect(*buffers.counters.buffer,
-                                 countersOffset + offsetof(GpuCullCounters, meshletCandidateDispatch));
+                                 std::to_underlying(CullPhase::Early) * sizeof(GpuCullCounters) +
+                                     offsetof(GpuCullCounters, meshletDispatch));
             cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &cullBarrier});
         }
 

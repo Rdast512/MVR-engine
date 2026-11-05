@@ -23,6 +23,9 @@
 enum class AssetBuffer : uint8_t {
     Vertices,
     Meshlets,         // GpuMeshletDesc[]
+    MeshletBounds,    // GpuMeshletBounds[], parallel to Meshlets
+    MeshletGroups,    // GpuMeshletGroup[], from the GeometryStore::meshletGroups catalog
+    MeshletPrimitives, // uint[] parallel to Meshlets: model-relative primitive row
     MeshletVertices,  // uint32_t[] remap
     MeshletTriangles, // uint8_t[] local corners
     Normals,
@@ -71,6 +74,7 @@ struct ModelAllocation {
     ElementRange morphWeights; // GeometryStore::morphWeights
     ElementRange auxBlobs;     // GeometryStore::auxBlobs
     ElementRange nodes;        // GeometryStore::nodeDraws
+    ElementRange meshletGroups; // GeometryStore::meshletGroups
     // resolved model file (AssetsLoader::resolveModelPath), the cache key
     std::string key;
     // union over the model's primitives, copied into every instance
@@ -246,6 +250,7 @@ private:
     struct PackedScratch {
         std::vector<GpuPrimitive> primitives;
         std::vector<GpuNode> nodes;
+        std::vector<uint32_t> meshletPrimitives;
         std::vector<GpuMorphTarget> morphTargets;
         // MaterialStore::dirtyRows, sorted, with their packed rows
         std::vector<uint32_t> materialRows;
@@ -272,6 +277,8 @@ private:
     [[nodiscard]] std::vector<GpuPrimitive> packScratchPrimitives() const;
     // scratch NodeDraws as model-relative GpuNodes
     [[nodiscard]] std::vector<GpuNode> packScratchNodes() const;
+    // model-relative primitive row of each scratch meshlet
+    [[nodiscard]] std::vector<uint32_t> packScratchMeshletPrimitives() const;
     // entity-major node-instance rows; grows the per-frame buffers (GPU idle)
     void rebuildNodeInstanceLayout();
     void writeNodeInstances(uint32_t frameSlot);

@@ -46,7 +46,7 @@ public:
     {
         vk::raii::ShaderEXT cullInstances = nullptr;
         vk::raii::ShaderEXT cullMeshlets = nullptr;
-        vk::raii::ShaderEXT cullMeshletCandidates = nullptr;
+        vk::raii::ShaderEXT cullRejectedMeshlets = nullptr;
         vk::raii::ShaderEXT buildMeshSequences = nullptr;
     };
     CullShaders cullShaders;

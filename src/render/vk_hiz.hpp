@@ -26,8 +26,8 @@ public:
     // after ResourceManager::createDepthResources, with the device idle
     void recreate();
     // outside a render pass, heaps bound, depth in eDepthStencilAttachmentOptimal after the raster pass;
-    // leaves depth in eShaderReadOnlyOptimal
-    void recordBuild(const vk::raii::CommandBuffer& cmd);
+    // leaves depth in eShaderReadOnlyOptimal. isFrozen: only that transition, the pyramid keeps its content
+    void recordBuild(const vk::raii::CommandBuffer& cmd, bool isFrozen = false);
 
     [[nodiscard]] uint32_t pyramidHeapIndex() const noexcept { return pyramidIndex; }
     [[nodiscard]] uint32_t maxSamplerHeapIndex() const noexcept { return maxSamplerIndex; }

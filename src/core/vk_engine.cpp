@@ -769,16 +769,20 @@ void Engine::drawCullingPanel()
     ImGui::Checkbox("Normal cone", &settings.isConeEnabled);
     ImGui::SetItemTooltip("meshlet backface test; double-sided materials skip it");
     ImGui::SameLine();
+    ImGui::Checkbox("Sub-pixel", &settings.isSubPixelEnabled);
+    ImGui::SetItemTooltip("instances and meshlets whose conservative screen rect holds no pixel center; lossless");
     ImGui::Checkbox("Counters", &settings.isStatsEnabled);
     ImGui::SetItemTooltip("per-test counters cost a few wave atomics per meshlet group");
+    ImGui::SameLine();
     ImGui::Checkbox("Occlusion", &settings.isOcclusionEnabled);
     ImGui::SetItemTooltip("hi-z test of instances and meshlets against the previous (early) or fresh (late) pyramid");
     ImGui::SameLine();
     ImGui::Checkbox("Freeze culling camera", &settings.isCameraFrozen);
     ImGui::SetItemTooltip("cull against the view at the moment of freezing; fly out to inspect the result. "
-                          "occlusion falls back to off while frozen");
+                          "occlusion keeps testing against that frame's pyramid, which is not rebuilt while frozen");
     ImGui::Checkbox("Triangle backface", &settings.isTriangleBackfaceEnabled);
-    ImGui::SetItemTooltip("per-triangle signed-area test in the mesh shader; double-sided materials skip it");
+    ImGui::SetItemTooltip("per-triangle orientation test in the mesh shader, also for triangles crossing the near plane; "
+                          "double-sided materials skip it");
     ImGui::SameLine();
     ImGui::Checkbox("Small triangles", &settings.isSmallTriangleEnabled);
     ImGui::SetItemTooltip("per-triangle test in the mesh shader: culls triangles whose bounds miss every pixel center");
@@ -798,8 +802,8 @@ void Engine::drawCullingPanel()
     const uint32_t earlyVisible = visibleMeshletCount(early);
     const uint32_t lateVisible = visibleMeshletCount(late);
 
-    ImGui::Text("Occlusion history: %s, fallback frames %u", occlusionHistoryName(stats.history),
-                stats.fallbackFrames);
+    ImGui::Text("Occlusion history: %s%s, fallback frames %u", occlusionHistoryName(stats.history),
+                stats.isPyramidFrozen ? " (pyramid frozen)" : "", stats.fallbackFrames);
     ImGui::SetItemTooltip("without history the early phase skips occlusion and the late phase gets no candidates");
 
     // rows: early, late, frame total (empty cells where a test does not run in that phase)
@@ -836,6 +840,7 @@ void Engine::drawCullingPanel()
             "late: candidates occluded early, re-tested against the fresh pyramid");
         if (settings.isStatsEnabled) {
             row("Frustum culled", early.instancesCulled, kNone, early.instancesCulled);
+            row("Sub-pixel culled", early.instancesSubPixel, kNone, early.instancesSubPixel);
             row("Occluded", early.instancesOccluded, late.instancesOccluded, late.instancesOccluded,
                 "early: became candidates; frame: still occluded after the late re-test");
             row("Drawn", early.instancesDrawn, late.instancesDrawn, sum(early.instancesDrawn, late.instancesDrawn));
@@ -855,12 +860,19 @@ void Engine::drawCullingPanel()
         if (settings.isStatsEnabled) {
             row("Tested", early.testedMeshlets, late.testedMeshlets, sum(early.testedMeshlets, late.testedMeshlets),
                 "meshlets of drawn instances; late: of recovered instances");
-            row("Candidates re-tested", kNone, late.meshletCandidateCount, kNone,
-                "early-occluded meshlets of early-drawn instances; only the occlusion test is redone");
+            row("Groups tested", early.groupsTested, late.groupsTested, sum(early.groupsTested, late.groupsTested),
+                "meshlet groups (draw records) whose box was tested before their meshlets");
+            row("Groups culled whole", early.groupsCulled, late.groupsCulled,
+                sum(early.groupsCulled, late.groupsCulled),
+                "the group box alone was outside, sub-pixel or occluded; its meshlets count in the rows below");
+            row("Rejected re-tested", kNone, late.meshletsRetested, kNone,
+                "reject-mask bits of early records: meshlets that failed only occlusion; only it is redone");
             row("Frustum culled", early.frustumCulled, late.frustumCulled, sum(early.frustumCulled, late.frustumCulled));
             row("Cone culled", early.coneCulled, late.coneCulled, sum(early.coneCulled, late.coneCulled));
+            row("Sub-pixel culled", early.meshletsSubPixel, late.meshletsSubPixel,
+                sum(early.meshletsSubPixel, late.meshletsSubPixel));
             row("Occluded", early.occlusionCulled, late.occlusionCulled, late.occlusionCulled,
-                "early: became candidates; frame: still occluded after the late re-test");
+                "early: set in the reject masks; frame: still occluded after the late re-test");
             row("Not tested (morph)", early.unculledMeshlets, late.unculledMeshlets,
                 sum(early.unculledMeshlets, late.unculledMeshlets));
         }

@@ -124,11 +124,9 @@ vk::Extent2D HiZPyramid::mipExtent(uint32_t mip) const
     return {std::max(extent.width >> mip, 1u), std::max(extent.height >> mip, 1u)};
 }
 
-void HiZPyramid::recordBuild(const vk::raii::CommandBuffer& cmd)
+void HiZPyramid::recordBuild(const vk::raii::CommandBuffer& cmd, bool isFrozen)
 {
     ZoneScopedN("HiZPyramid::recordBuild");
-    // single queue: every later submission sees this build
-    isBuilt = true;
     // depth writes -> mip 0 reads; the previous build's pyramid accesses -> this build's writes
     const vk::ImageMemoryBarrier2 depthBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
@@ -154,6 +152,12 @@ void HiZPyramid::recordBuild(const vk::raii::CommandBuffer& cmd)
                                             .pMemoryBarriers = &previousBuildBarrier,
                                             .imageMemoryBarrierCount = 1,
                                             .pImageMemoryBarriers = &depthBarrier});
+    // the next raster pass expects depth in eShaderReadOnlyOptimal either way
+    if (isFrozen) {
+        return;
+    }
+    // single queue: every later submission sees this build
+    isBuilt = true;
 
     HiZPushData push{
         .srcImage = depthIndex,

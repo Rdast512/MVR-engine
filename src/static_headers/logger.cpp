@@ -1,18 +1,60 @@
 #include "logger.hpp"
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
+#include <system_error>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/sinks/stdout_sinks.h>
 #include <spdlog/spdlog.h>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <io.h>
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace
 {
+    // set by redirectStdStreamsToLogFile before the first logger exists
+    bool isLogFileActive = false;
+
+    [[nodiscard]] std::filesystem::path executableDirectory()
+    {
+#if defined(_WIN32)
+        std::wstring buffer(MAX_PATH, L'\0');
+        for (;;) {
+            const DWORD length = ::GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+            if (length == 0) {
+                return std::filesystem::current_path();
+            }
+            if (length < buffer.size()) {
+                buffer.resize(length);
+                return std::filesystem::path(buffer).parent_path();
+            }
+            buffer.resize(buffer.size() * 2);
+        }
+#else
+        std::error_code error;
+        const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", error);
+        return error ? std::filesystem::current_path() : exe.parent_path();
+#endif
+    }
+
 #if defined(_WIN32)
     using SinkColor = std::uint16_t;
     // FOREGROUND_* | FOREGROUND_INTENSITY
@@ -77,19 +119,58 @@ namespace
         std::lock_guard<std::mutex> lock(mutex);
         std::shared_ptr<spdlog::logger>& logger = loggers[key];
         if (logger == nullptr) {
-            auto sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-            sink->set_color(spdlog::level::info, colorForDll(key));
-            sink->set_color(spdlog::level::warn, kBrightYellow);
-            sink->set_color(spdlog::level::err, kRed);
-            sink->set_color(spdlog::level::critical, kBrightRed);
-            logger = std::make_shared<spdlog::logger>(key, sink);
             static const bool debugEnabled = std::getenv("ENGINE_LOG_DEBUG") != nullptr;
+            if (isLogFileActive) {
+                // stdout is the log file: plain text, written straight to the handle per line (WriteFile on
+                // Windows), so lines stay in order with layer output and survive a crash
+                logger = std::make_shared<spdlog::logger>(key, std::make_shared<spdlog::sinks::stdout_sink_mt>());
+                logger->set_pattern("[%T.%e] [%n] %v");
+            } else {
+                auto sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+                sink->set_color(spdlog::level::info, colorForDll(key));
+                sink->set_color(spdlog::level::warn, kBrightYellow);
+                sink->set_color(spdlog::level::err, kRed);
+                sink->set_color(spdlog::level::critical, kBrightRed);
+                logger = std::make_shared<spdlog::logger>(key, sink);
+                logger->set_pattern("%^[%T] [%n] %v%$");
+            }
             logger->set_level(debugEnabled ? spdlog::level::debug : spdlog::level::info);
-            logger->set_pattern("%^[%T] [%n] %v%$");
         }
         return *logger;
     }
 } // namespace
+
+bool redirectStdStreamsToLogFile()
+{
+    std::error_code error;
+    const std::filesystem::path directory = executableDirectory() / "logs";
+    std::filesystem::create_directories(directory, error);
+    const std::filesystem::path path = directory / "engine.log";
+    // keep one previous run; a failed rename only means the old log is overwritten
+    std::filesystem::rename(path, directory / "engine.prev.log", error);
+
+#if defined(_WIN32)
+    if (::_wfreopen(path.c_str(), L"w", stdout) == nullptr) {
+        return false;
+    }
+    // one descriptor behind both streams: a shared file position, so stdout and stderr lines interleave in order
+    ::_dup2(::_fileno(stdout), ::_fileno(stderr));
+    // the OS std handles too: DLLs with their own C runtime (Vulkan layers, loaded later) and direct WriteFile
+    // users take their stdout from here
+    ::SetStdHandle(STD_OUTPUT_HANDLE, reinterpret_cast<HANDLE>(::_get_osfhandle(::_fileno(stdout))));
+    ::SetStdHandle(STD_ERROR_HANDLE, reinterpret_cast<HANDLE>(::_get_osfhandle(::_fileno(stderr))));
+#else
+    if (std::freopen(path.c_str(), "w", stdout) == nullptr) {
+        return false;
+    }
+    ::dup2(::fileno(stdout), ::fileno(stderr));
+#endif
+    // unbuffered: a crash loses nothing, and buffered C runtime output cannot land out of order with spdlog's
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+    isLogFileActive = true;
+    return true;
+}
 
 void logDebugAt(std::string_view message, std::string_view subsystem, std::string_view dll)
 {

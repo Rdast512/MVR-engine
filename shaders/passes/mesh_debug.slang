@@ -32,17 +32,18 @@ groupshared float4 clipCorners[kMaxMeshletVertices];
 uint debugId(uint mode, DrawContext draw, uint triangle)
 {
     // model-relative: instances of one model show the same meshlet colors
-    const uint meshletId = draw.primitive.firstMeshlet + draw.meshletIndex;
+    const uint meshletId = draw.visible.meshletRow;
     switch (mode)
     {
     case kDebugViewMeshlets:
         return meshletId;
     case kDebugViewPrimitives:
-        return draw.record.primitiveIndex;
+        // model-relative row, made distinct across models
+        return draw.primitiveRow ^ (draw.nodeInstance.modelIndex * 0x9E3779B1u);
     case kDebugViewNodeInstances:
-        return draw.record.nodeInstanceIndex;
+        return draw.visible.nodeInstanceIndex;
     case kDebugViewStateGroups:
-        return draw.record.flags & kDrawRecordStateGroupMask;
+        return draw.isDoubleSided ? kMeshStateGroupDoubleSided : 0;
     case kDebugViewCullPhase:
         return draw.visibleRow >= draw.root.lateVisibleBase ? 1 : 0;
     default:
@@ -85,7 +86,7 @@ void meshDebugMain(
     {
         GroupMemoryBarrierWithGroupSync();
     }
-    const bool isDoubleSided = (draw.record.flags & kDrawRecordStateGroupMask) == kMeshStateGroupDoubleSided;
+    const bool isDoubleSided = draw.isDoubleSided;
 
     const uint mode = draw.root.debugView & kDebugViewModeMask;
     uint backface = 0;
