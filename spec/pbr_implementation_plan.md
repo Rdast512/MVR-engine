@@ -15,8 +15,8 @@ description: Task plan for glTF metallic-roughness PBR built only on NVIDIA RTX 
 | [pbr_lighting_materials.html](./pbr_lighting_materials.html) | Human explainer with live graphs and scenes |
 | [gltf_parse_resources.md](./gltf_parse_resources.md) §5, §13.3, §14 | Normative glTF math |
 | [gltf_storage_plan.md](./gltf_storage_plan.md) | CPU/GPU storage (done) |
-| [../docs/resource_architecture.md](../docs/resource_architecture.md) | Current buffers, model slices, frame root, BDA + heap handle rules |
-| [../docs/shader_architecture_plan.md](../docs/shader_architecture_plan.md) | Shader file map and pass order (follows this plan) |
+| [resource_architecture.md](./resource_architecture.md) | Current buffers, model slices, frame root, BDA + heap handle rules |
+| [shader_architecture_plan.md](./shader_architecture_plan.md) | Shader file map and pass order (follows this plan) |
 | [VK_EXT_opacity_micromap.md](./VkExtensionsSpecs/VK_EXT_opacity_micromap.md) | OMM extension notes |
 | `ThirdParty/_deps/src/meshoptimizer/src/meshoptimizer.h` | Geometry processing API (v1.3): tangents, normals, opacity micromaps, meshlets |
 
@@ -96,7 +96,7 @@ Every ray-query pass traces the TLAS address in `GpuFrameRoot.tlas`.
 
 ## 3. Current state (verified 2026-10-25, working tree on `fd67395d1`)
 
-Resource details: [resource_architecture.md](../docs/resource_architecture.md).
+Resource details: [resource_architecture.md](./resource_architecture.md).
 
 | Piece | State |
 |---|---|

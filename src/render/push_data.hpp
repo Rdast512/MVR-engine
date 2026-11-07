@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -73,3 +74,7 @@ struct HiZViewPushData {
 
 static_assert(std::is_trivially_copyable_v<HiZViewPushData>);
 static_assert(sizeof(HiZViewPushData) == 24);
+
+// largest push block of any pass; checked against maxPushDataSize at startup
+inline constexpr size_t kMaxPushDataBytes =
+    std::max({sizeof(MeshPushData), sizeof(CullPushData), sizeof(HiZPushData), sizeof(HiZViewPushData)});

@@ -24,6 +24,8 @@ public:
     void waitIdle() const;
 
     uint32_t currentFrame = 0;
+    // monotonic; VMA refreshes its memory budget per frame index
+    uint32_t frameNumber = 0;
     // read once per recorded frame; the UI changes it between frames
     DebugViewSettings debugView;
 

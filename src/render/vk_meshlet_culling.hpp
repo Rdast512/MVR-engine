@@ -94,6 +94,12 @@ struct MeshletCullStats
     return count;
 }
 
+// appends dropped at a list's capacity; nonzero means the list is sized too small
+[[nodiscard]] constexpr uint32_t overflowedCount(const GpuCullCounters& counters)
+{
+    return counters.candidatesOverflowed + counters.drawRecordsOverflowed + counters.visibleOverflowed;
+}
+
 // GPU culling in compute: node instances (frustum + hi-z) -> draw records -> meshlets (frustum + normal cone + hi-z)
 // -> per state group visible lists -> DGC sequences. runs once per CullPhase: instances occluded early become
 // candidates, meshlets occluded early bits in their record's reject mask; the late phase re-tests both against the
@@ -202,6 +208,8 @@ private:
     glm::mat4 frozenViewProj{1.0f};
     glm::vec3 frozenPosition{0.0f};
     bool wasCameraFrozen = false;
+    // last frame's history, so a change is logged once
+    OcclusionHistory lastHistory = OcclusionHistory::Valid;
     // set by prepareFrame: frozen since an earlier frame, so this frame skips both pyramid builds
     bool isPyramidFrozenThisFrame = false;
     uint32_t fallbackFrames = 0;

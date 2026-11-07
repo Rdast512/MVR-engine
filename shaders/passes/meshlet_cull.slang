@@ -70,6 +70,11 @@ void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     GpuCullCounters* counters = bdaPtr<GpuCullCounters>(view.counters);
     const bool isLate = (view.flags & kCullLatePhase) != 0;
     const bool isStats = (view.flags & kCullStats) != 0;
+    // the late dispatch counts dropped candidates too
+    if (isLate && groupId.x >= view.instanceCandidateCapacity)
+    {
+        return;
+    }
     const uint itemIndex = isLate ? bdaPtr<uint>(view.instanceCandidates)[groupId.x] : groupId.x;
     const GpuInstanceCullItem item = bdaPtr<GpuInstanceCullItem>(view.instanceItems)[itemIndex];
 
@@ -114,10 +119,16 @@ void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
                 {
                     if (!isLate)
                     {
-                        // capacity is the instance count, so the list cannot overflow
                         uint slot;
                         InterlockedAdd(bdaPtr<GpuCullCounters>(view.lateCounters).instanceDispatch[0], 1, slot);
-                        bdaPtr<uint>(view.instanceCandidates)[slot] = itemIndex;
+                        if (slot < view.instanceCandidateCapacity)
+                        {
+                            bdaPtr<uint>(view.instanceCandidates)[slot] = itemIndex;
+                        }
+                        else
+                        {
+                            InterlockedAdd(counters.candidatesOverflowed, 1);
+                        }
                     }
                     if (isStats)
                     {
@@ -133,6 +144,11 @@ void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     if (lane == 0)
     {
         InterlockedAdd(counters.meshletDispatch[0], item.drawRecordCount, instanceRecordBase);
+        const uint end = instanceRecordBase + item.drawRecordCount;
+        if (end > view.drawRecordCapacity)
+        {
+            InterlockedAdd(counters.drawRecordsOverflowed, end - max(instanceRecordBase, view.drawRecordCapacity));
+        }
         if (isStats)
         {
             InterlockedAdd(counters.instancesDrawn, 1);
@@ -140,10 +156,14 @@ void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     }
     GroupMemoryBarrierWithGroupSync();
 
+    // records past the region's capacity are dropped (counted above)
+    const uint fitting = instanceRecordBase >= view.drawRecordCapacity
+        ? 0
+        : min(item.drawRecordCount, view.drawRecordCapacity - instanceRecordBase);
     const uint base = view.drawRecordBase + instanceRecordBase;
     GpuDrawRecord* templates = bdaPtr<GpuDrawRecord>(view.drawRecordTemplates) + item.firstDrawRecord;
     GpuDrawRecord* records = bdaPtr<GpuDrawRecord>(root.drawRecords) + base;
-    for (uint r = lane; r < item.drawRecordCount; r += kCullGroupSize)
+    for (uint r = lane; r < fitting; r += kCullGroupSize)
     {
         records[r] = templates[r];
     }
@@ -158,6 +178,11 @@ void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
 {
     const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
     const GpuCullView view = bdaPtr<GpuCullView>(push.cullView)[0];
+    // the dispatch counts dropped records too; group-uniform and before any barrier
+    if (groupId.x >= view.drawRecordCapacity)
+    {
+        return;
+    }
     GpuCullCounters* counters = bdaPtr<GpuCullCounters>(view.counters);
 
     const bool isLate = (view.flags & kCullLatePhase) != 0;
@@ -239,7 +264,9 @@ void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     const bool isVisible = isPresent && !isFrustumCulled && !isConeCulled && !isSubPixelCulled && !isOccluded;
     // every lane of a group shares the record, so the state group is wave-uniform
     const uint slot = waveAppend(counters.visibleMeshlets[group], isVisible);
-    if (isVisible)
+    const bool isStored = isVisible && slot < view.groupVisibleCapacity[group];
+    waveCount(counters.visibleOverflowed, isVisible && !isStored);
+    if (isStored)
     {
         GpuVisibleMeshlet entry;
         entry.nodeInstanceIndex = record.nodeInstanceIndex;
@@ -296,6 +323,11 @@ void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
 void cullRejectedMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
 {
     const GpuCullView view = bdaPtr<GpuCullView>(push.cullView)[0];
+    // the early dispatch counts dropped records too; the reject masks have the same capacity
+    if (groupId.x >= view.drawRecordCapacity)
+    {
+        return;
+    }
     const uint rejectMask = bdaPtr<uint>(view.rejectMasks)[groupId.x];
     // most groups are either drawn or culled whole early
     if (rejectMask == 0)
@@ -329,7 +361,9 @@ void cullRejectedMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
 
     const bool isVisible = isRejected && !isOccluded;
     const uint slot = waveAppend(counters.visibleMeshlets[group], isVisible);
-    if (isVisible)
+    const bool isStored = isVisible && slot < view.groupVisibleCapacity[group];
+    waveCount(counters.visibleOverflowed, isVisible && !isStored);
+    if (isStored)
     {
         GpuVisibleMeshlet entry;
         entry.nodeInstanceIndex = record.nodeInstanceIndex;
@@ -357,7 +391,8 @@ void buildMeshSequences(uint lane : SV_GroupIndex)
     [unroll]
     for (uint group = 0; group < kMeshStateGroupCount; ++group)
     {
-        const uint visibleCount = counters.visibleMeshlets[group];
+        // the counter includes dropped appends
+        const uint visibleCount = min(counters.visibleMeshlets[group], view.groupVisibleCapacity[group]);
         const uint sequenceCount = (visibleCount + perSequence - 1) / perSequence;
         for (uint s = lane; s < sequenceCount; s += kCullGroupSize)
         {

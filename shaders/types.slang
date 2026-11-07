@@ -191,6 +191,9 @@ struct GpuCullView
     float4x4 cullViewProj;       // frustum and sub-pixel tests: current, or the frozen cull camera
     float2 targetSize;           // render target in pixels
     float subpixelSnap;          // pixels a vertex may move when snapped to the subpixel grid
+    uint instanceCandidateCapacity; // list capacities; appends past them are dropped and counted
+    uint drawRecordCapacity;        // rows of this phase's drawRecords region, also the reject masks
+    uint groupVisibleCapacity[kMeshStateGroupCount];
     uint pad1;
 };
 
@@ -216,6 +219,9 @@ struct GpuCullCounters
     uint meshletsSubPixel;
     uint groupsTested; // kCullStats only
     uint groupsCulled; // whole group by its box: frustum, sub-pixel or occluded
+    uint candidatesOverflowed; // always counted: appends dropped at capacity
+    uint drawRecordsOverflowed;
+    uint visibleOverflowed;
 };
 
 // delta offsets relative to the model's morph slices, kNoneIndex = absent

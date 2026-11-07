@@ -63,9 +63,7 @@ namespace
         {"NodeBuffer", "GPU/Nodes", "Vulkan/NodeBytes", "Vulkan/NodeCapacityBytes", sizeof(GpuNode)},
     }};
 
-    constexpr const char* kDepthTracyName = "GPU/Depth";
     constexpr const char* kInstanceUboTracyName = "GPU/InstanceUBO";
-    constexpr const char* kFrameRootTracyName = "GPU/FrameRoot";
     constexpr const char* kModelTableTracyName = "GPU/ModelTable";
     constexpr const char* kNodeInstanceTracyName = "GPU/NodeInstances";
 
@@ -409,7 +407,7 @@ ResourceManager::~ResourceManager()
     logInfo("Destructor called", "ResourceManager");
     destroyInstanceUboBuffers();
     for (HostBuffer& root : frameRoots) {
-        destroyHostBuffer(root, kFrameRootTracyName);
+        destroyHostBuffer(root, nullptr);
     }
     destroyHostBuffer(modelTable, kModelTableTracyName);
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
@@ -418,7 +416,7 @@ ResourceManager::~ResourceManager()
     for (size_t i = 0; i < kAssetBufferCount; ++i) {
         destroyAssetBuffer(static_cast<AssetBuffer>(i));
     }
-    destroyAttachment(depthAttachment, kDepthTracyName);
+    destroyAttachment(depthAttachment, nullptr);
 }
 
 void ResourceManager::init()
@@ -892,8 +890,6 @@ void ResourceManager::createCameraBuffers(Camera& camera)
         camera.cameraBuffersMapped[i] = data;
         camera.cameraBufferAddresses[i] = device.getBufferAddress({.buffer = *camera.cameraBuffers[i]});
         cameraAddresses[i] = camera.cameraBufferAddresses[i];
-        tracyResourceAlloc(static_cast<VkBuffer>(*camera.cameraBuffers[i]), static_cast<size_t>(bufferSize),
-                           "GPU/CameraUBO");
     }
 }
 
@@ -925,7 +921,8 @@ void ResourceManager::createUniformBuffers()
     logInfo("createUniformBuffers() started", "ResourceManager");
     ensureInstanceCapacity(std::max(objectStorage.size(), 1u));
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-        createHostBuffer(frameRoots[i], sizeof(GpuFrameRoot), std::format("FrameRoot_{}", i), kFrameRootTracyName);
+        // fixed size and count: not a Tracy memory pool
+        createHostBuffer(frameRoots[i], sizeof(GpuFrameRoot), std::format("FrameRoot_{}", i), nullptr);
     }
     rebuildModelTable();
     rebuildNodeInstanceLayout();
@@ -1328,6 +1325,32 @@ void ResourceManager::rebaseCatalog(ModelId modelId, const ModelAllocation& remo
     }
 }
 
+void ResourceManager::tracyPlotMemoryBudget() const
+{
+#ifdef TRACY_ENABLE
+    static const bool isConfigured = [] {
+        TracyPlotConfig("Vulkan/DeviceLocalUsageBytes", tracy::PlotFormatType::Memory, false, true, 0);
+        TracyPlotConfig("Vulkan/DeviceLocalBudgetBytes", tracy::PlotFormatType::Memory, false, false, 0);
+        return true;
+    }();
+    (void)isConfigured;
+    const VkPhysicalDeviceMemoryProperties* memoryProperties = nullptr;
+    vmaGetMemoryProperties(allocator.allocator, &memoryProperties);
+    std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
+    vmaGetHeapBudgets(allocator.allocator, budgets.data());
+    VkDeviceSize usage = 0;
+    VkDeviceSize budget = 0;
+    for (uint32_t heap = 0; heap < memoryProperties->memoryHeapCount; ++heap) {
+        if ((memoryProperties->memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
+            usage += budgets[heap].usage;
+            budget += budgets[heap].budget;
+        }
+    }
+    TracyPlot("Vulkan/DeviceLocalUsageBytes", static_cast<double>(usage));
+    TracyPlot("Vulkan/DeviceLocalBudgetBytes", static_cast<double>(budget));
+#endif
+}
+
 void ResourceManager::tracyPlotResources() const
 {
 #ifdef TRACY_ENABLE
@@ -1466,5 +1489,6 @@ void ResourceManager::createDepthResources()
                       .aspect = vk::ImageAspectFlagBits::eDepth,
                       .layout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
                       .debugName = "DepthImage",
-                      .tracyName = kDepthTracyName});
+                      // recreated only on resize: not a Tracy memory pool
+                      .tracyName = nullptr});
 }

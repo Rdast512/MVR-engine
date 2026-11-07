@@ -8,6 +8,7 @@
     #include "imgui_impl_vulkan.h"
 #endif
 
+#include <format>
 #include <stdexcept>
 
 Renderer::Renderer(Device& device, SwapChain& swapChain, ResourceManager& resourceManager,
@@ -19,6 +20,11 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, ResourceManager& resour
     hiz(device, resourceManager, descriptorManager, shaderObjects), gpuTimer(device), tracyContext(tracyContext),
     imguiEnabled(imguiEnabled)
 {
+    const vk::DeviceSize maxPushData = device.capabilities.descriptorHeap.maxPushDataSize;
+    if (kMaxPushDataBytes > maxPushData) {
+        throw std::runtime_error(
+            std::format("push data of {} B exceeds the device's maxPushDataSize of {} B", kMaxPushDataBytes, maxPushData));
+    }
     dgc.init();
 }
 
@@ -46,13 +52,13 @@ void Renderer::drawFrame()
     auto& presentSemaphore = *resourceManager.presentCompleteSemaphore[currentFrame];
     auto& commandBuffer = resourceManager.commandBuffers[currentFrame];
 
-    resourceManager.tracyPlotResources();
-
     {
         ZoneScopedN("FenceWait");
         while (vk::Result::eTimeout == deviceRef.waitForFences(fence, vk::True, UINT64_MAX))
             ;
     }
+    vmaSetCurrentFrameIndex(resourceManager.allocator.allocator, ++frameNumber);
+    resourceManager.tracyPlotMemoryBudget();
 
     // after the fence: this slot's camera buffer and query results are no longer touched by the GPU
     camera.updateCameraData(currentFrame);
@@ -84,8 +90,10 @@ void Renderer::drawFrame()
         recordCommandBuffer(imageIndex);
     }
 
+    // only the swapchain write waits for the image: culling and preprocess run before it is acquired
     const vk::SemaphoreSubmitInfo waitSemaphoreInfo = {.semaphore = presentSemaphore,
-                                                       .stageMask = vk::PipelineStageFlagBits2::eTopOfPipe};
+                                                       .stageMask =
+                                                           vk::PipelineStageFlagBits2::eColorAttachmentOutput};
 
     const vk::CommandBufferSubmitInfo commandBufferInfo = {.commandBuffer = *commandBuffer};
 
@@ -150,7 +158,8 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
 #endif
         transitionImageLayout(&cmd, swapChain.swapChainImages[imageIndex], vk::ImageLayout::eUndefined,
                               vk::ImageLayout::eColorAttachmentOptimal, colorRange, VK_QUEUE_FAMILY_IGNORED,
-                              VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eTopOfPipe,
+                              // chains with the acquire semaphore wait stage
+                              VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eColorAttachmentOutput,
                               vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eNone,
                               vk::AccessFlagBits2::eColorAttachmentWrite);
         // cleared on load; waits for the previous frame's hi-z reads

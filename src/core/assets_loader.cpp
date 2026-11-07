@@ -308,7 +308,14 @@ namespace
         std::vector<std::jthread> workers;
         workers.reserve(workerCount);
         for (size_t w = 0; w < workerCount; ++w) {
-            workers.emplace_back(loop);
+            workers.emplace_back([&loop] {
+#ifdef TRACY_ENABLE
+                tracy::SetThreadName("AssetWorker");
+#endif
+                // one zone per worker, not per item
+                ZoneScopedN("AssetWorker");
+                loop();
+            });
         }
         loop();
         return workerCount + 1;

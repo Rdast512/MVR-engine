@@ -12,7 +12,6 @@
 
 namespace
 {
-    constexpr const char* kTracyName = "GPU/HiZPyramid";
     constexpr vk::Format kFormat = vk::Format::eR32Sfloat;
     // matches shaders/passes/hiz_build.slang
     constexpr uint32_t kGroupSize = 8;
@@ -55,7 +54,7 @@ HiZPyramid::HiZPyramid(const Device& device, ResourceManager& resourceManager, D
 }
 
 // the descriptor manager may already be gone; only the image is released
-HiZPyramid::~HiZPyramid() { destroyVmaImage(resourceManager.allocator.allocator, image, memory, kTracyName); }
+HiZPyramid::~HiZPyramid() { destroyVmaImage(resourceManager.allocator.allocator, image, memory); }
 
 void HiZPyramid::freeDescriptors()
 {
@@ -74,7 +73,7 @@ void HiZPyramid::freeDescriptors()
 void HiZPyramid::recreate()
 {
     freeDescriptors();
-    destroyVmaImage(resourceManager.allocator.allocator, image, memory, kTracyName);
+    destroyVmaImage(resourceManager.allocator.allocator, image, memory);
     isBuilt = false;
 
     depthExtent = resourceManager.swapChainExtent;
@@ -84,10 +83,8 @@ void HiZPyramid::recreate()
                                             kFormat,
                                             vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled,
                                             image, memory, "HiZPyramidMemory");
+    // recreated only on resize: not a Tracy memory pool
     setDebugName(device.vkdevice, image, "HiZPyramid");
-    // full chain is 4/3 of mip 0
-    const size_t approxBytes = size_t{extent.width} * extent.height * sizeof(float) * 4 / 3;
-    tracyResourceAlloc(static_cast<VkImage>(*image), approxBytes, kTracyName);
 
     vk::raii::CommandBuffer& cmd = resourceManager.commandBuffers[0];
     cmd.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});

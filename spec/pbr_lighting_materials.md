@@ -9,7 +9,7 @@ Human explainer (graphs, worked numbers): [pbr_lighting_materials.html](./pbr_li
 Normative formulas: [gltf_parse_resources.md](./gltf_parse_resources.md) §5, §13.3, §14  
 Khronos: Appendix B, [KHR_lights_punctual](../docs/gltf%202.0/extensions/Khronos/KHR_lights_punctual/README.md)  
 Implementation tasks: [pbr_implementation_plan.md](./pbr_implementation_plan.md)  
-Buffers, model slices, frame root: [resource_architecture.md](../docs/resource_architecture.md)
+Buffers, model slices, frame root: [resource_architecture.md](./resource_architecture.md)
 
 This file is the normative shading part of the PBR plan. The task plan owns passes, buffers and order; this file owns the math. When they disagree, fix whichever is wrong in the same change.
 

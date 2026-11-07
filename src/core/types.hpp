@@ -379,9 +379,15 @@ struct GpuCullView
     glm::vec2 targetSize{0.0f}; // render target in pixels
     // pixels a vertex may move when snapped to the subpixel grid (subPixelPrecisionBits)
     float subpixelSnap = 0.0f;
+    // capacities of the lists this phase appends to; appends past them are dropped and counted in GpuCullCounters
+    uint32_t instanceCandidateCapacity = 0;
+    uint32_t drawRecordCapacity = 0; // rows of this phase's drawRecords region, also the reject masks
+    std::array<uint32_t, kMeshStateGroupCount> groupVisibleCapacity{};
     uint32_t pad1 = 0;
 };
-static_assert(sizeof(GpuCullView) == 272);
+static_assert(sizeof(GpuCullView) == 288);
+static_assert(offsetof(GpuCullView, instanceCandidateCapacity) == 268);
+static_assert(offsetof(GpuCullView, groupVisibleCapacity) == 276);
 static_assert(offsetof(GpuCullView, cullViewProj) == 192);
 static_assert(offsetof(GpuCullView, rejectMasks) == 184);
 static_assert(offsetof(GpuCullView, instanceCandidates) == 160);
@@ -422,8 +428,13 @@ struct GpuCullCounters
     // meshlet groups (draw records) whose box was tested, and those culled whole by it; CullFlag::Stats only
     uint32_t groupsTested = 0;
     uint32_t groupsCulled = 0;
+    // always counted: appends dropped at capacity; nonzero means a list is sized too small
+    uint32_t candidatesOverflowed = 0;
+    uint32_t drawRecordsOverflowed = 0;
+    uint32_t visibleOverflowed = 0;
 };
-static_assert(sizeof(GpuCullCounters) == 104);
+static_assert(sizeof(GpuCullCounters) == 116);
+static_assert(offsetof(GpuCullCounters, candidatesOverflowed) == 104);
 static_assert(offsetof(GpuCullCounters, meshletsRetested) == 40);
 static_assert(offsetof(GpuCullCounters, instanceDispatch) == 28);
 static_assert(offsetof(GpuCullCounters, sequenceCount) == 8);

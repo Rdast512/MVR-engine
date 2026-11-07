@@ -572,7 +572,7 @@ endif ()
 
 engine_fetch_declare(tracy
         GIT_REPOSITORY https://github.com/wolfpld/tracy.git
-        GIT_TAG v0.14.0
+        GIT_TAG v0.15.0
         GIT_SHALLOW TRUE
         GIT_PROGRESS TRUE
 )

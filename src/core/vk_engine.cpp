@@ -805,6 +805,10 @@ void Engine::drawCullingPanel()
     ImGui::Text("Occlusion history: %s%s, fallback frames %u", occlusionHistoryName(stats.history),
                 stats.isPyramidFrozen ? " (pyramid frozen)" : "", stats.fallbackFrames);
     ImGui::SetItemTooltip("without history the early phase skips occlusion and the late phase gets no candidates");
+    if (const uint32_t overflowed = overflowedCount(early) + overflowedCount(late); overflowed > 0) {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "GPU lists overflowed: %u appends dropped", overflowed);
+        ImGui::SetItemTooltip("a culling list is sized too small; see the dropped rows below");
+    }
 
     // rows: early, late, frame total (empty cells where a test does not run in that phase)
     constexpr int64_t kNone = -1;
@@ -847,6 +851,11 @@ void Engine::drawCullingPanel()
         }
         row("Draw records", early.meshletDispatch[0], late.meshletDispatch[0],
             sum(early.meshletDispatch[0], late.meshletDispatch[0]));
+        row("Candidates dropped", early.candidatesOverflowed, kNone, early.candidatesOverflowed,
+            "appends past the candidate list's capacity; nonzero is a sizing bug");
+        row("Draw records dropped", early.drawRecordsOverflowed, late.drawRecordsOverflowed,
+            sum(early.drawRecordsOverflowed, late.drawRecordsOverflowed),
+            "appends past the phase's draw-record region; nonzero is a sizing bug");
         ImGui::EndTable();
     }
 
@@ -877,6 +886,9 @@ void Engine::drawCullingPanel()
                 sum(early.unculledMeshlets, late.unculledMeshlets));
         }
         row("Visible", earlyVisible, lateVisible, sum(earlyVisible, lateVisible));
+        row("Visible dropped", early.visibleOverflowed, late.visibleOverflowed,
+            sum(early.visibleOverflowed, late.visibleOverflowed),
+            "appends past a state group's visible list; nonzero is a sizing bug");
         for (const MeshStateGroup group : {MeshStateGroup::SingleSided, MeshStateGroup::DoubleSided}) {
             const auto index = std::to_underlying(group);
             row(group == MeshStateGroup::SingleSided ? "  single-sided" : "  double-sided",
@@ -1361,6 +1373,12 @@ void Engine::unloadModel(EntityId id)
         return;
     }
     const std::string name = std::filesystem::path(storage.names[id]).filename().string();
+#ifdef TRACY_ENABLE
+    {
+        const std::string msg = std::format("UnloadModel {}", name);
+        TracyMessage(msg.c_str(), msg.size());
+    }
+#endif
     // frames in flight still read the buffers, textures and heap slots being freed
     device->vkdevice.waitIdle();
     // textures come back only when this was the model's last entity

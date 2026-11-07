@@ -8,6 +8,7 @@
 
 // Named GPU/host resource tracking for Tracy's Memory view. No-ops without TRACY_ENABLE.
 // Keys must match between alloc and free (use raw VkBuffer / VkImage / VmaAllocation pointer).
+// nullptr poolName skips tracking: only resources whose count or size changes at runtime get a pool
 void tracyResourceAlloc(const void* ptr, size_t size, const char* poolName);
 void tracyResourceFree(const void* ptr, const char* poolName);
 

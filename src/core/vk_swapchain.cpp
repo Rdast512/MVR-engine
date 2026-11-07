@@ -2,6 +2,7 @@
 
 #include "../util/debug.hpp"
 #include "../static_headers/logger.hpp"
+#include "../util/vk_tracy.hpp"
 
 namespace
 {
@@ -158,6 +159,8 @@ void SwapChain::cleanupSwapChain() {
 }
 
 void SwapChain::recreateSwapChain() {
+    ZoneScopedN("SwapChain::recreateSwapChain");
+    TracyMessageL("Swapchain recreated");
     vkDevice.waitIdle();
     cleanupSwapChain();
     createSwapChain();

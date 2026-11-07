@@ -8,20 +8,20 @@ void tracyResourceAlloc([[maybe_unused]] const void* ptr, [[maybe_unused]] size_
                         [[maybe_unused]] const char* poolName)
 {
 #ifdef TRACY_ENABLE
-	if (ptr == nullptr || size == 0) {
+	if (ptr == nullptr || size == 0 || poolName == nullptr) {
 		return;
 	}
-	TracyAllocN(ptr, size, poolName != nullptr ? poolName : "GPU/Unknown");
+	TracyAllocN(ptr, size, poolName);
 #endif
 }
 
 void tracyResourceFree([[maybe_unused]] const void* ptr, [[maybe_unused]] const char* poolName)
 {
 #ifdef TRACY_ENABLE
-	if (ptr == nullptr) {
+	if (ptr == nullptr || poolName == nullptr) {
 		return;
 	}
-	TracyFreeN(ptr, poolName != nullptr ? poolName : "GPU/Unknown");
+	TracyFreeN(ptr, poolName);
 #endif
 }
 

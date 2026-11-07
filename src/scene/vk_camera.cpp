@@ -46,7 +46,7 @@ Camera::~Camera()
             vmaUnmapMemory(allocator, cameraBuffersMemory[i]);
             cameraBuffersMapped[i] = nullptr;
         }
-        destroyVmaBuffer(allocator, cameraBuffers[i], cameraBuffersMemory[i], "GPU/CameraUBO");
+        destroyVmaBuffer(allocator, cameraBuffers[i], cameraBuffersMemory[i]);
     }
 }
 

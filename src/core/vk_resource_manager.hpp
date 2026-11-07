@@ -154,8 +154,10 @@ public:
     void createCameraBuffers(Camera& camera);
     void setSwapChainImageCount(uint32_t count) { swapChainImageCount = count; createSyncObjects(); }
 
-    // per-frame Tracy plots for resource usage
+    // Tracy plots of resource counts and bytes; called when resources change (flush, instance, erase)
     void tracyPlotResources() const;
+    // per frame, after vmaSetCurrentFrameIndex refreshed the VK_EXT_memory_budget numbers
+    void tracyPlotMemoryBudget() const;
 
     [[nodiscard]] vk::DeviceAddress frameRootAddress(uint32_t frameSlot) const noexcept
     {

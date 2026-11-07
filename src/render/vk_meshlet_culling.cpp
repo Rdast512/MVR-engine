@@ -15,8 +15,6 @@
 
 namespace
 {
-    constexpr const char* kCullViewTracyName = "GPU/CullView";
-    constexpr const char* kCullCountersTracyName = "GPU/CullCounters";
     constexpr const char* kInstanceItemsTracyName = "GPU/InstanceCullItems";
     constexpr const char* kInstanceCandidatesTracyName = "GPU/InstanceCandidates";
     constexpr const char* kRejectMasksTracyName = "GPU/RejectMasks";
@@ -73,17 +71,18 @@ MeshletCulling::~MeshletCulling() { destroyFrameBuffers(); }
 void MeshletCulling::createFrameBuffers()
 {
     const VmaAllocator allocator = resourceManager.allocator.allocator;
+    // fixed size and count: not Tracy memory pools
     for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
         createMappedBuffer(frames[slot].cullView, sizeof(PhaseCullViews), vk::BufferUsageFlagBits2::eStorageBuffer,
                            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-                           device, allocator, std::format("CullView_{}", slot), kCullViewTracyName);
+                           device, allocator, std::format("CullView_{}", slot), nullptr);
         // indirect: the meshlet dispatch and the DGC sequence counts are read from here
         createMappedBuffer(frames[slot].counters, sizeof(kInitialCullCounters),
                            vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eIndirectBuffer |
                                vk::BufferUsageFlagBits2::eTransferDst,
                            vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible |
                                vk::MemoryPropertyFlagBits::eHostCoherent,
-                           device, allocator, std::format("CullCounters_{}", slot), kCullCountersTracyName);
+                           device, allocator, std::format("CullCounters_{}", slot), nullptr);
     }
 }
 
@@ -92,8 +91,8 @@ void MeshletCulling::destroyFrameBuffers()
     const VmaAllocator allocator = resourceManager.allocator.allocator;
     for (FrameBuffers& buffers : frames) {
         // persistently mapped (MAPPED_BIT): VMA unmaps on destroy
-        destroyVmaBuffer(allocator, buffers.cullView.buffer, buffers.cullView.memory, kCullViewTracyName);
-        destroyVmaBuffer(allocator, buffers.counters.buffer, buffers.counters.memory, kCullCountersTracyName);
+        destroyVmaBuffer(allocator, buffers.cullView.buffer, buffers.cullView.memory);
+        destroyVmaBuffer(allocator, buffers.counters.buffer, buffers.counters.memory);
         destroyVmaBuffer(allocator, buffers.instanceItems.buffer, buffers.instanceItems.memory,
                          kInstanceItemsTracyName);
         destroyVmaBuffer(allocator, buffers.instanceCandidates.buffer, buffers.instanceCandidates.memory,
@@ -131,6 +130,13 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera, cons
     if (history != OcclusionHistory::Valid && history != OcclusionHistory::Disabled) {
         ++fallbackFrames;
     }
+#ifdef TRACY_ENABLE
+    if (history != lastHistory) {
+        const std::string msg = std::format("Occlusion history: {}", occlusionHistoryName(history));
+        TracyMessage(msg.c_str(), msg.size());
+    }
+#endif
+    lastHistory = history;
     if (frames[frameSlot].generation != templates.generation) {
         uploadTemplates(frameSlot);
     }
@@ -201,6 +207,7 @@ void MeshletCulling::readBackCounters(uint32_t frameSlot)
     TracyPlot("Culling/HistoryValid", stats.history == OcclusionHistory::Valid ? 1.0 : 0.0);
     TracyPlot("Culling/TrianglesBackface", static_cast<double>(early.trianglesBackface + late.trianglesBackface));
     TracyPlot("Culling/TrianglesSmall", static_cast<double>(early.trianglesSmall + late.trianglesSmall));
+    TracyPlot("Culling/Overflowed", static_cast<double>(overflowedCount(early) + overflowedCount(late)));
 }
 
 MeshStateGroup MeshletCulling::stateGroupOf(const PrimitiveDraw& primitive) const
@@ -398,6 +405,10 @@ void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, con
         .cullViewProj = viewProj,
         .targetSize = camera.cameraData.renderTargetSize,
         .subpixelSnap = resourceManager.subpixelSnap,
+        .instanceCandidateCapacity = buffers.instanceCapacity,
+        // the phase regions are templates.drawRecords.size() apart (drawRecordBase below)
+        .drawRecordCapacity = static_cast<uint32_t>(templates.drawRecords.size()),
+        .groupVisibleCapacity = templates.groupMeshlets,
     };
     const uint32_t phaseVisibleRows =
         std::reduce(templates.groupMeshlets.begin(), templates.groupMeshlets.end(), 0u);
