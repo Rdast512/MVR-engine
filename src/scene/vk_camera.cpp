@@ -81,16 +81,16 @@ void Camera::updateVectors()
 
 void Camera::updateProjection()
 {
-    const float aspect =
-        static_cast<float>(swapChain.swapChainExtent.width) / static_cast<float>(swapChain.swapChainExtent.height);
+    const float aspect = static_cast<float>(renderExtent.width) / static_cast<float>(renderExtent.height);
 
-    glm::mat4 proj = glm::perspective(fov, aspect, nearPlane, farPlane);
+    // reverse Z: near maps to 1, far to 0 (GLM_FORCE_DEPTH_ZERO_TO_ONE)
+    glm::mat4 proj = glm::perspective(fov, aspect, farPlane, nearPlane);
     proj[1][1] *= -1; // vulkan y-flip
 
     cameraData.proj = proj;
     cameraData.nearZ = nearPlane;
     cameraData.farZ = farPlane;
-    cameraData.renderTargetSize = glm::vec2(swapChain.swapChainExtent.width, swapChain.swapChainExtent.height);
+    cameraData.renderTargetSize = glm::vec2(renderExtent.width, renderExtent.height);
     cameraData.invRenderTargetSize = 1.0f / cameraData.renderTargetSize;
 
     projDirty = false;

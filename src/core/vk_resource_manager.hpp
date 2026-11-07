@@ -107,7 +107,7 @@ struct HostBuffer {
     vk::DeviceAddress address = 0;
 };
 
-// Swapchain-sized render target, recreated on resize
+// render-resolution target, recreated on resize
 struct AttachmentImage {
     vk::raii::Image image = nullptr;
     VmaAllocation memory = nullptr;
@@ -159,6 +159,11 @@ public:
     // per frame, after vmaSetCurrentFrameIndex refreshed the VK_EXT_memory_budget numbers
     void tracyPlotMemoryBudget() const;
 
+    // persistently mapped host-visible storage buffer with a device address
+    void createHostBuffer(HostBuffer& target, vk::DeviceSize size, const std::string& debugName,
+                          const char* tracyName) const;
+    void destroyHostBuffer(HostBuffer& target, const char* tracyName) const;
+
     [[nodiscard]] vk::DeviceAddress frameRootAddress(uint32_t frameSlot) const noexcept
     {
         return frameRoots[frameSlot].address;
@@ -198,6 +203,8 @@ public:
     uint32_t graphicsIndex;
     uint32_t transferIndex;
     vk::Extent2D swapChainExtent{};
+    // depth, vis buffer, guides and every culling size; equal to swapChainExtent until upscaling (M3)
+    vk::Extent2D renderExtent{};
     uint32_t swapChainImageCount = 0;
     vk::Format swapChainImageFormat = vk::Format::eUndefined;
 
@@ -239,6 +246,8 @@ public:
     std::array<uint32_t, MAX_FRAMES_IN_FLIGHT> lateVisibleBases{};
     std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> cullCounterAddresses{};
     std::array<uint32_t, MAX_FRAMES_IN_FLIGHT> triangleCullFlags{};
+    // GpuTargets of each slot, set by RenderTargets::prepareFrame
+    std::array<vk::DeviceAddress, MAX_FRAMES_IN_FLIGHT> targetsAddresses{};
     float subpixelSnap = 0.0f;
 
 private:
@@ -269,10 +278,6 @@ private:
     };
 
     void destroyInstanceUboBuffers();
-    // persistently mapped host-visible storage buffer with a device address
-    void createHostBuffer(HostBuffer& target, vk::DeviceSize size, const std::string& debugName,
-                          const char* tracyName) const;
-    void destroyHostBuffer(HostBuffer& target, const char* tracyName) const;
     void rebuildModelTable();
     void writeFrameRoot(uint32_t frameSlot, uint32_t debugView);
     // scratch PrimitiveDraws as model-relative GpuPrimitives; call before remapScratchOffsets

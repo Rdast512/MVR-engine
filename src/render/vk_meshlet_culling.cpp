@@ -153,12 +153,12 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera, cons
     resourceManager.subpixelSnap = std::ldexp(1.0f, -static_cast<int>(subPixelBits) - 1);
 
     // every template may survive, so the per-group meshlet totals bound the visible lists and sequences
-    const uint32_t totalMeshlets = std::reduce(templates.groupMeshlets.begin(), templates.groupMeshlets.end(), 0u);
+    const uint32_t totalMeshlets = std::reduce(templates.binMeshlets.begin(), templates.binMeshlets.end(), 0u);
     // one visible region of totalMeshlets rows per phase
     resourceManager.lateVisibleBases[frameSlot] = totalMeshlets * std::to_underlying(CullPhase::Late);
     const uint32_t perSequence = meshletsPerSequence(totalMeshlets);
-    std::array<uint32_t, kMeshStateGroupCount> maxSequences{};
-    std::ranges::transform(templates.groupMeshlets, maxSequences.begin(),
+    std::array<uint32_t, kRasterBinCount> maxSequences{};
+    std::ranges::transform(templates.binMeshlets, maxSequences.begin(),
                            [perSequence](uint32_t meshlets) { return divideRoundUp(meshlets, perSequence); });
     dgc.prepareFrame(frameSlot, maxSequences, frames[frameSlot].counters.address);
     writeCullView(frameSlot, camera, hiz, history, perSequence);
@@ -170,7 +170,7 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera, cons
                 .drawRecords = static_cast<uint32_t>(templates.drawRecords.size()),
                 .totalMeshlets = totalMeshlets,
                 .meshletsPerSequence = perSequence,
-                .groupMeshlets = templates.groupMeshlets,
+                .binMeshlets = templates.binMeshlets,
                 .history = history,
                 .isPyramidFrozen = isPyramidFrozenThisFrame,
                 .fallbackFrames = fallbackFrames,
@@ -210,12 +210,15 @@ void MeshletCulling::readBackCounters(uint32_t frameSlot)
     TracyPlot("Culling/Overflowed", static_cast<double>(overflowedCount(early) + overflowedCount(late)));
 }
 
-MeshStateGroup MeshletCulling::stateGroupOf(const PrimitiveDraw& primitive) const
+// alpha-masked materials stay opaque until the M6 alpha-tested bin
+uint32_t MeshletCulling::drawRecordFlagsOf(const PrimitiveDraw& primitive) const
 {
     const MaterialStore& materials = resourceManager.materialStore;
     const uint32_t materialId = primitive.materialId == kNoneIndex ? materials.defaultMaterialId() : primitive.materialId;
-    const bool isDoubleSided = (materials.infos[materialId].material.flags & GpuMaterialFlag::DoubleSided) != 0;
-    return isDoubleSided ? MeshStateGroup::DoubleSided : MeshStateGroup::SingleSided;
+    const bool isTwoSided = (materials.infos[materialId].material.flags & GpuMaterialFlag::DoubleSided) != 0;
+    // bounds are built from base positions, so morphed meshlets always draw
+    return std::to_underlying(RasterBin::Opaque) | (isTwoSided ? DrawRecordFlag::TwoSided : 0u) |
+        (primitive.morphCount > 0 ? DrawRecordFlag::SkipCulling : 0u);
 }
 
 // one item per node instance with meshlets, its draw records contiguous behind firstDrawRecord
@@ -226,7 +229,7 @@ void MeshletCulling::buildTemplates()
     const auto& geometry = resourceManager.geometryStore;
     templates.instances.clear();
     templates.drawRecords.clear();
-    templates.groupMeshlets = {};
+    templates.binMeshlets = {};
     templates.generation = resourceManager.nodeInstanceLayoutGeneration;
 
     const uint32_t entityCount = resourceManager.asset(AssetBuffer::Primitives).address == 0 ? 0 : storage.size();
@@ -244,12 +247,9 @@ void MeshletCulling::buildTemplates()
             };
             for (uint32_t p = node.firstPrimitive; p < node.firstPrimitive + node.primitiveCount; ++p) {
                 const PrimitiveDraw& primitive = geometry.primitiveDraws[p];
-                const MeshStateGroup group = stateGroupOf(primitive);
-                // bounds are built from base positions, so morphed meshlets always draw
-                const uint32_t flags =
-                    std::to_underlying(group) | (primitive.morphCount > 0 ? DrawRecordFlag::SkipCulling : 0u);
+                const uint32_t flags = drawRecordFlagsOf(primitive);
                 item.flags |= flags & DrawRecordFlag::SkipCulling;
-                templates.groupMeshlets[std::to_underlying(group)] += primitive.meshlets.meshletCount;
+                templates.binMeshlets[flags & DrawRecordFlag::BinMask] += primitive.meshlets.meshletCount;
                 for (uint32_t g = 0; g < primitive.groupCount; ++g) {
                     templates.drawRecords.push_back(GpuDrawRecord{
                         .nodeInstanceIndex = item.nodeInstanceIndex,
@@ -272,8 +272,15 @@ void MeshletCulling::buildTemplates()
         throw std::runtime_error(std::format("cull: {} instances / {} draw records exceed maxComputeWorkGroupCount {}",
                                              templates.instances.size(), templates.drawRecords.size(), maxGroups));
     }
+    // the vis-buffer payload holds the visible row above the triangle bits
+    const uint32_t visibleRows =
+        std::reduce(templates.binMeshlets.begin(), templates.binMeshlets.end(), 0u) * kCullPhaseCount;
+    if (visibleRows > kMaxVisibleRows) {
+        throw std::runtime_error(std::format("cull: {} visible rows exceed the vis-buffer row field ({})",
+                                             visibleRows, kMaxVisibleRows));
+    }
     logInfo(std::format("cull templates: {} instances, {} draw records, {} + {} meshlets", templates.instances.size(),
-                        templates.drawRecords.size(), templates.groupMeshlets[0], templates.groupMeshlets[1]),
+                        templates.drawRecords.size(), templates.binMeshlets[0], templates.binMeshlets[1]),
             "Culling");
 }
 
@@ -321,7 +328,7 @@ void MeshletCulling::uploadTemplates(uint32_t frameSlot)
     }
 
     // one region per phase
-    const uint32_t totalMeshlets = std::reduce(templates.groupMeshlets.begin(), templates.groupMeshlets.end(), 0u);
+    const uint32_t totalMeshlets = std::reduce(templates.binMeshlets.begin(), templates.binMeshlets.end(), 0u);
     const uint32_t visibleRows = totalMeshlets * kCullPhaseCount;
     if (visibleRows > buffers.visibleCapacity || buffers.visibleMeshlets.memory == nullptr) {
         buffers.visibleCapacity = grownCapacity(visibleRows, buffers.visibleCapacity, kMinVisibleCapacity);
@@ -396,7 +403,7 @@ void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, con
         .instanceCount = static_cast<uint32_t>(templates.instances.size()),
         .maxMeshletsPerSequence = perSequence,
         .hizPyramid = hiz.pyramidHeapIndex(),
-        .hizMaxSampler = hiz.maxSamplerHeapIndex(),
+        .hizFarSampler = hiz.farSamplerHeapIndex(),
         .hizSize = hiz.size(),
         .instanceCandidates = buffers.instanceCandidates.address,
         // the early phase's records start at row 0 (drawRecordBase below)
@@ -408,10 +415,10 @@ void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, con
         .instanceCandidateCapacity = buffers.instanceCapacity,
         // the phase regions are templates.drawRecords.size() apart (drawRecordBase below)
         .drawRecordCapacity = static_cast<uint32_t>(templates.drawRecords.size()),
-        .groupVisibleCapacity = templates.groupMeshlets,
+        .binVisibleCapacity = templates.binMeshlets,
     };
     const uint32_t phaseVisibleRows =
-        std::reduce(templates.groupMeshlets.begin(), templates.groupMeshlets.end(), 0u);
+        std::reduce(templates.binMeshlets.begin(), templates.binMeshlets.end(), 0u);
     PhaseCullViews views{};
     for (uint32_t phase = 0; phase < kCullPhaseCount; ++phase) {
         GpuCullView& phaseView = views[phase];
@@ -431,11 +438,11 @@ void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, con
         phaseView.occlusionViewProj = isPyramidFrozenThisFrame ? frozenViewProj
                                       : isLate                 ? camera.cameraData.viewProj
                                                                : camera.cameraData.prevViewProj;
-        std::exclusive_scan(templates.groupMeshlets.begin(), templates.groupMeshlets.end(),
-                            phaseView.groupVisibleOffset.begin(), phase * phaseVisibleRows);
-        for (uint32_t group = 0; group < kMeshStateGroupCount; ++group) {
-            phaseView.groupSequenceOffset[group] =
-                dgc.groupSequenceOffset(static_cast<CullPhase>(phase), static_cast<MeshStateGroup>(group));
+        std::exclusive_scan(templates.binMeshlets.begin(), templates.binMeshlets.end(),
+                            phaseView.binVisibleOffset.begin(), phase * phaseVisibleRows);
+        for (uint32_t group = 0; group < kRasterBinCount; ++group) {
+            phaseView.binSequenceOffset[group] =
+                dgc.binSequenceOffset(static_cast<CullPhase>(phase), static_cast<RasterBin>(group));
         }
     }
     *static_cast<PhaseCullViews*>(buffers.cullView.mapped) = views;

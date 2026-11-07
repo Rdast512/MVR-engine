@@ -39,6 +39,13 @@ public:
         projDirty = true;
     }
 
+    // aspect ratio and renderTargetSize; the render resolution, not the display's
+    void setRenderExtent(vk::Extent2D extent)
+    {
+        renderExtent = extent;
+        projDirty = true;
+    }
+
     void updateCameraData(uint8_t currentImage);
 
     // after updateCameraData: first frame, focusOn or a projection change; prevViewProj does not match the
@@ -68,6 +75,7 @@ private:
     glm::vec3 right{1.0f, 0.0f, 0.0f};
     glm::vec3 worldUp{0.0f, 1.0f, 0.0f};
 
+    vk::Extent2D renderExtent{1, 1};
     float fov = glm::radians(45.0f); // vertical FOV
     float nearPlane = 0.1f;
     float farPlane = 1000.0f;

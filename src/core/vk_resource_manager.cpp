@@ -333,6 +333,7 @@ void ResourceManager::writeFrameRoot(uint32_t frameSlot, uint32_t debugView)
         .cullCounters = cullCounterAddresses[frameSlot],
         .triangleCull = triangleCullFlags[frameSlot],
         .subpixelSnap = subpixelSnap,
+        .targets = targetsAddresses[frameSlot],
     };
 }
 
@@ -1442,12 +1443,12 @@ void ResourceManager::destroyAttachment(AttachmentImage& target, const char* tra
 void ResourceManager::createAttachment(AttachmentImage& target, const AttachmentDesc& desc)
 {
     destroyAttachment(target, desc.tracyName);
-    allocator.createImage2D(swapChainExtent.width, swapChainExtent.height, 1, vk::SampleCountFlagBits::e1,
+    allocator.createImage2D(renderExtent.width, renderExtent.height, 1, vk::SampleCountFlagBits::e1,
                             desc.format, desc.usage, target.image, target.memory,
                             std::format("{}Memory", desc.debugName));
     setDebugName(device, target.image, desc.debugName);
     // approx footprint: 4 B/pixel
-    const vk::DeviceSize approxBytes = static_cast<vk::DeviceSize>(swapChainExtent.width) * swapChainExtent.height * 4u;
+    const vk::DeviceSize approxBytes = static_cast<vk::DeviceSize>(renderExtent.width) * renderExtent.height * 4u;
     tracyResourceAlloc(static_cast<VkImage>(*target.image), static_cast<size_t>(approxBytes), desc.tracyName);
 
     vk::raii::CommandBuffer& cmd = commandBuffers[0];
@@ -1465,7 +1466,8 @@ void ResourceManager::createAttachment(AttachmentImage& target, const Attachment
 vk::Format ResourceManager::findDepthFormat()
 {
     logInfo("findDepthFormat() started", "ResourceManager");
-    // hi-z reads depth as R32_SFLOAT; no stencil user
+    // hi-z reads depth as R32_SFLOAT; no stencil user. BestPractices-NVIDIA-CreateImage-Depth32Format (0xf00e92a8) is
+    // accepted: reverse Z needs float depth for its precision
     return findSupportedFormat({vk::Format::eD32Sfloat}, vk::ImageTiling::eOptimal,
                                vk::FormatFeatureFlagBits::eDepthStencilAttachment |
                                    vk::FormatFeatureFlagBits::eSampledImage);
@@ -1482,7 +1484,7 @@ void ResourceManager::createDepthResources()
     const vk::Format depthFormat = findDepthFormat();
     logInfo(std::format("Depth format selected: {}", vk::to_string(depthFormat)), "ResourceManager");
 
-    // sampled by the hi-z build
+    // sampled by the hi-z build, the resolve and the debug views
     createAttachment(depthAttachment,
                      {.format = depthFormat,
                       .usage = vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled,

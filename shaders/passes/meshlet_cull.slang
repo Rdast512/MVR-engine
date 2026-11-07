@@ -2,7 +2,7 @@
 #include "core/binding.slang"
 #include "core/culling.slang"
 
-// instances -> draw records -> per state group visible lists -> DGC sequences + counts; run once per CullPhase
+// instances -> draw records -> per raster bin visible lists -> DGC sequences + counts; run once per CullPhase
 
 [[vk::push_constant]] ConstantBuffer<CullPushData> push;
 
@@ -22,7 +22,7 @@ bool isBoxOccluded(GpuCullView view, float4x4 world, float3 bboxMin, float3 bbox
 {
     ClipBounds bounds;
     intersectFrustum(view.occlusionViewProj, bboxMin, bboxMax, world, bounds);
-    return isHiZOccluded(bounds, view.hizSize, view.hizPyramid, view.hizMaxSampler);
+    return isHiZOccluded(bounds, view.hizSize, view.hizPyramid, view.hizFarSampler);
 }
 
 // meshoptimizer sphere form: no apex needed, no singularity at the center
@@ -189,7 +189,7 @@ void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     const uint recordIndex = view.drawRecordBase + groupId.x;
     const GpuDrawRecord record = bdaPtr<GpuDrawRecord>(root.drawRecords)[recordIndex];
     const GpuPrimitive primitive = bdaPtr<GpuPrimitive>(root.primitives)[record.primitiveIndex];
-    const uint group = record.flags & kDrawRecordStateGroupMask;
+    const uint bin = record.flags & kDrawRecordBinMask;
     const uint meshletIndex = record.meshletOffset + lane;
     GpuNodeInstance* instance = bdaPtr<GpuNodeInstance>(root.nodeInstances) + record.nodeInstanceIndex;
     GpuModel* model = bdaPtr<GpuModel>(root.models) + instance.modelIndex;
@@ -245,7 +245,7 @@ void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
             isFrustumCulled = (view.flags & kCullFrustum) != 0 && !isInFrustum;
         }
         // double-sided faces are visible from behind
-        if (!isFrustumCulled && (view.flags & kCullCone) != 0 && group != kMeshStateGroupDoubleSided)
+        if (!isFrustumCulled && (view.flags & kCullCone) != 0 && (record.flags & kDrawRecordTwoSided) == 0)
         {
             isConeCulled = isConeBackfacing(meshlet, worldToObject(world, view.cameraPos));
         }
@@ -262,16 +262,16 @@ void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     }
 
     const bool isVisible = isPresent && !isFrustumCulled && !isConeCulled && !isSubPixelCulled && !isOccluded;
-    // every lane of a group shares the record, so the state group is wave-uniform
-    const uint slot = waveAppend(counters.visibleMeshlets[group], isVisible);
-    const bool isStored = isVisible && slot < view.groupVisibleCapacity[group];
+    // every lane of a group shares the record, so the bin is wave-uniform
+    const uint slot = waveAppend(counters.visibleMeshlets[bin], isVisible);
+    const bool isStored = isVisible && slot < view.binVisibleCapacity[bin];
     waveCount(counters.visibleOverflowed, isVisible && !isStored);
     if (isStored)
     {
         GpuVisibleMeshlet entry;
         entry.nodeInstanceIndex = record.nodeInstanceIndex;
         entry.meshletRow = primitive.firstMeshlet + meshletIndex;
-        bdaPtr<GpuVisibleMeshlet>(view.visibleMeshlets)[view.groupVisibleOffset[group] + slot] = entry;
+        bdaPtr<GpuVisibleMeshlet>(view.visibleMeshlets)[view.binVisibleOffset[bin] + slot] = entry;
     }
 
     // reject list (vk_lod_clusters rejectClusterMasks): one bit per meshlet that passed frustum, cone and sub-pixel
@@ -342,7 +342,7 @@ void cullRejectedMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     const GpuPrimitive primitive = bdaPtr<GpuPrimitive>(root.primitives)[record.primitiveIndex];
     GpuNodeInstance* instance = bdaPtr<GpuNodeInstance>(root.nodeInstances) + record.nodeInstanceIndex;
     GpuModel* model = bdaPtr<GpuModel>(root.models) + instance.modelIndex;
-    const uint group = record.flags & kDrawRecordStateGroupMask;
+    const uint bin = record.flags & kDrawRecordBinMask;
     const float4x4 world = instance.worldMatrix;
 
     // group-uniform: a group box still occluded keeps all its bits occluded
@@ -360,15 +360,15 @@ void cullRejectedMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     }
 
     const bool isVisible = isRejected && !isOccluded;
-    const uint slot = waveAppend(counters.visibleMeshlets[group], isVisible);
-    const bool isStored = isVisible && slot < view.groupVisibleCapacity[group];
+    const uint slot = waveAppend(counters.visibleMeshlets[bin], isVisible);
+    const bool isStored = isVisible && slot < view.binVisibleCapacity[bin];
     waveCount(counters.visibleOverflowed, isVisible && !isStored);
     if (isStored)
     {
         GpuVisibleMeshlet entry;
         entry.nodeInstanceIndex = record.nodeInstanceIndex;
         entry.meshletRow = primitive.firstMeshlet + record.meshletOffset + lane;
-        bdaPtr<GpuVisibleMeshlet>(view.visibleMeshlets)[view.groupVisibleOffset[group] + slot] = entry;
+        bdaPtr<GpuVisibleMeshlet>(view.visibleMeshlets)[view.binVisibleOffset[bin] + slot] = entry;
     }
 
     if ((view.flags & kCullStats) != 0)
@@ -378,7 +378,7 @@ void cullRejectedMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     }
 }
 
-// after cullMeshlets: one sequence per maxMeshletsPerSequence visible meshlets of each state group
+// after cullMeshlets: one sequence per maxMeshletsPerSequence visible meshlets of each raster bin
 [shader("compute")]
 [numthreads(kCullGroupSize, 1, 1)]
 void buildMeshSequences(uint lane : SV_GroupIndex)
@@ -389,10 +389,10 @@ void buildMeshSequences(uint lane : SV_GroupIndex)
     const uint perSequence = view.maxMeshletsPerSequence;
 
     [unroll]
-    for (uint group = 0; group < kMeshStateGroupCount; ++group)
+    for (uint bin = 0; bin < kRasterBinCount; ++bin)
     {
         // the counter includes dropped appends
-        const uint visibleCount = min(counters.visibleMeshlets[group], view.groupVisibleCapacity[group]);
+        const uint visibleCount = min(counters.visibleMeshlets[bin], view.binVisibleCapacity[bin]);
         const uint sequenceCount = (visibleCount + perSequence - 1) / perSequence;
         for (uint s = lane; s < sequenceCount; s += kCullGroupSize)
         {
@@ -400,15 +400,15 @@ void buildMeshSequences(uint lane : SV_GroupIndex)
             const uint batch = min(visibleCount - first, perSequence);
             MeshDgcSequence sequence;
             sequence.push.frameRoot = push.frameRoot;
-            sequence.push.firstVisible = view.groupVisibleOffset[group] + first;
+            sequence.push.firstVisible = view.binVisibleOffset[bin] + first;
             sequence.push.meshletCount = batch;
             sequence.groupCount = uint3(batch, 1, 1);
             sequence.pad0 = 0;
-            sequences[view.groupSequenceOffset[group] + s] = sequence;
+            sequences[view.binSequenceOffset[bin] + s] = sequence;
         }
         if (lane == 0)
         {
-            counters.sequenceCount[group] = sequenceCount;
+            counters.sequenceCount[bin] = sequenceCount;
         }
     }
 }

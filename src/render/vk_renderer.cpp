@@ -11,13 +11,23 @@
 #include <format>
 #include <stdexcept>
 
+namespace
+{
+    const vk::ImageSubresourceRange kColorRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    // matches passes/resolve.slang and passes/debug_view.slang
+    constexpr uint32_t kFullscreenTile = 8;
+
+    constexpr uint32_t divideRoundUp(uint32_t value, uint32_t divisor) { return (value + divisor - 1) / divisor; }
+} // namespace
+
 Renderer::Renderer(Device& device, SwapChain& swapChain, ResourceManager& resourceManager,
                    DescriptorManager& descriptorManager, ShaderObjects& shaderObjects, Camera& camera,
                    VkTracyContext* tracyContext, bool imguiEnabled) :
     device(device), swapChain(swapChain), resourceManager(resourceManager), descriptorManager(descriptorManager),
     camera(camera), shaderObjects(shaderObjects), dgc(device, resourceManager, descriptorManager, shaderObjects),
     culling(device, resourceManager, shaderObjects, dgc),
-    hiz(device, resourceManager, descriptorManager, shaderObjects), gpuTimer(device), tracyContext(tracyContext),
+    hiz(device, resourceManager, descriptorManager, shaderObjects), targets(device, resourceManager, descriptorManager),
+    gpuTimer(device), tracyContext(tracyContext),
     imguiEnabled(imguiEnabled)
 {
     const vk::DeviceSize maxPushData = device.capabilities.descriptorHeap.maxPushDataSize;
@@ -35,10 +45,12 @@ void Renderer::rebuildSwapchainResources()
     resourceManager.updateSwapChainExtent(swapChain.swapChainExtent);
     resourceManager.updateSwapChainImageFormat(swapChain.swapChainImageFormat);
     resourceManager.setSwapChainImageCount(static_cast<uint32_t>(swapChain.swapChainImages.size()));
+    // render resolution equals display until upscaling (M3)
+    resourceManager.renderExtent = swapChain.swapChainExtent;
     resourceManager.createDepthResources();
+    targets.recreate(resourceManager.renderExtent);
     hiz.recreate();
-    // aspect ratio follows the new extent
-    camera.setFov(camera.getFovDegrees());
+    camera.setRenderExtent(resourceManager.renderExtent);
 }
 
 void Renderer::drawFrame()
@@ -62,6 +74,7 @@ void Renderer::drawFrame()
 
     // after the fence: this slot's camera buffer and query results are no longer touched by the GPU
     camera.updateCameraData(currentFrame);
+    targets.prepareFrame(currentFrame, frameNumber);
     gpuTimer.collect(currentFrame);
 
     vk::Result result{};
@@ -90,7 +103,8 @@ void Renderer::drawFrame()
         recordCommandBuffer(imageIndex);
     }
 
-    // only the swapchain write waits for the image: culling and preprocess run before it is acquired
+    // cull and compute run before the image is acquired; color-attachment output, the vis-buffer raster included,
+    // waits for it until present gets its own submit
     const vk::SemaphoreSubmitInfo waitSemaphoreInfo = {.semaphore = presentSemaphore,
                                                        .stageMask =
                                                            vk::PipelineStageFlagBits2::eColorAttachmentOutput};
@@ -150,19 +164,12 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
 
     cmd.begin({});
 
-    const vk::ImageSubresourceRange colorRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
     {
         ZoneScopedN("TransitionToRender");
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneTransitionToRender, *cmd, "GPU_TransitionToRender", gpuTrace);
 #endif
-        transitionImageLayout(&cmd, swapChain.swapChainImages[imageIndex], vk::ImageLayout::eUndefined,
-                              vk::ImageLayout::eColorAttachmentOptimal, colorRange, VK_QUEUE_FAMILY_IGNORED,
-                              // chains with the acquire semaphore wait stage
-                              VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-                              vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eNone,
-                              vk::AccessFlagBits2::eColorAttachmentWrite);
-        // cleared on load; waits for the previous frame's hi-z reads
+        // cleared on load; waits for the previous frame's hi-z, resolve and debug-view reads
         transitionImageLayout(&cmd, resourceManager.depthAttachment.image, vk::ImageLayout::eUndefined,
                               vk::ImageLayout::eDepthStencilAttachmentOptimal,
                               {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}, VK_QUEUE_FAMILY_IGNORED,
@@ -172,44 +179,56 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
                               vk::AccessFlagBits2::eNone,
                               vk::AccessFlagBits2::eDepthStencilAttachmentRead |
                                   vk::AccessFlagBits2::eDepthStencilAttachmentWrite);
+        // content discarded: empty pixels are decided by depth; waits for the previous frame's compute reads
+        transitionImageLayout(&cmd, targets.getVisBufferImage(), vk::ImageLayout::eUndefined,
+                              vk::ImageLayout::eColorAttachmentOptimal, kColorRange, VK_QUEUE_FAMILY_IGNORED,
+                              VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eComputeShader,
+                              vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eNone,
+                              vk::AccessFlagBits2::eColorAttachmentWrite);
     }
 
     // also sizes the DGC buffers for this slot
     culling.prepareFrame(currentFrame, camera, hiz);
     gpuTimer.begin(cmd, currentFrame);
-    const RasterVariant rasterVariant = debugView.rasterVariant();
 
     cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
     cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
-    // shader objects require the *WithCount variants
-    cmd.setViewportWithCount(vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChain.swapChainExtent.width),
-                                          static_cast<float>(swapChain.swapChainExtent.height), 0.0f, 1.0f));
-    cmd.setScissorWithCount(vk::Rect2D(vk::Offset2D(0, 0), swapChain.swapChainExtent));
+    setViewport(cmd, targets.getExtent());
 
     {
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneEarlyPhase, *cmd, "GPU_EarlyPhase", gpuTrace);
 #endif
-        recordPhase(cmd, CullPhase::Early, imageIndex, rasterVariant);
+        recordPhase(cmd, CullPhase::Early);
     }
     {
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneLatePhase, *cmd, "GPU_LatePhase", gpuTrace);
 #endif
-        recordPhase(cmd, CullPhase::Late, imageIndex, rasterVariant);
+        recordPhase(cmd, CullPhase::Late);
     }
     MeshletCulling::recordCounterReadback(cmd);
 
     {
-        ZoneScopedN("TransitionToPresent");
+        ZoneScopedN("Resolve");
 #ifdef TRACY_ENABLE
-        TracyVkNamedZone(gpuCtx, gpuZoneTransitionToPresent, *cmd, "GPU_TransitionToPresent", gpuTrace);
+        TracyVkNamedZone(gpuCtx, gpuZoneResolve, *cmd, "GPU_Resolve", gpuTrace);
 #endif
-        transitionImageLayout(&cmd, swapChain.swapChainImages[imageIndex], vk::ImageLayout::eColorAttachmentOptimal,
-                              vk::ImageLayout::ePresentSrcKHR, colorRange, VK_QUEUE_FAMILY_IGNORED,
-                              VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-                              vk::PipelineStageFlagBits2::eBottomOfPipe, vk::AccessFlagBits2::eColorAttachmentWrite,
-                              {});
+        recordResolve(cmd);
+    }
+    {
+        ZoneScopedN("DebugView");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneDebugView, *cmd, "GPU_DebugView", gpuTrace);
+#endif
+        recordDebugView(cmd);
+    }
+    {
+        ZoneScopedN("Present");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZonePresent, *cmd, "GPU_Present", gpuTrace);
+#endif
+        recordPresent(cmd, imageIndex);
     }
 
     if (tracyContext) {
@@ -222,9 +241,25 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
 
 void Renderer::waitIdle() const { device.vkdevice.waitIdle(); }
 
-// cull -> preprocess -> raster -> hi-z; the late phase draws over the early one and adds ImGui
-void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase, uint32_t imageIndex,
-                           RasterVariant rasterVariant)
+void Renderer::setViewport(const vk::raii::CommandBuffer& cmd, vk::Extent2D extent)
+{
+    // shader objects require the *WithCount variants
+    cmd.setViewportWithCount(
+        vk::Viewport(0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f));
+    cmd.setScissorWithCount(vk::Rect2D(vk::Offset2D(0, 0), extent));
+}
+
+void Renderer::dispatchFullscreen(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader) const
+{
+    const FramePushData push{.frameRoot = resourceManager.frameRootAddress(currentFrame)};
+    ShaderObjects::bindComputeShader(cmd, shader);
+    cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
+    const vk::Extent2D extent = targets.getExtent();
+    cmd.dispatch(divideRoundUp(extent.width, kFullscreenTile), divideRoundUp(extent.height, kFullscreenTile), 1);
+}
+
+// cull -> preprocess -> vis-buffer raster -> hi-z; the late phase draws over the early one
+void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase)
 {
 #ifdef TRACY_ENABLE
     const bool gpuTrace = tracyContext != nullptr && tracyContext->isActive();
@@ -247,27 +282,19 @@ void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase, uint32
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneDgcPreprocess, *cmd, "GPU_DgcPreprocess", gpuTrace);
 #endif
-        // preprocess takes its state from the per-group state command buffers
-        dgc.recordPreprocess(cmd, rasterVariant, phase);
+        // preprocess takes its state from the state command buffer
+        dgc.recordPreprocess(cmd, phase);
         gpuTimer.end(cmd, scope(GpuTimerScope::EarlyPreprocess, GpuTimerScope::LatePreprocess));
     }
 
     if (!isEarly) {
-        // the early hi-z build sampled depth; the late raster loads color and depth
-        const vk::MemoryBarrier2 colorBarrier{
+        // the late raster loads the early vis buffer; the early hi-z build sampled depth
+        const vk::MemoryBarrier2 visBarrier{
             .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
             .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite,
         };
-        // the Hi-Z view samples the early pyramid in the late pass
-        const vk::MemoryBarrier2 pyramidBarrier{
-            .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-            .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-            .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
-            .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
-        };
-        const std::array memoryBarriers = {colorBarrier, pyramidBarrier};
         const vk::ImageMemoryBarrier2 depthBarrier{
             .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
             .srcAccessMask = vk::AccessFlagBits2::eNone,
@@ -282,33 +309,30 @@ void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase, uint32
             .image = *resourceManager.depthAttachment.image,
             .subresourceRange = {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1},
         };
-        cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = static_cast<uint32_t>(memoryBarriers.size()),
-                                                .pMemoryBarriers = memoryBarriers.data(),
+        cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1,
+                                                .pMemoryBarriers = &visBarrier,
                                                 .imageMemoryBarrierCount = 1,
                                                 .pImageMemoryBarriers = &depthBarrier});
     }
 
-    // nvidia compressed clear needs all-0 or all-1 components (BestPractices-NVIDIA-ClearColor-NotCompressed)
-    const vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 0.0f);
-    const vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
-    const vk::AttachmentLoadOp loadOp = isEarly ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad;
-    const vk::RenderingAttachmentInfo colorAttachmentInfo = {
-        .imageView = swapChain.swapChainImageViews[imageIndex],
+    // the vis buffer needs no clear: empty pixels are decided by depth (reverse Z: 0 is the far plane)
+    const vk::RenderingAttachmentInfo visAttachmentInfo = {
+        .imageView = targets.getVisBufferView(),
         .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
-        .loadOp = loadOp,
+        .loadOp = isEarly ? vk::AttachmentLoadOp::eDontCare : vk::AttachmentLoadOp::eLoad,
         .storeOp = vk::AttachmentStoreOp::eStore,
-        .clearValue = clearColor};
-    const vk::RenderingAttachmentInfo depthAttachmentInfo = {.imageView = resourceManager.depthAttachment.view,
-                                                             .imageLayout =
-                                                                 vk::ImageLayout::eDepthStencilAttachmentOptimal,
-                                                             .loadOp = loadOp,
-                                                             .storeOp = vk::AttachmentStoreOp::eStore,
-                                                             .clearValue = clearDepth};
-
-    const vk::RenderingInfo renderingInfo = {.renderArea = {.offset = {0, 0}, .extent = swapChain.swapChainExtent},
+    };
+    const vk::RenderingAttachmentInfo depthAttachmentInfo = {
+        .imageView = resourceManager.depthAttachment.view,
+        .imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+        .loadOp = isEarly ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+        .clearValue = vk::ClearDepthStencilValue(0.0f, 0),
+    };
+    const vk::RenderingInfo renderingInfo = {.renderArea = {.offset = {0, 0}, .extent = targets.getExtent()},
                                              .layerCount = 1,
                                              .colorAttachmentCount = 1,
-                                             .pColorAttachments = &colorAttachmentInfo,
+                                             .pColorAttachments = &visAttachmentInfo,
                                              .pDepthAttachment = &depthAttachmentInfo};
 
     cmd.beginRendering(renderingInfo);
@@ -317,33 +341,10 @@ void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase, uint32
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneDrawCalls, *cmd, "GPU_DrawCalls", gpuTrace);
 #endif
-        dgc.recordExecute(cmd, rasterVariant, phase);
+        dgc.recordExecute(cmd, phase);
         gpuTimer.end(cmd, scope(GpuTimerScope::EarlyDraw, GpuTimerScope::LateDraw));
     }
-
-    if (!isEarly && debugView.view == DebugView::HiZPyramid) {
-        recordHiZView(cmd);
-    }
-
-#if ENGINE_ENABLE_IMGUI
-    if (!isEarly && imguiEnabled) {
-        ZoneScopedN("RenderImGui");
-    #ifdef TRACY_ENABLE
-        TracyVkNamedZone(gpuCtx, gpuZoneImGui, *cmd, "GPU_ImGui", gpuTrace);
-    #endif
-        if (ImGui::GetDrawData() != nullptr) {
-            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), *cmd);
-            // classic descriptor sets invalidate the heap bindings the late hi-z build relies on
-            cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
-            cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
-        }
-    }
-#endif
-
     cmd.endRendering();
-    if (!isEarly) {
-        gpuTimer.end(cmd, GpuTimerScope::Ui);
-    }
 
     {
         ZoneScopedN("HiZBuild");
@@ -354,6 +355,117 @@ void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase, uint32
         hiz.recordBuild(cmd, culling.isPyramidFrozen());
         gpuTimer.end(cmd, scope(GpuTimerScope::EarlyHiZ, GpuTimerScope::LateHiZ));
     }
+}
+
+// vis buffer + depth -> guides of this frame's set; depth is already eShaderReadOnlyOptimal after the late hi-z build
+void Renderer::recordResolve(const vk::raii::CommandBuffer& cmd)
+{
+    const vk::ImageMemoryBarrier2 visBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+        .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = targets.getVisBufferImage(),
+        .subresourceRange = kColorRange,
+    };
+    // earlier frames' reads of the guide and display images (compute, present fragment) -> this frame's writes
+    const vk::MemoryBarrier2 writeAfterReadBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eFragmentShader,
+        .srcAccessMask = vk::AccessFlagBits2::eNone,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1,
+                                            .pMemoryBarriers = &writeAfterReadBarrier,
+                                            .imageMemoryBarrierCount = 1,
+                                            .pImageMemoryBarriers = &visBarrier});
+    dispatchFullscreen(cmd, shaderObjects.frameShaders.resolve);
+    gpuTimer.end(cmd, GpuTimerScope::Resolve);
+}
+
+void Renderer::recordDebugView(const vk::raii::CommandBuffer& cmd)
+{
+    // guide writes -> guide reads
+    const vk::MemoryBarrier2 guideBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &guideBarrier});
+    dispatchFullscreen(cmd, shaderObjects.frameShaders.debugView);
+    gpuTimer.end(cmd, GpuTimerScope::DebugView);
+}
+
+// display image -> swapchain, then the Hi-Z view and ImGui on top
+void Renderer::recordPresent(vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
+{
+    // display image and hi-z pyramid writes -> fragment samples
+    const vk::MemoryBarrier2 displayBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+    };
+    // chains with the acquire semaphore wait stage
+    const vk::ImageMemoryBarrier2 swapchainBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .srcAccessMask = vk::AccessFlagBits2::eNone,
+        .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+        .oldLayout = vk::ImageLayout::eUndefined,
+        .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = swapChain.swapChainImages[imageIndex],
+        .subresourceRange = kColorRange,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1,
+                                            .pMemoryBarriers = &displayBarrier,
+                                            .imageMemoryBarrierCount = 1,
+                                            .pImageMemoryBarriers = &swapchainBarrier});
+
+    // the fullscreen triangle covers every pixel
+    const vk::RenderingAttachmentInfo swapchainAttachmentInfo = {
+        .imageView = swapChain.swapChainImageViews[imageIndex],
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eDontCare,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+    };
+    const vk::Extent2D displayExtent = swapChain.swapChainExtent;
+    cmd.beginRendering(vk::RenderingInfo{.renderArea = {.offset = {0, 0}, .extent = displayExtent},
+                                         .layerCount = 1,
+                                         .colorAttachmentCount = 1,
+                                         .pColorAttachments = &swapchainAttachmentInfo});
+    shaderObjects.bindPresentState(cmd);
+    setViewport(cmd, displayExtent);
+    const PresentPushData push{.frameRoot = resourceManager.frameRootAddress(currentFrame),
+                               .displaySize = displayExtent};
+    cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
+    cmd.drawMeshTasksEXT(1, 1, 1);
+    if (debugView.view == DebugView::HiZPyramid) {
+        recordHiZView(cmd);
+    }
+    gpuTimer.end(cmd, GpuTimerScope::Present);
+
+#if ENGINE_ENABLE_IMGUI
+    if (imguiEnabled && ImGui::GetDrawData() != nullptr) {
+        ZoneScopedN("RenderImGui");
+        // its descriptor sets invalidate the heap bindings; nothing after it in this command buffer uses them
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), *cmd);
+    }
+#endif
+    cmd.endRendering();
+    gpuTimer.end(cmd, GpuTimerScope::Ui);
+
+    transitionImageLayout(&cmd, swapChain.swapChainImages[imageIndex], vk::ImageLayout::eColorAttachmentOptimal,
+                          vk::ImageLayout::ePresentSrcKHR, kColorRange, VK_QUEUE_FAMILY_IGNORED,
+                          VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                          vk::PipelineStageFlagBits2::eBottomOfPipe, vk::AccessFlagBits2::eColorAttachmentWrite, {});
 }
 
 void Renderer::recordHiZView(const vk::raii::CommandBuffer& cmd) const
@@ -367,10 +479,6 @@ void Renderer::recordHiZView(const vk::raii::CommandBuffer& cmd) const
         .screenSize = swapChain.swapChainExtent,
     };
     shaderObjects.bindHiZViewState(cmd);
-    // DGC execute leaves bound graphics state undefined
-    cmd.setViewportWithCount(vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChain.swapChainExtent.width),
-                                          static_cast<float>(swapChain.swapChainExtent.height), 0.0f, 1.0f));
-    cmd.setScissorWithCount(vk::Rect2D(vk::Offset2D(0, 0), swapChain.swapChainExtent));
     cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
     cmd.drawMeshTasksEXT(1, 1, 1);
 }

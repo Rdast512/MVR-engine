@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -45,22 +46,44 @@ struct CullPushData {
 static_assert(std::is_trivially_copyable_v<CullPushData>);
 static_assert(sizeof(CullPushData) == 16);
 
+// matches shaders/passes/hiz_build.slang
+inline constexpr uint32_t kHiZLevelsPerDispatch = 3;
+
+// resolve, debug view and present; must match shaders/types.slang FramePushData
+struct FramePushData {
+    vk::DeviceAddress frameRoot;
+};
+
+static_assert(sizeof(FramePushData) == 8);
+
+// present pass; must match shaders/types.slang PresentPushData
+struct PresentPushData {
+    vk::DeviceAddress frameRoot;
+    // swapchain extent
+    vk::Extent2D displaySize;
+};
+
+static_assert(sizeof(PresentPushData) == 16);
+
 // hi-z build dispatches; must match shaders/types.slang HiZPushData
 struct HiZPushData {
     // resource heap: depth for mip 0, the pyramid's full-chain view otherwise
     uint32_t srcImage;
-    // resource heap: storage view of the written mip
-    uint32_t dstImage;
-    // sampler heap
-    uint32_t maxSampler;
+    // resource heap: storage views of the written mips, first levelCount valid
+    std::array<uint32_t, kHiZLevelsPerDispatch> dstImages;
+    // pyramid mip the first written level halves; unused from depth
     uint32_t srcMip;
+    uint32_t isFromDepth;
+    uint32_t levelCount;
+    uint32_t pad0;
     vk::Extent2D srcSize;
+    // first written level
     vk::Extent2D dstSize;
 };
 
 static_assert(std::is_trivially_copyable_v<HiZPushData>);
-static_assert(offsetof(HiZPushData, srcSize) == 16);
-static_assert(sizeof(HiZPushData) == 32);
+static_assert(offsetof(HiZPushData, srcSize) == 32);
+static_assert(sizeof(HiZPushData) == 48);
 
 // Hi-Z pyramid debug view; must match shaders/types.slang HiZViewPushData
 struct HiZViewPushData {
@@ -77,4 +100,5 @@ static_assert(sizeof(HiZViewPushData) == 24);
 
 // largest push block of any pass; checked against maxPushDataSize at startup
 inline constexpr size_t kMaxPushDataBytes =
-    std::max({sizeof(MeshPushData), sizeof(CullPushData), sizeof(HiZPushData), sizeof(HiZViewPushData)});
+    std::max({sizeof(MeshPushData), sizeof(CullPushData), sizeof(HiZPushData), sizeof(HiZViewPushData),
+              sizeof(FramePushData), sizeof(PresentPushData)});

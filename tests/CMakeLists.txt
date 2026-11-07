@@ -33,17 +33,29 @@ set_tests_properties(sharc PROPERTIES SKIP_RETURN_CODE 77)
 # --- Hi-Z: screen footprint of known spheres (shaders/core/culling.slang) ---
 set(_hizShader "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hiz_footprint.slang")
 set(_hizShaderDir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
-set(_hizSpirv "${_hizShaderDir}/footprintMain.spv")
-add_custom_command(
-    OUTPUT ${_hizSpirv}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${_hizShaderDir}
-    COMMAND ${SLANGC_EXECUTABLE} ${_hizShader} ${ENGINE_SLANG_FLAGS} -entry footprintMain -o ${_hizSpirv}
-    DEPENDS ${_hizShader} ${ENGINE_SLANG_INCLUDE_DIR}/core/culling.slang ${ENGINE_SLANG_INCLUDE_DIR}/core/binding.slang
-    COMMENT "Compiling Hi-Z test shader footprintMain"
-    VERBATIM
-)
+# one module per depth convention (core/culling.slang CULLING_REVERSED_Z)
+set(_hizSpirvs)
+foreach (_convention IN ITEMS Standard Reversed)
+  if (_convention STREQUAL "Reversed")
+    set(_reversed 1)
+  else ()
+    set(_reversed 0)
+  endif ()
+  set(_spirv "${_hizShaderDir}/footprint${_convention}.spv")
+  add_custom_command(
+      OUTPUT ${_spirv}
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${_hizShaderDir}
+      COMMAND ${SLANGC_EXECUTABLE} ${_hizShader} ${ENGINE_SLANG_FLAGS} -DCULLING_REVERSED_Z=${_reversed}
+              -entry footprintMain -o ${_spirv}
+      DEPENDS ${_hizShader} ${ENGINE_SLANG_INCLUDE_DIR}/core/culling.slang
+              ${ENGINE_SLANG_INCLUDE_DIR}/core/binding.slang
+      COMMENT "Compiling Hi-Z test shader footprintMain (${_convention} Z)"
+      VERBATIM
+  )
+  list(APPEND _hizSpirvs ${_spirv})
+endforeach ()
 
-add_executable(hiz_footprint_test hiz_footprint_test.cpp ${_hizSpirv})
+add_executable(hiz_footprint_test hiz_footprint_test.cpp ${_hizSpirvs})
 target_compile_definitions(hiz_footprint_test PRIVATE HIZ_TEST_SHADER_DIR="${_hizShaderDir}")
 target_link_libraries(hiz_footprint_test PRIVATE engine_test_support)
 add_test(NAME hiz_footprint COMMAND hiz_footprint_test)

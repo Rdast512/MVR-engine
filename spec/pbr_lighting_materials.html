@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PBR on the RTX path</title>
-  <meta name="description" content="How this engine shades glTF metallic-roughness materials and punctual lights, and how RTXDI, RTXGI NRC, opacity micromaps and DLSS-RR turn that into a frame on NVIDIA RTX GPUs." />
+  <meta name="description" content="How this engine shades glTF metallic-roughness materials and punctual lights, and how the visibility buffer, RTXDI, a radiance cache with ReSTIR GI, opacity micromaps and DLSS-RR turn that into a frame on NVIDIA RTX GPUs." />
   <link rel="stylesheet" href="pbr_lighting_materials.css" />
 </head>
 <body>
@@ -39,10 +39,10 @@
         <p class="part">Part II · Render the frame</p>
         <ol>
           <li><a href="#frame"><span class="n">11</span>The frame at a glance</a></li>
-          <li><a href="#scene"><span class="n">12</span>G-buffer and TLAS</a></li>
+          <li><a href="#scene"><span class="n">12</span>Guides and TLAS</a></li>
           <li><a href="#omm"><span class="n">13</span>Opacity micromaps</a></li>
           <li><a href="#rtxdi"><span class="n">14</span>RTXDI: direct light</a></li>
-          <li><a href="#rtxgi"><span class="n">15</span>RTXGI NRC: indirect light</a></li>
+          <li><a href="#rtxgi"><span class="n">15</span>Bounce, cache, ReSTIR GI</a></li>
           <li><a href="#dlss"><span class="n">16</span>DLSS-RR guides</a></li>
           <li><a href="#slang"><span class="n">17</span>Where it lives in Slang</a></li>
         </ol>
@@ -56,12 +56,12 @@
 
     <main id="content">
       <header class="hero">
-        <p class="kicker">Human explainer · RTXDI + RTXGI + OMM + DLSS-RR</p>
+        <p class="kicker">Human explainer · visibility buffer + RTXDI + SHaRC/NRC + ReSTIR GI + OMM + DLSS-RR</p>
         <h1>PBR, lights, and the RTX frame</h1>
         <p class="lede">
           Part I builds the shading of a single surface point from glTF data, one symbol at a time.
           Every graph and scene on this page evaluates the same formulas the engine runs.
-          Part II shows where RTXDI, RTXGI NRC, opacity micromaps and DLSS-RR sit in the frame, and what each one reads and writes. The engine targets NVIDIA RTX GPUs only.
+          Part II shows where the visibility buffer, RTXDI, the radiance cache with ReSTIR GI, opacity micromaps and DLSS-RR sit in the frame, and what each one reads and writes. The engine targets NVIDIA RTX 20 and newer.
         </p>
         <div class="route">
           <a href="#equation"><b>New to PBR</b><span>Start at §1. Each section opens with a one-line summary.</span></a>
@@ -330,7 +330,7 @@ N  = normalize(T·n.x + B·n.y + N·n.z)</pre>
           </article>
           <article class="card">
             <h3>Occlusion (AO)</h3>
-            <p><code>ao</code> scales <strong>indirect</strong> light only (RTXGI in §15). The sun still reaches a crack that faces it.</p>
+            <p><code>ao</code> scales <strong>indirect</strong> light only: the radiance-cache term of §15. The sun still reaches a crack that faces it.</p>
             <p>In a lights-only view, a correct AO map looks ignored.</p>
           </article>
           <article class="card">
@@ -339,11 +339,11 @@ N  = normalize(T·n.x + B·n.y + N·n.z)</pre>
           </article>
           <article class="card">
             <h3>Alpha</h3>
-            <p><code>OPAQUE</code> ignores a. <code>MASK</code> cuts at <code>alphaCutoff</code> (0.5 by default). <code>BLEND</code> is straight-alpha over <em>after</em> lighting. Never premultiply before the BRDF.</p>
-            <p>In the engine, the G-buffer pass cuts <code>MASK</code> exactly with <code>discard</code>. Shadow and bounce rays use opacity micromaps (§13).</p>
+            <p><code>OPAQUE</code> ignores a. <code>MASK</code> cuts at <code>alphaCutoff</code> (0.5 by default). <code>BLEND</code> is straight-alpha over <em>after</em> lighting in glTF; the engine has no transparency pass yet and treats it as <code>MASK</code> at 0.5. Never premultiply before the BRDF.</p>
+            <p>In the engine, alpha-tested materials raster in their own bin that cuts exactly with <code>discard</code>; the resolve never tests alpha. Shadow and bounce rays use opacity micromaps (§13).</p>
           </article>
         </div>
-        <p><code>doubleSided</code>: no culling, and <code>N = −N</code> on back faces <em>before</em> the BRDF.</p>
+        <p><code>doubleSided</code>: no culling, and <code>N = −N</code> on back faces <em>before</em> the BRDF. The engine draws back faces by flipping their winding in the mesh shader, so one cull mode serves every material.</p>
       </section>
 
       <section class="sec" id="lights">
@@ -438,107 +438,124 @@ for each node-attached light:
       <div class="part-head">
         <p>Part II</p>
         <h2>Render the frame</h2>
-        <p class="lede">Part I shaded one point. A frame needs about 8 million of them, plus shadows, bounced light, and a clean image from very few rays. Four NVIDIA SDKs do that work, and the engine only writes the glue each one asks for.</p>
+        <p class="lede">Part I shaded one point. A frame needs millions of them, plus shadows, bounced light, and a clean image from very few rays. The engine rasterizes only <em>which</em> triangle each pixel sees, shades every pixel once in compute, and lets NVIDIA’s SDKs do the lighting. The engine writes only the glue each SDK asks for.</p>
       </div>
 
       <section class="sec" id="frame">
         <div class="sec-head"><span class="sec-num">11</span><h2>The frame at a glance</h2></div>
-        <p class="tldr"><b>In one line</b>Raster the first hit into a G-buffer, then RTXDI adds direct light, RTXGI NRC adds bounced light, and DLSS-RR denoises and upscales.</p>
+        <p class="tldr"><b>In one line</b>Rasterize triangle ids into a visibility buffer, resolve them into surface guides, then RTXDI adds direct light, one ray bounce plus a radiance cache and ReSTIR GI add bounced light, and DLSS-RR denoises and upscales.</p>
         <figure class="fig">
-          <svg class="diagram" viewBox="0 0 760 610" role="img" aria-label="Frame graph">
+          <svg class="diagram" viewBox="0 0 760 670" role="img" aria-label="Frame graph">
             <defs><marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0 10 5 0 10z" /></marker></defs>
             <text class="tag sub" x="20" y="18">ONCE PER ASSET</text>
-            <text class="tag sub" x="270" y="18">EVERY FRAME</text>
+            <text class="tag sub" x="270" y="18">EVERY FRAME · GRAPHICS</text>
             <text class="tag sub" x="560" y="18">WRITES</text>
-            <a href="#omm"><rect class="box g-geo" x="20" y="30" width="210" height="46" rx="9" /><text x="125" y="51" text-anchor="middle">OMM bake (CPU)</text><text class="sub" x="125" y="67" text-anchor="middle">OMM SDK · alpha → micromaps</text></a>
-            <a href="#omm"><rect class="box g-geo" x="20" y="94" width="210" height="46" rx="9" /><text x="125" y="115" text-anchor="middle">micromap build</text><text class="sub" x="125" y="131" text-anchor="middle">vkCmdBuildMicromapsEXT</text></a>
-            <a href="#scene"><rect class="box g-geo" x="20" y="158" width="210" height="46" rx="9" /><text x="125" y="179" text-anchor="middle">BLAS build</text><text class="sub" x="125" y="195" text-anchor="middle">one per primitive (+ OMM)</text></a>
+            <a href="#scene"><rect class="box g-geo" x="20" y="30" width="210" height="46" rx="9" /><text x="125" y="51" text-anchor="middle">clusters + tangents</text><text class="sub" x="125" y="67" text-anchor="middle">meshoptimizer · at load</text></a>
+            <a href="#omm"><rect class="box g-geo" x="20" y="94" width="210" height="46" rx="9" /><text x="125" y="115" text-anchor="middle">OMM bake (CPU)</text><text class="sub" x="125" y="131" text-anchor="middle">meshoptimizer · per cluster</text></a>
+            <a href="#scene"><rect class="box g-geo" x="20" y="158" width="210" height="46" rx="9" /><text x="125" y="179" text-anchor="middle">CLAS + cluster BLAS</text><text class="sub" x="125" y="195" text-anchor="middle">per cluster · per primitive (+ OMM)</text></a>
+            <text class="tag sub" x="20" y="246">EVERY FRAME · ASYNC COMPUTE</text>
+            <a href="#scene"><rect class="box g-geo" x="20" y="258" width="210" height="46" rx="9" /><text x="125" y="279" text-anchor="middle">instances + TLAS</text><text class="sub" x="125" y="295" text-anchor="middle">GPU-written · full build</text></a>
+            <text class="sub" x="125" y="324" text-anchor="middle">ray passes wait on a timeline</text>
+            <text class="sub" x="125" y="338" text-anchor="middle">semaphore for the TLAS</text>
 
-            <a href="#scene"><rect class="box g-geo" x="270" y="30" width="250" height="46" rx="9" /><text x="395" y="51" text-anchor="middle">TLAS build</text><text class="sub" x="395" y="67" text-anchor="middle">CPU instance rows · full rebuild</text></a>
-            <a href="#scene"><rect class="box g-out" x="270" y="94" width="250" height="46" rx="9" /><text x="395" y="115" text-anchor="middle">G-buffer raster</text><text class="sub" x="395" y="131" text-anchor="middle">mesh shader + DGC · jittered</text></a>
+            <a href="#scene"><rect class="box g-out" x="270" y="30" width="250" height="46" rx="9" /><text x="395" y="51" text-anchor="middle">cull + vis-buffer raster</text><text class="sub" x="395" y="67" text-anchor="middle">2 phases · mesh shader + DGC · jittered</text></a>
+            <a href="#scene"><rect class="box g-out" x="270" y="94" width="250" height="46" rx="9" /><text x="395" y="115" text-anchor="middle">resolve (compute)</text><text class="sub" x="395" y="131" text-anchor="middle">triangle → Surface → sampleMaterial</text></a>
             <a href="#rtxdi"><rect class="box g-direct" x="270" y="158" width="250" height="46" rx="9" /><text x="395" y="179" text-anchor="middle">rtxdi_initial</text><text class="sub" x="395" y="195" text-anchor="middle">light + BRDF candidates → reservoir</text></a>
             <a href="#rtxdi"><rect class="box g-direct" x="270" y="222" width="250" height="46" rx="9" /><text x="395" y="243" text-anchor="middle">rtxdi_shade</text><text class="sub" x="395" y="259" text-anchor="middle">spatiotemporal reuse → shadow ray</text></a>
-            <a href="#rtxgi"><rect class="box g-indirect" x="270" y="286" width="250" height="46" rx="9" /><text x="395" y="307" text-anchor="middle">nrc_update + nrc_query</text><text class="sub" x="395" y="323" text-anchor="middle">sparse training paths · 1 path per pixel</text></a>
-            <a href="#rtxgi"><rect class="box g-indirect" x="270" y="350" width="250" height="46" rx="9" /><text x="395" y="371" text-anchor="middle">NRC QueryAndTrain + Resolve</text><text class="sub" x="395" y="387" text-anchor="middle">host SDK · infer, train, write indirect</text></a>
-            <a href="#rtxgi"><rect class="box g-indirect" x="270" y="414" width="250" height="46" rx="9" /><text x="395" y="435" text-anchor="middle">noisy_color</text><text class="sub" x="395" y="451" text-anchor="middle">direct + indirect + emissive</text></a>
-            <a href="#dlss"><rect class="box g-out" x="270" y="478" width="250" height="46" rx="9" /><text x="395" y="499" text-anchor="middle">DLSS Ray Reconstruction</text><text class="sub" x="395" y="515" text-anchor="middle">host NGX · noisy → clean + upscale</text></a>
-            <rect class="box g-out" x="270" y="542" width="250" height="46" rx="9" /><text x="395" y="563" text-anchor="middle">composite</text><text class="sub" x="395" y="579" text-anchor="middle">exposure · tonemap · swapchain</text>
+            <a href="#rtxgi"><rect class="box g-indirect" x="270" y="286" width="250" height="46" rx="9" /><text x="395" y="307" text-anchor="middle">cache update</text><text class="sub" x="395" y="323" text-anchor="middle">SHaRC or NRC · sparse training paths</text></a>
+            <a href="#rtxgi"><rect class="box g-indirect" x="270" y="350" width="250" height="46" rx="9" /><text x="395" y="371" text-anchor="middle">indirect bounce (SER)</text><text class="sub" x="395" y="387" text-anchor="middle">1 ray/px → shade hit → cache query</text></a>
+            <a href="#rtxgi"><rect class="box g-indirect" x="270" y="414" width="250" height="46" rx="9" /><text x="395" y="435" text-anchor="middle">ReSTIR GI</text><text class="sub" x="395" y="451" text-anchor="middle">temporal + spatial reuse of bounces</text></a>
+            <a href="#rtxgi"><rect class="box g-indirect" x="270" y="478" width="250" height="46" rx="9" /><text x="395" y="499" text-anchor="middle">combine</text><text class="sub" x="395" y="515" text-anchor="middle">direct + indirect + emissive</text></a>
+            <a href="#dlss"><rect class="box g-out" x="270" y="542" width="250" height="46" rx="9" /><text x="395" y="563" text-anchor="middle">DLSS Ray Reconstruction</text><text class="sub" x="395" y="579" text-anchor="middle">host NGX · noisy → clean + upscale</text></a>
+            <rect class="box g-out" x="270" y="606" width="250" height="46" rx="9" /><text x="395" y="627" text-anchor="middle">post + present</text><text class="sub" x="395" y="643" text-anchor="middle">exposure · tonemap · swapchain · UI</text>
 
-            <rect class="box" x="560" y="94" width="180" height="46" rx="9" /><text x="650" y="115" text-anchor="middle">G-buffer ×2</text><text class="sub" x="650" y="131" text-anchor="middle">current + previous frame</text>
+            <rect class="box" x="560" y="30" width="180" height="46" rx="9" /><text x="650" y="51" text-anchor="middle">vis buffer + depth</text><text class="sub" x="650" y="67" text-anchor="middle">32-bit id · reverse Z</text>
+            <rect class="box" x="560" y="94" width="180" height="46" rx="9" /><text x="650" y="115" text-anchor="middle">guides ×2</text><text class="sub" x="650" y="131" text-anchor="middle">current + previous frame</text>
             <rect class="box g-direct" x="560" y="158" width="180" height="46" rx="9" /><text x="650" y="179" text-anchor="middle">DI reservoirs</text><text class="sub" x="650" y="195" text-anchor="middle">RTXDI-owned layout</text>
             <rect class="box g-direct" x="560" y="222" width="180" height="46" rx="9" /><text x="650" y="243" text-anchor="middle">directRadiance</text><text class="sub" x="650" y="259" text-anchor="middle">no AO</text>
-            <rect class="box g-indirect" x="560" y="318" width="180" height="46" rx="9" /><text x="650" y="339" text-anchor="middle">NRC network</text><text class="sub" x="650" y="355" text-anchor="middle">records → indirectRadiance</text>
-            <rect class="box g-indirect" x="560" y="414" width="180" height="46" rx="9" /><text x="650" y="435" text-anchor="middle">noisyColor</text><text class="sub" x="650" y="451" text-anchor="middle">direct + indirect + emissive</text>
+            <rect class="box g-indirect" x="560" y="286" width="180" height="46" rx="9" /><text x="650" y="307" text-anchor="middle">radiance cache</text><text class="sub" x="650" y="323" text-anchor="middle">hash grid or network</text>
+            <rect class="box g-indirect" x="560" y="414" width="180" height="46" rx="9" /><text x="650" y="435" text-anchor="middle">indirectRadiance</text><text class="sub" x="650" y="451" text-anchor="middle">ReSTIR GI output</text>
+            <rect class="box g-indirect" x="560" y="478" width="180" height="46" rx="9" /><text x="650" y="499" text-anchor="middle">noisyColor</text><text class="sub" x="650" y="515" text-anchor="middle">linear HDR, render res</text>
 
             <path class="edge" style="marker-end:url(#arrow2)" d="M125 76v16" /><path class="edge" style="marker-end:url(#arrow2)" d="M125 140v16" />
-            <path class="edge" style="marker-end:url(#arrow2)" d="M230 181 C250 181 250 53 268 53" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M125 204v52" />
+            <path class="edge" style="marker-end:url(#arrow2);stroke-dasharray:4 4" d="M230 281 C250 281 250 181 268 181" />
             <path class="edge" style="marker-end:url(#arrow2)" d="M395 76v16" /><path class="edge" style="marker-end:url(#arrow2)" d="M395 140v16" />
             <path class="edge" style="marker-end:url(#arrow2)" d="M395 204v16" /><path class="edge" style="marker-end:url(#arrow2)" d="M395 268v16" />
             <path class="edge" style="marker-end:url(#arrow2)" d="M395 332v16" /><path class="edge" style="marker-end:url(#arrow2)" d="M395 396v16" />
             <path class="edge" style="marker-end:url(#arrow2)" d="M395 460v16" /><path class="edge" style="marker-end:url(#arrow2)" d="M395 524v16" />
-            <path class="edge" style="marker-end:url(#arrow2)" d="M520 117h38" /><path class="edge" style="marker-end:url(#arrow2)" d="M520 181h38" />
-            <path class="edge" style="marker-end:url(#arrow2)" d="M520 245h38" />
-            <path class="edge" style="marker-end:url(#arrow2)" d="M520 309 C540 309 540 341 558 341" /><path class="edge" style="marker-end:url(#arrow2)" d="M520 373 C540 373 540 341 558 341" />
-            <path class="edge" style="marker-end:url(#arrow2)" d="M520 437h38" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M395 588v16" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M520 53h38" /><path class="edge" style="marker-end:url(#arrow2)" d="M520 117h38" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M520 181h38" /><path class="edge" style="marker-end:url(#arrow2)" d="M520 245h38" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M520 309h38" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M560 324 C540 340 540 373 522 373" />
+            <path class="edge" style="marker-end:url(#arrow2)" d="M520 437h38" /><path class="edge" style="marker-end:url(#arrow2)" d="M520 501h38" />
           </svg>
           <div class="flow-legend">
-            <span><i style="border-color:var(--accent-3)"></i>geometry</span>
+            <span><i style="border-color:var(--accent-3)"></i>geometry and acceleration structures</span>
             <span><i style="border-color:var(--accent)"></i>direct light (RTXDI)</span>
-            <span><i style="border-color:var(--accent-2)"></i>indirect light (RTXGI NRC)</span>
+            <span><i style="border-color:var(--accent-2)"></i>indirect light (bounce, cache, ReSTIR GI)</span>
             <span><i style="border-color:var(--text)"></i>primary / output</span>
           </div>
-          <p class="hint" style="margin-top:0.6rem">Boxes link to their section. Every lighting pass is a compute shader with ray queries, and every ray traces the same TLAS.</p>
+          <p class="hint" style="margin-top:0.6rem">Boxes link to their section. Rays that shade what they hit (the bounce, cache training) run in one ray-tracing pipeline built around shader execution reordering (SER). Rays that only test visibility (shadows) are ray queries in compute. Every ray traces the same TLAS. The dashed arrow is the wait for the TLAS build on the async compute queue.</p>
         </figure>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Concern</th><th>Owner</th><th>The engine writes</th></tr></thead>
             <tbody>
-              <tr><td>direct light</td><td><b>RTXDI</b> (ReSTIR DI)</td><td><code>RAB_*</code> bridge, light buffer, two compute entry points</td></tr>
-              <tr><td>indirect light</td><td><b>RTXGI NRC</b> (Neural Radiance Cache)</td><td>one path loop (update + query variants), one combine pass, host train/infer/resolve calls</td></tr>
-              <tr><td>alpha-tested rays</td><td><b>OMM SDK</b> + <code>VK_EXT_opacity_micromap</code></td><td>load-time bake, micromap build, attach to BLAS</td></tr>
-              <tr><td>denoise + upscale</td><td><b>DLSS-RR</b> (NGX)</td><td>guide images, host evaluate</td></tr>
+              <tr><td>first hit</td><td>engine: visibility buffer + compute resolve</td><td>id raster, resolve, guide images</td></tr>
+              <tr><td>ray geometry</td><td><b>RTX Mega Geometry</b> (cluster acceleration structures)</td><td>load-time builds, GPU instance write, TLAS build</td></tr>
+              <tr><td>direct light</td><td><b>RTXDI</b> (ReSTIR DI)</td><td><code>RAB_*</code> bridge, GPU light buffer, two compute entry points</td></tr>
+              <tr><td>indirect light</td><td>one SER bounce + <b>SHaRC</b> or <b>NRC</b> (RTXGI radiance caches) + <b>RTXDI ReSTIR GI</b></td><td>raygen + minimal closest-hit, cache bridges, combine pass</td></tr>
+              <tr><td>alpha-tested rays</td><td><b>meshoptimizer</b> OMM bake + <code>VK_EXT_opacity_micromap</code></td><td>load-time bake per cluster, micromap build, attach to the cluster structures</td></tr>
+              <tr><td>denoise + upscale</td><td><b>DLSS-RR</b> (NGX)</td><td>guide images (already written by the resolve), host evaluate</td></tr>
             </tbody>
           </table>
         </div>
-        <div class="callout engine"><strong>One BRDF everywhere</strong>RTXDI’s target pdf, the NRC path loop and the G-buffer’s specular-albedo guide all call the <code>evalBrdf</code> from §7. When they disagree, it is a bug. There is no reference light loop, homegrown cache, or custom denoiser to compare against, and no vendor fallback path.</div>
+        <div class="callout engine"><strong>One BRDF everywhere</strong>The resolve, RTXDI’s target pdf, the indirect bounce, the cache training paths and the specular-albedo guide all call the same <code>sampleMaterial</code> and the <code>evalBrdf</code> from §7. When they disagree, it is a bug. There is no reference light loop, homegrown cache, or custom denoiser to compare against, and no vendor fallback path.</div>
       </section>
 
       <section class="sec" id="scene">
-        <div class="sec-head"><span class="sec-num">12</span><h2>What the SDKs read: G-buffer and TLAS</h2></div>
-        <p class="tldr"><b>In one line</b>The rasterizer writes the first-hit surface once. Rays use standard KHR acceleration structures built from the same vertex and index buffers.</p>
-        <p>RTXDI, NRC and DLSS-RR all start from the surface the camera sees. The engine already draws meshes with mesh shaders and device-generated commands, so that pass writes a <em>G-buffer</em>: the BRDF inputs of §3 per pixel, not a lit color. Alpha testing there is an exact <code>discard</code> at the cutoff.</p>
+        <div class="sec-head"><span class="sec-num">12</span><h2>What the SDKs read: guides and TLAS</h2></div>
+        <p class="tldr"><b>In one line</b>The rasterizer stores only which triangle covers each pixel. One compute pass turns that into the surface every later pass reads. Rays trace acceleration structures built from the same clusters.</p>
+        <p>RTXDI, the indirect bounce and DLSS-RR all start from the surface the camera sees. The engine draws meshes as small <em>clusters</em> of up to 126 triangles, culled on the GPU and drawn with mesh shaders and device-generated commands. That raster writes no color: per pixel it stores depth and a 32-bit id, <code>(visible cluster, triangle)</code>. This is the <em>visibility buffer</em>.</p>
+        <p>A compute pass, the <em>resolve</em>, then reads each pixel’s id, fetches the triangle’s three vertices, and computes perspective-correct barycentrics and their screen-space derivatives directly from the triangle. With those it interpolates UVs and normals, samples textures with exact gradients (<code>SampleGrad</code>), runs <code>sampleMaterial</code>, and writes the BRDF inputs of §3 per pixel: the <em>guides</em>. Each visible pixel is shaded exactly once, however many triangles were drawn over it.</p>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Image</th><th>Content</th><th>Read by</th></tr></thead>
+            <thead><tr><th>Image</th><th>Format</th><th>Content</th><th>Read by</th></tr></thead>
             <tbody>
-              <tr><td>depth</td><td>hardware depth</td><td>RTXDI, NRC paths, DLSS</td></tr>
-              <tr><td><code>normalRoughness</code></td><td>world shading normal, <strong>perceptual</strong> roughness</td><td>RTXDI, NRC paths, DLSS</td></tr>
-              <tr><td><code>geoNormal</code></td><td>geometric normal</td><td>ray origin offset</td></tr>
-              <tr><td><code>diffuseAo</code></td><td><code>c_diff</code>, ao</td><td>RTXDI, NRC paths, DLSS diffuse albedo</td></tr>
-              <tr><td><code>specularF0</code></td><td><code>f0</code></td><td>RTXDI, NRC paths</td></tr>
-              <tr><td><code>specAlbedo</code></td><td>pre-integrated <code>f0</code> at <code>NdotV</code></td><td>DLSS specular albedo</td></tr>
-              <tr><td><code>emissive</code></td><td>emissive (unlit: baseColor)</td><td><code>noisy_color</code></td></tr>
-              <tr><td><code>motion</code></td><td>pixels, current → previous</td><td>RTXDI temporal reuse, DLSS</td></tr>
+              <tr><td>depth</td><td>D32F, reverse Z</td><td>hardware depth</td><td>RTXDI, ReSTIR GI, DLSS</td></tr>
+              <tr><td><code>NormalRoughness</code></td><td>RGBA16F</td><td>world shading normal, <strong>perceptual</strong> roughness</td><td>RTXDI, bounce, DLSS</td></tr>
+              <tr><td><code>GeoNormal</code></td><td>RG16 snorm</td><td>geometric normal, octahedral</td><td>ray origin offset</td></tr>
+              <tr><td><code>DiffuseAlbedo</code></td><td>RGBA8</td><td><code>c_diff</code>, ao</td><td>RTXDI, bounce, DLSS diffuse albedo</td></tr>
+              <tr><td><code>SpecularF0</code></td><td>RGBA8</td><td><code>f0</code></td><td>RTXDI, bounce</td></tr>
+              <tr><td><code>SpecAlbedo</code></td><td>RGBA8</td><td>pre-integrated <code>f0</code> at <code>NdotV</code></td><td>DLSS specular albedo</td></tr>
+              <tr><td><code>Emissive</code></td><td>R11G11B10F</td><td>emissive (unlit: baseColor)</td><td>combine</td></tr>
+              <tr><td><code>Motion</code></td><td>RG16F</td><td>pixels, current → previous, without jitter</td><td>RTXDI and ReSTIR GI temporal reuse, DLSS</td></tr>
             </tbody>
           </table>
         </div>
-        <p>The engine keeps two G-buffers and swaps them every frame. RTXDI’s temporal reuse reads last frame’s surface to check that a reused light sample still belongs to a similar surface.</p>
+        <p>The engine keeps two guide sets and swaps them every frame. Temporal reuse in RTXDI and ReSTIR GI reads last frame’s surface to check that a reused sample still belongs to a similar surface.</p>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Event</th><th>BLAS</th><th>TLAS</th><th>RTXDI light buffer</th></tr></thead>
+            <thead><tr><th>Event</th><th>Cluster structures (CLAS) + BLAS</th><th>Instances + TLAS</th><th>RTXDI light buffer</th></tr></thead>
             <tbody>
-              <tr><td>load an asset</td><td>build one per primitive (with its OMM), grouped per model</td><td>new instance rows</td><td>new light rows</td></tr>
+              <tr><td>load an asset</td><td>one CLAS per cluster (with its OMM), one BLAS per primitive from its clusters, grouped per model</td><td>new instance rows, written on the GPU</td><td>new light rows</td></tr>
               <tr><td>unload an asset</td><td>destroy that model’s group; the others stay valid</td><td>its rows disappear</td><td>its lights disappear</td></tr>
-              <tr><td>object moves or rotates</td><td>—</td><td>rewrite its rows, rebuild</td><td>rewrite lights attached to it</td></tr>
-              <tr><td>nothing changes</td><td>—</td><td>rebuild anyway (cheap)</td><td>—</td></tr>
+              <tr><td>object moves or rotates</td><td>—</td><td>GPU rewrites its rows, rebuild</td><td>GPU moves the lights attached to it</td></tr>
+              <tr><td>nothing changes</td><td>—</td><td>rebuild anyway (cheap, async compute)</td><td>—</td></tr>
             </tbody>
           </table>
         </div>
-        <div class="callout engine"><strong>In this engine</strong>Every loaded model owns a slice of each vertex, index and material buffer, and unloading a model moves the slices after it. So no ray-tracing data stores a fixed id. Each frame the CPU writes, next to every TLAS instance, a <code>GpuRayInstance</code> row with the current entity and primitive. At a ray hit, <code>CommittedInstanceIndex()</code> picks that row, which leads to the model’s slices and the primitive’s material, and <code>CommittedPrimitiveIndex()</code> gives the triangle. Three indices from the model’s index slice then give the vertices to interpolate. The same <code>sampleMaterial</code> runs at the hit as in the G-buffer fragment shader.</div>
+        <div class="callout engine"><strong>In this engine</strong>Every loaded model owns a slice of each vertex, cluster and material buffer, and unloading a model moves the slices after it. So no ray-tracing data stores a fixed id. Each frame a compute pass writes, next to every TLAS instance, a <code>GpuRayInstance</code> row with the current node instance and primitive. At a hit, <code>InstanceIndex()</code> picks that row, <code>ClusterID</code> gives the cluster and <code>PrimitiveIndex()</code> the triangle inside it: the same triple the visibility buffer stores. So <code>decodeHit</code> builds the same <code>Surface</code> as the resolve, and the same <code>sampleMaterial</code> runs at a hit as on screen. Hit positions come straight from the acceleration structure (position fetch); texture LOD at hits comes from ray cones.</div>
         <details class="deeper">
           <summary>Why the first hit is rasterized, not traced</summary>
-          <p>A camera ray and a rasterized pixel find the same surface. Raster already exists here, gives exact alpha edges with <code>discard</code>, and needs no ray-tracing pipeline or shader table. Every remaining ray (shadow, bounce) is a ray query in a compute shader.</p>
+          <p>A camera ray and a rasterized pixel find the same surface. Mesh-shader raster with two-phase GPU occlusion culling finds it faster, and the visibility buffer keeps the raster cheap: no textures, no material fetch, no shading of pixels that are later covered. Alpha-tested materials get their own raster bin that samples alpha and uses <code>discard</code>, so edges are exact where you look at them.</p>
           <p>DLSS needs the raster to be jittered by a sub-pixel offset each frame. Motion vectors are computed from the <em>unjittered</em> positions, and DLSS receives the jitter separately.</p>
+        </details>
+        <details class="deeper">
+          <summary>Why cluster structures instead of a plain triangle BLAS per primitive</summary>
+          <p>Rays and raster use the same clusters with the same triangle order, so a hit and a pixel decode to the same ids. Each cluster’s structure (CLAS) is built once and shared by every instance of the model; a primitive’s BLAS is assembled from its clusters. When cluster LOD arrives after version 1.0, it changes which clusters enter a BLAS, not the data model.</p>
         </details>
       </section>
 
@@ -570,12 +587,12 @@ for each node-attached light:
           <table>
             <thead><tr><th>Ray</th><th>Alpha handled by</th><th>Why</th></tr></thead>
             <tbody>
-              <tr><td>camera (first hit)</td><td>raster <code>discard</code> in the G-buffer pass</td><td>exact edges where you look at them</td></tr>
+              <tr><td>camera (first hit)</td><td>raster <code>discard</code> in the alpha-tested bin</td><td>exact edges where you look at them. The resolve never tests alpha</td></tr>
               <tr><td>shadow, bounce</td><td>OMM, forced 2-state per instance</td><td>no shader runs during traversal. A slightly wrong edge is invisible in a soft shadow</td></tr>
             </tbody>
           </table>
         </div>
-        <div class="callout engine"><strong>In this engine</strong>The OMM SDK bakes 4-state micromaps on the CPU at load time (with a disk cache), in index-buffer triangle order. Each micromap attaches to its primitive’s BLAS geometry. The instance flag <code>FORCE_OPACITY_MICROMAP_2_STATE</code> folds unknown into opaque or transparent at trace time. Instances without a micromap are <code>FORCE_OPAQUE</code>, so a ray query never sees a candidate it would have to alpha-test. The “any-hit calls” stat shows what 4-state tracing would cost.</div>
+        <div class="callout engine"><strong>In this engine</strong>meshoptimizer bakes 4-state micromaps on the CPU at load time, cached with the model’s processed geometry. The bake reads the final cluster triangles, after the cluster optimizer has run, because it may rotate triangle corners and micromap data depends on corner order. Each cluster gets an index buffer that maps its triangles to their bake entries, and the micromap attaches to the cluster’s CLAS. The instance flag <code>FORCE_OPACITY_MICROMAP_2_STATE</code> folds unknown into opaque or transparent at trace time. Instances without a micromap are <code>FORCE_OPAQUE</code>, so traversal never hands back a candidate to alpha-test and the engine has no any-hit shader. The “any-hit calls” stat shows what 4-state tracing would cost.</div>
       </section>
 
       <section class="sec" id="rtxdi">
@@ -608,7 +625,7 @@ for each node-attached light:
             <div class="stat"><b>error (RMSE)</b><span id="restir-rmse"></span></div>
             <div class="stat"><b>frame</b><span id="restir-frame"></span></div>
           </div>
-          <p class="hint">The demo draws candidates in proportion to light power (RTXDI’s <code>Power_RIS</code> mode). The engine starts with <code>Uniform</code> candidates, which is enough for the few punctual lights a glTF scene carries.</p>
+          <p class="hint">The demo draws candidates in proportion to light power (RTXDI’s <code>Power_RIS</code> mode). The engine uses <code>Uniform</code> candidates while a scene has only its few punctual lights, and switches to <code>Power_RIS</code> once emissive triangles become lights: Bistro has thousands of them.</p>
         </figure>
         <details class="deeper">
           <summary>The reservoir in five lines</summary>
@@ -620,19 +637,19 @@ L<sub>o</sub> ≈ f(y) · L<sub>i</sub>(y) · NdotL · visible(y) · W</pre>
         </details>
 
         <h3>Where RTXDI sits in the frame</h3>
-        <p>RTXDI runs as two compute passes right after the G-buffer, before anything else lights the frame. Its only output is <code>directRadiance</code>, which <code>noisy_color</code> later adds to the indirect light.</p>
+        <p>RTXDI runs as two compute passes right after the resolve, before anything else lights the frame. Its shadow rays are ray queries. Its only output is <code>directRadiance</code>, which the combine pass later adds to the indirect light.</p>
         <figure class="fig">
           <svg class="diagram" viewBox="0 0 760 240" role="img" aria-label="RTXDI passes, their inputs and outputs">
             <defs><marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0 10 5 0 10z" /></marker></defs>
-            <rect class="box" x="20" y="20" width="180" height="46" rx="9" /><text x="110" y="41" text-anchor="middle">G-buffer (current)</text><text class="sub" x="110" y="57" text-anchor="middle">via RAB_GetGBufferSurface</text>
-            <rect class="box" x="20" y="96" width="180" height="46" rx="9" /><text x="110" y="117" text-anchor="middle">G-buffer (previous)</text><text class="sub" x="110" y="133" text-anchor="middle">temporal similarity test</text>
-            <rect class="box g-direct" x="20" y="172" width="180" height="46" rx="9" /><text x="110" y="193" text-anchor="middle">light buffer</text><text class="sub" x="110" y="209" text-anchor="middle">CPU · local, then infinite</text>
+            <rect class="box" x="20" y="20" width="180" height="46" rx="9" /><text x="110" y="41" text-anchor="middle">guides (current)</text><text class="sub" x="110" y="57" text-anchor="middle">via RAB_GetGBufferSurface</text>
+            <rect class="box" x="20" y="96" width="180" height="46" rx="9" /><text x="110" y="117" text-anchor="middle">guides (previous)</text><text class="sub" x="110" y="133" text-anchor="middle">temporal similarity test</text>
+            <rect class="box g-direct" x="20" y="172" width="180" height="46" rx="9" /><text x="110" y="193" text-anchor="middle">light buffer</text><text class="sub" x="110" y="209" text-anchor="middle">GPU · local, then infinite</text>
 
             <rect class="box g-direct" x="260" y="20" width="220" height="56" rx="9" /><text x="370" y="43" text-anchor="middle">rtxdi_initial</text><text class="sub" x="370" y="61" text-anchor="middle">RTXDI_Sample{Local,Infinite}Lights, Brdf</text>
             <rect class="box g-direct" x="260" y="140" width="220" height="56" rx="9" /><text x="370" y="163" text-anchor="middle">rtxdi_shade</text><text class="sub" x="370" y="181" text-anchor="middle">RTXDI_DISpatioTemporalResampling</text>
 
             <rect class="box g-direct" x="540" y="20" width="200" height="56" rx="9" /><text x="640" y="43" text-anchor="middle">DI reservoirs</text><text class="sub" x="640" y="61" text-anchor="middle">this frame + last frame</text>
-            <rect class="box g-direct" x="540" y="140" width="200" height="56" rx="9" /><text x="640" y="163" text-anchor="middle">directRadiance</text><text class="sub" x="640" y="181" text-anchor="middle">RGBA16F → noisy_color</text>
+            <rect class="box g-direct" x="540" y="140" width="200" height="56" rx="9" /><text x="640" y="163" text-anchor="middle">directRadiance</text><text class="sub" x="640" y="181" text-anchor="middle">RGBA16F → combine</text>
 
             <path class="edge" style="marker-end:url(#arrow3)" d="M200 43 C230 43 230 48 258 48" />
             <path class="edge" style="marker-end:url(#arrow3)" d="M200 195 C232 195 232 64 258 64" />
@@ -648,8 +665,8 @@ L<sub>o</sub> ≈ f(y) · L<sub>i</sub>(y) · NdotL · visible(y) · W</pre>
           <table>
             <thead><tr><th>Pass</th><th>What happens</th><th>Rays</th></tr></thead>
             <tbody>
-              <tr><td><code>rtxdi_initial</code></td><td>draw candidates from local lights (point, spot), infinite lights (directional) and one BRDF direction. Combine them into one reservoir per pixel and store it</td><td>none (unshadowed)</td></tr>
-              <tr><td><code>rtxdi_shade</code></td><td>merge with last frame’s reservoir at the reprojected pixel and with a few neighbors (fused spatiotemporal), then trace a shadow ray to the survivor and write <code>evalBrdf · L<sub>i</sub> · NdotL · W</code></td><td>1 shadow ray per pixel</td></tr>
+              <tr><td><code>rtxdi_initial</code></td><td>draw candidates from local lights (point, spot, and later emissive triangles), infinite lights (directional) and one BRDF direction. Combine them into one reservoir per pixel and store it</td><td>none (unshadowed)</td></tr>
+              <tr><td><code>rtxdi_shade</code></td><td>merge with last frame’s reservoir at the reprojected pixel and with a few neighbors (fused spatiotemporal), then trace a shadow ray to the survivor and write <code>evalBrdf · L<sub>i</sub> · NdotL · W</code></td><td>1 shadow ray query per pixel</td></tr>
             </tbody>
           </table>
         </div>
@@ -662,89 +679,96 @@ L<sub>o</sub> ≈ f(y) · L<sub>i</sub>(y) · NdotL · visible(y) · W</pre>
           </article>
           <article class="card metal">
             <h3>Engine (<code>lighting/rtxdi_bridge.slang</code>)</h3>
-            <p>The <code>RAB_*</code> functions: read a surface from the G-buffer, sample a light with <code>evalLight</code>, compute <code>p̂</code> with <code>evalBrdf</code>, sample and evaluate the BRDF pdf with <code>sampleBrdf</code> / <code>pdfBrdf</code>, and test visibility with a TLAS ray query.</p>
+            <p>The <code>RAB_*</code> functions: read a surface from the guides and depth, sample a light with <code>evalLight</code>, compute <code>p̂</code> with <code>evalBrdf</code>, sample and evaluate the BRDF pdf with <code>sampleBrdf</code> / <code>pdfBrdf</code>, and test visibility with a TLAS ray query.</p>
           </article>
         </div>
         <div class="table-wrap">
           <table>
             <thead><tr><th>RAB group</th><th>Backed by</th></tr></thead>
             <tbody>
-              <tr><td>surface (<code>RAB_GetGBufferSurface</code>, <code>RAB_AreMaterialsSimilar</code>, …)</td><td>G-buffer, current or previous</td></tr>
+              <tr><td>surface (<code>RAB_GetGBufferSurface</code>, <code>RAB_AreMaterialsSimilar</code>, …)</td><td>guides + depth, current or previous set</td></tr>
               <tr><td>BRDF (<code>RAB_SurfaceImportanceSampleBrdf</code>, <code>RAB_SurfaceEvaluateBrdfPdf</code>)</td><td><code>sampleBrdf</code>, <code>pdfBrdf</code></td></tr>
-              <tr><td>lights (<code>RAB_LoadLightInfo</code>, <code>RAB_SamplePolymorphicLight</code>, …)</td><td>light buffer + <code>evalLight</code></td></tr>
+              <tr><td>lights (<code>RAB_LoadLightInfo</code>, <code>RAB_SamplePolymorphicLight</code>, …)</td><td>light buffer + <code>evalLight</code>; RTXDI’s triangle-light path for emissive triangles</td></tr>
               <tr><td>target pdf (<code>RAB_GetLightSampleTargetPdfForSurface</code>)</td><td><code>luminance(evalBrdf · L<sub>i</sub> · NdotL)</code></td></tr>
               <tr><td>visibility (<code>RAB_GetConservativeVisibility</code>, …)</td><td>ray query against the TLAS</td></tr>
             </tbody>
           </table>
         </div>
-        <div class="callout engine"><strong>In this engine</strong>The CPU writes the light buffer every frame: point and spot lights first, then directional lights, each moved by its node’s world matrix. That fixed order lets <code>RAB_TranslateLightIndex</code> return its input unchanged. To check correctness, set RTXDI’s resampling mode to <code>None</code> with many initial samples (the SDK’s own unbiased setup) and compare against the default fused mode.</div>
+        <div class="callout engine"><strong>In this engine</strong>A compute pass writes the light buffer every frame: point and spot lights (and, once they land, emissive triangles found at load) first, then directional lights, each moved by its entity’s world matrix. The CPU never loops over lights. That fixed order lets <code>RAB_TranslateLightIndex</code> return its input unchanged. To check correctness, set RTXDI’s resampling mode to <code>None</code> with many initial samples (the SDK’s own unbiased setup) and compare against the default fused mode.</div>
       </section>
 
       <section class="sec" id="rtxgi">
-        <div class="sec-head"><span class="sec-num">15</span><h2>RTXGI NRC: bounced light</h2></div>
-        <p class="tldr"><b>In one line</b>Trace a short path per pixel, then ask a small network, trained on this scene every frame, for the light that the rest of the path would have found.</p>
-        <p>Indirect light is the light arriving from other surfaces. Tracing it fully means long, noisy paths. The Neural Radiance Cache (NRC) learns “light leaving this point in this direction” for the current scene. Every pixel traces a short path and stops where the cache can take over. A sparse set of longer <em>training paths</em> teaches the cache what the scene really looks like, every frame, so it follows moving lights and objects.</p>
+        <div class="sec-head"><span class="sec-num">15</span><h2>Bounced light: one bounce, a radiance cache, ReSTIR GI</h2></div>
+        <p class="tldr"><b>In one line</b>Trace one bounce per pixel, let a radiance cache answer for every bounce after it, then share good bounce samples across neighbors and frames.</p>
+        <p>Indirect light is the light arriving from other surfaces. Tracing it fully means long, noisy paths. Instead, every pixel traces <b>one</b> ray from its surface to a second point X₂, lights X₂ directly, and asks a <em>radiance cache</em> for the light that all further bounces would have found. The cache is a world-space store of “light leaving this point in this direction”. A sparse set of <em>training paths</em> refreshes it every frame, so it follows moving lights and objects.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th></th><th>SHaRC</th><th>NRC</th></tr></thead>
+            <tbody>
+              <tr><td>what it is</td><td>hash grid in world space</td><td>small neural network trained online</td></tr>
+              <tr><td>cost</td><td>low, every RTX GPU</td><td>higher; CUDA runtime DLLs</td></tr>
+              <tr><td>quality</td><td>diffuse-leaning, grid artifacts on glossy</td><td>handles glossy, adapts without parameters</td></tr>
+              <tr><td>tier</td><td><b>floor</b> (RTX 2060 Super)</td><td><b>reference</b> (RTX 5070)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Both sit behind one Slang interface, <code>IRadianceCache</code> (<code>update</code>, <code>query</code>), so the bounce code is shared. Choosing one is a quality setting, not a fallback: both are the same kind of algorithm.</p>
 
-        <h3>Where NRC sits in the frame</h3>
-        <p>NRC runs after RTXDI. The engine writes the two path passes and one combine pass; training, inference and the final write are host calls into the NRC SDK, recorded in the same command buffer. All paths start from the G-buffer surface, so no camera ray is traced again.</p>
+        <h3>Where it sits in the frame</h3>
+        <p>Indirect light runs after RTXDI. Rays that shade what they hit (the bounce, the training paths) run in one ray-tracing pipeline built around SER. Its shadow rays and ReSTIR GI’s checks are ray queries. All of it starts from the guides, so no camera ray is traced again.</p>
         <figure class="fig">
-          <svg class="diagram" viewBox="0 0 760 250" role="img" aria-label="NRC update and query paths, training and inference, then the combine pass">
+          <svg class="diagram" viewBox="0 0 760 250" role="img" aria-label="Cache update, indirect bounce, cache answer, ReSTIR GI, then the combine pass">
             <defs><marker id="arrow4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0 10 5 0 10z" /></marker></defs>
-            <rect class="box g-indirect" x="20" y="24" width="210" height="60" rx="9" /><text x="125" y="47" text-anchor="middle">1 · nrc_update</text><text class="sub" x="125" y="65" text-anchor="middle">sparse pixels · long training paths</text>
-            <rect class="box g-indirect" x="20" y="150" width="210" height="60" rx="9" /><text x="125" y="173" text-anchor="middle">2 · nrc_query</text><text class="sub" x="125" y="191" text-anchor="middle">every pixel · short path, then a query</text>
-            <rect class="box g-indirect" x="275" y="86" width="210" height="64" rx="9" /><text x="380" y="111" text-anchor="middle">3 · QueryAndTrain</text><text class="sub" x="380" y="131" text-anchor="middle">host SDK · infer queries, train once</text>
-            <rect class="box g-indirect" x="530" y="24" width="210" height="60" rx="9" /><text x="635" y="47" text-anchor="middle">4 · Resolve</text><text class="sub" x="635" y="65" text-anchor="middle">throughput × cached → indirect</text>
-            <rect class="box g-indirect" x="530" y="150" width="210" height="60" rx="9" /><text x="635" y="173" text-anchor="middle">5 · noisy_color</text><text class="sub" x="635" y="191" text-anchor="middle">direct + indirect + emissive</text>
+            <rect class="box g-indirect" x="20" y="24" width="210" height="60" rx="9" /><text x="125" y="47" text-anchor="middle">1 · cache update</text><text class="sub" x="125" y="65" text-anchor="middle">sparse pixels · training paths</text>
+            <rect class="box g-indirect" x="20" y="150" width="210" height="60" rx="9" /><text x="125" y="173" text-anchor="middle">2 · indirect bounce (SER)</text><text class="sub" x="125" y="191" text-anchor="middle">every pixel · 1 ray, then a query</text>
+            <rect class="box g-indirect" x="275" y="86" width="210" height="64" rx="9" /><text x="380" y="111" text-anchor="middle">3 · cache answers</text><text class="sub" x="380" y="131" text-anchor="middle">SHaRC resolve · NRC infer + train</text>
+            <rect class="box g-indirect" x="530" y="24" width="210" height="60" rx="9" /><text x="635" y="47" text-anchor="middle">4 · ReSTIR GI</text><text class="sub" x="635" y="65" text-anchor="middle">temporal + spatial reuse</text>
+            <rect class="box g-indirect" x="530" y="150" width="210" height="60" rx="9" /><text x="635" y="173" text-anchor="middle">5 · combine</text><text class="sub" x="635" y="191" text-anchor="middle">direct + indirect + emissive</text>
 
             <path class="edge" style="marker-end:url(#arrow4)" d="M230 54 C255 54 255 105 273 105" />
             <path class="edge" style="marker-end:url(#arrow4)" d="M230 180 C255 180 255 132 273 132" />
             <path class="edge" style="marker-end:url(#arrow4)" d="M485 105 C510 105 510 54 528 54" />
             <path class="edge" style="marker-end:url(#arrow4)" d="M635 84v64" />
             <text class="sub" x="245" y="40">training records</text>
-            <text class="sub" x="245" y="222">query records</text>
-            <text class="sub" x="380" y="236" text-anchor="middle">records live in SDK-owned buffers; the engine only binds them</text>
+            <text class="sub" x="245" y="222">queries → GI samples</text>
+            <text class="sub" x="380" y="236" text-anchor="middle">SHaRC resolves before the bounce queries it; NRC answers after, in a custom resolve</text>
           </svg>
         </figure>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Step</th><th>What happens</th><th>NRC calls</th></tr></thead>
+            <thead><tr><th>Step</th><th>What happens</th></tr></thead>
             <tbody>
-              <tr><td><code>nrc_update</code></td><td>a sparse set of pixels trace long paths from their G-buffer surface. At each vertex they add direct light (RTXDI candidate sampling without reuse, plus one shadow ray) and emissive, and NRC records every vertex as a training sample</td><td><code>NrcUpdateOnHit</code>, <code>NrcUpdateOnMiss</code>, <code>NrcSetBrdfPdf</code></td></tr>
-              <tr><td><code>nrc_query</code></td><td>every pixel traces a short path from its G-buffer surface, starting with throughput <code>ao</code>. NRC decides at each hit whether to continue or to end the path with a query record. Light gathered before that point goes straight to the indirect target</td><td>same calls, plus <code>NrcWriteFinalPathInfo</code></td></tr>
-              <tr><td><code>QueryAndTrain</code></td><td>the network predicts radiance for every query record, then takes one training step on the update paths</td><td>host</td></tr>
-              <tr><td><code>Resolve</code></td><td>adds <code>throughput × predicted radiance</code> of each query into <code>indirectRadiance</code></td><td>host</td></tr>
-              <tr><td><code>noisy_color</code></td><td>writes <code>noisyColor = directRadiance + indirectRadiance + emissive</code>, the only place the three terms meet</td><td>—</td></tr>
+              <tr><td>cache update</td><td>a sparse set of pixels trace short paths from their guide surface. At each vertex they add direct light (RTXDI candidate sampling without reuse, plus one shadow ray) and emissive, and the cache records every vertex as a training sample</td></tr>
+              <tr><td>indirect bounce</td><td>every pixel traces one ray, sorted by material with <code>ReorderThread</code>, shades X₂ with the same <code>sampleMaterial</code> and BRDF, adds direct light and emissive at X₂, and queries the cache for the rest. The result is the pixel’s initial ReSTIR GI sample</td></tr>
+              <tr><td>cache answers</td><td>SHaRC: its resolve pass ran before the bounce, so the query reads finished radiance. NRC: <code>QueryAndTrain</code> predicts radiance for every query and takes one training step, then a custom resolve writes <code>throughput × predicted radiance</code> into the GI samples</td></tr>
+              <tr><td>ReSTIR GI</td><td>reuses GI samples from last frame and from neighbors, with a visibility check on each reconnection, and writes <code>indirectRadiance</code></td></tr>
+              <tr><td>combine</td><td>writes <code>noisyColor = directRadiance + indirectRadiance + emissive</code>, the only place the three terms meet</td></tr>
             </tbody>
           </table>
         </div>
         <details class="deeper" open>
-          <summary>The one path loop, both variants</summary>
-          <pre class="formula"><span class="cmt">// pathtrace.slang, built twice: NRC_UPDATE / NRC_QUERY</span>
-surface    = gbuffer[pixel]                <span class="cmt">// no camera ray</span>
-throughput = QUERY ? ao : 1                <span class="cmt">// ao only on indirect</span>
-(dir, w)   = sampleBrdf(surface, V, rng)    <span class="cmt">// w = f · cos / pdf</span>
-throughput *= w ;  NrcSetBrdfPdf
-for bounce &lt; kMaxBounces:
-    hit = traceClosest(surface.pos, dir)    <span class="cmt">// 2-state OMM</span>
-    if miss:
-        NrcUpdateOnMiss
-        break
-    Ld = direct(hit) + emissive(hit)        <span class="cmt">// RTXDI sampling, no reuse</span>
-    state = NrcUpdateOnHit(hit, Ld)        <span class="cmt">// continue, stop, or write a query</span>
-    if state != continue: break
-    (dir, w) = sampleBrdf(hit, rng) ;  NrcSetBrdfPdf
-    throughput *= w                         <span class="cmt">// roulette only if NRC allows</span>
-NrcWriteFinalPathInfo                       <span class="cmt">// query only</span></pre>
-          <p>The SDK names above follow the NRC headers as described in the plan; check them against the pinned SDK version when it is vendored.</p>
+          <summary>The indirect bounce in pseudocode</summary>
+          <pre class="formula"><span class="cmt">// raygen of the SER pipeline, one ray per pixel</span>
+surface  = guides[pixel] + depth             <span class="cmt">// no camera ray</span>
+(dir, w) = sampleBrdf(surface, V, rng)       <span class="cmt">// GGX VNDF; w = f · cos / pdf</span>
+hit      = HitObject::TraceRay(tlas, surface.pos + offset(geoNormal), dir)  <span class="cmt">// 2-state OMM</span>
+ReorderThread(hit, materialBin(hit))         <span class="cmt">// group rays that hit similar materials</span>
+if miss: storeGiSample(pixel, none) ; return
+x2       = decodeHit(hit)                    <span class="cmt">// same Surface as the resolve</span>
+m        = sampleMaterial(x2)
+Ld       = rtxdiSampleNoReuse(x2) · visible   <span class="cmt">// one shadow ray query</span>
+Lcache   = cache.query(x2, −dir)             <span class="cmt">// bounces 2…∞; NRC: a query record</span>
+storeGiSample(pixel, x2, Ld + m.emissive + ao · Lcache)   <span class="cmt">// ao of the first surface, cache term only</span></pre>
+          <p>The SDK names follow the RTXDI, SHaRC and NRC headers as described in the plan; check them against the pinned SDK versions.</p>
         </details>
-        <div class="callout trap"><strong>Why train every frame</strong>The network starts empty and only knows what the training paths showed it recently. Too few training paths, or none while the camera moves, gives indirect light that lags behind the scene. The first surface never queries NRC for direct light, because RTXDI already handles it there.</div>
-        <div class="callout engine"><strong>In this engine</strong>The NRC SDK allocates its own buffers; <code>gi/nrc_bridge.slang</code> binds them and must match the SDK’s HLSL buffer packing under Slang. The host library ships as prebuilt DLLs with CUDA runtime dependencies, which is acceptable because the engine targets NVIDIA RTX GPUs only. SHaRC, RTXGI’s hash-grid cache, is not used.</div>
+        <div class="callout trap"><strong>Why train every frame</strong>The cache starts empty and only knows what the training paths showed it recently. Too few training paths, or none while the camera moves, gives indirect light that lags behind the scene. The first surface never asks the cache for direct light, because RTXDI already handles it there.</div>
+        <div class="callout engine"><strong>In this engine</strong>The SDKs allocate their own buffers; <code>gi/sharc_bridge.slang</code> and <code>gi/nrc_bridge.slang</code> bind them, and the NRC bridge must match the SDK’s HLSL buffer packing under Slang. NRC ships as prebuilt DLLs with CUDA runtime dependencies and stays inside its own module (<code>vk_nrc</code>), because it is NVIDIA-only. SHaRC comes first: it is cheaper, needs no CUDA and keeps a later AMD port open. The floor tier traces the bounce at half resolution.</div>
       </section>
 
       <section class="sec" id="dlss">
         <div class="sec-head"><span class="sec-num">16</span><h2>DLSS Ray Reconstruction</h2></div>
         <p class="tldr"><b>In one line</b>Hand the denoiser a noisy image plus clean hints about the surfaces, and it rebuilds a sharp, stable frame at display resolution.</p>
-        <p>The lit color is noisy at 1 sample per pixel and rendered below display resolution. DLSS-RR replaces hand-written denoisers and upscales too. It needs <em>guide buffers</em>: noise-free descriptions of what is at each pixel. The G-buffer pass (§12) already writes all of them.</p>
+        <p>The lit color is noisy at about 1 sample per pixel and rendered below display resolution. DLSS-RR replaces hand-written denoisers and upscales too. It needs <em>guide buffers</em>: noise-free descriptions of what is at each pixel. The resolve (§12) already writes all of them.</p>
         <figure class="fig">
           <div class="fig-head"><h3>Guides for the light-lab scene</h3></div>
           <div class="seg" role="group" aria-label="Guide buffer">
@@ -763,15 +787,15 @@ NrcWriteFinalPathInfo                       <span class="cmt">// query only</spa
           <table>
             <thead><tr><th>Guide</th><th>Engine source</th><th>Trap</th></tr></thead>
             <tbody>
-              <tr><td>color</td><td><code>noisyColor</code> from <code>noisy_color</code>, linear HDR</td><td>pre-tonemap, and exposure passed separately</td></tr>
-              <tr><td>diffuse albedo</td><td><code>diffuseAo.rgb</code> = <code>c_diff</code></td><td>no lighting, not sRGB, never ORM</td></tr>
-              <tr><td>specular albedo</td><td><code>specAlbedo</code>, pre-integrated <code>f0</code> at <code>NdotV</code></td><td>metals carry their color here</td></tr>
-              <tr><td>normal + roughness</td><td><code>normalRoughness</code>, roughness packed in alpha</td><td><strong>perceptual</strong> roughness, never <code>α</code></td></tr>
-              <tr><td>depth, motion</td><td>hardware depth, <code>motion</code></td><td>motion from unjittered positions; jitter passed separately</td></tr>
+              <tr><td>color</td><td><code>noisyColor</code> from the combine pass, linear HDR</td><td>pre-tonemap, and exposure passed separately</td></tr>
+              <tr><td>diffuse albedo</td><td><code>DiffuseAlbedo.rgb</code> = <code>c_diff</code></td><td>no lighting, not sRGB, never ORM</td></tr>
+              <tr><td>specular albedo</td><td><code>SpecAlbedo</code>, pre-integrated <code>f0</code> at <code>NdotV</code></td><td>metals carry their color here</td></tr>
+              <tr><td>normal + roughness</td><td><code>NormalRoughness</code>, roughness packed in alpha</td><td><strong>perceptual</strong> roughness, never <code>α</code></td></tr>
+              <tr><td>depth, motion</td><td>hardware depth (reverse Z), <code>Motion</code></td><td>motion from unjittered positions; jitter passed separately</td></tr>
             </tbody>
           </table>
         </div>
-        <div class="callout engine"><strong>In this engine</strong>NGX runs on the host after <code>noisy_color</code>. It picks the render resolution for the chosen quality mode, and the G-buffer and all lighting passes run at that size. A GPU without Ray Reconstruction is an initialization error. There is no fallback denoiser.</div>
+        <div class="callout engine"><strong>In this engine</strong>NGX runs on the host after the combine pass. It picks the render resolution for the Quality mode, used on every tier, and the visibility buffer, the resolve and all lighting passes run at that size. Textures are sampled with a LOD bias of <code>log2(render / display)</code> so they stay sharp after upscaling. A GPU without Ray Reconstruction is an initialization error. There is no fallback denoiser.</div>
       </section>
 
       <section class="sec" id="slang">
@@ -781,15 +805,18 @@ NrcWriteFinalPathInfo                       <span class="cmt">// query only</spa
           <table>
             <thead><tr><th>Module</th><th>Owns</th><th>Section</th></tr></thead>
             <tbody>
-              <tr><td><code>types</code></td><td><code>GpuMaterial</code>, <code>GpuLight</code>, <code>GpuModel</code>, <code>GpuPrimitive</code>, <code>GpuFrameRoot</code>, <code>GpuRayInstance</code>, flags, enums</td><td>§3, §12</td></tr>
-              <tr><td><code>core.frame</code></td><td>push data → frame root → instance, model slices, primitive, material</td><td>§12</td></tr>
-              <tr><td><code>material.pbr</code></td><td><code>sampleMaterial</code>: factors × textures, color spaces, normal map</td><td>§3, §9</td></tr>
-              <tr><td><code>material.brdf</code></td><td><code>evalBrdf</code>, <code>sampleBrdf</code>, <code>pdfBrdf</code></td><td>§4–§7</td></tr>
+              <tr><td><code>types</code></td><td><code>GpuMaterial</code>, <code>GpuLight</code>, <code>GpuModel</code>, <code>GpuPrimitive</code>, <code>GpuFrameRoot</code>, <code>GpuTargets</code>, <code>GpuRayInstance</code>, flags, enums, guide ids</td><td>§3, §12</td></tr>
+              <tr><td><code>core.frame</code></td><td>push data → frame root → instance, model slices, primitive, material, render targets</td><td>§12</td></tr>
+              <tr><td><code>geometry.visbuffer</code></td><td>pixel id packing, barycentrics and their derivatives from the triangle</td><td>§12</td></tr>
+              <tr><td><code>geometry.surface</code></td><td><code>Surface</code>: interpolated position, normals, UVs and UV gradients; shared by the resolve and ray hits</td><td>§9, §12</td></tr>
+              <tr><td><code>geometry.hit</code></td><td>ray hit ids → <code>Surface</code> with ray-cone gradients</td><td>§12, §15</td></tr>
+              <tr><td><code>material.pbr</code></td><td><code>sampleMaterial</code>: factors × textures, color spaces, normal map, unlit; <code>sampleSlot</code> for every texture fetch</td><td>§3, §9</td></tr>
+              <tr><td><code>material.brdf</code></td><td><code>evalBrdf</code>, <code>sampleBrdf</code>, <code>pdfBrdf</code>, <code>envBrdfApprox</code></td><td>§4–§7</td></tr>
               <tr><td><code>lighting.lights</code></td><td><code>evalLight</code>, range window, spot cone</td><td>§10</td></tr>
-              <tr><td><code>geometry.hit</code></td><td>ray-query hit → vertices → <code>SurfaceHit</code>, <code>traceVisibility</code>, <code>traceClosest</code></td><td>§12, §13</td></tr>
-              <tr><td><code>postprocessing.gbuffer</code></td><td>G-buffer layout and packing, DLSS guides</td><td>§12, §16</td></tr>
+              <tr><td><code>raytracing.*</code></td><td>minimal closest-hit payload, <code>traceVisibility</code></td><td>§13, §15</td></tr>
+              <tr><td><code>gi.radiance_cache</code></td><td><code>IRadianceCache</code> (<code>update</code>, <code>query</code>)</td><td>§15</td></tr>
               <tr><td><code>lighting/rtxdi_bridge</code></td><td><code>RAB_*</code> + RTXDI resource bindings (textual include)</td><td>§14</td></tr>
-              <tr><td><code>gi/nrc_bridge</code></td><td>NRC buffer bindings + <code>NrcConstants</code>, matching the SDK’s HLSL packing (textual include)</td><td>§15</td></tr>
+              <tr><td><code>gi/sharc_bridge</code>, <code>gi/nrc_bridge</code></td><td>cache buffer bindings and constants, matching each SDK’s HLSL packing (textual include)</td><td>§15</td></tr>
             </tbody>
           </table>
         </div>
@@ -808,7 +835,7 @@ NrcWriteFinalPathInfo                       <span class="cmt">// query only</spa
     return (1.0 - f) * cDiff / kPi
          + f * ggxD(saturate(dot(n, h)), a2) * smithVisibility(nDotL, max(dot(n, v), 1e-4), a2);
 }</pre>
-        <p>The signature takes <code>cDiff</code> and <code>f0</code> so the RTXDI bridge and the NRC path loop can call it straight from G-buffer data. The full contracts, the task order and the toolchain caveats are in <a href="pbr_implementation_plan.md">pbr_implementation_plan.md</a>.</p>
+        <p>The signature takes <code>cDiff</code> and <code>f0</code> so the RTXDI bridge, the indirect bounce and the caches can call it straight from guide data. The full contracts, the task order and the toolchain caveats are in <a href="pbr_implementation_plan.md">pbr_implementation_plan.md</a>; the architecture is in <a href="../docs/engine_spec.md">engine_spec.md</a>.</p>
       </section>
 
       <!-- ============================== REFERENCE ============================== -->
@@ -828,12 +855,15 @@ NrcWriteFinalPathInfo                       <span class="cmt">// query only</spa
           <li><div><b>Grazing lights too bright or too dark</b><span>Missing or doubled <code>NdotL</code>.</span></div></li>
           <li><div><b>Dents look like bumps</b><span>DirectX-style normal map Y.</span></div></li>
           <li><div><b>A light that never shows up</b><span>Light definition with no node referencing it.</span></div></li>
-          <li><div><b>Object moves, its shadow does not</b><span>TLAS row not rewritten, or a light not following its entity.</span></div></li>
+          <li><div><b>Textures blurry or shimmering</b><span>Wrong UV gradients in the resolve: the texture-transform matrix not applied to them, or no LOD bias after upscaling.</span></div></li>
+          <li><div><b>Object moves, its shadow does not</b><span>GPU instance write skipped, or a light not following its entity.</span></div></li>
           <li><div><b>Shadows pop when the camera turns</b><span>Camera culling applied to TLAS instances.</span></div></li>
-          <li><div><b>Leaves cast solid shadows</b><span>Micromap not attached to the BLAS, or the instance left <code>FORCE_OPAQUE</code>.</span></div></li>
-          <li><div><b>RTXDI with reuse differs from mode <code>None</code></b><span>Target pdf not built from the same <code>evalBrdf</code>/<code>evalLight</code>, or the previous G-buffer not swapped.</span></div></li>
+          <li><div><b>Leaves cast solid shadows</b><span>Micromap not attached to the cluster’s CLAS, or the instance left <code>FORCE_OPAQUE</code>.</span></div></li>
+          <li><div><b>Leaf edges in shadows don’t match the leaves</b><span>Micromap baked before the cluster optimizer rotated corners, or with another cutoff or UV orientation than the raster <code>discard</code>.</span></div></li>
+          <li><div><b>Speckled self-shadowing</b><span>Ray origin not offset along the geometric normal.</span></div></li>
+          <li><div><b>RTXDI with reuse differs from mode <code>None</code></b><span>Target pdf not built from the same <code>evalBrdf</code>/<code>evalLight</code>, or the previous guide set not swapped.</span></div></li>
           <li><div><b>Lights smear when the camera moves</b><span>Motion vectors include the jitter, or point the wrong way (must be current → previous).</span></div></li>
-          <li><div><b>Indirect light lags or smears after a change</b><span>NRC training paths missing or too few, or AO applied after <code>Resolve</code> instead of as the query path’s starting throughput.</span></div></li>
+          <li><div><b>Indirect light lags or smears after a change</b><span>Cache training paths missing or too few, or AO applied to the whole bounce instead of only the cache term.</span></div></li>
           <li><div><b>Smeared metals after DLSS-RR</b><span><code>α</code> written to the roughness guide, or lighting baked into albedo.</span></div></li>
         </ol>
       </section>
@@ -842,14 +872,19 @@ NrcWriteFinalPathInfo                       <span class="cmt">// query only</spa
         <div class="sec-head"><span class="sec-num">19</span><h2>Glossary</h2></div>
         <dl class="glossary">
           <dt>BRDF</dt><dd>function of two directions giving the share of light redirected from one to the other (1/sr)</dd>
-          <dt>G-buffer</dt><dd>per-pixel BRDF inputs (normal, roughness, albedo, f0, depth, motion) written by the raster pass</dd>
-          <dt>BLAS / TLAS</dt><dd>bottom-level (one per glTF primitive) and top-level (instances with transforms) acceleration structures</dd>
-          <dt>ray query</dt><dd>tracing a ray inline from a compute shader, with no ray-tracing pipeline or shader table</dd>
+          <dt>visibility buffer</dt><dd>per-pixel depth plus a 32-bit id of the visible cluster and triangle, written by the raster</dd>
+          <dt>resolve</dt><dd>compute pass that turns visibility-buffer ids into surfaces and writes the guides</dd>
+          <dt>guides</dt><dd>per-pixel BRDF inputs (normal, roughness, albedo, f0, emissive, depth, motion) read by the lighting passes and DLSS-RR</dd>
+          <dt>cluster</dt><dd>a small group of up to 126 triangles: the unit of culling, raster and ray-tracing builds</dd>
+          <dt>CLAS / BLAS / TLAS</dt><dd>cluster-level (one per cluster), bottom-level (one per glTF primitive, made from its clusters) and top-level (instances with transforms) acceleration structures</dd>
+          <dt>ray query</dt><dd>tracing a ray inline from a compute shader, with no ray-tracing pipeline or shader table. Used for visibility-only rays</dd>
+          <dt>SER</dt><dd>shader execution reordering: the GPU regroups rays by what they hit before shading, so neighbors in a warp run the same material code</dd>
           <dt>OMM</dt><dd>opacity micromap: per-micro-triangle opaque, transparent or unknown state for alpha testing in traversal</dd>
-          <dt>DGC</dt><dd>device-generated commands: the raster path’s mesh-draw lists</dd>
+          <dt>DGC</dt><dd>device-generated commands: draw lists the GPU writes for itself after culling</dd>
           <dt>RAB</dt><dd>RTXDI application bridge: the <code>RAB_*</code> functions the engine implements for the RTXDI headers</dd>
           <dt>RIS</dt><dd>resampled importance sampling: draw cheap candidates, keep one in proportion to a better target</dd>
-          <dt>ReSTIR</dt><dd>RIS plus reuse of reservoirs across neighbors and frames. RTXDI implements ReSTIR DI</dd>
+          <dt>ReSTIR</dt><dd>RIS plus reuse of reservoirs across neighbors and frames. RTXDI implements ReSTIR DI (lights) and ReSTIR GI (bounce samples)</dd>
+          <dt>SHaRC</dt><dd>Spatially Hashed Radiance Cache (RTXGI): a world-space hash grid of the light leaving surfaces</dd>
           <dt>NRC</dt><dd>Neural Radiance Cache (RTXGI): a small network trained every frame that predicts the light leaving a surface point</dd>
           <dt>DLSS-RR</dt><dd>DLSS Ray Reconstruction: learned denoise + upscale driven by guide buffers</dd>
         </dl>

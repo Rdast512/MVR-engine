@@ -6,7 +6,9 @@
 #include "vk_dgc.hpp"
 #include "vk_gpu_timer.hpp"
 #include "vk_hiz.hpp"
+#include "debug_view.hpp"
 #include "vk_meshlet_culling.hpp"
+#include "vk_render_targets.hpp"
 #include "vk_shader_objects.hpp"
 
 class VkTracyContext;
@@ -35,9 +37,15 @@ public:
 
 private:
     void recordCommandBuffer(uint32_t imageIndex);
-    // DebugView::HiZPyramid: covers the late pass with the pyramid the late phase tested against
+    void recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase);
+    void recordResolve(const vk::raii::CommandBuffer& cmd);
+    void recordDebugView(const vk::raii::CommandBuffer& cmd);
+    void recordPresent(vk::raii::CommandBuffer& cmd, uint32_t imageIndex);
+    // DebugView::HiZPyramid: covers the present pass with the pyramid of the final depth
     void recordHiZView(const vk::raii::CommandBuffer& cmd) const;
-    void recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase, uint32_t imageIndex, RasterVariant rasterVariant);
+    // one thread per render pixel, FramePushData
+    void dispatchFullscreen(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader) const;
+    static void setViewport(const vk::raii::CommandBuffer& cmd, vk::Extent2D extent);
 
     Device& device;
     SwapChain& swapChain;
@@ -49,6 +57,8 @@ private:
     // after dgc: writes into its sequence buffers
     MeshletCulling culling;
     HiZPyramid hiz;
+    // after hiz: both are recreated from the depth attachment
+    RenderTargets targets;
     GpuTimer gpuTimer;
     VkTracyContext* tracyContext = nullptr;
     // unused when imgui is compiled out

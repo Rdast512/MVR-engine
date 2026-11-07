@@ -51,7 +51,6 @@ constexpr std::array kRequiredDeviceExtensions = {
     vk::KHRShaderUntypedPointersExtensionName,
     vk::KHRDeviceAddressCommandsExtensionName,
     vk::KHRRobustness2ExtensionName, // shader objects take no VkPipelineRobustnessCreateInfo
-    vk::KHRFragmentShaderBarycentricExtensionName, // mesh_debug edge overlay
     // EXT
     vk::EXTOpacityMicromapExtensionName,
     vk::EXTMemoryBudgetExtensionName,
@@ -185,7 +184,6 @@ constexpr std::array kRequiredFeatures = {
     ENGINE_FEATURE(PhysicalDeviceRobustness2FeaturesKHR, robustBufferAccess2),
     ENGINE_FEATURE(PhysicalDeviceRobustness2FeaturesKHR, robustImageAccess2),
     ENGINE_FEATURE(PhysicalDeviceRobustness2FeaturesKHR, nullDescriptor),
-    ENGINE_FEATURE(PhysicalDeviceFragmentShaderBarycentricFeaturesKHR, fragmentShaderBarycentric),
 };
 
 // enabled only with their NV extensions
@@ -229,8 +227,7 @@ using FeatureChain = vk::StructureChain<
     vk::PhysicalDeviceMaintenance8FeaturesKHR, vk::PhysicalDeviceMaintenance9FeaturesKHR,
     vk::PhysicalDeviceMaintenance10FeaturesKHR, vk::PhysicalDeviceCopyMemoryIndirectFeaturesKHR,
     vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR, vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR,
-    vk::PhysicalDeviceRobustness2FeaturesKHR, vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR,
-    vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV,
+    vk::PhysicalDeviceRobustness2FeaturesKHR, vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV,
     vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV>;
 
 using QueueFamilyChain = vk::StructureChain<vk::QueueFamilyProperties2, vk::QueueFamilyOwnershipTransferPropertiesKHR>;

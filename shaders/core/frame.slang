@@ -14,17 +14,17 @@ struct DrawContext
     GpuModel model;
     uint primitiveRow; // row of the model's primitives slice
     GpuPrimitive primitive;
-    bool isDoubleSided; // the material's, which also picked the state group (MeshletCulling::stateGroupOf)
+    bool isDoubleSided; // the material's, also DrawRecordFlag::TwoSided (MeshletCulling::drawRecordFlagsOf)
     uint visibleRow;    // row of root.visibleMeshlets; >= root.lateVisibleBase in the late phase
 };
 
-// groupId: mesh workgroup within the sequence's batch
-DrawContext loadDrawContext(MeshPushData push, uint groupId)
+// visible: the {node instance, meshlet} a vis-buffer pixel or a ray hit decodes to; visibleRow is kNoneIndex for hits
+DrawContext loadDrawContext(GpuFrameRoot root, GpuVisibleMeshlet visible, uint visibleRow)
 {
     DrawContext draw;
-    draw.root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
-    draw.visibleRow = push.firstVisible + groupId;
-    draw.visible = bdaPtr<GpuVisibleMeshlet>(draw.root.visibleMeshlets)[draw.visibleRow];
+    draw.root = root;
+    draw.visibleRow = visibleRow;
+    draw.visible = visible;
     draw.nodeInstance = bdaPtr<GpuNodeInstance>(draw.root.nodeInstances)[draw.visible.nodeInstanceIndex];
     draw.model = bdaPtr<GpuModel>(draw.root.models)[draw.nodeInstance.modelIndex];
     draw.primitiveRow = bdaPtr<uint>(draw.model.meshletPrimitives)[draw.visible.meshletRow];
@@ -34,6 +34,23 @@ DrawContext loadDrawContext(MeshPushData push, uint groupId)
     GpuMaterial* materialRef = bdaPtr<GpuMaterial>(draw.root.materials) + material;
     draw.isDoubleSided = (materialRef.flags & kMaterialFlagDoubleSided) != 0;
     return draw;
+}
+
+// a row of root.visibleMeshlets: a vis-buffer payload's or a mesh workgroup's
+DrawContext loadDrawContext(GpuFrameRoot root, uint visibleRow)
+{
+    return loadDrawContext(root, bdaPtr<GpuVisibleMeshlet>(root.visibleMeshlets)[visibleRow], visibleRow);
+}
+
+// groupId: mesh workgroup within the sequence's batch
+DrawContext loadDrawContext(MeshPushData push, uint groupId)
+{
+    return loadDrawContext(bdaPtr<GpuFrameRoot>(push.frameRoot)[0], push.firstVisible + groupId);
+}
+
+GpuTargets loadTargets(GpuFrameRoot root)
+{
+    return bdaPtr<GpuTargets>(root.targets)[0];
 }
 
 GpuCameraData loadCamera(GpuFrameRoot root)

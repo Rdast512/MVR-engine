@@ -3,15 +3,13 @@
 #include <vulkan/vulkan_raii.hpp>
 #include "../core/types.hpp"
 #include "../core/vk_resource_manager.hpp"
-#include "debug_view.hpp"
 
 #include <array>
 #include <string_view>
 
 class DescriptorManager;
 
-// linked mesh + fragment VK_EXT_shader_object pairs, one per RasterVariant, plus the unlinked compute shaders;
-// all raster state is dynamic
+// linked mesh + fragment VK_EXT_shader_object pairs plus the unlinked compute shaders; all raster state is dynamic
 class ShaderObjects
 {
 public:
@@ -22,12 +20,15 @@ public:
     void createMeshShaders();
     void createCullShaders();
     void createHiZShaders();
+    void createFrameShaders();
 
-    // binds the variant's shaders and every state a monolithic pipeline would bake; viewport/scissor stay with the
-    // caller. only the cull mode differs between state groups
-    void bindMeshState(const vk::raii::CommandBuffer& cmd, RasterVariant variant, MeshStateGroup group) const;
+    // vis-buffer raster and every state a monolithic pipeline would bake; viewport/scissor stay with the caller.
+    // One state serves every RasterBin until M6 gives AlphaTested its own fragment shader
+    void bindMeshState(const vk::raii::CommandBuffer& cmd) const;
     // fullscreen Hi-Z mip view: no culling, no depth; push HiZViewPushData, then draw one mesh task
     void bindHiZViewState(const vk::raii::CommandBuffer& cmd) const;
+    // fullscreen display image -> swapchain: no culling, no depth; push PresentPushData, then draw one mesh task
+    void bindPresentState(const vk::raii::CommandBuffer& cmd) const;
     static void bindComputeShader(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader);
 
     const vk::raii::Device& device;
@@ -38,8 +39,8 @@ public:
         vk::raii::ShaderEXT fragment = nullptr;
     };
 
-    // indexed by RasterVariant
-    std::array<MeshShaderPair, kRasterVariantCount> meshShaders;
+    // passes/mesh_raster.slang + passes/mesh_fragment.slang
+    MeshShaderPair visRaster;
 
     // passes/meshlet_cull.slang
     struct CullShaders
@@ -54,17 +55,23 @@ public:
     // passes/hiz_build.slang
     struct HiZShaders
     {
-        vk::raii::ShaderEXT fromDepth = nullptr;
-        vk::raii::ShaderEXT downsample = nullptr;
+        vk::raii::ShaderEXT build = nullptr;
     };
     HiZShaders hizShaders;
     // passes/hiz_view.slang
     MeshShaderPair hizView;
+    // passes/present.slang
+    MeshShaderPair present;
 
-    [[nodiscard]] const MeshShaderPair& pair(RasterVariant variant) const
+    // FramePushData compute passes after the late raster
+    struct FrameShaders
     {
-        return meshShaders[std::to_underlying(variant)];
-    }
+        // passes/resolve.slang
+        vk::raii::ShaderEXT resolve = nullptr;
+        // passes/debug_view.slang
+        vk::raii::ShaderEXT debugView = nullptr;
+    };
+    FrameShaders frameShaders;
 
 private:
     struct MeshShaderSource
@@ -81,6 +88,8 @@ private:
     static void bindShaderPair(const vk::raii::CommandBuffer& cmd, const MeshShaderPair& shaderPair);
     // every state a monolithic pipeline would bake, except viewport/scissor
     static void setRasterState(const vk::raii::CommandBuffer& cmd, vk::CullModeFlags cullMode, bool isDepthEnabled);
+    // fullscreen triangle into the swapchain
+    static void setFullscreenState(const vk::raii::CommandBuffer& cmd, const MeshShaderPair& shaderPair);
     // file under ENGINE_SHADER_DIR/passes
     [[nodiscard]] vk::raii::ShaderEXT createComputeShader(std::string_view file, const char* entry,
                                                           std::string_view debugName) const;

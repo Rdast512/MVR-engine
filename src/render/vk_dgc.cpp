@@ -25,8 +25,8 @@ namespace
         return (size + alignment - 1) / alignment * alignment;
     }
 
-    constexpr std::array<MeshStateGroup, kMeshStateGroupCount> kMeshStateGroups = {MeshStateGroup::SingleSided,
-                                                                                   MeshStateGroup::DoubleSided};
+    constexpr std::array<RasterBin, kRasterBinCount> kRasterBins = {RasterBin::Opaque,
+                                                                                   RasterBin::AlphaTested};
 } // namespace
 
 DeviceGeneratedCommands::DeviceGeneratedCommands(Device& device, ResourceManager& resourceManager,
@@ -64,16 +64,13 @@ void DeviceGeneratedCommands::init()
     }
 
     shaderStages = kDgcMeshStages;
-    for (size_t variant = 0; variant < kRasterVariantCount; ++variant) {
-        const ShaderObjects::MeshShaderPair& shaderPair = shaderObjects.meshShaders[variant];
-        generatedShaders[variant] = {*shaderPair.mesh, *shaderPair.fragment};
-        generatedShaderInfos[variant] = vk::GeneratedCommandsShaderInfoEXT{
-            .shaderCount = static_cast<uint32_t>(generatedShaders[variant].size()),
-            .pShaders = generatedShaders[variant].data(),
-        };
-    }
+    generatedShaders = {*shaderObjects.visRaster.mesh, *shaderObjects.visRaster.fragment};
+    generatedShaderInfo = vk::GeneratedCommandsShaderInfoEXT{
+        .shaderCount = static_cast<uint32_t>(generatedShaders.size()),
+        .pShaders = generatedShaders.data(),
+    };
     createLayout();
-    createStateCommandBuffers();
+    createStateCommandBuffer();
 
     logInfo(std::format("DGC ready: stride={} maxSequences={}", sizeof(MeshDgcSequence),
                         props.maxIndirectSequenceCount),
@@ -116,9 +113,9 @@ void DeviceGeneratedCommands::createLayout()
     layout = vk::raii::IndirectCommandsLayoutEXT(device.vkdevice, createInfo);
 }
 
-// separate state buffers as in nvpro vk_device_generated_cmds; Nsight 2026.3.1 replay faults when
+// separate state buffer as in nvpro vk_device_generated_cmds; Nsight 2026.3.1 replay faults when
 // stateCommandBuffer is the recording command buffer itself
-void DeviceGeneratedCommands::createStateCommandBuffers()
+void DeviceGeneratedCommands::createStateCommandBuffer()
 {
     statePool = vk::raii::CommandPool(device.vkdevice, {.queueFamilyIndex = device.graphicsIndex});
     setDebugName(device.vkdevice, statePool, "DgcStateCommandPool");
@@ -126,55 +123,36 @@ void DeviceGeneratedCommands::createStateCommandBuffers()
     const vk::CommandBufferAllocateInfo allocInfo{
         .commandPool = *statePool,
         .level = vk::CommandBufferLevel::eSecondary,
-        .commandBufferCount = static_cast<uint32_t>(kRasterVariantCount * kMeshStateGroupCount),
+        .commandBufferCount = 1,
     };
-    stateCommandBuffers = vk::raii::CommandBuffers(device.vkdevice, allocInfo);
+    stateCommandBuffer = std::move(vk::raii::CommandBuffers(device.vkdevice, allocInfo).front());
 
     // shaders and heaps are created once before init, so recording once is enough
     const vk::CommandBufferInheritanceInfo inheritance{};
-    for (size_t variant = 0; variant < kRasterVariantCount; ++variant) {
-        const auto rasterVariant = static_cast<RasterVariant>(variant);
-        for (const MeshStateGroup group : kMeshStateGroups) {
-            const vk::raii::CommandBuffer& state = stateCommandBuffer(rasterVariant, group);
-            setDebugName(device.vkdevice, state,
-                         std::format("DgcStateCommandBuffer{}_{}", variant, std::to_underlying(group)));
-            state.begin({.pInheritanceInfo = &inheritance});
-            shaderObjects.bindMeshState(state, rasterVariant, group);
-            state.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
-            state.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
-        }
-    }
+    setDebugName(device.vkdevice, stateCommandBuffer, "DgcStateCommandBuffer");
+    stateCommandBuffer.begin({.pInheritanceInfo = &inheritance});
+    shaderObjects.bindMeshState(stateCommandBuffer);
+    stateCommandBuffer.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
+    stateCommandBuffer.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
 }
 
-const vk::raii::CommandBuffer& DeviceGeneratedCommands::stateCommandBuffer(RasterVariant variant,
-                                                                         MeshStateGroup group) const
-{
-    return stateCommandBuffers[std::to_underlying(variant) * kMeshStateGroupCount + std::to_underlying(group)];
-}
-
-// requirements depend on the shader set; one buffer serves every variant
 vk::DeviceSize DeviceGeneratedCommands::queryPreprocessSize(uint32_t capacity) const
 {
-    vk::DeviceSize size = 0;
-    for (const vk::GeneratedCommandsShaderInfoEXT& shaderInfo : generatedShaderInfos) {
-        const vk::GeneratedCommandsMemoryRequirementsInfoEXT memInfo{
-            .pNext = &shaderInfo,
-            .indirectCommandsLayout = *layout,
-            .maxSequenceCount = capacity,
-            .maxDrawCount = 1,
-        };
-        const vk::MemoryRequirements2 requirements = device.vkdevice.getGeneratedCommandsMemoryRequirementsEXT(memInfo);
-        size = std::max(size, requirements.memoryRequirements.size);
-    }
-    return size;
+    const vk::GeneratedCommandsMemoryRequirementsInfoEXT memInfo{
+        .pNext = &generatedShaderInfo,
+        .indirectCommandsLayout = *layout,
+        .maxSequenceCount = capacity,
+        .maxDrawCount = 1,
+    };
+    return device.vkdevice.getGeneratedCommandsMemoryRequirementsEXT(memInfo).memoryRequirements.size;
 }
 
 void DeviceGeneratedCommands::prepareFrame(uint32_t frameSlot,
-                                           const std::array<uint32_t, kMeshStateGroupCount>& maxSequences,
+                                           const std::array<uint32_t, kRasterBinCount>& maxSequences,
                                            vk::DeviceAddress countersAddress)
 {
     frame = frameSlot;
-    groupMaxSequences = maxSequences;
+    binMaxSequences = maxSequences;
     counters = countersAddress;
     std::exclusive_scan(maxSequences.begin(), maxSequences.end(), groupOffsets.begin(), 0u);
     phaseSequences = groupOffsets.back() + maxSequences.back();
@@ -238,7 +216,7 @@ void DeviceGeneratedCommands::allocatePreprocessBuffer(uint32_t frameSlot, uint3
         return;
     }
     const vk::DeviceSize regionStride = alignUp(regionSize, kPreprocessRegionAlignment);
-    const vk::DeviceSize preprocessSize = regionStride * kCullPhaseCount * kMeshStateGroupCount;
+    const vk::DeviceSize preprocessSize = regionStride * kCullPhaseCount * kRasterBinCount;
 
     vk::raii::Buffer buffer({});
     VmaAllocation memory = nullptr;
@@ -271,40 +249,37 @@ void DeviceGeneratedCommands::destroyFrameResources(uint32_t frameSlot)
     preprocessGroupStrides[frameSlot] = 0;
 }
 
-vk::GeneratedCommandsInfoEXT DeviceGeneratedCommands::generatedCommandsInfo(CullPhase phase, MeshStateGroup group,
-                                                                            RasterVariant variant) const
+vk::GeneratedCommandsInfoEXT DeviceGeneratedCommands::generatedCommandsInfo(CullPhase phase, RasterBin group) const
 {
     const uint32_t index = std::to_underlying(group);
-    const uint32_t region = std::to_underlying(phase) * kMeshStateGroupCount + index;
+    const uint32_t region = std::to_underlying(phase) * kRasterBinCount + index;
     const vk::DeviceAddress preprocessBase = preprocessAddresses[frame];
     const vk::DeviceAddress phaseCounters = counters + std::to_underlying(phase) * sizeof(GpuCullCounters);
     return vk::GeneratedCommandsInfoEXT{
-        .pNext = &generatedShaderInfos[std::to_underlying(variant)],
+        .pNext = &generatedShaderInfo,
         .shaderStages = shaderStages,
         .indirectExecutionSet = nullptr,
         .indirectCommandsLayout = *layout,
-        .indirectAddress = sequenceAddresses[frame] + groupSequenceOffset(phase, group) * sizeof(MeshDgcSequence),
-        .indirectAddressSize = static_cast<vk::DeviceSize>(groupMaxSequences[index]) * sizeof(MeshDgcSequence),
+        .indirectAddress = sequenceAddresses[frame] + binSequenceOffset(phase, group) * sizeof(MeshDgcSequence),
+        .indirectAddressSize = static_cast<vk::DeviceSize>(binMaxSequences[index]) * sizeof(MeshDgcSequence),
         .preprocessAddress = preprocessBase == 0 ? 0 : preprocessBase + region * preprocessGroupStrides[frame],
         .preprocessSize = preprocessGroupStrides[frame],
-        .maxSequenceCount = groupMaxSequences[index],
+        .maxSequenceCount = binMaxSequences[index],
         .sequenceCountAddress = phaseCounters + offsetof(GpuCullCounters, sequenceCount) + index * sizeof(uint32_t),
         .maxDrawCount = 1,
     };
 }
 
-void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd, RasterVariant variant,
-                                               CullPhase phase) const
+void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd, CullPhase phase) const
 {
     ZoneScopedN("DeviceGeneratedCommands::recordPreprocess");
     bool hasWork = false;
     // groups use disjoint preprocess regions, so no barrier is needed between them
-    for (const MeshStateGroup group : kMeshStateGroups) {
-        if (groupMaxSequences[std::to_underlying(group)] == 0) {
+    for (const RasterBin group : kRasterBins) {
+        if (binMaxSequences[std::to_underlying(group)] == 0) {
             continue;
         }
-        cmd.preprocessGeneratedCommandsEXT(generatedCommandsInfo(phase, group, variant),
-                                           *stateCommandBuffer(variant, group));
+        cmd.preprocessGeneratedCommandsEXT(generatedCommandsInfo(phase, group), *stateCommandBuffer);
         hasWork = true;
     }
     if (!hasWork) {
@@ -320,15 +295,15 @@ void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd, Ras
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &preprocessBarrier});
 }
 
-void DeviceGeneratedCommands::recordExecute(vk::raii::CommandBuffer& cmd, RasterVariant variant,
-                                            CullPhase phase) const
+void DeviceGeneratedCommands::recordExecute(vk::raii::CommandBuffer& cmd, CullPhase phase) const
 {
     ZoneScopedN("DeviceGeneratedCommands::recordExecute");
-    for (const MeshStateGroup group : kMeshStateGroups) {
-        if (groupMaxSequences[std::to_underlying(group)] == 0) {
+    for (const RasterBin group : kRasterBins) {
+        if (binMaxSequences[std::to_underlying(group)] == 0) {
             continue;
         }
-        shaderObjects.bindMeshState(cmd, variant, group);
-        cmd.executeGeneratedCommandsEXT(vk::True, generatedCommandsInfo(phase, group, variant));
+        // execute leaves the bound graphics state undefined; rebind exactly what preprocess saw
+        shaderObjects.bindMeshState(cmd);
+        cmd.executeGeneratedCommandsEXT(vk::True, generatedCommandsInfo(phase, group));
     }
 }

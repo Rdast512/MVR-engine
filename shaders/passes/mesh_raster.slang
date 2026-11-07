@@ -4,11 +4,15 @@
 #include "core/math.slang"
 #include "geometry/mesh.slang"
 #include "geometry/triangle_cull.slang"
+#include "geometry/visbuffer.slang"
+
+// vis-buffer raster: position per vertex, the payload per primitive (passes/mesh_fragment.slang writes it)
 
 [[vk::push_constant]] ConstantBuffer<MeshPushData> push;
 
 struct MeshPrimitiveOut
 {
+    uint payload : SV_PrimitiveID;
     bool cull : SV_CullPrimitive;
 };
 
@@ -34,34 +38,36 @@ void meshMain(
 
     const GpuCameraData camera = loadCamera(draw.root);
     float4x4 mvp = objectToClip(camera, draw.nodeInstance.worldMatrix);
-    const uint material = materialRow(draw.primitive);
 
     for (uint vi = gtid; vi < vertCount; vi += kGroupSize)
     {
-        const GpuVertex v = loadMeshletCorner(draw, meshlet, vi);
-        const float4 clip = mul(mvp, float4(v.pos, 1.0));
+        const float4 clip = jitterClip(camera, mul(mvp, float4(loadMeshletCorner(draw, meshlet, vi).pos, 1.0)));
         verts[vi].pos = clip;
-        verts[vi].fragColor = v.color;
-        verts[vi].fragTexCoord = v.texCoord;
-        verts[vi].materialRow = material;
         clipCorners[vi] = clip;
     }
 
     // uniform for the whole draw, so the barrier stays in uniform control flow
     const uint triangleCull = draw.root.triangleCull;
     const bool isCulling = (triangleCull & (kTriangleCullBackface | kTriangleCullSmall)) != 0;
-    if (isCulling)
+    const bool isDoubleSided = draw.isDoubleSided;
+    if (isCulling || isDoubleSided)
     {
         GroupMemoryBarrierWithGroupSync();
     }
-    const bool isDoubleSided = draw.isDoubleSided;
 
     uint backface = 0;
     uint small = 0;
     for (uint ti = gtid; ti < primCount; ti += kGroupSize)
     {
-        const uint3 tri = loadFrontFacingTriangle(draw, meshlet, ti);
+        uint3 tri = loadFrontFacingTriangle(draw, meshlet, ti);
+        // one cull mode for every bin (engine spec A6): a two-sided back face is drawn with its winding flipped.
+        // The payload keeps the meshlet-local index; the resolve recomputes facing
+        if (isDoubleSided && !isFrontFacingHW(clipCorners[tri.x], clipCorners[tri.y], clipCorners[tri.z]))
+        {
+            tri = tri.xzy;
+        }
         tris[ti] = tri;
+        prims[ti].payload = packVisPayload(draw.visibleRow, ti);
         const uint reason = isCulling
             ? triangleCullReason(clipCorners[tri.x], clipCorners[tri.y], clipCorners[tri.z], triangleCull,
                                  isDoubleSided, camera.renderTargetSize, draw.root.subpixelSnap)

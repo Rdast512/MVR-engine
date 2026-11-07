@@ -18,8 +18,11 @@ enum class GpuTimerScope : uint32_t
     LateCull,
     LatePreprocess,
     LateDraw,
-    Ui,
     LateHiZ,
+    Resolve,
+    DebugView,
+    Present,
+    Ui,
     Count,
 };
 inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::Count);
@@ -42,10 +45,16 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "Late DGC preprocess";
     case GpuTimerScope::LateDraw:
         return "Late mesh draw";
-    case GpuTimerScope::Ui:
-        return "ImGui";
     case GpuTimerScope::LateHiZ:
         return "Late Hi-Z build";
+    case GpuTimerScope::Resolve:
+        return "Vis-buffer resolve";
+    case GpuTimerScope::DebugView:
+        return "Debug view";
+    case GpuTimerScope::Present:
+        return "Present";
+    case GpuTimerScope::Ui:
+        return "ImGui";
     case GpuTimerScope::Count:
         break;
     }

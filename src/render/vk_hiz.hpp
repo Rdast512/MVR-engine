@@ -9,7 +9,7 @@
 #include <vector>
 #include <vulkan/vulkan_raii.hpp>
 
-// max-depth pyramid of the depth attachment (standard Z: each texel holds the farthest depth of its footprint).
+// far-depth pyramid of the depth attachment (reverse Z: each texel holds the minimum depth of its footprint).
 // R32_SFLOAT, previous power of two of the depth size, full mip chain, always in eGeneral
 class HiZPyramid
 {
@@ -30,7 +30,7 @@ public:
     void recordBuild(const vk::raii::CommandBuffer& cmd, bool isFrozen = false);
 
     [[nodiscard]] uint32_t pyramidHeapIndex() const noexcept { return pyramidIndex; }
-    [[nodiscard]] uint32_t maxSamplerHeapIndex() const noexcept { return maxSamplerIndex; }
+    [[nodiscard]] uint32_t farSamplerHeapIndex() const noexcept { return farSamplerIndex; }
     [[nodiscard]] vk::Extent2D size() const noexcept { return extent; }
     [[nodiscard]] uint32_t mipCount() const noexcept { return static_cast<uint32_t>(mipIndices.size()); }
     // false from recreate until the first recorded build: the image holds no depth yet
@@ -52,11 +52,11 @@ private:
 
     // resource heap indices
     uint32_t depthIndex = kNoneIndex;
-    // full chain, sampled through maxSamplerIndex
+    // full chain, sampled through farSamplerIndex
     uint32_t pyramidIndex = kNoneIndex;
     // storage view per mip
     std::vector<uint32_t> mipIndices;
     // sampler heap index; samplers are never freed
-    uint32_t maxSamplerIndex = 0;
+    uint32_t farSamplerIndex = 0;
     bool isBuilt = false;
 };

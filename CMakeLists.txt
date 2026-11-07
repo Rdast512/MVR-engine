@@ -187,10 +187,6 @@ set(ENGINE_SLANG_CAPABILITIES
     SPV_EXT_mesh_shader
     spvMeshShadingEXT
 
-    # vk::KHRFragmentShaderBarycentricExtensionName: SV_Barycentrics in mesh_debug
-    SPV_KHR_fragment_shader_barycentric
-    spvFragmentBarycentricKHR
-
     # vk::KHRAccelerationStructureExtensionName + vk::KHRRayTracingPipelineExtensionName
     SPV_KHR_ray_tracing
     spvRayTracingKHR
@@ -270,17 +266,24 @@ function(engine_add_slang_pass rel_path)
   set(COMPILED_SHADERS ${_spv} ${COMPILED_SHADERS} PARENT_SCOPE)
 endfunction()
 
+set(ENGINE_SLANG_SURFACE_DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang
+    core/culling.slang geometry/mesh.slang geometry/visbuffer.slang geometry/surface.slang)
 engine_add_slang_pass(passes/mesh_raster.slang
     ENTRIES meshMain
     DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang geometry/mesh.slang
-            geometry/triangle_cull.slang core/culling.slang)
+            geometry/triangle_cull.slang geometry/visbuffer.slang core/culling.slang)
 engine_add_slang_pass(passes/mesh_fragment.slang
     ENTRIES fragMain
-    DEPENDS types.slang core/binding.slang core/frame.slang material/pbr.slang)
-engine_add_slang_pass(passes/mesh_debug.slang
-    ENTRIES meshDebugMain fragDebugMain
-    DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang geometry/mesh.slang
-            geometry/triangle_cull.slang core/culling.slang)
+    DEPENDS types.slang)
+engine_add_slang_pass(passes/resolve.slang
+    ENTRIES resolveMain
+    DEPENDS ${ENGINE_SLANG_SURFACE_DEPENDS} material/brdf.slang material/pbr.slang)
+engine_add_slang_pass(passes/debug_view.slang
+    ENTRIES debugViewMain
+    DEPENDS ${ENGINE_SLANG_SURFACE_DEPENDS})
+engine_add_slang_pass(passes/present.slang
+    ENTRIES presentMesh presentFrag
+    DEPENDS types.slang core/binding.slang core/frame.slang)
 engine_add_slang_pass(passes/meshlet_cull.slang
     ENTRIES cullInstances cullMeshlets cullRejectedMeshlets buildMeshSequences
     DEPENDS types.slang core/binding.slang core/culling.slang)
@@ -288,8 +291,8 @@ engine_add_slang_pass(passes/hiz_view.slang
     ENTRIES hizViewMesh hizViewFrag
     DEPENDS types.slang core/binding.slang)
 engine_add_slang_pass(passes/hiz_build.slang
-    ENTRIES hizFromDepth hizDownsample
-    DEPENDS types.slang core/binding.slang)
+    ENTRIES hizBuild
+    DEPENDS types.slang core/binding.slang core/culling.slang)
 
 add_custom_target(Shaders ALL DEPENDS ${COMPILED_SHADERS})
 

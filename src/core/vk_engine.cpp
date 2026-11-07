@@ -277,7 +277,8 @@ void Engine::initialize()
         initInfo.ImageCount = std::max<uint32_t>(imageCount, initInfo.MinImageCount);
         initInfo.UseDynamicRendering = true;
         imguiColorFormat = static_cast<VkFormat>(swapChain->swapChainImageFormat);
-        imguiDepthFormat = static_cast<VkFormat>(resourceManager->findDepthFormat());
+        // drawn in the present pass, which has no depth attachment
+        imguiDepthFormat = VK_FORMAT_UNDEFINED;
         imguiPipelineRenderingInfo = VkPipelineRenderingCreateInfoKHR{};
         imguiPipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
         imguiPipelineRenderingInfo.colorAttachmentCount = 1;
@@ -724,11 +725,17 @@ void Engine::drawDebugViewPanel()
         ImGui::EndCombo();
     }
 
+    if (settings.view != DebugView::HiZPyramid) {
+        ImGui::Checkbox("Triangle edges", &settings.showEdges);
+        ImGui::SetItemTooltip("wireframe from the resolve's analytic barycentrics");
+    }
+
     // per-category options; lighting and upscaling views add theirs here
     switch (debugViewInfo(settings.view).category) {
+    case DebugViewCategory::Lit:
+        ImGui::TextDisabled("no lighting before M3: the diffuse albedo guide");
+        break;
     case DebugViewCategory::Geometry:
-        ImGui::Checkbox("Triangle edges", &settings.showEdges);
-        ImGui::SetItemTooltip("barycentric wireframe over the debug colors");
         ImGui::TextDisabled("meshlet colors are per model: instances match");
         break;
     case DebugViewCategory::Culling:
@@ -738,12 +745,16 @@ void Engine::drawDebugViewPanel()
             if (ImGui::SliderInt("Mip", &mip, 0, lastMip)) {
                 settings.hizMip = static_cast<uint32_t>(mip);
             }
-            ImGui::TextDisabled("pyramid built from the early phase: what the late phase tests against");
+            ImGui::TextDisabled("pyramid of the final depth: what the next frame's early phase tests against");
         } else {
             ImGui::TextDisabled("blue: drawn early; orange: recovered by the late phase");
         }
         break;
-    case DebugViewCategory::Lit:
+    case DebugViewCategory::Guides:
+        if (settings.view == DebugView::MotionVectors) {
+            ImGui::TextDisabled("|x| red, |y| green, 16 px saturates");
+        }
+        break;
     case DebugViewCategory::Lighting:
     case DebugViewCategory::Upscaling:
         break;
@@ -888,16 +899,16 @@ void Engine::drawCullingPanel()
         row("Visible", earlyVisible, lateVisible, sum(earlyVisible, lateVisible));
         row("Visible dropped", early.visibleOverflowed, late.visibleOverflowed,
             sum(early.visibleOverflowed, late.visibleOverflowed),
-            "appends past a state group's visible list; nonzero is a sizing bug");
-        for (const MeshStateGroup group : {MeshStateGroup::SingleSided, MeshStateGroup::DoubleSided}) {
+            "appends past a raster bin's visible list; nonzero is a sizing bug");
+        for (const RasterBin group : {RasterBin::Opaque, RasterBin::AlphaTested}) {
             const auto index = std::to_underlying(group);
-            row(group == MeshStateGroup::SingleSided ? "  single-sided" : "  double-sided",
+            row(group == RasterBin::Opaque ? "  opaque" : "  alpha-tested",
                 early.visibleMeshlets[index], late.visibleMeshlets[index],
                 sum(early.visibleMeshlets[index], late.visibleMeshlets[index]));
         }
-        for (const MeshStateGroup group : {MeshStateGroup::SingleSided, MeshStateGroup::DoubleSided}) {
+        for (const RasterBin group : {RasterBin::Opaque, RasterBin::AlphaTested}) {
             const auto index = std::to_underlying(group);
-            row(group == MeshStateGroup::SingleSided ? "DGC sequences single" : "DGC sequences double",
+            row(group == RasterBin::Opaque ? "DGC sequences opaque" : "DGC sequences alpha-tested",
                 early.sequenceCount[index], late.sequenceCount[index],
                 sum(early.sequenceCount[index], late.sequenceCount[index]));
         }

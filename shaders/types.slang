@@ -10,10 +10,10 @@ static const uint kGroupSize = 32;
 // must match src/core/types.hpp kMeshletGroupMaxSize
 static const uint kMeshletGroupMaxSize = 32;
 
-// must match src/core/types.hpp kCullGroupSize / kMeshStateGroupCount
+// must match src/core/types.hpp kCullGroupSize / kRasterBinCount
 static const uint kCullGroupSize = 64;
-static const uint kMeshStateGroupCount = 2;
-static const uint kMeshStateGroupDoubleSided = 1;
+static const uint kRasterBinCount = 2;
+static const uint kRasterBinAlphaTested = 1;
 
 struct GpuCameraData
 {
@@ -82,14 +82,29 @@ struct GpuModel
 
 static const uint kNodeFlagFlipWinding = 1u;
 
+// GpuModel.attributeMask; must match GpuModelAttribute in src/core/types.hpp
+static const uint kModelAttributeNormals = 1u << 0;
+static const uint kModelAttributeTangents = 1u << 1;
+static const uint kModelAttributeUv1 = 1u << 2;
+
 // GpuFrameRoot.debugView; must match src/render/debug_view.hpp
 static const uint kDebugViewLit = 0u;
 static const uint kDebugViewMeshlets = 1u;
 static const uint kDebugViewTriangles = 2u;
 static const uint kDebugViewPrimitives = 3u;
 static const uint kDebugViewNodeInstances = 4u;
-static const uint kDebugViewStateGroups = 5u;
+static const uint kDebugViewBins = 5u;
 static const uint kDebugViewCullPhase = 6u;
+static const uint kDebugViewHiZPyramid = 7u;
+static const uint kDebugViewDepth = 8u;
+static const uint kDebugViewShadingNormal = 9u;
+static const uint kDebugViewRoughness = 10u;
+static const uint kDebugViewGeometricNormal = 11u;
+static const uint kDebugViewDiffuseAlbedo = 12u;
+static const uint kDebugViewSpecularF0 = 13u;
+static const uint kDebugViewSpecularAlbedo = 14u;
+static const uint kDebugViewEmissive = 15u;
+static const uint kDebugViewMotionVectors = 16u;
 static const uint kDebugViewModeMask = 0xffu;
 static const uint kDebugViewFlagEdges = 1u << 8;
 
@@ -120,8 +135,9 @@ struct GpuNodeInstance
 };
 
 // DrawRecordFlag
-static const uint kDrawRecordStateGroupMask = 0x3u;
+static const uint kDrawRecordBinMask = 0x3u;
 static const uint kDrawRecordSkipCulling = 1u << 2;
+static const uint kDrawRecordTwoSided = 1u << 3;
 
 // one render-list entry (vk_lod_clusters ClusterInfo); must match src/core/types.hpp
 struct GpuVisibleMeshlet
@@ -170,18 +186,18 @@ struct GpuCullView
 {
     float3 cameraPos;
     uint flags; // kCull*
-    uint64_t visibleMeshlets;     // GpuVisibleMeshlet[], one region per state group
+    uint64_t visibleMeshlets;     // GpuVisibleMeshlet[], one region per raster bin
     uint64_t counters;            // GpuCullCounters
     uint64_t sequences;           // MeshDgcSequence[]
     uint64_t instanceItems;       // GpuInstanceCullItem[instanceCount]
     uint64_t drawRecordTemplates; // GpuDrawRecord[], copied to GpuFrameRoot.drawRecords
     uint instanceCount;
     uint maxMeshletsPerSequence;
-    uint groupVisibleOffset[kMeshStateGroupCount];
-    uint groupSequenceOffset[kMeshStateGroupCount];
+    uint binVisibleOffset[kRasterBinCount];
+    uint binSequenceOffset[kRasterBinCount];
     float4x4 occlusionViewProj; // early: previous frame's, late: current
     uint hizPyramid;            // resource heap, full mip chain
-    uint hizMaxSampler;         // sampler heap
+    uint hizFarSampler;         // sampler heap: far-depth reduction
     uint2 hizSize;              // mip 0
     uint64_t instanceCandidates; // uint[]: instance items occluded early, re-tested late
     uint64_t lateCounters;       // GpuCullCounters counting the candidates; early view only
@@ -193,14 +209,14 @@ struct GpuCullView
     float subpixelSnap;          // pixels a vertex may move when snapped to the subpixel grid
     uint instanceCandidateCapacity; // list capacities; appends past them are dropped and counted
     uint drawRecordCapacity;        // rows of this phase's drawRecords region, also the reject masks
-    uint groupVisibleCapacity[kMeshStateGroupCount];
+    uint binVisibleCapacity[kRasterBinCount];
     uint pad1;
 };
 
 struct GpuCullCounters
 {
-    uint visibleMeshlets[kMeshStateGroupCount];
-    uint sequenceCount[kMeshStateGroupCount];
+    uint visibleMeshlets[kRasterBinCount];
+    uint sequenceCount[kRasterBinCount];
     uint meshletDispatch[3]; // VkDispatchIndirectCommand: x = draw records of visible instances
     uint instanceDispatch[3]; // VkDispatchIndirectCommand: x = late candidates
     uint meshletsRetested; // late, kCullStats only: reject-mask bits re-tested
@@ -446,24 +462,69 @@ struct HiZViewPushData
     uint2 screenSize;
 };
 
-// 32 B, matches src/render/push_data.hpp
+// 48 B, matches src/render/push_data.hpp
 struct HiZPushData
 {
-    uint srcImage; // resource heap: depth for mip 0, the pyramid's full-chain view otherwise
-    uint dstImage; // resource heap: storage view of the written mip
-    uint maxSampler; // sampler heap: max reduction, clamp to edge
-    uint srcMip;
+    uint srcImage;     // resource heap: depth for mip 0, the pyramid's full-chain view otherwise
+    uint dstImages[3]; // resource heap: storage views of the written mips, first levelCount valid
+    uint srcMip;       // pyramid mip the first written level halves; unused from depth
+    uint isFromDepth;
+    uint levelCount;
+    uint pad0;
     uint2 srcSize;
-    uint2 dstSize;
+    uint2 dstSize;     // first written level
 };
 
+// 8 B, matches src/render/push_data.hpp: fullscreen passes reach everything through the root
+struct FramePushData
+{
+    uint64_t frameRoot;
+};
+
+// 16 B, matches src/render/push_data.hpp
+struct PresentPushData
+{
+    uint64_t frameRoot;
+    uint2 displaySize; // swapchain extent
+};
+
+// vis-buffer raster: position only, the payload is per primitive
 struct MeshVertexOut
 {
-    float4 pos          : SV_Position;
-    float3 fragColor    : COLOR;
-    float2 fragTexCoord : TEXCOORD;
-    // same for every vertex of a meshlet
-    nointerpolation uint materialRow : MATERIAL_ROW;
+    float4 pos : SV_Position;
+};
+
+// must match src/core/types.hpp kVisTriangleBits
+static const uint kVisTriangleBits = 7;
+
+// GpuGuideSet rows; must match GuideImage in src/core/types.hpp
+static const uint kGuideNormalRoughness = 0;
+static const uint kGuideGeoNormal = 1;
+static const uint kGuideDiffuseAlbedo = 2;
+static const uint kGuideSpecularF0 = 3;
+static const uint kGuideSpecAlbedo = 4;
+static const uint kGuideEmissive = 5;
+static const uint kGuideMotion = 6;
+static const uint kGuideImageCount = 7;
+
+struct GpuGuideSet
+{
+    uint storage[kGuideImageCount]; // written by the resolve
+    uint sampled[kGuideImageCount];
+};
+
+// render-resolution targets of one frame; matches GpuTargets in src/core/types.hpp
+struct GpuTargets
+{
+    uint visBuffer; // sampled R32_UINT
+    uint depth;     // sampled, reverse Z
+    uint displayStorage;
+    uint displaySampled;
+    uint linearSampler; // sampler heap
+    uint pad0;
+    uint2 renderSize;
+    GpuGuideSet current; // this frame's, by frame parity
+    GpuGuideSet previous;
 };
 
 // per-frame root, matches GpuFrameRoot in src/core/types.hpp
@@ -489,6 +550,7 @@ struct GpuFrameRoot
     uint64_t cullCounters; // GpuCullCounters[kCullPhaseCount]; the mesh shader adds its triangle counts
     uint triangleCull;     // kTriangleCull*
     float subpixelSnap;    // pixels a vertex may move when snapped to the subpixel grid
+    uint64_t targets;      // GpuTargets
 };
 
 #endif

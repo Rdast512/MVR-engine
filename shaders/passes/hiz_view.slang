@@ -36,8 +36,8 @@ float4 hizViewFrag(HiZViewVertexOut vertIn) : SV_TARGET
     const uint2 texel = min(uint2(vertIn.pos.xy * float2(mipSize) / float2(push.screenSize)), mipSize - 1);
     const float depth = pyramid.Load(int3(texel, mip)).r;
 
-    // standard Z [0, 1]
-    const float linearZ = push.nearZ * push.farZ / (push.farZ - depth * (push.farZ - push.nearZ));
+    // reverse Z: 1 at near, 0 at far
+    const float linearZ = push.nearZ * push.farZ / (push.nearZ + depth * (push.farZ - push.nearZ));
     const float t = saturate(log(linearZ / push.nearZ) / log(push.farZ / push.nearZ));
     return float4((1.0 - t).xxx, 1.0);
 }

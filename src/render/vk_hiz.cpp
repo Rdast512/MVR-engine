@@ -28,7 +28,7 @@ namespace
         const auto properties =
             device.physicalDevice.getFormatProperties2<vk::FormatProperties2, vk::FormatProperties3>(kFormat);
         if ((properties.get<vk::FormatProperties3>().optimalTilingFeatures & required) != required) {
-            throw std::runtime_error(std::format("hi-z: {} lacks storage / max-reduction support",
+            throw std::runtime_error(std::format("hi-z: {} lacks storage / min-reduction support",
                                                  vk::to_string(kFormat)));
         }
     }
@@ -40,8 +40,9 @@ HiZPyramid::HiZPyramid(const Device& device, ResourceManager& resourceManager, D
     shaderObjects(shaderObjects)
 {
     checkFormatSupport(device);
-    const vk::SamplerReductionModeCreateInfo reduction{.reductionMode = vk::SamplerReductionMode::eMax};
-    maxSamplerIndex = descriptorManager.writeSamplerDescriptor(vk::SamplerCreateInfo{
+    // reverse Z: the farthest depth is the minimum (core/culling.slang farthestDepth)
+    const vk::SamplerReductionModeCreateInfo reduction{.reductionMode = vk::SamplerReductionMode::eMin};
+    farSamplerIndex = descriptorManager.writeSamplerDescriptor(vk::SamplerCreateInfo{
         .pNext = &reduction,
         .magFilter = vk::Filter::eLinear,
         .minFilter = vk::Filter::eLinear,
@@ -76,7 +77,7 @@ void HiZPyramid::recreate()
     destroyVmaImage(resourceManager.allocator.allocator, image, memory);
     isBuilt = false;
 
-    depthExtent = resourceManager.swapChainExtent;
+    depthExtent = resourceManager.renderExtent;
     extent = {std::bit_floor(depthExtent.width), std::bit_floor(depthExtent.height)};
     const auto mipCount = static_cast<uint32_t>(std::bit_width(std::max(extent.width, extent.height)));
     resourceManager.allocator.createImage2D(extent.width, extent.height, mipCount, vk::SampleCountFlagBits::e1,
@@ -156,33 +157,33 @@ void HiZPyramid::recordBuild(const vk::raii::CommandBuffer& cmd, bool isFrozen)
     // single queue: every later submission sees this build
     isBuilt = true;
 
-    HiZPushData push{
-        .srcImage = depthIndex,
-        .dstImage = mipIndices[0],
-        .maxSampler = maxSamplerIndex,
-        .srcMip = 0,
-        .srcSize = depthExtent,
-        .dstSize = extent,
-    };
-    ShaderObjects::bindComputeShader(cmd, shaderObjects.hizShaders.fromDepth);
-    cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
-    cmd.dispatch(divideRoundUp(extent.width, kGroupSize), divideRoundUp(extent.height, kGroupSize), 1);
-
-    // mip n-1 written -> mip n samples it; the pyramid stays eGeneral, so a global barrier suffices
-    const vk::MemoryBarrier2 mipBarrier{
+    // the last written mip of a dispatch -> the next dispatch reads it; the pyramid stays eGeneral
+    const vk::MemoryBarrier2 levelBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
         .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
     };
-    ShaderObjects::bindComputeShader(cmd, shaderObjects.hizShaders.downsample);
-    push.srcImage = pyramidIndex;
-    for (uint32_t mip = 1; mip < mipIndices.size(); ++mip) {
-        cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &mipBarrier});
-        push.dstImage = mipIndices[mip];
-        push.srcMip = mip - 1;
-        push.srcSize = mipExtent(mip - 1);
-        push.dstSize = mipExtent(mip);
+    ShaderObjects::bindComputeShader(cmd, shaderObjects.hizShaders.build);
+    const auto mipCount = static_cast<uint32_t>(mipIndices.size());
+    for (uint32_t firstMip = 0; firstMip < mipCount; firstMip += kHiZLevelsPerDispatch) {
+        const bool isFromDepth = firstMip == 0;
+        if (!isFromDepth) {
+            cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &levelBarrier});
+        }
+        HiZPushData push{
+            .srcImage = isFromDepth ? depthIndex : pyramidIndex,
+            .dstImages = {kNoneIndex, kNoneIndex, kNoneIndex},
+            .srcMip = isFromDepth ? 0 : firstMip - 1,
+            .isFromDepth = isFromDepth ? 1u : 0u,
+            .levelCount = std::min(kHiZLevelsPerDispatch, mipCount - firstMip),
+            .pad0 = 0,
+            .srcSize = isFromDepth ? depthExtent : mipExtent(firstMip - 1),
+            .dstSize = mipExtent(firstMip),
+        };
+        for (uint32_t level = 0; level < push.levelCount; ++level) {
+            push.dstImages[level] = mipIndices[firstMip + level];
+        }
         cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
         cmd.dispatch(divideRoundUp(push.dstSize.width, kGroupSize), divideRoundUp(push.dstSize.height, kGroupSize),
                      1);

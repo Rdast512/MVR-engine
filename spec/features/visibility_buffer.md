@@ -1,6 +1,6 @@
 # Feature: visibility buffer
 
-**Date:** 2026-11-07 · **Status:** approved, not started · **Milestone:** M1 ([engine_spec.md](../../docs/engine_spec.md) §16.2)
+**Date:** 2026-11-07 · **Status:** V1–V7 implemented (§10), timings and V8 open · **Milestone:** M1 ([engine_spec.md](../../docs/engine_spec.md) §16.2)
 **Implements:** engine spec §8.1 (A6, A9), §8.2, §8.3, §9.2 (single-dispatch form), §9.3, §12.2 (partial)
 **Depends on:** M0: `GpuTargets` block, shading attributes (PBR A4: normals and tangents for every primitive), animation removal (§7.3)
 **Related:** [resource_architecture.md](../resource_architecture.md), [shader_architecture_plan.md](../shader_architecture_plan.md), [culling_comparison.md](../../reference/culling_comparison.md), [pbr_implementation_plan.md](../pbr_implementation_plan.md) B1
@@ -225,6 +225,23 @@ All decided 2026-11-07.
 | D3 | Far plane under reverse Z | **finite**, as in §3.2 |
 
 ---
+
+## 10. As built (2026-11-07)
+
+| Step | State | Deviation from this spec |
+|---|---|---|
+| V1 | done: `ResourceManager::renderExtent`, `RenderTargets` ([vk_render_targets.cpp](../../src/render/vk_render_targets.cpp)), `GpuTargets` behind `GpuFrameRoot::targets` (one host block per frame slot) | M0 was not done first: no shading-attribute generation (A4), so the resolve falls back to the geometric normal where a primitive has no normals and skips normal mapping without tangents; morph targets still exist and the resolve applies the same default-weight positions as the raster |
+| V2 | done; `hiz_footprint_test` runs both conventions | culling counters on a frozen view not compared against standard Z |
+| V3 | done: 3 levels per dispatch ([hiz_build.slang](../../shaders/passes/hiz_build.slang)) | groupshared reductions instead of `subgroupShuffle` (no wave-size assumption); pyramid layout unchanged (previous power of two, level 0 reduces the 1–3 texel footprint), so `hizMip` and its test are untouched. Hi-Z time not recorded |
+| V4 | done: `RasterBin`, `DrawRecordFlag::TwoSided`, winding flip in `mesh_raster` | one DGC state command buffer for both bins until M6 gives `AlphaTested` its own fragment shader |
+| V5 | done: vis-buffer raster, `debug_view`, `present`; `mesh_debug`, `RasterVariant` and `fragmentShaderBarycentric` removed | barycentrics from Olano–Greer homogeneous edge functions, valid for triangles crossing the eye plane. The Hi-Z view now draws in the present pass, so it shows the final pyramid (the next frame's early test) |
+| V6 | done: resolve, `sampleMaterial`, all §3.6 guides, motion | guide storage writes use write-without-format with a startup format-feature check (Slang takes `[format]` only on globals, not heap handles); sampled views serve the reads. Checked on Sponza: unit normals, shading and geometric normals in one hemisphere, geometric normal facing the viewer, zero motion for a static camera. Motion under rotation not yet checked |
+| V7 | cleanup done | spec §2.3 timings not recorded on either tier |
+| V8 | open | |
+
+Validation: no errors after startup, during frames, or on resize. The remaining best-practice warnings come from pre-existing code or the ImGui backend, apart from `Depth32Format`, which reverse Z justifies (commented at `findDepthFormat`).
+
+Open follow-up: the acquire semaphore waits at color-attachment output, which also holds the vis-buffer raster until the image is acquired; present needs its own submit to overlap it (§13.1).
 
 ## References
 

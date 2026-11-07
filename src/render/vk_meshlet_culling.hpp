@@ -69,7 +69,7 @@ struct MeshletCullStats
     uint32_t drawRecords = 0;
     uint32_t totalMeshlets = 0;
     uint32_t meshletsPerSequence = 0;
-    std::array<uint32_t, kMeshStateGroupCount> groupMeshlets{};
+    std::array<uint32_t, kRasterBinCount> binMeshlets{};
     OcclusionHistory history = OcclusionHistory::Valid;
     // the culling camera is frozen and the pyramid holds the freeze frame's depth
     bool isPyramidFrozen = false;
@@ -101,7 +101,7 @@ struct MeshletCullStats
 }
 
 // GPU culling in compute: node instances (frustum + hi-z) -> draw records -> meshlets (frustum + normal cone + hi-z)
-// -> per state group visible lists -> DGC sequences. runs once per CullPhase: instances occluded early become
+// -> per raster bin visible lists -> DGC sequences. runs once per CullPhase: instances occluded early become
 // candidates, meshlets occluded early bits in their record's reject mask; the late phase re-tests both against the
 // fresh pyramid
 class MeshletCulling
@@ -142,7 +142,7 @@ private:
     {
         std::vector<GpuInstanceCullItem> instances;
         std::vector<GpuDrawRecord> drawRecords;
-        std::array<uint32_t, kMeshStateGroupCount> groupMeshlets{};
+        std::array<uint32_t, kRasterBinCount> binMeshlets{};
         // ResourceManager::nodeInstanceLayoutGeneration it was built from
         uint32_t generation = kNoGeneration;
     };
@@ -186,7 +186,7 @@ private:
     [[nodiscard]] OcclusionHistory occlusionHistory(const Camera& camera, const HiZPyramid& hiz,
                                                     bool isLayoutChanged) const;
     [[nodiscard]] uint32_t meshletsPerSequence(uint32_t totalMeshlets) const;
-    [[nodiscard]] MeshStateGroup stateGroupOf(const PrimitiveDraw& primitive) const;
+    [[nodiscard]] uint32_t drawRecordFlagsOf(const PrimitiveDraw& primitive) const;
     void createFrameBuffers();
     void destroyFrameBuffers();
 

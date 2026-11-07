@@ -39,6 +39,7 @@ void ShaderObjects::init()
     createMeshShaders();
     createCullShaders();
     createHiZShaders();
+    createFrameShaders();
 }
 
 bool ShaderObjects::usesDescriptorHeaps() const
@@ -48,19 +49,12 @@ bool ShaderObjects::usesDescriptorHeaps() const
 
 void ShaderObjects::createMeshShaders()
 {
-    meshShaders[std::to_underlying(RasterVariant::Lit)] = createMeshShaderPair({
+    visRaster = createMeshShaderPair({
         .meshFile = "mesh_raster.spv",
         .fragmentFile = "mesh_fragment.spv",
         .meshEntry = "meshMain",
         .fragmentEntry = "fragMain",
-        .debugName = "MeshRaster",
-    });
-    meshShaders[std::to_underlying(RasterVariant::GeometryDebug)] = createMeshShaderPair({
-        .meshFile = "mesh_debug.spv",
-        .fragmentFile = "mesh_debug.spv",
-        .meshEntry = "meshDebugMain",
-        .fragmentEntry = "fragDebugMain",
-        .debugName = "MeshDebug",
+        .debugName = "VisRaster",
     });
     hizView = createMeshShaderPair({
         .meshFile = "hiz_view.spv",
@@ -68,6 +62,13 @@ void ShaderObjects::createMeshShaders()
         .meshEntry = "hizViewMesh",
         .fragmentEntry = "hizViewFrag",
         .debugName = "HiZView",
+    });
+    present = createMeshShaderPair({
+        .meshFile = "present.spv",
+        .fragmentFile = "present.spv",
+        .meshEntry = "presentMesh",
+        .fragmentEntry = "presentFrag",
+        .debugName = "Present",
     });
 }
 
@@ -82,8 +83,13 @@ void ShaderObjects::createCullShaders()
 
 void ShaderObjects::createHiZShaders()
 {
-    hizShaders.fromDepth = createComputeShader("hiz_build.spv", "hizFromDepth", "HiZFromDepth");
-    hizShaders.downsample = createComputeShader("hiz_build.spv", "hizDownsample", "HiZDownsample");
+    hizShaders.build = createComputeShader("hiz_build.spv", "hizBuild", "HiZBuild");
+}
+
+void ShaderObjects::createFrameShaders()
+{
+    frameShaders.resolve = createComputeShader("resolve.spv", "resolveMain", "Resolve");
+    frameShaders.debugView = createComputeShader("debug_view.spv", "debugViewMain", "DebugView");
 }
 
 vk::raii::ShaderEXT ShaderObjects::createComputeShader(std::string_view file, const char* entry,
@@ -162,17 +168,19 @@ ShaderObjects::MeshShaderPair ShaderObjects::createMeshShaderPair(const MeshShad
     return result;
 }
 
-void ShaderObjects::bindMeshState(const vk::raii::CommandBuffer& cmd, RasterVariant variant,
-                                  MeshStateGroup group) const
+void ShaderObjects::bindMeshState(const vk::raii::CommandBuffer& cmd) const
 {
-    bindShaderPair(cmd, pair(variant));
-    setRasterState(cmd, group == MeshStateGroup::DoubleSided ? vk::CullModeFlagBits::eNone : vk::CullModeFlagBits::eBack,
-                   true);
+    bindShaderPair(cmd, visRaster);
+    setRasterState(cmd, vk::CullModeFlagBits::eBack, true);
 }
 
-void ShaderObjects::bindHiZViewState(const vk::raii::CommandBuffer& cmd) const
+void ShaderObjects::bindHiZViewState(const vk::raii::CommandBuffer& cmd) const { setFullscreenState(cmd, hizView); }
+
+void ShaderObjects::bindPresentState(const vk::raii::CommandBuffer& cmd) const { setFullscreenState(cmd, present); }
+
+void ShaderObjects::setFullscreenState(const vk::raii::CommandBuffer& cmd, const MeshShaderPair& shaderPair)
 {
-    bindShaderPair(cmd, hizView);
+    bindShaderPair(cmd, shaderPair);
     setRasterState(cmd, vk::CullModeFlagBits::eNone, false);
 }
 
@@ -210,7 +218,8 @@ void ShaderObjects::setRasterState(const vk::raii::CommandBuffer& cmd, vk::CullM
     // depth / stencil
     cmd.setDepthTestEnable(isDepthEnabled ? vk::True : vk::False);
     cmd.setDepthWriteEnable(isDepthEnabled ? vk::True : vk::False);
-    cmd.setDepthCompareOp(vk::CompareOp::eLess);
+    // reverse Z (core/culling.slang CULLING_REVERSED_Z)
+    cmd.setDepthCompareOp(vk::CompareOp::eGreater);
     cmd.setStencilTestEnable(vk::False);
 
     // color attachment 0

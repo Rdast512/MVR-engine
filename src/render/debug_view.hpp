@@ -5,25 +5,33 @@
 #include <cstdint>
 #include <utility>
 
-// what the main raster pass shows; values below Count match shaders/types.slang kDebugView*
+// what passes/debug_view.slang writes to the display image; values below Count match shaders/types.slang kDebugView*
 enum class DebugView : uint32_t
 {
+    // until lighting (M3): the diffuse albedo guide
     Lit = 0,
     Meshlets,
     Triangles,
     Primitives,
     NodeInstances,
-    StateGroups,
+    // material flags of the primitive: two-sided, and the raster bin
+    Bins,
     // early phase blue, late phase orange
     CullPhase,
-    // fullscreen pyramid mip the late phase tested against
+    // fullscreen pyramid mip of the final depth (passes/hiz_view.slang over the present pass)
     HiZPyramid,
+    Depth,
+    ShadingNormal,
+    Roughness,
+    GeometricNormal,
+    DiffuseAlbedo,
+    SpecularF0,
+    SpecularAlbedo,
+    Emissive,
+    MotionVectors,
     // reserved, not implemented yet
-    LightingAlbedo,
-    LightingNormals,
     LightingOnly,
     DlssInput,
-    DlssMotionVectors,
     Count,
 };
 
@@ -32,6 +40,7 @@ enum class DebugViewCategory : uint8_t
     Lit,
     Geometry,
     Culling,
+    Guides,
     Lighting,
     Upscaling,
 };
@@ -45,6 +54,8 @@ enum class DebugViewCategory : uint8_t
         return "Geometry";
     case DebugViewCategory::Culling:
         return "Culling";
+    case DebugViewCategory::Guides:
+        return "Guides";
     case DebugViewCategory::Lighting:
         return "Lighting";
     case DebugViewCategory::Upscaling:
@@ -60,44 +71,32 @@ struct DebugViewInfo
     bool isImplemented;
 };
 
-// indexed by DebugView; drives the UI, shader selection and overlay label
+// indexed by DebugView; drives the UI and the overlay label
 inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)> kDebugViews = {{
     {"Lit", DebugViewCategory::Lit, true},
     {"Meshlets", DebugViewCategory::Geometry, true},
     {"Triangles", DebugViewCategory::Geometry, true},
     {"Primitives", DebugViewCategory::Geometry, true},
     {"Node instances", DebugViewCategory::Geometry, true},
-    {"State groups", DebugViewCategory::Geometry, true},
+    {"Bins", DebugViewCategory::Geometry, true},
     {"Cull phase", DebugViewCategory::Culling, true},
     {"Hi-Z pyramid", DebugViewCategory::Culling, true},
-    {"Albedo", DebugViewCategory::Lighting, false},
-    {"Normals", DebugViewCategory::Lighting, false},
+    {"Depth", DebugViewCategory::Guides, true},
+    {"Shading normal", DebugViewCategory::Guides, true},
+    {"Roughness", DebugViewCategory::Guides, true},
+    {"Geometric normal", DebugViewCategory::Guides, true},
+    {"Diffuse albedo", DebugViewCategory::Guides, true},
+    {"Specular F0", DebugViewCategory::Guides, true},
+    {"Specular albedo", DebugViewCategory::Guides, true},
+    {"Emissive", DebugViewCategory::Guides, true},
+    {"Motion vectors", DebugViewCategory::Guides, true},
     {"Lighting only", DebugViewCategory::Lighting, false},
     {"DLSS input", DebugViewCategory::Upscaling, false},
-    {"DLSS motion vectors", DebugViewCategory::Upscaling, false},
 }};
 
 [[nodiscard]] constexpr const DebugViewInfo& debugViewInfo(DebugView view)
 {
     return kDebugViews[std::to_underlying(view)];
-}
-
-// linked mesh + fragment shader pair the main pass is drawn with
-enum class RasterVariant : uint32_t
-{
-    Lit = 0,
-    GeometryDebug,
-    Count,
-};
-
-inline constexpr size_t kRasterVariantCount = std::to_underlying(RasterVariant::Count);
-
-[[nodiscard]] constexpr RasterVariant rasterVariantFor(DebugView view)
-{
-    const DebugViewCategory category = debugViewInfo(view).category;
-    return category == DebugViewCategory::Geometry || category == DebugViewCategory::Culling
-        ? RasterVariant::GeometryDebug
-        : RasterVariant::Lit;
 }
 
 struct DebugViewSettings
@@ -106,12 +105,10 @@ struct DebugViewSettings
     static constexpr uint32_t kFlagEdges = 1u << 8;
 
     DebugView view = DebugView::Lit;
-    // barycentric triangle edges over geometry views
+    // analytic-barycentric triangle edges over every view
     bool showEdges = false;
     // DebugView::HiZPyramid; clamped to the last mip
     uint32_t hizMip = 0;
-
-    [[nodiscard]] RasterVariant rasterVariant() const { return rasterVariantFor(view); }
 
     // GpuFrameRoot::debugView: mode in the low byte, flags above
     [[nodiscard]] uint32_t packed() const

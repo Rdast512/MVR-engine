@@ -11,7 +11,7 @@
 class DescriptorManager;
 
 // GPU-driven mesh draws: PUSH_DATA + DRAW_MESH_TASKS via VK_EXT_device_generated_commands.
-// The meshlet cull pass writes the sequences and their counts; one execute per (CullPhase, MeshStateGroup).
+// The meshlet cull pass writes the sequences and their counts; one execute per (CullPhase, RasterBin).
 // Each pair owns a sequence region and a preprocess region.
 class DeviceGeneratedCommands
 {
@@ -29,34 +29,31 @@ public:
 
     // sizes this slot's buffers for maxSequences per group in every phase (the slot must not be in flight); counts
     // are read from GpuCullCounters::sequenceCount of each phase, the first phase's counters at countersAddress
-    void prepareFrame(uint32_t frameSlot, const std::array<uint32_t, kMeshStateGroupCount>& maxSequences,
+    void prepareFrame(uint32_t frameSlot, const std::array<uint32_t, kRasterBinCount>& maxSequences,
                       vk::DeviceAddress countersAddress);
 
     // valid after prepareFrame: where the cull pass writes each group's sequences
     [[nodiscard]] vk::DeviceAddress sequenceAddress() const { return sequenceAddresses[frame]; }
-    [[nodiscard]] uint32_t groupSequenceOffset(CullPhase phase, MeshStateGroup group) const
+    [[nodiscard]] uint32_t binSequenceOffset(CullPhase phase, RasterBin group) const
     {
         return std::to_underlying(phase) * phaseSequences + groupOffsets[std::to_underlying(group)];
     }
 
-    // both get the same variant within a frame: preprocess snapshots its shaders and state.
-    // preprocess runs outside the render pass, after the cull pass is made visible to it
-    void recordPreprocess(vk::raii::CommandBuffer& cmd, RasterVariant variant, CullPhase phase) const;
-    // binds each group's mesh state before its execute
-    void recordExecute(vk::raii::CommandBuffer& cmd, RasterVariant variant, CullPhase phase) const;
+    // preprocess snapshots the state command buffer's shaders and state; it runs outside the render pass, after the
+    // cull pass is made visible to it
+    void recordPreprocess(vk::raii::CommandBuffer& cmd, CullPhase phase) const;
+    // binds the mesh state before each bin's execute
+    void recordExecute(vk::raii::CommandBuffer& cmd, CullPhase phase) const;
 
 private:
     void createLayout();
-    void createStateCommandBuffers();
+    void createStateCommandBuffer();
     void ensureFrameCapacity(uint32_t frameSlot, uint32_t minSequences);
     void destroyFrameResources(uint32_t frameSlot);
     void allocateSequenceBuffer(uint32_t frameSlot, uint32_t capacity);
     void allocatePreprocessBuffer(uint32_t frameSlot, uint32_t capacity);
     [[nodiscard]] vk::DeviceSize queryPreprocessSize(uint32_t capacity) const;
-    [[nodiscard]] vk::GeneratedCommandsInfoEXT generatedCommandsInfo(CullPhase phase, MeshStateGroup group,
-                                                                     RasterVariant variant) const;
-    [[nodiscard]] const vk::raii::CommandBuffer& stateCommandBuffer(RasterVariant variant,
-                                                                    MeshStateGroup group) const;
+    [[nodiscard]] vk::GeneratedCommandsInfoEXT generatedCommandsInfo(CullPhase phase, RasterBin group) const;
 
     Device& device;
     ResourceManager& resourceManager;
@@ -64,21 +61,21 @@ private:
     ShaderObjects& shaderObjects;
 
     vk::raii::IndirectCommandsLayoutEXT layout = nullptr;
-    // per RasterVariant: one handle per stage of kDgcMeshStages, pointed to by the matching generatedShaderInfos row
-    std::array<std::array<vk::ShaderEXT, 2>, kRasterVariantCount> generatedShaders{};
-    std::array<vk::GeneratedCommandsShaderInfoEXT, kRasterVariantCount> generatedShaderInfos{};
+    // one handle per stage of kDgcMeshStages, pointed to by generatedShaderInfo
+    std::array<vk::ShaderEXT, 2> generatedShaders{};
+    vk::GeneratedCommandsShaderInfoEXT generatedShaderInfo{};
     vk::ShaderStageFlags shaderStages{};
 
     // stays in recording state; pool declared first so the buffers are freed before it
     vk::raii::CommandPool statePool = nullptr;
-    // [variant * kMeshStateGroupCount + group]: execute must match the preprocessed graphics state exactly
-    std::vector<vk::raii::CommandBuffer> stateCommandBuffers;
+    // execute must match the preprocessed graphics state exactly; every bin shares it until M6
+    vk::raii::CommandBuffer stateCommandBuffer = nullptr;
 
     // frame recorded by the last prepareFrame
     uint32_t frame = 0;
-    std::array<uint32_t, kMeshStateGroupCount> groupMaxSequences{};
+    std::array<uint32_t, kRasterBinCount> binMaxSequences{};
     // within a phase
-    std::array<uint32_t, kMeshStateGroupCount> groupOffsets{};
+    std::array<uint32_t, kRasterBinCount> groupOffsets{};
     // sequences of all groups of one phase
     uint32_t phaseSequences = 0;
     vk::DeviceAddress counters = 0;

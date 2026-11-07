@@ -260,15 +260,16 @@ struct GpuNodeInstance
 static_assert(sizeof(GpuNodeInstance) == 144);
 static_assert(offsetof(GpuNodeInstance, entityIndex) == 128);
 
-// raster state a meshlet draws with; one DGC execute per group
-enum class MeshStateGroup : uint32_t
+// raster pipeline a meshlet draws with (engine spec A6); one DGC execute per bin and phase. Every bin culls back
+// faces: two-sided materials flip the winding of back-facing triangles in the mesh shader
+enum class RasterBin : uint32_t
 {
-    SingleSided = 0,
-    // cull mode none, no cone culling
-    DoubleSided,
+    Opaque = 0,
+    // M6: discard below the alpha cutoff; empty until then
+    AlphaTested,
     Count,
 };
-inline constexpr uint32_t kMeshStateGroupCount = std::to_underlying(MeshStateGroup::Count);
+inline constexpr uint32_t kRasterBinCount = std::to_underlying(RasterBin::Count);
 
 // two-phase occlusion: early draws what passes against the previous pyramid, late what the fresh one recovers.
 // each phase has its own GpuCullView, GpuCullCounters, visible list region and DGC sequences
@@ -285,12 +286,14 @@ inline constexpr uint32_t kCullGroupSize = 64;
 
 namespace DrawRecordFlag
 {
-    // MeshStateGroup in the low bits
-    inline constexpr uint32_t StateGroupMask = 0x3u;
+    // RasterBin in the low bits
+    inline constexpr uint32_t BinMask = 0x3u;
     // deformed positions (morph targets) leave the meshlet bounds
     inline constexpr uint32_t SkipCulling = 1u << 2;
+    // double-sided material: no normal-cone test
+    inline constexpr uint32_t TwoSided = 1u << 3;
 } // namespace DrawRecordFlag
-static_assert(kMeshStateGroupCount - 1 <= DrawRecordFlag::StateGroupMask);
+static_assert(kRasterBinCount - 1 <= DrawRecordFlag::BinMask);
 
 // one meshlet cull work item: one GpuMeshletGroup of one primitive placed by one node instance.
 // built once per scene layout as templates; the instance pass copies those of visible instances
@@ -349,20 +352,20 @@ struct GpuCullView
 {
     glm::vec3 cameraPos{0.0f};
     uint32_t flags = 0; // CullFlag
-    // GpuVisibleMeshlet[], one region per MeshStateGroup
+    // GpuVisibleMeshlet[], one region per RasterBin
     vk::DeviceAddress visibleMeshlets = 0;
     vk::DeviceAddress counters = 0;  // GpuCullCounters
-    vk::DeviceAddress sequences = 0; // MeshDgcSequence[], one region per MeshStateGroup
+    vk::DeviceAddress sequences = 0; // MeshDgcSequence[], one region per RasterBin
     vk::DeviceAddress instanceItems = 0;       // GpuInstanceCullItem[instanceCount]
     vk::DeviceAddress drawRecordTemplates = 0; // GpuDrawRecord[], copied to GpuFrameRoot::drawRecords
     uint32_t instanceCount = 0;
     uint32_t maxMeshletsPerSequence = 0;
-    std::array<uint32_t, kMeshStateGroupCount> groupVisibleOffset{};
-    std::array<uint32_t, kMeshStateGroupCount> groupSequenceOffset{};
+    std::array<uint32_t, kRasterBinCount> binVisibleOffset{};
+    std::array<uint32_t, kRasterBinCount> binSequenceOffset{};
     // early: previous frame's viewProj against the pyramid it built; late: current viewProj and fresh pyramid
     glm::mat4 occlusionViewProj{1.0f};
     uint32_t hizPyramid = 0;    // resource heap, full mip chain
-    uint32_t hizMaxSampler = 0; // sampler heap
+    uint32_t hizFarSampler = 0; // sampler heap: far-depth reduction
     vk::Extent2D hizSize{};     // mip 0
     // uint[]: GpuInstanceCullItem rows occluded in the early phase, re-tested by the late one
     vk::DeviceAddress instanceCandidates = 0;
@@ -382,26 +385,26 @@ struct GpuCullView
     // capacities of the lists this phase appends to; appends past them are dropped and counted in GpuCullCounters
     uint32_t instanceCandidateCapacity = 0;
     uint32_t drawRecordCapacity = 0; // rows of this phase's drawRecords region, also the reject masks
-    std::array<uint32_t, kMeshStateGroupCount> groupVisibleCapacity{};
+    std::array<uint32_t, kRasterBinCount> binVisibleCapacity{};
     uint32_t pad1 = 0;
 };
 static_assert(sizeof(GpuCullView) == 288);
 static_assert(offsetof(GpuCullView, instanceCandidateCapacity) == 268);
-static_assert(offsetof(GpuCullView, groupVisibleCapacity) == 276);
+static_assert(offsetof(GpuCullView, binVisibleCapacity) == 276);
 static_assert(offsetof(GpuCullView, cullViewProj) == 192);
 static_assert(offsetof(GpuCullView, rejectMasks) == 184);
 static_assert(offsetof(GpuCullView, instanceCandidates) == 160);
 static_assert(offsetof(GpuCullView, occlusionViewProj) == 80);
 static_assert(offsetof(GpuCullView, visibleMeshlets) == 16);
 static_assert(offsetof(GpuCullView, instanceItems) == 40);
-static_assert(offsetof(GpuCullView, groupVisibleOffset) == 64);
+static_assert(offsetof(GpuCullView, binVisibleOffset) == 64);
 
 // one per CullPhase, back to back per frame slot; reset to kInitialCullCounters before the early cull
 struct GpuCullCounters
 {
-    std::array<uint32_t, kMeshStateGroupCount> visibleMeshlets{};
+    std::array<uint32_t, kRasterBinCount> visibleMeshlets{};
     // DGC sequenceCountAddress of each group's execute
-    std::array<uint32_t, kMeshStateGroupCount> sequenceCount{};
+    std::array<uint32_t, kRasterBinCount> sequenceCount{};
     // VkDispatchIndirectCommand of the meshlet cull: x = draw records of visible instances
     std::array<uint32_t, 3> meshletDispatch{0, 1, 1};
     // VkDispatchIndirectCommand of the late instance cull: x = candidates; late phase only
@@ -776,6 +779,62 @@ static_assert(offsetof(GpuModel, meshletPrimitives) == 32);
 static_assert(offsetof(GpuModel, primitives) == 152);
 static_assert(offsetof(GpuModel, attributeMask) == 160);
 
+// vis-buffer payload: (visible row << kVisTriangleBits) | meshlet-local triangle (shaders/geometry/visbuffer.slang)
+inline constexpr uint32_t kVisTriangleBits = 7;
+inline constexpr uint32_t kMaxVisibleRows = 1u << (32 - kVisTriangleBits);
+
+// GpuGuideSet rows (docs/engine_spec.md §9.3); must match shaders/types.slang kGuide*
+enum class GuideImage : uint32_t
+{
+    // RGBA16F: world shading normal, perceptual roughness
+    NormalRoughness = 0,
+    // RG16_SNORM: octahedral, facing-corrected
+    GeoNormal,
+    // RGBA8: baseColor * (1 - metallic)
+    DiffuseAlbedo,
+    // RGBA8: lerp(0.04, baseColor, metallic)
+    SpecularF0,
+    // RGBA8: environment BRDF approximation
+    SpecAlbedo,
+    // R11G11B10F
+    Emissive,
+    // RG16F: render-resolution pixels to the previous frame, no jitter
+    Motion,
+    Count,
+};
+inline constexpr size_t kGuideImageCount = std::to_underlying(GuideImage::Count);
+// temporal passes read the previous frame's set
+inline constexpr uint32_t kGuideSetCount = 2;
+
+// heap indices of one guide set; storage views are written by the resolve, sampled views read by later passes
+struct GpuGuideSet
+{
+    std::array<uint32_t, kGuideImageCount> storage{};
+    std::array<uint32_t, kGuideImageCount> sampled{};
+};
+static_assert(sizeof(GpuGuideSet) == 56);
+
+// render-resolution targets of one frame, reached from GpuFrameRoot::targets
+struct GpuTargets
+{
+    // sampled R32_UINT, eShaderReadOnlyOptimal after the late raster
+    uint32_t visBuffer = 0;
+    // sampled D32_SFLOAT, reverse Z
+    uint32_t depth = 0;
+    // RGBA16F written by passes/debug_view.slang, sampled by passes/present.slang
+    uint32_t displayStorage = 0;
+    uint32_t displaySampled = 0;
+    // sampler heap: linear, clamp to edge
+    uint32_t linearSampler = 0;
+    uint32_t pad0 = 0;
+    glm::uvec2 renderSize{0};
+    // this frame's set, by frame parity
+    GpuGuideSet current;
+    GpuGuideSet previous;
+};
+static_assert(sizeof(GpuTargets) == 144);
+static_assert(offsetof(GpuTargets, current) == 32);
+
 // per-frame entry point for every shader: the only address the push data carries
 struct GpuFrameRoot
 {
@@ -813,8 +872,11 @@ struct GpuFrameRoot
     uint32_t triangleCull = 0;
     // pixels a vertex may move when snapped to the subpixel grid (subPixelPrecisionBits)
     float subpixelSnap = 0.0f;
+    // GpuTargets of this frame slot
+    vk::DeviceAddress targets = 0;
 };
-static_assert(sizeof(GpuFrameRoot) == 128);
+static_assert(sizeof(GpuFrameRoot) == 136);
+static_assert(offsetof(GpuFrameRoot, targets) == 128);
 static_assert(offsetof(GpuFrameRoot, cullCounters) == 112);
 static_assert(offsetof(GpuFrameRoot, lightCount) == 88);
 

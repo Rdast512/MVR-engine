@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Ported from nvpro-samples/vk_lod_clusters shaders/culling.glsl to Slang and modified for this engine:
- * - CULLING_REVERSED_Z switch (the original is reverse Z only); the engine runs standard Z for now
+ * - CULLING_REVERSED_Z switch (the original is reverse Z only); the engine runs reverse Z, tests run both
  * - the near-plane rule names the near-side clip bit for either depth convention
  * - clip bounds are accumulated per corner, so a world-space sphere can feed them without a world matrix
  * - mip choice and center fetch split out of intersectHiz (hizMip) so they can be unit-tested
@@ -21,8 +21,24 @@
 // clip-space corners; the pyramid keeps the farthest depth of its footprint
 
 #ifndef CULLING_REVERSED_Z
-#define CULLING_REVERSED_Z 0 // must match the depth test and the pyramid reduction (passes/hiz_build.slang)
+#define CULLING_REVERSED_Z 1 // must match the depth test (ShaderObjects::setRasterState) and the camera projection
 #endif
+
+#if CULLING_REVERSED_Z
+static const float kNearestDepth = 1.0;
+#else
+static const float kNearestDepth = 0.0;
+#endif
+
+// the pyramid reduction (passes/hiz_build.slang) and the sampler reduction mode (HiZPyramid) follow it
+float farthestDepth(float a, float b)
+{
+#if CULLING_REVERSED_Z
+    return min(a, b);
+#else
+    return max(a, b);
+#endif
+}
 
 static const float kCullingEpsilon = 1.2e-07;
 // two float ulps at depth 1 (D32_SFLOAT, 24-bit significand): absorbs the difference between the depth the
@@ -189,9 +205,9 @@ float hizMip(float4 uvRect, uint2 hizSize)
     return mip;
 }
 
-// intersectHiz: one max-reduction fetch at the rect center. Samples past the last mip clamp to the 1x1 level, which
+// intersectHiz: one far-reduction fetch at the rect center. Samples past the last mip clamp to the 1x1 level, which
 // covers the whole screen. An invalid box is never occluded
-bool isHiZOccluded(ClipBounds bounds, uint2 hizSize, uint pyramidIndex, uint maxSamplerIndex)
+bool isHiZOccluded(ClipBounds bounds, uint2 hizSize, uint pyramidIndex, uint farSamplerIndex)
 {
     if (!bounds.isValid)
     {
@@ -200,7 +216,7 @@ bool isHiZOccluded(ClipBounds bounds, uint2 hizSize, uint pyramidIndex, uint max
     const float4 uvRect = clipUvRect(bounds);
     const float2 center = (uvRect.xy + uvRect.zw) * 0.5;
     const float farthest =
-        tex2D(pyramidIndex).SampleLevel(samplerOf(maxSamplerIndex), center, hizMip(uvRect, hizSize)).r;
+        tex2D(pyramidIndex).SampleLevel(samplerOf(farSamplerIndex), center, hizMip(uvRect, hizSize)).r;
 #if CULLING_REVERSED_Z
     return clipNearestDepth(bounds) < farthest - kHiZDepthNudge;
 #else

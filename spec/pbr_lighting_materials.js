@@ -46,7 +46,7 @@
     return "#" + rgb.map((c) => Math.round(saturate(linearToSrgb(c)) * 255).toString(16).padStart(2, "0")).join("");
   }
 
-  // narkowicz aces fit; same operator class as the engine composite
+  // narkowicz aces fit; same operator class as the engine post pass
   const aces = (x) => saturate((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
   const toDisplay = (c, exposure) => Math.round(linearToSrgb(aces(Math.max(0, c * exposure))) * 255);
 
