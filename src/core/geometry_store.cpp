@@ -139,8 +139,6 @@ void GeometryStore::resizeVertices(uint32_t newCount)
     uv0.resize(newCount, glm::vec2{0.0f});
     uv1.resize(newCount, glm::vec2{0.0f});
     colors.resize(newCount, glm::vec4{1.0f});
-    joints0.resize(newCount, std::array<uint16_t, 4>{0, 0, 0, 0});
-    weights0.resize(newCount, glm::vec4{0.0f});
     vertices.resize(newCount);
 }
 
@@ -153,8 +151,6 @@ void GeometryStore::reserveGeometry(size_t extraVertices, size_t extraIndices)
     uv0.reserve(vertexTarget);
     uv1.reserve(vertexTarget);
     colors.reserve(vertexTarget);
-    joints0.reserve(vertexTarget);
-    weights0.reserve(vertexTarget);
     vertices.reserve(vertexTarget);
     indices.reserve(indices.size() + extraIndices);
 }
@@ -358,8 +354,6 @@ void GeometryStore::clearScratch()
     drop(uv0);
     drop(uv1);
     drop(colors);
-    drop(joints0);
-    drop(weights0);
     drop(indices);
     drop(vertices);
     drop(meshlets);
@@ -367,14 +361,9 @@ void GeometryStore::clearScratch()
     // meshletGroups is catalog: the cull templates read it after the upload
     drop(meshletVertices);
     drop(meshletTriangles);
-    drop(morphPos);
-    drop(morphNrm);
-    drop(morphTan);
     presentStreams = 0;
     textureRefs = {};
     flushedPrimitiveCount = static_cast<uint32_t>(primitiveDraws.size());
-    flushedMorphTargetCount = static_cast<uint32_t>(morphTargets.size());
-    flushedMorphWeightCount = static_cast<uint32_t>(morphWeights.size());
     flushedAuxBlobCount = static_cast<uint32_t>(auxBlobs.size());
     flushedNodeCount = static_cast<uint32_t>(nodeDraws.size());
     flushedGroupCount = static_cast<uint32_t>(meshletGroups.size());
@@ -383,8 +372,6 @@ void GeometryStore::clearScratch()
 void GeometryStore::discardScratch()
 {
     primitiveDraws.resize(flushedPrimitiveCount);
-    morphTargets.resize(flushedMorphTargetCount);
-    morphWeights.resize(flushedMorphWeightCount);
     auxBlobs.resize(flushedAuxBlobCount);
     nodeDraws.resize(flushedNodeCount);
     meshletGroups.resize(flushedGroupCount);

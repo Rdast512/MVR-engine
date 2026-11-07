@@ -212,7 +212,7 @@ namespace
         return result;
     }
 
-    // unsigned data (indices, JOINTS_n): UINT32, UINT16, UINT8
+    // unsigned data (indices): UINT32, UINT16, UINT8
     static std::vector<uint32_t> readAccessorU32(const tg3_model& model, int32_t accessorIdx)
     {
         const std::optional<AccessorView> view = viewAccessor(model, accessorIdx);
@@ -1382,49 +1382,6 @@ namespace
         return {};
     }
 
-    // mesh-local deltas: nodes place the mesh at draw time, so nothing is transformed here
-    static void storeMorphTargets(GeometryStore& geometry, const tg3_model& model, const tg3_primitive& prim,
-                                  uint32_t vertexCount)
-    {
-        if (prim.targets_count == 0) {
-            return;
-        }
-        logDebug(std::format("glTF morph targets: {}", prim.targets_count), "AssetLoader");
-        for (uint32_t t = 0; t < prim.targets_count; ++t) {
-            if (prim.targets == nullptr || prim.target_attribute_counts == nullptr) {
-                break;
-            }
-            const tg3_str_int_pair* attrs = prim.targets[t];
-            const uint32_t attrCount = prim.target_attribute_counts[t];
-            if (attrs == nullptr) {
-                continue;
-            }
-            MorphTarget target{};
-            for (uint32_t a = 0; a < attrCount; ++a) {
-                const std::string_view key = strView(attrs[a].key);
-                const std::vector<float> delta = readAccessorFloats(model, attrs[a].value);
-                const uint32_t comps = accessorCompCount(model, attrs[a].value);
-                logDebug(std::format("glTF morph[{}] attr='{}' accessor={} floats={}", t, key, attrs[a].value,
-                                      delta.size()),
-                          "AssetLoader");
-                if (key == "POSITION") {
-                    target.posOffset = static_cast<uint32_t>(geometry.morphPos.size());
-                    geometry.morphPos.resize(target.posOffset + vertexCount, glm::vec3{0.0f});
-                    fillVec3Range(geometry.morphPos, target.posOffset, vertexCount, delta, comps);
-                } else if (key == "NORMAL") {
-                    target.nrmOffset = static_cast<uint32_t>(geometry.morphNrm.size());
-                    geometry.morphNrm.resize(target.nrmOffset + vertexCount, glm::vec3{0.0f});
-                    fillVec3Range(geometry.morphNrm, target.nrmOffset, vertexCount, delta, comps);
-                } else if (key == "TANGENT") {
-                    target.tanOffset = static_cast<uint32_t>(geometry.morphTan.size());
-                    geometry.morphTan.resize(target.tanOffset + vertexCount, glm::vec4{0.0f});
-                    fillVec4Range(geometry.morphTan, target.tanOffset, vertexCount, delta, comps, glm::vec4{0.0f});
-                }
-            }
-            geometry.morphTargets.push_back(target);
-        }
-    }
-
     static void storeVertexAttribute(GeometryStore& geometry, uint32_t firstVertex, uint32_t vertexCount,
                                      const tg3_model& model, std::string_view name, int32_t accessorIdx)
     {
@@ -1467,35 +1424,6 @@ namespace
         }
         if (name.starts_with("COLOR_")) {
             logDebug(std::format("glTF attr '{}' accessor={} skipped (COLOR_n>0)", name, accessorIdx), "AssetLoader");
-            return;
-        }
-        if (name == "JOINTS_0") {
-            const std::vector<uint32_t> joints = readAccessorU32(model, accessorIdx);
-            logDebug(std::format("glTF attr '{}' accessor={} u32={}", name, accessorIdx, joints.size()),
-                      "AssetLoader");
-            const uint32_t comps = accessorCompCount(model, accessorIdx);
-            for (uint32_t i = 0; i < vertexCount && comps > 0; ++i) {
-                const uint32_t base = i * comps;
-                std::array<uint16_t, 4> packed{0, 0, 0, 0};
-                for (uint32_t c = 0; c < comps && c < 4 && base + c < joints.size(); ++c) {
-                    packed[c] = static_cast<uint16_t>(std::min(joints[base + c], 65535u));
-                }
-                geometry.joints0[firstVertex + i] = packed;
-            }
-            geometry.presentStreams |= GpuModelAttribute::Joints;
-            return;
-        }
-        if (name == "WEIGHTS_0") {
-            const std::vector<float> weights = readAccessorFloats(model, accessorIdx);
-            logDebug(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, weights.size()),
-                      "AssetLoader");
-            fillVec4Range(geometry.weights0, firstVertex, vertexCount, weights, accessorCompCount(model, accessorIdx),
-                          glm::vec4{0.0f});
-            geometry.presentStreams |= GpuModelAttribute::Weights;
-            return;
-        }
-        if (name.starts_with("JOINTS_") || name.starts_with("WEIGHTS_")) {
-            logDebug(std::format("glTF attr '{}' accessor={} skipped (set > 0)", name, accessorIdx), "AssetLoader");
             return;
         }
         logDebug(std::format("glTF attr '{}' accessor={} skipped", name, accessorIdx), "AssetLoader");
@@ -1613,17 +1541,11 @@ namespace
         const tg3_mesh& mesh = model.meshes[mi];
         uint32_t storedPrimitives = 0;
 
-        const uint32_t morphWeightFirst = static_cast<uint32_t>(geometry.morphWeights.size());
-        for (uint32_t wi = 0; wi < mesh.weights_count; ++wi) {
-            geometry.morphWeights.push_back(static_cast<float>(mesh.weights[wi]));
-        }
-
         for (uint32_t pi = 0; pi < mesh.primitives_count; ++pi) {
             const tg3_primitive& prim = mesh.primitives[pi];
             const int32_t mode = prim.mode < 0 ? TG3_MODE_TRIANGLES : prim.mode;
-            logDebug(std::format("glTF mesh[{}].prim[{}] mode={} material={} attrs={} morphTargets={} indicesAcc={}",
-                                  mi, pi, primitiveModeName(mode), prim.material, prim.attributes_count,
-                                  prim.targets_count, prim.indices),
+            logDebug(std::format("glTF mesh[{}].prim[{}] mode={} material={} attrs={} indicesAcc={}", mi, pi,
+                                  primitiveModeName(mode), prim.material, prim.attributes_count, prim.indices),
                       "AssetLoader");
 
             if (mode != TG3_MODE_TRIANGLES && mode != TG3_MODE_TRIANGLE_STRIP && mode != TG3_MODE_TRIANGLE_FAN) {
@@ -1685,8 +1607,8 @@ namespace
                 }
             }
             std::vector<uint32_t> triIndices = toTriangleIndices(mode, srcIndices);
-            // a morph target can open a triangle that is degenerate in the base pose
-            if (posComps == 3 && prim.targets_count == 0) {
+            // static geometry: base-pose degenerates never open up
+            if (posComps == 3) {
                 filterRedundantTriangles(triIndices, positions.data(), vertexCount, sizeof(glm::vec3));
             }
             if (triIndices.empty()) {
@@ -1715,10 +1637,6 @@ namespace
             }
             const uint32_t indexCount = static_cast<uint32_t>(triIndices.size());
 
-            const uint32_t morphFirst = static_cast<uint32_t>(geometry.morphTargets.size());
-            storeMorphTargets(geometry, model, prim, vertexCount);
-            const uint32_t morphCount = static_cast<uint32_t>(geometry.morphTargets.size()) - morphFirst;
-
             uint32_t materialId = ctx.materials.defaultMaterialId();
             if (prim.material >= 0 && static_cast<uint32_t>(prim.material) < ctx.materialIds.size()) {
                 materialId = ctx.materialIds[static_cast<uint32_t>(prim.material)];
@@ -1730,10 +1648,6 @@ namespace
             draw.vertexCount = vertexCount;
             draw.firstIndex = firstIndex;
             draw.indexCount = indexCount;
-            draw.morphFirst = morphCount > 0 ? morphFirst : 0;
-            draw.morphCount = morphCount;
-            // a short weight list would let the shader read past the mesh's weights
-            draw.morphWeightFirst = morphCount > 0 && mesh.weights_count >= morphCount ? morphWeightFirst : kNoneIndex;
             // draw.meshlets is filled by buildGltfMeshlets once every primitive is appended
             parseGltfExtras(geometry, AuxOwnerKind::Primitive, static_cast<uint32_t>(geometry.primitiveDraws.size()),
                             prim.ext, std::format("mesh[{}].prim[{}]", mi, pi));
@@ -1808,8 +1722,8 @@ namespace
         GeometryStore& geometry = ctx.geometry;
         for (uint32_t mi = 0; mi < model.meshes_count; ++mi) {
             const tg3_mesh& mesh = model.meshes[mi];
-            logDebug(std::format("glTF mesh[{}] name='{}' primitives={} morphWeights={}", mi, strView(mesh.name),
-                                  mesh.primitives_count, mesh.weights_count),
+            logDebug(std::format("glTF mesh[{}] name='{}' primitives={}", mi, strView(mesh.name),
+                                  mesh.primitives_count),
                       "AssetLoader");
             parseGltfExtras(geometry, AuxOwnerKind::Mesh, mi, mesh.ext, std::format("mesh[{}]", mi));
         }

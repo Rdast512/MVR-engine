@@ -2,7 +2,6 @@
 
 #include "types.hpp"
 
-#include <array>
 #include <string>
 #include <vector>
 
@@ -26,8 +25,6 @@ public:
     std::vector<glm::vec2> uv0;
     std::vector<glm::vec2> uv1;
     std::vector<glm::vec4> colors;
-    std::vector<std::array<uint16_t, 4>> joints0;
-    std::vector<glm::vec4> weights0;
     std::vector<uint32_t> indices;
 
     // packed {pos, color.rgb, uv0} for the current mesh shader
@@ -43,12 +40,6 @@ public:
     // mesh placements; a mesh's primitives appear once in primitiveDraws however many nodes place it
     std::vector<NodeDraw> nodeDraws;
 
-    std::vector<MorphTarget> morphTargets;
-    std::vector<glm::vec3> morphPos;
-    std::vector<glm::vec3> morphNrm;
-    std::vector<glm::vec4> morphTan;
-    std::vector<float> morphWeights;
-
     std::vector<AuxBlob> auxBlobs;
     std::vector<std::string> extensionsUsed;
     std::vector<std::string> extensionsRequired;
@@ -59,17 +50,15 @@ public:
     // absent streams stay zero-filled in scratch and are not uploaded
     uint32_t presentStreams = 0;
 
-    // catalog watermarks: primitiveDraws/morphTargets below these are GPU-absolute
+    // catalog watermarks: primitiveDraws below these are GPU-absolute
     uint32_t flushedPrimitiveCount = 0;
-    uint32_t flushedMorphTargetCount = 0;
-    uint32_t flushedMorphWeightCount = 0;
     uint32_t flushedAuxBlobCount = 0;
     uint32_t flushedNodeCount = 0;
     uint32_t flushedGroupCount = 0;
 
     // grow SoA + packed GpuVertex to newCount; new verts get default attrs
     void resizeVertices(uint32_t newCount);
-    // capacity for extraVertices more in all nine per-vertex arrays, and extraIndices more indices
+    // capacity for extraVertices more in all seven per-vertex arrays, and extraIndices more indices
     void reserveGeometry(size_t extraVertices, size_t extraIndices);
 
     // enclosing sphere of positions [firstVertex, +vertexCount); zero when empty
@@ -92,7 +81,7 @@ public:
     void buildMeshletsForRange(uint32_t firstIndex, uint32_t indexCount, uint32_t firstVertex, uint32_t vertexCount,
                                PrimitiveDraw& draw);
 
-    // drop load scratch after GPU append; catalog (primitiveDraws, nodeDraws, morphTargets, weights, aux) stays
+    // drop load scratch after GPU append; catalog (primitiveDraws, nodeDraws, meshletGroups, aux) stays
     void clearScratch();
     // failed load: catalog entries past the watermarks go too
     void discardScratch();

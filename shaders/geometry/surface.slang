@@ -16,7 +16,7 @@
 struct TriangleCorners
 {
     uint3 vertexIndex; // model-relative, in meshlet order (not winding-adjusted)
-    float3 objectPos[3]; // default morph weights applied, as in mesh_raster
+    float3 objectPos[3];
     float4 clip[3];      // jittered
     // front face of the winding the rasterizer received (FlipWinding applied)
     bool isFrontFacing;
@@ -33,7 +33,7 @@ TriangleCorners loadTriangleCorners(DrawContext draw, GpuCameraData camera, uint
     {
         const uint vertexIndex = loadMeshletVertexIndex(draw, meshlet, local[i]);
         corners.vertexIndex[i] = vertexIndex;
-        corners.objectPos[i] = applyMorphPosition(draw, vertexIndex, loadVertex(draw, vertexIndex).pos);
+        corners.objectPos[i] = loadVertex(draw, vertexIndex).pos;
         corners.clip[i] = jitterClip(camera, mul(worldViewProj, float4(corners.objectPos[i], 1.0)));
     }
     const bool isFlipped = (draw.nodeInstance.flags & kNodeFlagFlipWinding) != 0;

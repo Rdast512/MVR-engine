@@ -31,14 +31,7 @@ enum class AssetBuffer : uint8_t {
     Normals,
     Tangents,
     Uv1,
-    Joints,
-    Weights,
     Indices,
-    MorphPos,
-    MorphNrm,
-    MorphTan,
-    MorphTargets,     // GpuMorphTarget[], model-relative delta offsets
-    MorphWeights,     // float[], glTF default weights
     Materials,        // shared rows, MaterialStore ids; not sliced per model
     PbrExt,           // parallel to Materials
     Lights,           // per entity, rewritten from LightStore::uploaded; not sliced per model
@@ -70,8 +63,6 @@ struct ElementRange {
 struct ModelAllocation {
     std::array<ElementRange, kAssetBufferCount> gpu; // empty for buffers that are not model-sliced
     ElementRange primitives;   // GeometryStore::primitiveDraws
-    ElementRange morphTargets; // GeometryStore::morphTargets
-    ElementRange morphWeights; // GeometryStore::morphWeights
     ElementRange auxBlobs;     // GeometryStore::auxBlobs
     ElementRange nodes;        // GeometryStore::nodeDraws
     ElementRange meshletGroups; // GeometryStore::meshletGroups
@@ -265,7 +256,6 @@ private:
         std::vector<GpuPrimitive> primitives;
         std::vector<GpuNode> nodes;
         std::vector<uint32_t> meshletPrimitives;
-        std::vector<GpuMorphTarget> morphTargets;
         // MaterialStore::dirtyRows, sorted, with their packed rows
         std::vector<uint32_t> materialRows;
         std::vector<GpuMaterial> materials;

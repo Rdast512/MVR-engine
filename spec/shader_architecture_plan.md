@@ -99,7 +99,7 @@ Library files become Slang modules in M0 (PBR A2). Vendor headers are textual in
 
 | Path | Status | Purpose |
 |---|---|---|
-| `types.slang` | [exists] | POD mirrors of `src/core/types.hpp` and `push_data.hpp`. To do: `GpuTargets`, `GpuRayInstance`, frame root fields (M0, M2); morph types removed (M0) |
+| `types.slang` | [exists] | POD mirrors of `src/core/types.hpp` and `push_data.hpp`. To do: `GpuTargets`, `GpuRayInstance`, frame root fields (M0, M2). Morph types removed (2026-11-08) |
 | `base.slang`, `base/mesh.slang` | [exists] → [delete] | include bundles from before the pass split; not compiled by any pass; removed with modules (M0) |
 | **core/** | | |
 | `core/binding.slang` | [exists] | `tex2D`, `storageTex2D`, `samplerOf`, `bdaPtr`. To do: `sampleOr` (S6) |
@@ -107,7 +107,7 @@ Library files become Slang modules in M0 (PBR A2). Vendor headers are textual in
 | `core/culling.slang` | [exists] | modified port of `vk_lod_clusters` `culling.glsl` (Apache-2.0 header kept): `intersectFrustum`, `isHiZOccluded`, `isSubPixel`, `isFrontFacingHW`, `testTrianglePixel`, `CULLING_REVERSED_Z` (on in M1) |
 | `core/math.slang` | [exists] | `objectToClip`. To do: `kPi`, ONB, octahedral encode, PCG RNG, Halton |
 | **geometry/** | | |
-| `geometry/mesh.slang` | [exists] | meshlet, vertex and triangle fetch through model slices; `loadFrontFacingTriangle` (winding flip). `applyMorphPosition` removed in M0 |
+| `geometry/mesh.slang` | [exists] | meshlet, vertex and triangle fetch through model slices; `loadFrontFacingTriangle` (winding flip) |
 | `geometry/triangle_cull.slang` | [exists] | homogeneous backface + small-primitive test (`SV_CullPrimitive`) |
 | `geometry/visbuffer.slang` | [new] | pack/unpack the 32-bit vis-buffer payload (`visibleRow << kVisTriangleBits \| triangle`); analytic barycentrics and screen derivatives (M1, [visibility_buffer.md](./features/visibility_buffer.md)) |
 | `geometry/surface.slang` | [new] | triangle fetch and attribute interpolation from `(nodeInstance, meshletRow, triangle)`, shared by the resolve (M1) and `decodeHit` (M2) |
@@ -205,7 +205,7 @@ The spec's §16. Each step renders something testable and is measured against sp
 
 | # | Shader work | Visible result |
 |---|---|---|
-| M0 | PBR A1, A2 (modules), A4; `GpuTargets`; remove morph code from `types`, `mesh`, `frame`; delete `base*`, `dlss`; capacity checks in `meshlet_cull` | same image; structs asserted |
+| M0 | PBR A1, A2 (modules), A4; `GpuTargets`; ~~remove morph code~~ (done); delete `base*`, `dlss`; capacity checks in `meshlet_cull` | same image; structs asserted |
 | M1 | per [visibility_buffer.md](./features/visibility_buffer.md): reverse Z + `nvhiz`; `visbuffer`, `surface`, vis-buffer `mesh_fragment`, opaque bin with winding flip; `resolve` as one tiled dispatch with `sampleMaterial` (B1); `gbuffer` layout; `debug_view`, `present`; `mesh_debug` removed | guide debug views; same geometry and cull counts as today |
 | M2 | `geometry/hit`, `rt_instances`, `rt_debug` | debug colors by cluster; unload keeps other models traceable |
 | M3 | `sampleMaterial`, BRDF, `evalLight` (PBR B); RTXDI passes; `exposure`, `composite`; culling jitter rule | stable direct light |

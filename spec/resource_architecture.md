@@ -108,16 +108,11 @@ Usage for all: `TransferSrc | TransferDst | StorageBuffer | ShaderDeviceAddress`
 | `Normals` | `float3` (12 B) | uploaded only if a primitive provides it | reachable, unused |
 | `Tangents` | `float4` (16 B) | xyz + handedness; same rule | reachable, unused |
 | `Uv1` | `float2` (8 B) | same rule | reachable, unused |
-| `Joints` | `uint16 × 4` (8 B) | same rule | reachable, unused; removed in M0 (§12) |
-| `Weights` | `float4` (16 B) | same rule | reachable, unused; removed in M0 |
 | `Indices` | `uint32` | model-relative vertex ids | reachable, unused |
-| `MorphPos` / `MorphNrm` / `MorphTan` | `float3` / `float3` / `float4` | morph deltas, one per primitive vertex per target | position: mesh shader via `applyMorphPosition`; removed in M0 |
-| `MorphTargets` | `GpuMorphTarget` (12 B) | per-target delta offsets into the model's morph slices | mesh shader; removed in M0 |
-| `MorphWeights` | `float` | glTF mesh default weights | mesh shader; removed in M0 |
 | `Materials` | `GpuMaterial` (112 B) | factors, flags, 5 texture + 5 sampler heap indices, 5 UV sets | fragment via `loadMaterial`; `DoubleSided` flag read by `loadDrawContext` |
 | `PbrExt` | `GpuMaterialExtension` (724 B) | glTF extension rows, parallel to `Materials` | `loadMaterialExtension`, no consumer yet |
 | `Lights` | `GpuLight` (64 B) | model-space punctual lights + owning `instanceIndex` | `loadWorldLight`, no consumer yet |
-| `Primitives` | `GpuPrimitive` (48 B) | one row per **mesh** primitive: meshlet/vertex/index/morph/group ranges, `materialId`, model-relative | mesh + fragment via `loadDrawContext`; cull |
+| `Primitives` | `GpuPrimitive` (36 B) | one row per **mesh** primitive: meshlet/vertex/index/group ranges, `materialId`, model-relative | mesh + fragment via `loadDrawContext`; cull |
 | `Nodes` | `GpuNode` (112 B) | mesh placements: affine `localToModel` rows, model-space sphere, mesh-space box, primitive range, `NodeFlag` | instance cull (box) |
 
 `DeviceBuffer` = `{buffer, memory, address, usedBytes, capacityBytes}`. `uploadedCount(id) = usedBytes / stride`.
@@ -129,7 +124,7 @@ Usage for all: `TransferSrc | TransferDst | StorageBuffer | ShaderDeviceAddress`
 2. One command buffer records, per upload: if `dstOffset + bytes ≤ capacity`, a copy into the existing buffer; otherwise a new buffer of `nextCapacity` (exact on first create, then ×2) receives the old bytes the upload does not overwrite plus the staging data. Copies into one buffer never overlap, so no barriers are needed.
 3. One `submitAndWait` on the transfer queue (dedicated family when available), then `installAssetBuffer` swaps in every grown buffer and caches its address.
 
-Optional streams (`Normals`, `Tangents`, `Uv1`, `Joints`, `Weights`) are uploaded only when `GeometryStore::presentStreams` has their `GpuModelAttribute` bit; the loader sets it per accessor. Absent streams stay zero-filled in CPU scratch but never reach the GPU.
+Optional streams (`Normals`, `Tangents`, `Uv1`) are uploaded only when `GeometryStore::presentStreams` has their `GpuModelAttribute` bit; the loader sets it per accessor. Absent streams stay zero-filled in CPU scratch but never reach the GPU.
 
 **Addresses change on growth and on unload.** Never cache an asset address across a flush or an unload; read it from `asset(id).address` / `modelAssetAddress(id, entity)` when building frame data.
 
@@ -139,7 +134,7 @@ Optional streams (`Normals`, `Tangents`, `Uv1`, `Joints`, `Weights`) are uploade
 
 `Engine::loadSelectedModel` first resolves the folder to its model file (`AssetsLoader::resolveModelPath`, weakly canonical) and looks it up with `ResourceManager::findModel`. A hit calls `instantiateModel`: a new entity that shares the model's geometry, materials and textures; only its light rows are uploaded. A miss runs `waitIdle` → `AssetsLoader::loadModel` → `ResourceManager::flushGpuAssets` → `ensureInstanceCapacity`. Startup does the same through `ResourceManager::init`.
 
-1. **Parse.** The loader fills `GeometryStore` scratch (SoA streams, packed `GpuVertex`, meshlets, indices, morph deltas, `textureRefs`), adds materials to `MaterialStore` (dedup by value against every live row, §6.1), fills `LightStore`, and creates the entity in `ObjectStorage` with `modelIds = kInvalidModelId`. Scratch is empty before each load, so scratch offsets are already model-relative. Geometry clean-up uses meshoptimizer: triangle lists drop degenerate and repeated triangles (`meshopt_filterIndexBuffer`, skipped for morphed primitives), OBJ corners are welded with `meshopt_generateVertexRemap`, and every bounding sphere is `meshopt_computeSphereBounds`.
+1. **Parse.** The loader fills `GeometryStore` scratch (SoA streams, packed `GpuVertex`, meshlets, indices, `textureRefs`), adds materials to `MaterialStore` (dedup by value against every live row, §6.1), fills `LightStore`, and creates the entity in `ObjectStorage` with `modelIds = kInvalidModelId`. Scratch is empty before each load, so scratch offsets are already model-relative. Geometry clean-up uses meshoptimizer: triangle lists drop degenerate and repeated triangles (`meshopt_filterIndexBuffer`), OBJ corners are welded with `meshopt_generateVertexRemap`, and every bounding sphere is `meshopt_computeSphereBounds`.
 2. **Meshlets and groups** (`GeometryStore::buildMeshlets`, level 0 of `clusterlod.h`'s `clodDefaultConfig`, spec §7.1):
    - `meshopt_buildMeshletsFlex` (64 vertices, 126 triangles, min triangles = max / 3, cone weight 0, split factor 2), then `meshopt_optimizeMeshletLevel` level 1 per meshlet;
    - per meshlet: `GpuMeshletDesc` (sphere + snorm8 cone from `meshopt_computeMeshletBounds`) and `GpuMeshletBounds` (box and edge lengths from its triangle corners);
@@ -160,7 +155,7 @@ Optional streams (`Normals`, `Tangents`, `Uv1`, `Joints`, `Weights`) are uploade
 
 ## 6. Model slices and unload
 
-`ModelAllocation` (`vk_resource_manager.hpp`) is one uploaded model file, shared by every entity loaded from it. It holds one `ElementRange` per model-sliced asset buffer (`isModelSliced`: all except `Materials`, `PbrExt`, `Lights`), CPU ranges (primitives, groups, nodes, morph targets, morph weights, aux blobs), the cache `key`, the light template, `materialRefs`, `textureRefs` and `refCount` (entities drawing it). `modelAllocations` is indexed by `ModelId`; `ObjectStorage::modelIds[entity]` and `GpuObjectUB::modelIndex` point into it.
+`ModelAllocation` (`vk_resource_manager.hpp`) is one uploaded model file, shared by every entity loaded from it. It holds one `ElementRange` per model-sliced asset buffer (`isModelSliced`: all except `Materials`, `PbrExt`, `Lights`), CPU ranges (primitives, groups, nodes, aux blobs), the cache `key`, the light template, `materialRefs`, `textureRefs` and `refCount` (entities drawing it). `modelAllocations` is indexed by `ModelId`; `ObjectStorage::modelIds[entity]` and `GpuObjectUB::modelIndex` point into it.
 
 ### 6.1 Reference counts
 
@@ -207,11 +202,11 @@ Every `rebuildNodeInstanceLayout` (load, instance, erase) bumps `nodeInstanceLay
 
 Erasing an entity whose model has other entities touches only the light buffer and the node-instance layout. After a model erase, every buffer the model used, every later slice address and every later model id change. Buffers the model did not use keep their address; the material table never moves rows; the model table keeps its address unless it grew.
 
-`GpuModel` (168 B, rebuilt by `rebuildModelTable`): slice addresses for vertices, meshlets, meshletBounds, meshletGroups, meshletPrimitives, meshletVertices, meshletTriangles, normals, tangents, uv1, joints, weights, indices, morphPos, morphNrm, morphTan, morphTargets, morphWeights, nodes, and `primitives` (the model's slice of `GpuFrameRoot::primitives`), plus `attributeMask` (`GpuModelAttribute::*`, `Morphs` = has morph targets) and `nodeCount`. An empty slice has address 0 and a clear bit.
+`GpuModel` (112 B, rebuilt by `rebuildModelTable`): slice addresses for vertices, meshlets, meshletBounds, meshletGroups, meshletPrimitives, meshletVertices, meshletTriangles, normals, tangents, uv1, indices, nodes, and `primitives` (the model's slice of `GpuFrameRoot::primitives`), plus `attributeMask` (`GpuModelAttribute::*`) and `nodeCount`. An empty slice has address 0 and a clear bit.
 
 ### 6.2 Meshes and nodes
 
-A glTF mesh is stored **once** per model: its primitives, vertices, meshlets and morph deltas stay in mesh space. Every scene node that references it becomes a `NodeDraw` / `GpuNode` with its world matrix inside the model (`localToModel`), a model-space sphere, a mesh-space box and the mesh's primitive range. `EXT_mesh_gpu_instancing` expands into one node per instance (`node world × instance TRS`); such a node draws only its instances. OBJ files produce one identity node.
+A glTF mesh is stored **once** per model: its primitives, vertices and meshlets stay in mesh space. Every scene node that references it becomes a `NodeDraw` / `GpuNode` with its world matrix inside the model (`localToModel`), a model-space sphere, a mesh-space box and the mesh's primitive range. `EXT_mesh_gpu_instancing` expands into one node per instance (`node world × instance TRS`); such a node draws only its instances. OBJ files produce one identity node.
 
 Draw instance = entity × node. `rebuildNodeInstanceLayout` assigns rows entity-major (`entityNodeInstanceFirst`) and grows the per-frame `GpuNodeInstance` buffers; it runs after every flush, `instantiateModel` and `eraseEntity` (GPU idle). Each frame `writeNodeInstances` precomputes `world = entity × localToModel`, `prevWorld = prevEntity × localToModel`, and `NodeFlag::FlipWinding` from `det(world) < 0`. A mirrored instance keeps back-face culling: the mesh shader swaps two triangle corners instead of changing front-face state, which DGC cannot vary per sequence.
 
@@ -255,8 +250,8 @@ Per frame, in recording order:
 | Struct | Size (B) | Where | Role |
 |---|---|---|---|
 | `GpuCullView` | 272 | host, per slot and phase | flags, matrices (`cullViewProj` for frustum and sub-pixel, `occlusionViewProj` for Hi-Z), pyramid heap indices, target size, snap, and the addresses below |
-| `GpuCullCounters` | 104 | host-visible VRAM, per slot and phase | visible counts and `sequenceCount` per state group, indirect dispatch args, stats |
-| `GpuInstanceCullItem` | 16 | host, per slot | one node instance: its draw-record template range, `SkipCulling` when morphed |
+| `GpuCullCounters` | 112 | host-visible VRAM, per slot and phase | visible counts and `sequenceCount` per state group, indirect dispatch args, stats |
+| `GpuInstanceCullItem` | 12 | host, per slot | one node instance: its draw-record template range |
 | `GpuDrawRecord` | 20 | templates host, records device | one (node instance, meshlet group) work item: `{nodeInstanceIndex, primitiveIndex, meshletOffset, flags, groupOffset}`; cull-internal, the mesh shaders do not read it |
 | instance candidates | `uint` per item | device | early-occluded instance items, re-tested late |
 | reject masks | `uint` per early draw record | device | bit i = meshlet i of the group failed only occlusion; written every frame, so never cleared |
@@ -285,8 +280,6 @@ material  = root.materials[primitive.materialId == kNoneIndex ? 0 : primitive.ma
 extension = same index as material, from root.pbrExtensions  (loadMaterialExtension)
 light     = root.lights[i], moved to world space by root.instances[light.instanceIndex].modelMatrix  (loadWorldLight)
 meshlet   = model.meshlets[visible.meshletRow]
-morph     = position += Σ model.morphWeights[primitive.morphWeightFirst + t]
-                        * model.morphPos[model.morphTargets[primitive.morphFirst + t].posOffset + vertex - primitive.firstVertex]
 vertex    = model.vertices[model.meshletVertices[meshlet.vertexOffset + i]]
 ```
 
@@ -317,19 +310,18 @@ Rules:
 | `MeshDgcSequence` | 32 | 16 B push data + 12 B draw command, `alignas(16)` so the BDA stays 8-byte aligned |
 | `CullPushData` | 16 | |
 | `GpuFrameRoot` | 128 | `lightCount` @ 88, `cullCounters` @ 112 |
-| `GpuModel` | 168 | `meshletBounds` @ 16, `primitives` @ 152, `attributeMask` @ 160 |
+| `GpuModel` | 112 | `meshletBounds` @ 16, `primitives` @ 96, `attributeMask` @ 104 |
 | `GpuNode` | 112 | affine rows; `firstPrimitive` @ 64, `bboxMin` @ 80 |
 | `GpuNodeInstance` | 144 | `entityIndex` @ 128 |
-| `GpuPrimitive` | 48 | `morphFirst` @ 28 |
+| `GpuPrimitive` | 36 | `firstGroup` @ 28 |
 | `GpuMeshletDesc` | 32 | `coneAxis` @ 12, `boundingSphere` @ 16 |
 | `GpuMeshletBounds` | 32 | `bboxMax` @ 16 |
 | `GpuMeshletGroup` | 32 | `bboxMax` @ 16 |
 | `GpuVisibleMeshlet` | 8 | |
 | `GpuDrawRecord` | 20 | |
-| `GpuInstanceCullItem` | 16 | |
+| `GpuInstanceCullItem` | 12 | |
 | `GpuCullView` | 272 | key offsets asserted |
-| `GpuCullCounters` | 104 | key offsets asserted |
-| `GpuMorphTarget` | 12 | removed in M0 |
+| `GpuCullCounters` | 112 | key offsets asserted |
 | `GpuObjectUB` | 160 | `modelIndex` @ 144 |
 | `GpuMaterial` | 112 | `alignas(16)` in C++; explicit tail pad in Slang |
 | `GpuLight` | 64 | model space; `instanceIndex` @ 56; `type` is a raw `uint` |
@@ -388,9 +380,8 @@ Rules:
 
 | Data | CPU after flush | GPU |
 |---|---|---|
-| Geometry streams, meshlets, bounds, indices, morph deltas | dropped | asset buffers |
+| Geometry streams, meshlets, bounds, indices | dropped | asset buffers |
 | `PrimitiveDraw` catalog, `GeometryStore::meshletGroups` | kept: cull templates are built from them on layout change | `GpuPrimitive`, `GpuMeshletGroup` rows |
-| `MorphTarget` rows, morph weights | kept | — |
 | Material rows | kept: `MaterialStore::infos` is the dedup source and the editor view; freed rows stay as free slots | `Materials`, `PbrExt` |
 | Lights | kept: `LightStore::uploaded` mirrors the GPU rows so erase can fix `instanceIndex`; `ModelAllocation::lights` keeps the template | `Lights` |
 | Model-space bounding spheres | kept (`ObjectStorage::localBounds`) | world-space copy in `GpuObjectUB` |
@@ -451,7 +442,7 @@ What the target architecture adds to or removes from the resources above, by spe
 
 | Milestone | Change | Spec |
 |---|---|---|
-| M0 | Remove the animation resources: `Joints`, `Weights`, `MorphPos`, `MorphNrm`, `MorphTan`, `MorphTargets`, `MorphWeights` buffers and their `GpuModel` slices and attribute bits, `GpuPrimitive` morph ranges, `GpuMorphTarget`, `DrawRecordFlag::SkipCulling` and the "morphed primitives skip culling" rule | §7.3 |
+| M0 | **Done (2026-11-08).** Remove the animation resources: `Joints`, `Weights`, `MorphPos`, `MorphNrm`, `MorphTan`, `MorphTargets`, `MorphWeights` buffers and their `GpuModel` slices and attribute bits, `GpuPrimitive` morph ranges, `GpuMorphTarget`, `DrawRecordFlag::SkipCulling` and the "morphed primitives skip culling" rule | §7.3 |
 | M0 | `GpuTargets` block (heap indices of all render targets) reached from `GpuFrameRoot`; frame root gains `frameIndex`, `exposure`, jitter | §6.2, S7 |
 | M0 | Every GPU list append through a capacity check with an overflow counter in `GpuCullCounters` and the culling panel | §8.1 A10, S11 |
 | M1 | Depth becomes reverse Z (clear 0, `GREATER`); Hi-Z min reduction, `nvhiz` 3 levels per dispatch; `CULLING_REVERSED_Z` on | §8.1 A9, §8.2 |
@@ -476,8 +467,6 @@ The binding model (§1, model slices, frame root, handle-or-address) carries ove
 
 | Issue | Where |
 |---|---|
-| Morphs use only glTF default weights; normal/tangent deltas are not applied (all removed in M0) | `applyMorphPosition` |
-| Morphed meshlets are never culled: bounds come from base positions (removed with morphs in M0) | `DrawRecordFlag::SkipCulling` |
 | Optional streams are still zero-filled in CPU scratch during load (only the GPU upload is skipped) | `GeometryStore::resizeVertices` |
 | Sampler slots are never freed (bounded by sampler dedup) | `vk_descriptors.cpp` |
 | Normals and tangents are mesh-local; lighting will need the node instance's normal matrix (inverse-transpose of `worldMatrix`) | `GpuNodeInstance` |
@@ -496,6 +485,7 @@ The binding model (§1, model slices, frame root, handle-or-address) carries ove
 
 | Date | Change |
 |---|---|
+| 2026-11-08 | Animation removed (engine spec §7.3): `Joints`, `Weights`, `MorphPos`, `MorphNrm`, `MorphTan`, `MorphTargets`, `MorphWeights` buffers, their `GpuModel` slices and attribute bits (`Indices` is now bit 3), `GpuPrimitive` morph ranges, `GpuMorphTarget`, `MorphTarget`, `DrawRecordFlag::SkipCulling` (`TwoSided` is now bit 2), `GpuInstanceCullItem::flags`, the `unculledMeshlets` counter. Sizes: `GpuModel` 112, `GpuPrimitive` 36, `GpuInstanceCullItem` 12, `GpuCullCounters` 112. glTF morph targets and skins are ignored; files load in their base pose |
 | 2026-11-07 | Moved to `spec/`. Re-verified against `7dc04f965`: GPU culling buffers and structs, GPU-written draw records and DGC sequences, `MeshletBounds` / `MeshletGroups` / `MeshletPrimitives` asset buffers, `GpuVisibleMeshlet` lookup chain (push data `{frameRoot, firstVisible, meshletCount}`), sizes (`GpuFrameRoot` 128, `GpuModel` 168, `GpuNode` 112, `GpuNodeInstance` 144, `GpuPrimitive` 48, `GpuDrawRecord` 20), meshlet build as `clusterlod.h` level 0, render targets (no MSAA, D32 depth, Hi-Z pyramid), debug views. New §12: resource changes per [engine_spec.md](../docs/engine_spec.md) milestone |
 | 2026-10-25 | meshoptimizer clean-up: `meshopt_computeSphereBounds` for vertex and node spheres (`mergeBoundingSpheres` removed), `meshopt_filterIndexBuffer` on glTF triangle lists and OBJ, OBJ welding via `meshopt_generateVertexRemap` (`std::hash<GpuVertex>` removed) |
 | 2026-10-25 | Debug views: `DebugView` table, `RasterVariant` shader-object pairs, per-variant DGC shader info + state command buffer, `mesh_debug.slang` (meshlets / triangles / primitives / node instances, barycentric edges), `GpuFrameRoot::debugView` replaces `pad0`, `VK_KHR_fragment_shader_barycentric` |

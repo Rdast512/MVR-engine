@@ -79,64 +79,61 @@ void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     const GpuInstanceCullItem item = bdaPtr<GpuInstanceCullItem>(view.instanceItems)[itemIndex];
 
     // group-uniform: every lane tests the same box, the node's mesh box under the instance matrix
-    if ((item.flags & kDrawRecordSkipCulling) == 0)
+    GpuNodeInstance* instance = bdaPtr<GpuNodeInstance>(root.nodeInstances) + item.nodeInstanceIndex;
+    GpuModel* model = bdaPtr<GpuModel>(root.models) + instance.modelIndex;
+    GpuNode* node = bdaPtr<GpuNode>(model.nodes) + instance.nodeIndex;
+    const float3 bboxMin = node.bboxMin;
+    const float3 bboxMax = node.bboxMax;
+    // candidates already passed both
+    if (!isLate && (view.flags & (kCullInstanceFrustum | kCullSubPixel)) != 0)
     {
-        GpuNodeInstance* instance = bdaPtr<GpuNodeInstance>(root.nodeInstances) + item.nodeInstanceIndex;
-        GpuModel* model = bdaPtr<GpuModel>(root.models) + instance.modelIndex;
-        GpuNode* node = bdaPtr<GpuNode>(model.nodes) + instance.nodeIndex;
-        const float3 bboxMin = node.bboxMin;
-        const float3 bboxMax = node.bboxMax;
-        // candidates already passed both
-        if (!isLate && (view.flags & (kCullInstanceFrustum | kCullSubPixel)) != 0)
+        ClipBounds bounds;
+        const bool isInFrustum =
+            intersectFrustum(view.cullViewProj, bboxMin, bboxMax, instance.worldMatrix, bounds);
+        if ((view.flags & kCullInstanceFrustum) != 0 && !isInFrustum)
         {
-            ClipBounds bounds;
-            const bool isInFrustum =
-                intersectFrustum(view.cullViewProj, bboxMin, bboxMax, instance.worldMatrix, bounds);
-            if ((view.flags & kCullInstanceFrustum) != 0 && !isInFrustum)
+            if (lane == 0 && isStats)
             {
-                if (lane == 0 && isStats)
-                {
-                    InterlockedAdd(counters.instancesCulled, 1);
-                }
-                return;
+                InterlockedAdd(counters.instancesCulled, 1);
             }
-            // final, so a sub-pixel instance never becomes a candidate
-            if ((view.flags & kCullSubPixel) != 0 && isSubPixel(bounds, view.targetSize, view.subpixelSnap))
-            {
-                if (lane == 0 && isStats)
-                {
-                    InterlockedAdd(counters.instancesSubPixel, 1);
-                }
-                return;
-            }
+            return;
         }
-        if ((view.flags & kCullOcclusion) != 0)
+        // final, so a sub-pixel instance never becomes a candidate
+        if ((view.flags & kCullSubPixel) != 0 && isSubPixel(bounds, view.targetSize, view.subpixelSnap))
         {
-            // early: where the instance was when the previous pyramid was drawn
-            if (isBoxOccluded(view, isLate ? instance.worldMatrix : instance.prevWorldMatrix, bboxMin, bboxMax))
+            if (lane == 0 && isStats)
             {
-                if (lane == 0)
+                InterlockedAdd(counters.instancesSubPixel, 1);
+            }
+            return;
+        }
+    }
+    if ((view.flags & kCullOcclusion) != 0)
+    {
+        // early: where the instance was when the previous pyramid was drawn
+        if (isBoxOccluded(view, isLate ? instance.worldMatrix : instance.prevWorldMatrix, bboxMin, bboxMax))
+        {
+            if (lane == 0)
+            {
+                if (!isLate)
                 {
-                    if (!isLate)
+                    uint slot;
+                    InterlockedAdd(bdaPtr<GpuCullCounters>(view.lateCounters).instanceDispatch[0], 1, slot);
+                    if (slot < view.instanceCandidateCapacity)
                     {
-                        uint slot;
-                        InterlockedAdd(bdaPtr<GpuCullCounters>(view.lateCounters).instanceDispatch[0], 1, slot);
-                        if (slot < view.instanceCandidateCapacity)
-                        {
-                            bdaPtr<uint>(view.instanceCandidates)[slot] = itemIndex;
-                        }
-                        else
-                        {
-                            InterlockedAdd(counters.candidatesOverflowed, 1);
-                        }
+                        bdaPtr<uint>(view.instanceCandidates)[slot] = itemIndex;
                     }
-                    if (isStats)
+                    else
                     {
-                        InterlockedAdd(counters.instancesOccluded, 1);
+                        InterlockedAdd(counters.candidatesOverflowed, 1);
                     }
                 }
-                return;
+                if (isStats)
+                {
+                    InterlockedAdd(counters.instancesOccluded, 1);
+                }
             }
+            return;
         }
     }
 
@@ -197,8 +194,6 @@ void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
         bdaPtr<GpuMeshletGroup>(model.meshletGroups)[primitive.firstGroup + record.groupOffset];
 
     const bool isPresent = lane < meshletGroup.meshletCount;
-    const bool isGroupTested = (record.flags & kDrawRecordSkipCulling) == 0;
-    const bool isTested = isPresent && isGroupTested;
     const float4x4 world = instance.worldMatrix;
     // early: where the bounds were when the previous pyramid was drawn
     const float4x4 occlusionWorld = isLate ? world : instance.prevWorldMatrix;
@@ -207,30 +202,27 @@ void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
     bool isGroupFrustumCulled = false;
     bool isGroupSubPixel = false;
     bool isGroupOccluded = false;
-    if (isGroupTested)
+    ClipBounds groupBounds = clipBoundsBegin();
+    if ((view.flags & (kCullFrustum | kCullSubPixel)) != 0)
     {
-        ClipBounds groupBounds = clipBoundsBegin();
-        if ((view.flags & (kCullFrustum | kCullSubPixel)) != 0)
-        {
-            const bool isInFrustum =
-                intersectFrustum(view.cullViewProj, meshletGroup.bboxMin, meshletGroup.bboxMax, world, groupBounds);
-            isGroupFrustumCulled = (view.flags & kCullFrustum) != 0 && !isInFrustum;
-        }
-        if (!isGroupFrustumCulled && (view.flags & kCullSubPixel) != 0)
-        {
-            isGroupSubPixel = isSubPixel(groupBounds, view.targetSize, view.subpixelSnap);
-        }
-        if (!isGroupFrustumCulled && !isGroupSubPixel && (view.flags & kCullOcclusion) != 0)
-        {
-            isGroupOccluded = isBoxOccluded(view, occlusionWorld, meshletGroup.bboxMin, meshletGroup.bboxMax);
-        }
+        const bool isInFrustum =
+            intersectFrustum(view.cullViewProj, meshletGroup.bboxMin, meshletGroup.bboxMax, world, groupBounds);
+        isGroupFrustumCulled = (view.flags & kCullFrustum) != 0 && !isInFrustum;
+    }
+    if (!isGroupFrustumCulled && (view.flags & kCullSubPixel) != 0)
+    {
+        isGroupSubPixel = isSubPixel(groupBounds, view.targetSize, view.subpixelSnap);
+    }
+    if (!isGroupFrustumCulled && !isGroupSubPixel && (view.flags & kCullOcclusion) != 0)
+    {
+        isGroupOccluded = isBoxOccluded(view, occlusionWorld, meshletGroup.bboxMin, meshletGroup.bboxMax);
     }
 
     bool isFrustumCulled = false;
     bool isConeCulled = false;
     bool isSubPixelCulled = false;
     bool isOccluded = false;
-    if (isTested)
+    if (isPresent)
     {
         const uint row = primitive.firstMeshlet + meshletIndex;
         const GpuMeshletDesc meshlet = bdaPtr<GpuMeshletDesc>(model.meshlets)[row];
@@ -298,7 +290,7 @@ void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
 
     if ((view.flags & kCullStats) != 0)
     {
-        if (lane == 0 && isGroupTested)
+        if (lane == 0)
         {
             InterlockedAdd(counters.groupsTested, 1);
             if (isGroupFrustumCulled || isGroupSubPixel || isGroupOccluded)
@@ -306,11 +298,10 @@ void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
                 InterlockedAdd(counters.groupsCulled, 1);
             }
         }
-        waveCount(counters.testedMeshlets, isTested);
+        waveCount(counters.testedMeshlets, isPresent);
         waveCount(counters.frustumCulled, isFrustumCulled);
         waveCount(counters.coneCulled, isConeCulled);
         waveCount(counters.meshletsSubPixel, isSubPixelCulled);
-        waveCount(counters.unculledMeshlets, isPresent && !isTested);
         waveCount(counters.occlusionCulled, isOccluded);
     }
 }

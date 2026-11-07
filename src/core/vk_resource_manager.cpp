@@ -42,17 +42,7 @@ namespace
         {"NormalBuffer", "GPU/Normals", "Vulkan/NormalBytes", "Vulkan/NormalCapacityBytes", sizeof(glm::vec3)},
         {"TangentBuffer", "GPU/Tangents", "Vulkan/TangentBytes", "Vulkan/TangentCapacityBytes", sizeof(glm::vec4)},
         {"Uv1Buffer", "GPU/Uv1", "Vulkan/Uv1Bytes", "Vulkan/Uv1CapacityBytes", sizeof(glm::vec2)},
-        {"JointBuffer", "GPU/Joints", "Vulkan/JointBytes", "Vulkan/JointCapacityBytes",
-         sizeof(std::array<uint16_t, 4>)},
-        {"WeightBuffer", "GPU/Weights", "Vulkan/WeightBytes", "Vulkan/WeightCapacityBytes", sizeof(glm::vec4)},
         {"IndexBuffer", "GPU/Indices", "Vulkan/IndexBytes", "Vulkan/IndexCapacityBytes", sizeof(uint32_t)},
-        {"MorphPosBuffer", "GPU/MorphPos", "Vulkan/MorphPosBytes", "Vulkan/MorphPosCapacityBytes", sizeof(glm::vec3)},
-        {"MorphNrmBuffer", "GPU/MorphNrm", "Vulkan/MorphNrmBytes", "Vulkan/MorphNrmCapacityBytes", sizeof(glm::vec3)},
-        {"MorphTanBuffer", "GPU/MorphTan", "Vulkan/MorphTanBytes", "Vulkan/MorphTanCapacityBytes", sizeof(glm::vec4)},
-        {"MorphTargetBuffer", "GPU/MorphTargets", "Vulkan/MorphTargetBytes", "Vulkan/MorphTargetCapacityBytes",
-         sizeof(GpuMorphTarget)},
-        {"MorphWeightBuffer", "GPU/MorphWeights", "Vulkan/MorphWeightBytes", "Vulkan/MorphWeightCapacityBytes",
-         sizeof(float)},
         {"MaterialBuffer", "GPU/Materials", "Vulkan/MaterialBytes", "Vulkan/MaterialCapacityBytes",
          sizeof(GpuMaterial)},
         {"PbrExtBuffer", "GPU/PbrExtensions", "Vulkan/PbrExtBytes", "Vulkan/PbrExtCapacityBytes",
@@ -164,17 +154,6 @@ namespace
         return packed;
     }
 
-    // scratch offsets are still model-relative: call before remapScratchOffsets
-    [[nodiscard]] std::vector<GpuMorphTarget> packMorphTargets(std::span<const MorphTarget> targets)
-    {
-        std::vector<GpuMorphTarget> packed;
-        packed.reserve(targets.size());
-        for (const MorphTarget& target : targets) {
-            packed.push_back({.posOffset = target.posOffset, .nrmOffset = target.nrmOffset, .tanOffset = target.tanOffset});
-        }
-        return packed;
-    }
-
     [[nodiscard]] vk::DeviceSize nextCapacity(vk::DeviceSize current, vk::DeviceSize needed)
     {
         if (needed == 0) {
@@ -277,26 +256,16 @@ void ResourceManager::rebuildModelTable()
             .normals = slice(AssetBuffer::Normals),
             .tangents = slice(AssetBuffer::Tangents),
             .uv1 = slice(AssetBuffer::Uv1),
-            .joints = slice(AssetBuffer::Joints),
-            .weights = slice(AssetBuffer::Weights),
             .indices = slice(AssetBuffer::Indices),
-            .morphPos = slice(AssetBuffer::MorphPos),
-            .morphNrm = slice(AssetBuffer::MorphNrm),
-            .morphTan = slice(AssetBuffer::MorphTan),
-            .morphTargets = slice(AssetBuffer::MorphTargets),
-            .morphWeights = slice(AssetBuffer::MorphWeights),
             .nodes = slice(AssetBuffer::Nodes),
             .primitives = slice(AssetBuffer::Primitives),
             .nodeCount = modelAllocations[id].nodes.count,
         };
-        const std::array<std::pair<vk::DeviceAddress, uint32_t>, 7> streams{{
+        const std::array<std::pair<vk::DeviceAddress, uint32_t>, 4> streams{{
             {model.normals, GpuModelAttribute::Normals},
             {model.tangents, GpuModelAttribute::Tangents},
             {model.uv1, GpuModelAttribute::Uv1},
-            {model.joints, GpuModelAttribute::Joints},
-            {model.weights, GpuModelAttribute::Weights},
             {model.indices, GpuModelAttribute::Indices},
-            {model.morphTargets, GpuModelAttribute::Morphs},
         }};
         for (const auto& [address, bit] : streams) {
             if (address != 0) {
@@ -665,15 +634,7 @@ std::span<const std::byte> ResourceManager::scratchBytes(AssetBuffer id, const P
     case AssetBuffer::Normals:          return optionalStream(geometryStore.normals, GpuModelAttribute::Normals);
     case AssetBuffer::Tangents:         return optionalStream(geometryStore.tangents, GpuModelAttribute::Tangents);
     case AssetBuffer::Uv1:              return optionalStream(geometryStore.uv1, GpuModelAttribute::Uv1);
-    case AssetBuffer::Joints:           return optionalStream(geometryStore.joints0, GpuModelAttribute::Joints);
-    case AssetBuffer::Weights:          return optionalStream(geometryStore.weights0, GpuModelAttribute::Weights);
     case AssetBuffer::Indices:          return std::as_bytes(std::span(geometryStore.indices));
-    case AssetBuffer::MorphPos:         return std::as_bytes(std::span(geometryStore.morphPos));
-    case AssetBuffer::MorphNrm:         return std::as_bytes(std::span(geometryStore.morphNrm));
-    case AssetBuffer::MorphTan:         return std::as_bytes(std::span(geometryStore.morphTan));
-    case AssetBuffer::MorphTargets:     return std::as_bytes(std::span(packed.morphTargets));
-    case AssetBuffer::MorphWeights:
-        return std::as_bytes(std::span(geometryStore.morphWeights).subspan(geometryStore.flushedMorphWeightCount));
     // not model-sliced: appendMaterialUploads and uploadLights write them
     case AssetBuffer::Materials:
     case AssetBuffer::PbrExt:
@@ -695,30 +656,14 @@ void ResourceManager::remapScratchOffsets()
     const uint32_t indexBase = uploadedCount(AssetBuffer::Indices);
     const uint32_t newPrimitives =
         static_cast<uint32_t>(geometry.primitiveDraws.size()) - geometry.flushedPrimitiveCount;
-    const uint32_t newMorphTargets =
-        static_cast<uint32_t>(geometry.morphTargets.size()) - geometry.flushedMorphTargetCount;
-    logInfo(std::format("remap scratch: +{} prims +{} morphTargets onto gpu verts={} meshlets={} indices={}",
-                         newPrimitives, newMorphTargets, vertexBase, meshletBase, indexBase),
+    logInfo(std::format("remap scratch: +{} prims onto gpu verts={} meshlets={} indices={}", newPrimitives,
+                         vertexBase, meshletBase, indexBase),
              "ResourceManager");
     for (uint32_t p = geometry.flushedPrimitiveCount; p < geometry.primitiveDraws.size(); ++p) {
         PrimitiveDraw& draw = geometry.primitiveDraws[p];
         draw.firstVertex += vertexBase;
         draw.firstIndex += indexBase;
         draw.meshlets.firstMeshlet += meshletBase;
-    }
-    auto bump = [](uint32_t& value, uint32_t delta) {
-        if (value != kNoneIndex) {
-            value += delta;
-        }
-    };
-    const uint32_t morphPosBase = uploadedCount(AssetBuffer::MorphPos);
-    const uint32_t morphNrmBase = uploadedCount(AssetBuffer::MorphNrm);
-    const uint32_t morphTanBase = uploadedCount(AssetBuffer::MorphTan);
-    for (uint32_t t = geometry.flushedMorphTargetCount; t < geometry.morphTargets.size(); ++t) {
-        MorphTarget& target = geometry.morphTargets[t];
-        bump(target.posOffset, morphPosBase);
-        bump(target.nrmOffset, morphNrmBase);
-        bump(target.tanOffset, morphTanBase);
     }
     for (EntityId id = 0; id < objectStorage.size(); ++id) {
         if (objectStorage.firstPrimitives[id] >= geometry.flushedPrimitiveCount) {
@@ -736,7 +681,6 @@ std::vector<GpuPrimitive> ResourceManager::packScratchPrimitives() const
         const PrimitiveDraw& draw = geometryStore.primitiveDraws[p];
         const bool isDefaultMaterial =
             draw.materialId == kNoneIndex || draw.materialId == materialStore.defaultMaterialId();
-        const bool hasMorphWeights = draw.morphCount > 0 && draw.morphWeightFirst != kNoneIndex;
         packed.push_back(GpuPrimitive{
             .firstMeshlet = draw.meshlets.firstMeshlet,
             .meshletCount = draw.meshlets.meshletCount,
@@ -747,10 +691,6 @@ std::vector<GpuPrimitive> ResourceManager::packScratchPrimitives() const
             .firstIndex = draw.firstIndex,
             .indexCount = draw.indexCount,
             // catalog rows past the watermark are this model's, so subtracting it makes them model-relative
-            .morphFirst = draw.morphCount > 0 ? draw.morphFirst - geometryStore.flushedMorphTargetCount : 0,
-            .morphCount = draw.morphCount,
-            .morphWeightFirst =
-                hasMorphWeights ? draw.morphWeightFirst - geometryStore.flushedMorphWeightCount : kNoneIndex,
             .firstGroup = draw.firstGroup - geometryStore.flushedGroupCount,
             .groupCount = draw.groupCount,
         });
@@ -939,14 +879,11 @@ void ResourceManager::flushGpuAssets()
     ZoneScopedN("ResourceManager::flushGpuAssets");
     logInfo("flushGpuAssets() started", "ResourceManager");
     logInfo(std::format("cpu scratch: verts={} meshlets={} meshletVerts={} triCorners={} indices={} "
-                         "normals={} tangents={} uv1={} joints={} weights={} morphPos/Nrm/Tan={}/{}/{} "
-                         "new materials={} lights={}/{} prims={} (flushed {})",
+                         "normals={} tangents={} uv1={} new materials={} lights={}/{} prims={} (flushed {})",
                          geometryStore.vertices.size(), geometryStore.meshlets.size(),
                          geometryStore.meshletVertices.size(), geometryStore.meshletTriangles.size(),
                          geometryStore.indices.size(), geometryStore.normals.size(), geometryStore.tangents.size(),
-                         geometryStore.uv1.size(), geometryStore.joints0.size(), geometryStore.weights0.size(),
-                         geometryStore.morphPos.size(), geometryStore.morphNrm.size(), geometryStore.morphTan.size(),
-                         materialStore.dirtyRows.size(), lightStore.defs.size(), lightStore.instances.size(), geometryStore.primitiveDraws.size(),
+                         geometryStore.uv1.size(), materialStore.dirtyRows.size(), lightStore.defs.size(), lightStore.instances.size(), geometryStore.primitiveDraws.size(),
                          geometryStore.flushedPrimitiveCount),
              "ResourceManager");
 
@@ -969,12 +906,6 @@ void ResourceManager::flushGpuAssets()
         .gpu = {},
         .primitives = {geometryStore.flushedPrimitiveCount,
                        static_cast<uint32_t>(geometryStore.primitiveDraws.size()) - geometryStore.flushedPrimitiveCount},
-        .morphTargets = {geometryStore.flushedMorphTargetCount,
-                         static_cast<uint32_t>(geometryStore.morphTargets.size()) -
-                             geometryStore.flushedMorphTargetCount},
-        .morphWeights = {geometryStore.flushedMorphWeightCount,
-                         static_cast<uint32_t>(geometryStore.morphWeights.size()) -
-                             geometryStore.flushedMorphWeightCount},
         .auxBlobs = {geometryStore.flushedAuxBlobCount,
                      static_cast<uint32_t>(geometryStore.auxBlobs.size()) - geometryStore.flushedAuxBlobCount},
         .nodes = {geometryStore.flushedNodeCount,
@@ -995,8 +926,6 @@ void ResourceManager::flushGpuAssets()
         .primitives = packScratchPrimitives(),
         .nodes = packScratchNodes(),
         .meshletPrimitives = packScratchMeshletPrimitives(),
-        .morphTargets =
-            packMorphTargets(std::span(geometryStore.morphTargets).subspan(geometryStore.flushedMorphTargetCount)),
         .materialRows = {},
         .materials = {},
         .extensions = {},
@@ -1044,13 +973,11 @@ void ResourceManager::flushGpuAssets()
 #endif
 
     logInfo(std::format("gpu catalog: verts={} meshlets={} meshletVerts={} triCorners={} indices={} "
-                         "morphPos/Nrm/Tan={}/{}/{} materials={} lights={} prims={} morphTargets={}",
+                         "materials={} lights={} prims={}",
                          uploadedCount(AssetBuffer::Vertices), uploadedCount(AssetBuffer::Meshlets),
                          uploadedCount(AssetBuffer::MeshletVertices), uploadedCount(AssetBuffer::MeshletTriangles),
-                         uploadedCount(AssetBuffer::Indices), uploadedCount(AssetBuffer::MorphPos),
-                         uploadedCount(AssetBuffer::MorphNrm), uploadedCount(AssetBuffer::MorphTan),
-                         materialStore.liveCount(), lightStore.uploadedCount(), geometryStore.primitiveDraws.size(),
-                         geometryStore.morphTargets.size()),
+                         uploadedCount(AssetBuffer::Indices), materialStore.liveCount(), lightStore.uploadedCount(),
+                         geometryStore.primitiveDraws.size()),
              "ResourceManager");
     const auto [gpuAssetBytes, gpuAssetCapacity] = assetTotals();
     logInfo(std::format("gpu ssbo total: used {} / cap {}", formatBytes(gpuAssetBytes),
@@ -1278,16 +1205,12 @@ void ResourceManager::rebaseCatalog(ModelId modelId, const ModelAllocation& remo
 
     GeometryStore& geometry = geometryStore;
     eraseSlice(geometry.primitiveDraws, removed.primitives);
-    eraseSlice(geometry.morphTargets, removed.morphTargets);
-    eraseSlice(geometry.morphWeights, removed.morphWeights);
     eraseSlice(geometry.auxBlobs, removed.auxBlobs);
     eraseSlice(geometry.nodeDraws, removed.nodes);
     eraseSlice(geometry.meshletGroups, removed.meshletGroups);
     geometry.flushedNodeCount -= removed.nodes.count;
     geometry.flushedGroupCount -= removed.meshletGroups.count;
     geometry.flushedPrimitiveCount -= removed.primitives.count;
-    geometry.flushedMorphTargetCount -= removed.morphTargets.count;
-    geometry.flushedMorphWeightCount -= removed.morphWeights.count;
     geometry.flushedAuxBlobCount -= removed.auxBlobs.count;
 
     // material ids are shared rows that never move
@@ -1295,17 +1218,10 @@ void ResourceManager::rebaseCatalog(ModelId modelId, const ModelAllocation& remo
         shift(draw.meshlets.firstMeshlet, gpuRange(AssetBuffer::Meshlets));
         shift(draw.firstVertex, gpuRange(AssetBuffer::Vertices));
         shift(draw.firstIndex, gpuRange(AssetBuffer::Indices));
-        shift(draw.morphFirst, removed.morphTargets);
-        shift(draw.morphWeightFirst, removed.morphWeights);
         shift(draw.firstGroup, removed.meshletGroups);
     }
     for (NodeDraw& node : geometry.nodeDraws) {
         shift(node.firstPrimitive, removed.primitives);
-    }
-    for (MorphTarget& target : geometry.morphTargets) {
-        shift(target.posOffset, gpuRange(AssetBuffer::MorphPos));
-        shift(target.nrmOffset, gpuRange(AssetBuffer::MorphNrm));
-        shift(target.tanOffset, gpuRange(AssetBuffer::MorphTan));
     }
 
     modelAllocations.erase(modelAllocations.begin() + modelId);
@@ -1322,8 +1238,6 @@ void ResourceManager::rebaseCatalog(ModelId modelId, const ModelAllocation& remo
             shift(allocation.gpu[i].first, removed.gpu[i]);
         }
         shift(allocation.primitives.first, removed.primitives);
-        shift(allocation.morphTargets.first, removed.morphTargets);
-        shift(allocation.morphWeights.first, removed.morphWeights);
         shift(allocation.auxBlobs.first, removed.auxBlobs);
         shift(allocation.nodes.first, removed.nodes);
         shift(allocation.meshletGroups.first, removed.meshletGroups);
@@ -1384,9 +1298,6 @@ void ResourceManager::tracyPlotResources() const
     TracyPlot("Vulkan/MaterialCacheHits", static_cast<double>(materialStore.cacheHits));
     TracyPlot("Vulkan/MaterialCacheMisses", static_cast<double>(materialStore.cacheMisses));
     TracyPlot("Vulkan/LightCount", static_cast<double>(lightStore.uploadedCount()));
-    TracyPlot("Vulkan/MorphPosCount", static_cast<double>(uploadedCount(AssetBuffer::MorphPos)));
-    TracyPlot("Vulkan/MorphNrmCount", static_cast<double>(uploadedCount(AssetBuffer::MorphNrm)));
-    TracyPlot("Vulkan/MorphTanCount", static_cast<double>(uploadedCount(AssetBuffer::MorphTan)));
     for (size_t i = 0; i < kAssetBufferCount; ++i) {
         TracyPlot(kAssetBufferInfo[i].plotUsed, static_cast<double>(assetBuffers[i].usedBytes));
         TracyPlot(kAssetBufferInfo[i].plotCapacity, static_cast<double>(assetBuffers[i].capacityBytes));

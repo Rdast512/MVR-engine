@@ -66,14 +66,7 @@ struct GpuModel
     uint64_t normals;
     uint64_t tangents;
     uint64_t uv1;
-    uint64_t joints;
-    uint64_t weights;
     uint64_t indices;
-    uint64_t morphPos;     // float3 deltas
-    uint64_t morphNrm;     // float3 deltas
-    uint64_t morphTan;     // float4 deltas
-    uint64_t morphTargets; // GpuMorphTarget[]
-    uint64_t morphWeights; // float[], glTF default weights
     uint64_t nodes;        // GpuNode[nodeCount]
     uint64_t primitives;   // GpuPrimitive[], the model's slice of GpuFrameRoot.primitives
     uint attributeMask;
@@ -136,8 +129,7 @@ struct GpuNodeInstance
 
 // DrawRecordFlag
 static const uint kDrawRecordBinMask = 0x3u;
-static const uint kDrawRecordSkipCulling = 1u << 2;
-static const uint kDrawRecordTwoSided = 1u << 3;
+static const uint kDrawRecordTwoSided = 1u << 2;
 
 // one render-list entry (vk_lod_clusters ClusterInfo); must match src/core/types.hpp
 struct GpuVisibleMeshlet
@@ -165,7 +157,6 @@ struct GpuInstanceCullItem
     uint nodeInstanceIndex;
     uint firstDrawRecord; // row of GpuCullView.drawRecordTemplates
     uint drawRecordCount;
-    uint flags;           // kDrawRecordSkipCulling when any primitive is morphed
 };
 
 // CullFlag
@@ -226,7 +217,6 @@ struct GpuCullCounters
     uint testedMeshlets;
     uint frustumCulled;
     uint coneCulled;
-    uint unculledMeshlets;
     uint occlusionCulled; // early: set in the reject masks, late: still occluded
     uint trianglesTested; // mesh shader, kTriangleCullStats only
     uint trianglesBackface;
@@ -240,14 +230,6 @@ struct GpuCullCounters
     uint visibleOverflowed;
 };
 
-// delta offsets relative to the model's morph slices, kNoneIndex = absent
-struct GpuMorphTarget
-{
-    uint posOffset;
-    uint nrmOffset;
-    uint tanOffset;
-};
-
 // values are relative to the owning model's slices
 struct GpuPrimitive
 {
@@ -258,9 +240,6 @@ struct GpuPrimitive
     uint vertexCount;
     uint firstIndex;
     uint indexCount;
-    uint morphFirst;       // rows of model.morphTargets
-    uint morphCount;
-    uint morphWeightFirst; // row of model.morphWeights, kNoneIndex = no default weights
     uint firstGroup;       // rows of model.meshletGroups
     uint groupCount;
 };

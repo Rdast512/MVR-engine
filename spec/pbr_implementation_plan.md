@@ -123,7 +123,7 @@ Resource details: [resource_architecture.md](./resource_architecture.md). Vis-bu
 | `material/brdf.slang` | `envBrdfApprox`, `kDielectricF0`. `evalLambert` stub still present. No GGX, sampling or pdf |
 | Debug views | Guides category done (depth, shading/geometric normal, roughness, albedo, F0, spec albedo, emissive, motion). `LightingOnly` and `DlssInput` reserved, not implemented |
 | Vertex streams | `GpuVertex` 32 B (pos, color, uv0); normals, tangents, uv1 as separate float32 streams. **No generation (A4)**: the resolve falls back to the geometric normal and skips normal mapping without tangents |
-| Animation code | still present (`GpuMorphTarget`, morph and joint streams). The resolve applies the same default-weight morph positions as the raster. Removal is M0 |
+| Animation code | removed (2026-11-08): no morph or skin data is loaded or uploaded; glTF files load in their base pose |
 | Lights | `GpuLight` 64 B per entity in model space, `type` a raw `uint` (`GpuLightType` **missing**); placed by `loadWorldLight` |
 | Clusters | `clusterlod.h` level 0 (Flex builder, cone weight 0, `optimizeMeshletLevel` 1), groups via `partitionClusters` |
 | Device | AS, ray query, RT pipeline, SER, OMM enabled. Cluster AS optional (`hasClusterAccelerationStructure`). OMM properties queried but **not cached**. Position fetch and cooperative vectors **not enabled**. Fragment barycentrics removed |
@@ -695,7 +695,7 @@ A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
 
 | Milestone (spec §16.2) | Tasks |
 |---|---|
-| M0 Contracts | A1, A2, A3, A4, animation removal |
+| M0 Contracts | A1, A2, A3, A4, animation removal (**done**) |
 | M1 Vis buffer | B1, E1 (**done**); 32-bit payload kept, V8 deferred; culling image checked |
 | M2 Cluster RT bring-up | C1, C2, C3 |
 | M3 First lit frame | B1 extensions, B2, B3, E1 open items, E2 (punctual), F1–F3, H1, H2 |

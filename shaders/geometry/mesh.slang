@@ -22,28 +22,6 @@ GpuVertex loadVertex(DrawContext draw, uint vertexIndex)
     return bdaPtr<GpuVertex>(draw.model.vertices)[vertexIndex];
 }
 
-// glTF default weights only; animated weights would come from the instance
-float3 applyMorphPosition(DrawContext draw, uint vertexIndex, float3 position)
-{
-    const GpuPrimitive primitive = draw.primitive;
-    if (primitive.morphCount == 0 || primitive.morphWeightFirst == kNoneIndex)
-    {
-        return position;
-    }
-    // a target holds one delta per primitive vertex
-    const uint local = vertexIndex - primitive.firstVertex;
-    for (uint t = 0; t < primitive.morphCount; ++t)
-    {
-        const float weight = bdaPtr<float>(draw.model.morphWeights)[primitive.morphWeightFirst + t];
-        const GpuMorphTarget target = bdaPtr<GpuMorphTarget>(draw.model.morphTargets)[primitive.morphFirst + t];
-        if (weight != 0.0 && target.posOffset != kNoneIndex)
-        {
-            position += weight * bdaPtr<float3>(draw.model.morphPos)[target.posOffset + local];
-        }
-    }
-    return position;
-}
-
 uint3 loadMeshletTriangle(DrawContext draw, GpuMeshletDesc meshlet, uint ti)
 {
     uint8_t* corners = bdaPtr<uint8_t>(draw.model.meshletTriangles);
@@ -51,13 +29,10 @@ uint3 loadMeshletTriangle(DrawContext draw, GpuMeshletDesc meshlet, uint ti)
     return uint3(uint(corners[base + 0]), uint(corners[base + 1]), uint(corners[base + 2]));
 }
 
-// meshlet corner in model space, default morph weights applied
+// meshlet corner in model space
 GpuVertex loadMeshletCorner(DrawContext draw, GpuMeshletDesc meshlet, uint vi)
 {
-    const uint vertexIndex = loadMeshletVertexIndex(draw, meshlet, vi);
-    GpuVertex v = loadVertex(draw, vertexIndex);
-    v.pos = applyMorphPosition(draw, vertexIndex, v.pos);
-    return v;
+    return loadVertex(draw, loadMeshletVertexIndex(draw, meshlet, vi));
 }
 
 // a mirrored placement reverses winding; swapping two corners restores the front face

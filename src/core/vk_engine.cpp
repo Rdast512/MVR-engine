@@ -893,8 +893,6 @@ void Engine::drawCullingPanel()
                 sum(early.meshletsSubPixel, late.meshletsSubPixel));
             row("Occluded", early.occlusionCulled, late.occlusionCulled, late.occlusionCulled,
                 "early: set in the reject masks; frame: still occluded after the late re-test");
-            row("Not tested (morph)", early.unculledMeshlets, late.unculledMeshlets,
-                sum(early.unculledMeshlets, late.unculledMeshlets));
         }
         row("Visible", earlyVisible, lateVisible, sum(earlyVisible, lateVisible));
         row("Visible dropped", early.visibleOverflowed, late.visibleOverflowed,

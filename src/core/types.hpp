@@ -110,10 +110,6 @@ struct PrimitiveDraw
     uint32_t vertexCount = 0;
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;
-    uint32_t morphFirst = 0;
-    uint32_t morphCount = 0;
-    // kNoneIndex: the mesh has no default weights (all zero)
-    uint32_t morphWeightFirst = kNoneIndex;
     // catalog-absolute rows of GeometryStore::meshletGroups; the groups cover the meshlets in order
     uint32_t firstGroup = 0;
     uint32_t groupCount = 0;
@@ -138,22 +134,6 @@ struct NodeDraw
     uint32_t primitiveCount = 0;
     uint32_t flags = 0;
 };
-
-struct MorphTarget
-{
-    uint32_t posOffset = kNoneIndex;
-    uint32_t nrmOffset = kNoneIndex;
-    uint32_t tanOffset = kNoneIndex;
-};
-
-// GPU mirror of MorphTarget: delta offsets relative to the model's morph slices, kNoneIndex = absent
-struct GpuMorphTarget
-{
-    uint32_t posOffset = kNoneIndex;
-    uint32_t nrmOffset = kNoneIndex;
-    uint32_t tanOffset = kNoneIndex;
-};
-static_assert(sizeof(GpuMorphTarget) == 12);
 
 namespace GpuMaterialFlag
 {
@@ -213,17 +193,12 @@ struct GpuPrimitive
     uint32_t vertexCount = 0;
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;
-    // rows of the model's morph target slice; deltas are indexed by vertex - firstVertex
-    uint32_t morphFirst = 0;
-    uint32_t morphCount = 0;
-    // row of the model's morph weight slice, kNoneIndex = no default weights
-    uint32_t morphWeightFirst = kNoneIndex;
     // rows of the model's GpuMeshletGroup slice
     uint32_t firstGroup = 0;
     uint32_t groupCount = 0;
 };
-static_assert(sizeof(GpuPrimitive) == 48);
-static_assert(offsetof(GpuPrimitive, morphFirst) == 28);
+static_assert(sizeof(GpuPrimitive) == 36);
+static_assert(offsetof(GpuPrimitive, firstGroup) == 28);
 
 // GPU mirror of NodeDraw, model-relative; read by culling and ray tracing, the raster path uses GpuNodeInstance
 struct GpuNode
@@ -288,10 +263,8 @@ namespace DrawRecordFlag
 {
     // RasterBin in the low bits
     inline constexpr uint32_t BinMask = 0x3u;
-    // deformed positions (morph targets) leave the meshlet bounds
-    inline constexpr uint32_t SkipCulling = 1u << 2;
     // double-sided material: no normal-cone test
-    inline constexpr uint32_t TwoSided = 1u << 3;
+    inline constexpr uint32_t TwoSided = 1u << 2;
 } // namespace DrawRecordFlag
 static_assert(kRasterBinCount - 1 <= DrawRecordFlag::BinMask);
 
@@ -313,10 +286,8 @@ struct GpuInstanceCullItem
     uint32_t nodeInstanceIndex = 0;
     uint32_t firstDrawRecord = 0; // row of GpuCullView::drawRecordTemplates
     uint32_t drawRecordCount = 0;
-    // DrawRecordFlag::SkipCulling when any of its primitives is morphed
-    uint32_t flags = 0;
 };
-static_assert(sizeof(GpuInstanceCullItem) == 16);
+static_assert(sizeof(GpuInstanceCullItem) == 12);
 
 namespace CullFlag
 {
@@ -418,7 +389,6 @@ struct GpuCullCounters
     uint32_t testedMeshlets = 0;
     uint32_t frustumCulled = 0;
     uint32_t coneCulled = 0;
-    uint32_t unculledMeshlets = 0;
     // early: set in the reject masks; late: still occluded
     uint32_t occlusionCulled = 0;
     // mesh shader, TriangleCullFlag::Stats only
@@ -436,8 +406,8 @@ struct GpuCullCounters
     uint32_t drawRecordsOverflowed = 0;
     uint32_t visibleOverflowed = 0;
 };
-static_assert(sizeof(GpuCullCounters) == 116);
-static_assert(offsetof(GpuCullCounters, candidatesOverflowed) == 104);
+static_assert(sizeof(GpuCullCounters) == 112);
+static_assert(offsetof(GpuCullCounters, candidatesOverflowed) == 100);
 static_assert(offsetof(GpuCullCounters, meshletsRetested) == 40);
 static_assert(offsetof(GpuCullCounters, instanceDispatch) == 28);
 static_assert(offsetof(GpuCullCounters, sequenceCount) == 8);
@@ -740,10 +710,7 @@ namespace GpuModelAttribute
     inline constexpr uint32_t Normals = 1u << 0;
     inline constexpr uint32_t Tangents = 1u << 1;
     inline constexpr uint32_t Uv1 = 1u << 2;
-    inline constexpr uint32_t Joints = 1u << 3;
-    inline constexpr uint32_t Weights = 1u << 4;
-    inline constexpr uint32_t Indices = 1u << 5;
-    inline constexpr uint32_t Morphs = 1u << 6;
+    inline constexpr uint32_t Indices = 1u << 3;
 } // namespace GpuModelAttribute
 
 // slice addresses of one loaded model; data inside a slice is model-relative. 0 = stream absent
@@ -759,25 +726,18 @@ struct GpuModel
     vk::DeviceAddress normals = 0;
     vk::DeviceAddress tangents = 0;
     vk::DeviceAddress uv1 = 0;
-    vk::DeviceAddress joints = 0;
-    vk::DeviceAddress weights = 0;
     vk::DeviceAddress indices = 0;
-    vk::DeviceAddress morphPos = 0;
-    vk::DeviceAddress morphNrm = 0;
-    vk::DeviceAddress morphTan = 0;
-    vk::DeviceAddress morphTargets = 0;
-    vk::DeviceAddress morphWeights = 0;
     vk::DeviceAddress nodes = 0;
     vk::DeviceAddress primitives = 0; // GpuPrimitive[], the model's slice of GpuFrameRoot::primitives
     uint32_t attributeMask = 0;
     uint32_t nodeCount = 0;
 };
-static_assert(sizeof(GpuModel) == 168);
+static_assert(sizeof(GpuModel) == 112);
 static_assert(offsetof(GpuModel, meshletBounds) == 16);
 static_assert(offsetof(GpuModel, meshletGroups) == 24);
 static_assert(offsetof(GpuModel, meshletPrimitives) == 32);
-static_assert(offsetof(GpuModel, primitives) == 152);
-static_assert(offsetof(GpuModel, attributeMask) == 160);
+static_assert(offsetof(GpuModel, primitives) == 96);
+static_assert(offsetof(GpuModel, attributeMask) == 104);
 
 // vis-buffer payload: (visible row << kVisTriangleBits) | meshlet-local triangle (shaders/geometry/visbuffer.slang)
 inline constexpr uint32_t kVisTriangleBits = 7;

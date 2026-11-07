@@ -216,9 +216,7 @@ uint32_t MeshletCulling::drawRecordFlagsOf(const PrimitiveDraw& primitive) const
     const MaterialStore& materials = resourceManager.materialStore;
     const uint32_t materialId = primitive.materialId == kNoneIndex ? materials.defaultMaterialId() : primitive.materialId;
     const bool isTwoSided = (materials.infos[materialId].material.flags & GpuMaterialFlag::DoubleSided) != 0;
-    // bounds are built from base positions, so morphed meshlets always draw
-    return std::to_underlying(RasterBin::Opaque) | (isTwoSided ? DrawRecordFlag::TwoSided : 0u) |
-        (primitive.morphCount > 0 ? DrawRecordFlag::SkipCulling : 0u);
+    return std::to_underlying(RasterBin::Opaque) | (isTwoSided ? DrawRecordFlag::TwoSided : 0u);
 }
 
 // one item per node instance with meshlets, its draw records contiguous behind firstDrawRecord
@@ -248,7 +246,6 @@ void MeshletCulling::buildTemplates()
             for (uint32_t p = node.firstPrimitive; p < node.firstPrimitive + node.primitiveCount; ++p) {
                 const PrimitiveDraw& primitive = geometry.primitiveDraws[p];
                 const uint32_t flags = drawRecordFlagsOf(primitive);
-                item.flags |= flags & DrawRecordFlag::SkipCulling;
                 templates.binMeshlets[flags & DrawRecordFlag::BinMask] += primitive.meshlets.meshletCount;
                 for (uint32_t g = 0; g < primitive.groupCount; ++g) {
                     templates.drawRecords.push_back(GpuDrawRecord{
