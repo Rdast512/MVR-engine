@@ -502,6 +502,11 @@ void ResourceManager::createCommandBuffers()
     for (size_t i = 0; i < commandBuffers.size(); ++i) {
         setDebugName(device, commandBuffers[i], std::format("GraphicsCommandBuffer_{}", i));
     }
+    presentCommandBuffers.clear();
+    presentCommandBuffers = vk::raii::CommandBuffers(device, allocInfo);
+    for (size_t i = 0; i < presentCommandBuffers.size(); ++i) {
+        setDebugName(device, presentCommandBuffers[i], std::format("PresentCommandBuffer_{}", i));
+    }
     if (deviceWrapper.hasDedicatedTransferQueue()) {
         vk::CommandBufferAllocateInfo transferAllocInfo{.commandPool = transferCommandPool,
                                                         .level = vk::CommandBufferLevel::ePrimary,

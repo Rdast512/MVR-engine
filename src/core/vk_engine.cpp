@@ -945,10 +945,14 @@ void Engine::drawCullingPanel()
     }
     float gpuTotalMs = 0.0f;
     for (size_t i = 0; i < kGpuTimerScopeCount; ++i) {
-        gpuTotalMs += timer.averageMs(static_cast<GpuTimerScope>(i));
+        const auto scope = static_cast<GpuTimerScope>(i);
+        if (scope != GpuTimerScope::AcquireWait) {
+            gpuTotalMs += timer.averageMs(scope);
+        }
     }
     ImGui::Text("GPU total %.3f ms (rolling %zu frames)", gpuTotalMs, GpuTimer::kHistorySize);
-    ImGui::SetItemTooltip("sum of the scopes below: begin of the early cull to the end of the late Hi-Z build");
+    ImGui::SetItemTooltip("sum of the scopes below except Acquire wait, which is idle time until the swapchain "
+                          "image is available");
     constexpr float kPlotHeight = 32.0f;
     for (size_t i = 0; i < kGpuTimerScopeCount; ++i) {
         const auto scope = static_cast<GpuTimerScope>(i);
@@ -1440,6 +1444,7 @@ void Engine::cleanup()
     // command buffers go before the resources they reference
     if (resourceManager) {
         resourceManager->commandBuffers.clear();
+        resourceManager->presentCommandBuffers.clear();
         resourceManager->transferCommandBuffer.clear();
     }
 

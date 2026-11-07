@@ -245,10 +245,16 @@ Each task lists **Do**, **Done when**, and **Must not** where relevant, plus its
 - **Do:**
   - Slang `AlphaMode`, `LightType` and material flag constants mirroring `GpuMaterialFlag` (§4.2); move `kMaterialFlagUnlit` out of `material/pbr.slang`.
   - `enum class GpuLightType : uint32_t { Directional, Point, Spot }` (values used by `lightTypeFromName`); `GpuLight.type` becomes `GpuLightType`. Keep 64 B.
-  - `GpuRayInstance` (8 B) and the `GpuFrameRoot` fields of §4.2, with size and offset asserts.
-  - Cache `vk::PhysicalDeviceOpacityMicromapPropertiesEXT` in `HardwareCapabilities::opacityMicromap`.
+  - `GpuRayInstance` (8 B) and the `GpuFrameRoot` fields of §4.2 plus `frameFlags` (`kFrameFlagHistoryReset`, [motion_vectors.md](./features/motion_vectors.md) §4), with size and offset asserts.
+  - Cache `vk::PhysicalDeviceOpacityMicromapPropertiesEXT` in `HardwareCapabilities::opacityMicromap`, and `vk::PhysicalDeviceRayTracingInvocationReorderPropertiesEXT` with its hint logged at startup ([shader_execution_reordering.md](./features/shader_execution_reordering.md) SER1).
+  - **Core-material data lives in `GpuMaterial`** (decided 2026-11-08). The resolve and every hit already load one `GpuMaterial` row; a second table would add a pointer load and a second row of cache lines per pixel, and `GpuMaterialExtension` (724 B per row) is mostly data no shader reads yet. So:
+    - `KHR_materials_emissive_strength` is folded into `emissiveFactor` on the CPU when the row is packed: no field, no shader math;
+    - `KHR_texture_transform` is precomputed on the CPU into one 2×3 float matrix per slot (`M = T · R · S`; 24 B × 5 slots), so the shader does no `sin`/`cos`;
+    - flag bits 4–8 (`kMaterialFlagUvTransformBaseColor` … `Emissive`) mark slots with a non-identity transform; the shader reads a slot's matrix only when its bit is set, so identity materials (almost all) load no extra bytes. `texCoord` overrides are already resolved into the slot's UV index.
+
+    `GpuMaterial` grows from 112 to 240 B; update the asserts on both sides. `GpuMaterialExtension` keeps the other KHR extensions for their future material bins.
 - **Done when:** changing any field or pad breaks the build.
-- **Must not:** add a Slang `MaterialPbrExtension` (pbrExt stays unread until a KHR extension bin needs it).
+- **Must not:** add a Slang mirror of `GpuMaterialExtension` or read it per pixel before a KHR extension bin needs it.
 
 #### A2 · Slang modules + frame root fields
 
@@ -310,8 +316,8 @@ SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodB
   - Normals and tangents are transformed by the node instance's normal matrix; the bitangent sign flips under `FlipWinding`; back faces of two-sided materials flip the normal in `buildSurface`.
   - **Unlit:** `baseColor = 0`, `metallic = 0`, the color goes into `emissive`. Every consumer then handles unlit with no special case.
 - **Open (M3, with E1):**
-  - `KHR_texture_transform` per slot (parse into `GpuMaterial`, apply in `textureGradients`: `uv' = M·uv + t`, and the same 2×2 matrix on `ddx`/`ddy`).
-  - `KHR_materials_emissive_strength` as a scale on `emissiveFactor`.
+  - `KHR_texture_transform` per slot from the A1 `GpuMaterial` matrices, applied in `textureGradients` only when the slot's flag bit is set: `uv' = M·(uv, 1)`, and the matrix's 2×2 part on `ddx`/`ddy`.
+  - `KHR_materials_emissive_strength`: nothing in the shader; A1 folds it into `emissiveFactor`.
   - `lodBias = log2(render / display)` once DLSS-RR sets the render resolution.
 - **Done when:** the roughness and F0 debug views on `MetalRoughSpheres` match the texture layout; `TextureTransformTest` matches the Khronos screenshot in kind.
 - **Must not:** sRGB-sample metal-rough/normal/occlusion, use Unity ORM on the metal-rough slot, flip normal Y, or sample with implicit LOD outside a fragment shader.
@@ -527,7 +533,8 @@ Spec §8.2, §10.5.
   - **Jitter** (M3, spec §12.2): Halton(2,3), phase count `8 · (display / render)²`, applied through `jitterClip` in the raster and the resolve's pixel → NDC mapping; motion stays unjittered; culling uses the unjittered matrix and the exact pixel tests widen by the jitter amplitude.
   - **`lodBias`** = `log2(render / display)` (B1).
   - `DebugView::LightingOnly` and `DlssInput` become views of the lighting outputs and H1 inputs; mark them `isImplemented` as each lands.
-  - Motion under camera rotation not yet checked; spec §2.3 timings not recorded (visibility_buffer.md §10).
+  - **Motion vectors:** [motion_vectors.md](./features/motion_vectors.md): history bugs B1–B4, the history-reset flag, and a reprojection debug view that proves the vectors (MV1–MV5).
+  - Spec §2.3 timings deferred (2026-11-08); take them on a release build with validation off (vulkan-dev skill §6.1).
   - M7 splits the resolve into per-material-bin shaders (spec §9.1–9.2); the per-pixel body stays this one.
 - **Done when (remaining):** `MetalRoughSpheres`, `TwoSidedPlane` and `UnlitTest` guides match the Khronos screenshots in kind; motion is zero for a static scene and consistent under rotation.
 - **Must not:** write GGX `α` as roughness, jitter without unjittered motion, or sRGB-encode guides.
@@ -581,6 +588,7 @@ Spec §11.1, §11.3–11.6.
 
 #### G1 · SER RT pipeline
 
+- **Feature spec:** [shader_execution_reordering.md](./features/shader_execution_reordering.md) (SER1–SER6). It refines the steps below: the hint is computed from `InstanceIndex()` before the invoke, and the invoke stays because `HitObject::GetClusterID` is NV-only while position fetch on the hit object is EXT-only.
 - **Files:** `src/render/vk_rt_pipeline.{hpp,cpp}` (new), `shaders/raytracing/*`
 - **Do:**
   - `VkPipeline` + SBT per shaded-ray pass: one raygen, one miss, one hit group (closest-hit only). Descriptor-heap pipeline flag as on the shader objects; `allowClusterAccelerationStructure` for cluster hits. Dispatch with `vkCmdTraceRaysIndirect2KHR`.
@@ -688,7 +696,7 @@ A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
 | Milestone (spec §16.2) | Tasks |
 |---|---|
 | M0 Contracts | A1, A2, A3, A4, animation removal |
-| M1 Vis buffer | B1, E1 (**done**); V8 32 vs 64-bit measurement open |
+| M1 Vis buffer | B1, E1 (**done**); 32-bit payload kept, V8 deferred; culling image checked |
 | M2 Cluster RT bring-up | C1, C2, C3 |
 | M3 First lit frame | B1 extensions, B2, B3, E1 open items, E2 (punctual), F1–F3, H1, H2 |
 | M4 Indirect | G1, G2, G3 (SHaRC), G5, G6 |

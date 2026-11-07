@@ -36,7 +36,10 @@ public:
     [[nodiscard]] uint32_t getHiZMipCount() const noexcept { return hiz.mipCount(); }
 
 private:
-    void recordCommandBuffer(uint32_t imageIndex);
+    // submitted before the image is acquired: cull, raster, Hi-Z, resolve, debug view
+    void recordFrameCommands(vk::raii::CommandBuffer& cmd);
+    // submitted after the acquire, waiting on its semaphore: present pass and UI
+    void recordPresentCommands(vk::raii::CommandBuffer& cmd, uint32_t imageIndex);
     void recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase);
     void recordResolve(const vk::raii::CommandBuffer& cmd);
     void recordDebugView(const vk::raii::CommandBuffer& cmd);

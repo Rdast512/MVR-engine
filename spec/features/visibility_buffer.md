@@ -1,6 +1,6 @@
 # Feature: visibility buffer
 
-**Date:** 2026-11-07 · **Status:** V1–V7 implemented (§10), timings and V8 open · **Milestone:** M1 ([engine_spec.md](../../docs/engine_spec.md) §16.2)
+**Date:** 2026-11-07 · **Status:** V1–V7 implemented (§10); timings and V8 deferred; motion vectors continue in [motion_vectors.md](./motion_vectors.md) · **Milestone:** M1 ([engine_spec.md](../../docs/engine_spec.md) §16.2)
 **Implements:** engine spec §8.1 (A6, A9), §8.2, §8.3, §9.2 (single-dispatch form), §9.3, §12.2 (partial)
 **Depends on:** M0: `GpuTargets` block, shading attributes (PBR A4: normals and tangents for every primitive), animation removal (§7.3)
 **Related:** [resource_architecture.md](../resource_architecture.md), [shader_architecture_plan.md](../shader_architecture_plan.md), [culling_comparison.md](../../reference/culling_comparison.md), [pbr_implementation_plan.md](../pbr_implementation_plan.md) B1
@@ -237,11 +237,11 @@ All decided 2026-11-07.
 | V5 | done: vis-buffer raster, `debug_view`, `present`; `mesh_debug`, `RasterVariant` and `fragmentShaderBarycentric` removed | barycentrics from Olano–Greer homogeneous edge functions, valid for triangles crossing the eye plane. The Hi-Z view now draws in the present pass, so it shows the final pyramid (the next frame's early test) |
 | V6 | done: resolve, `sampleMaterial`, all §3.6 guides, motion | guide storage writes use write-without-format with a startup format-feature check (Slang takes `[format]` only on globals, not heap handles); sampled views serve the reads. Checked on Sponza: unit normals, shading and geometric normals in one hemisphere, geometric normal facing the viewer, zero motion for a static camera. Motion under rotation not yet checked |
 | V7 | cleanup done | spec §2.3 timings not recorded on either tier |
-| V8 | open | |
+| V8 | deferred (2026-11-08): 32-bit payload kept | |
 
 Validation: no errors after startup, during frames, or on resize. The remaining best-practice warnings come from pre-existing code or the ImGui backend, apart from `Depth32Format`, which reverse Z justifies (commented at `findDepthFormat`).
 
-Open follow-up: the acquire semaphore waits at color-attachment output, which also holds the vis-buffer raster until the image is acquired; present needs its own submit to overlap it (§13.1).
+Present on its own submit (done 2026-11-08): the frame work (cull, raster, Hi-Z, resolve, debug view) is submitted before the acquire with no wait; only the present + UI submit waits on the acquire semaphore and signals the fence. An out-of-date acquire signals the fence with an empty submit. The `Acquire wait` timer scope shows the GPU idle time until the image arrives and is excluded from the total. Checked with core + sync validation through repeated resizes: clean.
 
 ## References
 

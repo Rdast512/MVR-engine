@@ -61,8 +61,9 @@ void Renderer::drawFrame()
     auto& presentQueue = device.presentQueue;
     auto& swapChainKHR = swapChain.swapChain;
     auto& fence = *resourceManager.inFlightFences[currentFrame];
-    auto& presentSemaphore = *resourceManager.presentCompleteSemaphore[currentFrame];
-    auto& commandBuffer = resourceManager.commandBuffers[currentFrame];
+    auto& acquireSemaphore = *resourceManager.presentCompleteSemaphore[currentFrame];
+    auto& frameCmd = resourceManager.commandBuffers[currentFrame];
+    auto& presentCmd = resourceManager.presentCommandBuffers[currentFrame];
 
     {
         ZoneScopedN("FenceWait");
@@ -77,16 +78,36 @@ void Renderer::drawFrame()
     targets.prepareFrame(currentFrame, frameNumber);
     gpuTimer.collect(currentFrame);
 
+    // the fence covers both submits of this slot; every path below ends in a submit that signals it
+    deviceRef.resetFences(fence);
+    frameCmd.reset();
+    {
+        ZoneScopedN("RecordFrameCommands");
+        recordFrameCommands(frameCmd);
+    }
+    {
+        ZoneScopedN("UpdateUBO");
+        resourceManager.updateUniformBuffers(currentFrame, debugView.packed());
+    }
+    {
+        ZoneScopedN("QueueSubmitFrame");
+        // no wait: cull, raster and compute run while the CPU acquires the image
+        const vk::CommandBufferSubmitInfo frameCmdInfo{.commandBuffer = *frameCmd};
+        graphicsQueue.submit2(vk::SubmitInfo2{.commandBufferInfoCount = 1, .pCommandBufferInfos = &frameCmdInfo});
+    }
+
     vk::Result result{};
     uint32_t imageIndex{0};
     {
         ZoneScopedN("AcquireImage");
-        auto acquired = swapChainKHR.acquireNextImage(UINT64_MAX, presentSemaphore, nullptr);
+        auto acquired = swapChainKHR.acquireNextImage(UINT64_MAX, acquireSemaphore, nullptr);
         result = acquired.result;
         imageIndex = acquired.value;
     }
 
     if (result == vk::Result::eErrorOutOfDateKHR) {
+        // no present this frame: an empty submit signals the fence after the frame work, so the slot stays usable
+        graphicsQueue.submit2(vk::ArrayProxy<const vk::SubmitInfo2>{}, fence);
         swapChain.recreateSwapChain();
         rebuildSwapchainResources();
         return;
@@ -96,38 +117,28 @@ void Renderer::drawFrame()
         throw std::runtime_error("failed to acquire swap chain image!");
     }
 
-    deviceRef.resetFences(fence);
-    commandBuffer.reset();
+    presentCmd.reset();
     {
-        ZoneScopedN("RecordCommandBuffer");
-        recordCommandBuffer(imageIndex);
+        ZoneScopedN("RecordPresentCommands");
+        recordPresentCommands(presentCmd, imageIndex);
     }
 
-    // cull and compute run before the image is acquired; color-attachment output, the vis-buffer raster included,
-    // waits for it until present gets its own submit
-    const vk::SemaphoreSubmitInfo waitSemaphoreInfo = {.semaphore = presentSemaphore,
+    // only the present pass waits for the image; the swapchain barrier chains with this stage
+    const vk::SemaphoreSubmitInfo waitSemaphoreInfo = {.semaphore = acquireSemaphore,
                                                        .stageMask =
                                                            vk::PipelineStageFlagBits2::eColorAttachmentOutput};
-
-    const vk::CommandBufferSubmitInfo commandBufferInfo = {.commandBuffer = *commandBuffer};
-
+    const vk::CommandBufferSubmitInfo presentCmdInfo = {.commandBuffer = *presentCmd};
     auto& renderSemaphore = *resourceManager.renderFinishedSemaphore[imageIndex];
     const vk::SemaphoreSubmitInfo signalSemaphoreInfo = {.semaphore = renderSemaphore,
                                                          .stageMask = vk::PipelineStageFlagBits2::eBottomOfPipe};
-
-    {
-        ZoneScopedN("UpdateUBO");
-        resourceManager.updateUniformBuffers(currentFrame, debugView.packed());
-    }
-
     const vk::SubmitInfo2 submitInfo{.waitSemaphoreInfoCount = 1,
                                      .pWaitSemaphoreInfos = &waitSemaphoreInfo,
                                      .commandBufferInfoCount = 1,
-                                     .pCommandBufferInfos = &commandBufferInfo,
+                                     .pCommandBufferInfos = &presentCmdInfo,
                                      .signalSemaphoreInfoCount = 1,
                                      .pSignalSemaphoreInfos = &signalSemaphoreInfo};
     {
-        ZoneScopedN("QueueSubmit");
+        ZoneScopedN("QueueSubmitPresent");
         graphicsQueue.submit2(submitInfo, fence);
     }
 
@@ -151,12 +162,10 @@ void Renderer::drawFrame()
     currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-void Renderer::recordCommandBuffer(uint32_t imageIndex)
+// everything up to the display image; independent of the swapchain image
+void Renderer::recordFrameCommands(vk::raii::CommandBuffer& cmd)
 {
     ZoneScoped;
-    auto& commandBuffers = resourceManager.commandBuffers;
-    auto& cmd = commandBuffers[currentFrame];
-
 #ifdef TRACY_ENABLE
     const bool gpuTrace = tracyContext != nullptr && tracyContext->isActive();
     TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
@@ -223,6 +232,23 @@ void Renderer::recordCommandBuffer(uint32_t imageIndex)
 #endif
         recordDebugView(cmd);
     }
+
+    cmd.end();
+}
+
+// present pass + UI into the acquired image; earlier submits on this queue are ordered by the barriers inside
+void Renderer::recordPresentCommands(vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
+{
+    ZoneScoped;
+#ifdef TRACY_ENABLE
+    const bool gpuTrace = tracyContext != nullptr && tracyContext->isActive();
+    TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
+#endif
+
+    cmd.begin({});
+    // heap bindings do not carry over from the frame command buffer
+    cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
+    cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
     {
         ZoneScopedN("Present");
 #ifdef TRACY_ENABLE
@@ -428,6 +454,8 @@ void Renderer::recordPresent(vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
                                             .pMemoryBarriers = &displayBarrier,
                                             .imageMemoryBarrierCount = 1,
                                             .pImageMemoryBarriers = &swapchainBarrier});
+    // the barrier waits for the acquire semaphore, so this span is the GPU idle time until the image arrives
+    gpuTimer.end(cmd, GpuTimerScope::AcquireWait);
 
     // the fullscreen triangle covers every pixel
     const vk::RenderingAttachmentInfo swapchainAttachmentInfo = {

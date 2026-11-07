@@ -21,6 +21,8 @@ enum class GpuTimerScope : uint32_t
     LateHiZ,
     Resolve,
     DebugView,
+    // GPU idle until the swapchain image is acquired; not GPU work, so not in the total
+    AcquireWait,
     Present,
     Ui,
     Count,
@@ -51,6 +53,8 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "Vis-buffer resolve";
     case GpuTimerScope::DebugView:
         return "Debug view";
+    case GpuTimerScope::AcquireWait:
+        return "Acquire wait";
     case GpuTimerScope::Present:
         return "Present";
     case GpuTimerScope::Ui:

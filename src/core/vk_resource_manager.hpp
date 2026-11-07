@@ -214,7 +214,10 @@ public:
     std::vector<vk::raii::Fence> inFlightFences;
     vk::raii::CommandPool commandPool = nullptr;
     vk::raii::CommandPool transferCommandPool = nullptr;
+    // per frame slot: the frame's work, submitted before the swapchain image is acquired
     std::vector<vk::raii::CommandBuffer> commandBuffers;
+    // per frame slot: present pass + UI, the only work that waits for the acquired image
+    std::vector<vk::raii::CommandBuffer> presentCommandBuffers;
     std::vector<vk::raii::CommandBuffer> transferCommandBuffer;
     AttachmentImage depthAttachment;
 

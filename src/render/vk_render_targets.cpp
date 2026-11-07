@@ -174,7 +174,7 @@ void RenderTargets::recreate(vk::Extent2D renderExtent)
     };
     constexpr vk::AccessFlags2 kStorageAccess =
         vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eShaderSampledRead;
-    // the vis buffer is transitioned from eUndefined every frame (Renderer::recordCommandBuffer)
+    // the vis buffer is transitioned from eUndefined every frame (Renderer::recordFrameCommands)
     initialize(*display.image, vk::ImageLayout::eGeneral, kStorageAccess);
     for (auto& guides : guideSets) {
         for (Target& guide : guides) {
