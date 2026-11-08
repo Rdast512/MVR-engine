@@ -124,7 +124,93 @@ namespace
         }
         return bounds;
     }
+
+    template <typename T>
+    std::vector<T> expandToCorners(const std::vector<T>& stream, uint32_t firstVertex,
+                                   const std::vector<uint32_t>& localIndices)
+    {
+        std::vector<T> corners;
+        corners.reserve(localIndices.size());
+        for (const uint32_t local : localIndices) {
+            corners.push_back(stream[firstVertex + local]);
+        }
+        return corners;
+    }
+
+    template <typename T>
+    void weldStream(std::vector<T>& stream, uint32_t firstVertex, size_t uniqueCount, const std::vector<T>& corners,
+                    const std::vector<unsigned int>& remap)
+    {
+        stream.resize(firstVertex + uniqueCount);
+        meshopt_remapVertexBuffer(stream.data() + firstVertex, corners.data(), corners.size(), sizeof(T), remap.data());
+    }
+
+    // experimental in meshoptimizer v1.3: the only call site
+    void generateFlatNormals(std::vector<glm::vec3>& cornerNormals, const std::vector<glm::vec3>& cornerPositions)
+    {
+        constexpr float kFlatCreaseAngle = 0.0f;
+        constexpr float kNoSmoothing = 0.0f;
+        meshopt_generateNormals(&cornerNormals[0].x, nullptr, cornerNormals.size(), &cornerPositions[0].x,
+                                cornerPositions.size(), sizeof(glm::vec3), kFlatCreaseAngle, kNoSmoothing);
+    }
+
+    // glTF v points down, normal maps +Y up: only 1 - v gives w of file-provided tangents
+    void generateCompatibleTangents(std::vector<glm::vec4>& cornerTangents, const std::vector<glm::vec3>& cornerPositions,
+                                    const std::vector<glm::vec3>& cornerNormals, std::vector<glm::vec2> uvs)
+    {
+        for (glm::vec2& uv : uvs) {
+            uv.y = 1.0f - uv.y;
+        }
+        meshopt_generateTangents(&cornerTangents[0].x, nullptr, cornerTangents.size(), &cornerPositions[0].x,
+                                 cornerPositions.size(), sizeof(glm::vec3), &cornerNormals[0].x, sizeof(glm::vec3),
+                                 &uvs[0].x, sizeof(glm::vec2), meshopt_TangentCompatible);
+    }
 } // namespace
+
+uint32_t GeometryStore::generateShadingAttributes(uint32_t firstVertex, std::vector<uint32_t>& localIndices,
+                                                  const ShadingAttributeRequest& request)
+{
+    std::vector<glm::vec3> cornerPositions = expandToCorners(positions, firstVertex, localIndices);
+    std::vector<glm::vec3> cornerNormals = expandToCorners(normals, firstVertex, localIndices);
+    std::vector<glm::vec4> cornerTangents = expandToCorners(tangents, firstVertex, localIndices);
+    std::vector<glm::vec2> cornerUv0 = expandToCorners(uv0, firstVertex, localIndices);
+    std::vector<glm::vec2> cornerUv1 = expandToCorners(uv1, firstVertex, localIndices);
+    std::vector<glm::vec4> cornerColors = expandToCorners(colors, firstVertex, localIndices);
+
+    if (request.needsNormals) {
+        generateFlatNormals(cornerNormals, cornerPositions);
+        presentStreams |= GpuModelAttribute::Normals;
+    }
+    if (request.needsTangents) {
+        generateCompatibleTangents(cornerTangents, cornerPositions, cornerNormals,
+                                   request.tangentUvSet == 0 ? cornerUv0 : cornerUv1);
+        presentStreams |= GpuModelAttribute::Tangents;
+    }
+
+    const size_t cornerCount = localIndices.size();
+    const std::array streams = {
+        meshopt_Stream{cornerPositions.data(), sizeof(glm::vec3), sizeof(glm::vec3)},
+        meshopt_Stream{cornerNormals.data(), sizeof(glm::vec3), sizeof(glm::vec3)},
+        meshopt_Stream{cornerTangents.data(), sizeof(glm::vec4), sizeof(glm::vec4)},
+        meshopt_Stream{cornerUv0.data(), sizeof(glm::vec2), sizeof(glm::vec2)},
+        meshopt_Stream{cornerUv1.data(), sizeof(glm::vec2), sizeof(glm::vec2)},
+        meshopt_Stream{cornerColors.data(), sizeof(glm::vec4), sizeof(glm::vec4)},
+    };
+    std::vector<unsigned int> remap(cornerCount);
+    const size_t uniqueCount = meshopt_generateVertexRemapMulti(remap.data(), nullptr, cornerCount, cornerCount,
+                                                                streams.data(), streams.size());
+
+    weldStream(positions, firstVertex, uniqueCount, cornerPositions, remap);
+    weldStream(normals, firstVertex, uniqueCount, cornerNormals, remap);
+    weldStream(tangents, firstVertex, uniqueCount, cornerTangents, remap);
+    weldStream(uv0, firstVertex, uniqueCount, cornerUv0, remap);
+    weldStream(uv1, firstVertex, uniqueCount, cornerUv1, remap);
+    weldStream(colors, firstVertex, uniqueCount, cornerColors, remap);
+    vertices.resize(positions.size());
+
+    localIndices.assign(remap.begin(), remap.end());
+    return static_cast<uint32_t>(uniqueCount);
+}
 
 void GeometryStore::resizeVertices(uint32_t newCount)
 {

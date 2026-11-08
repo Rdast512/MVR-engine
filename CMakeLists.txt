@@ -207,12 +207,12 @@ set(ENGINE_SLANG_CAPABILITIES
 list(JOIN ENGINE_SLANG_CAPABILITIES "+" ENGINE_SLANG_CAPABILITY_STRING)
 message(STATUS "Slang shader capabilities: ${ENGINE_SLANG_CAPABILITY_STRING}")
 
-# Debug / empty: -g2 -O0. RelWithDebInfo: -g2 -O2. Release/MinSizeRel: -g0 -O2.
+# Debug / empty: -g3 -O0. RelWithDebInfo: -g2 -O2. Release/MinSizeRel: -g0 -O3.
 # Always emit non-empty args via $<IF:...> — bare $<$<CONFIG:...>:-flag> leaves
 # "" placeholders that slangc treats as inputs.
 set(ENGINE_SLANG_CONFIG_FLAGS
-    "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:>>,-g2,$<IF:$<CONFIG:RelWithDebInfo>,-g2,-g0>>"
-    "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:>>,-O0,-O2>"
+    "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:>>,-g3,$<IF:$<CONFIG:RelWithDebInfo>,-g2,-g0>>"
+    "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:>>,-O0,$<IF:$<CONFIG:RelWithDebInfo>,-O2,-O3>>"
 )
 
 # shared by engine passes and test shaders

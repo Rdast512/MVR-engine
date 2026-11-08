@@ -16,6 +16,15 @@ struct MeshletBuild
     std::vector<uint8_t> triangles;
 };
 
+// streams one primitive lacks and must get generated
+struct ShadingAttributeRequest
+{
+    bool needsNormals = false;
+    bool needsTangents = false;
+    // UV set of the normal texture, 0 or 1
+    uint32_t tangentUvSet = 0;
+};
+
 class GeometryStore
 {
 public:
@@ -70,6 +79,11 @@ public:
 
     // pack vertices[v] from positions/colors/uv0
     void packVertex(uint32_t v);
+
+    // generates the requested streams for the last primitive's vertices [firstVertex, end). Vertices split on seams
+    // and unused ones drop, so localIndices are rewritten; returns the new vertex count. Call before packVertex
+    [[nodiscard]] uint32_t generateShadingAttributes(uint32_t firstVertex, std::vector<uint32_t>& localIndices,
+                                                     const ShadingAttributeRequest& request);
 
     // Pure: only reads indices/vertices, so ranges may be built concurrently.
     // indices in [firstIndex, +indexCount) must reference vertices in [firstVertex, +vertexCount)

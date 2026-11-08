@@ -19,6 +19,9 @@ public:
     // look at target from a fixed offset
     void focusOn(const glm::vec3& target, float distance = 5.0f);
 
+    // keeps the orientation; a cut, so the jump is not camera motion
+    void teleportTo(const glm::vec3& position);
+
     // clamped to [10, 150] degrees
     void setFov(float fovVerticalDegrees);
     void addFov(float deltaDegrees); // for scroll-wheel
@@ -48,7 +51,7 @@ public:
 
     void updateCameraData(uint8_t currentImage);
 
-    // after updateCameraData: first frame, focusOn, a projection change, or any swapchain recreation (setRenderExtent);
+    // after updateCameraData: first frame, focusOn, teleportTo, a projection change, or any swapchain recreation (setRenderExtent);
     // cameraData.prevViewProj equals viewProj then
     [[nodiscard]] bool isCut() const noexcept { return isCutFrame; }
 
@@ -80,7 +83,7 @@ private:
     float nearPlane = 0.1f;
     float farPlane = 1000.0f;
     bool projDirty = true;
-    // set by focusOn, consumed by updateCameraData
+    // set by focusOn and teleportTo, consumed by updateCameraData
     bool isCutPending = true;
     bool isCutFrame = true;
 

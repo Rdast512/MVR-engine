@@ -2,12 +2,6 @@ module brdf;
 
 // rt/pt brdf. raster preview uses material/pbr.slang sampleAlbedo.
 
-float3 evalLambert(float3 albedo, float3 n, float3 l)
-{
-    float ndotl = saturate(dot(n, l));
-    return albedo * ndotl / 3.14159265;
-}
-
 // dielectric reflectance at normal incidence
 public static const float kDielectricF0 = 0.04;
 

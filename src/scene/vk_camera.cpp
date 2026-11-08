@@ -35,6 +35,12 @@ void Camera::focusOn(const glm::vec3& target, float distance)
     yaw = glm::atan(dir.x, dir.z);
 }
 
+void Camera::teleportTo(const glm::vec3& position)
+{
+    isCutPending = true;
+    cameraData.cameraPos = position;
+}
+
 Camera::~Camera()
 {
     for (size_t i = 0; i < cameraBuffersMemory.size(); ++i) {

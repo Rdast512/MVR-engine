@@ -83,7 +83,7 @@ emissive  = emissiveFactor * emissiveStrength * sample_srgb(emissiveTex).rgb   /
 
 **`KHR_texture_transform`:** per slot, `uv' = M · uv + offset` with `M` = rotation × scale, and the same 2×2 `M` applied to both UV gradients. `texCoord` in the extension overrides the slot's UV set.
 
-UV: the engine stores `v' = 1 - v`. Normal: OpenGL +Y up, `scale` on XY then normalize, `B = cross(N,T)*tangent.w`. Missing `TANGENT` on a normal-mapped primitive is generated at load (MikkTSpace-compatible `meshopt_generateTangents`, plan A4); missing `NORMAL` becomes flat normals. Until A4 lands, the resolve falls back to the geometric normal and skips normal mapping without tangents. Normals and tangents are mesh-local: use the node instance's normal matrix and negate `tangent.w` on mirrored placements (`FlipWinding`).
+UV: stored as in the file, with no flip (glTF and Vulkan share a top-left origin). Normal: OpenGL +Y up, `scale` on XY then normalize, `B = cross(N,T)*tangent.w`. Missing `TANGENT` on a normal-mapped primitive is generated at load (MikkTSpace-compatible `meshopt_generateTangents`, plan A4); missing `NORMAL` becomes flat normals. A4 generates both at load; the resolve's fallbacks remain only as guards. Normals and tangents are mesh-local: use the node instance's normal matrix and negate `tangent.w` on mirrored placements (`FlipWinding`).
 
 **Unlit (`KHR_materials_unlit`):** `sampleMaterial` returns `baseColor = 0`, `metallic = 0` and puts the color into `emissive`, so every consumer handles unlit with no special case.
 

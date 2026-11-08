@@ -33,5 +33,4 @@ public:
 
 private:
     [[nodiscard]] std::optional<EntityId> loadGltfModel(const std::string& modelPath, glm::vec3 xyz);
-    [[nodiscard]] std::optional<EntityId> loadObjModel(const std::string& modelPath, glm::vec3 xyz);
 };

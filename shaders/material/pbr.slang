@@ -48,6 +48,8 @@ float4 sampleSlot(uint texture, uint samplerIndex, uint uvSet, Surface surface, 
         .SampleGrad(samplerOf(NonUniformResourceIndex(samplerIndex)), gradients.uv, gradients.ddx, gradients.ddy);
 }
 
+static const float kMinOrthoTangentLengthSq = 1e-8;
+
 public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodBias)
 {
     const float4 one = float4(1.0, 1.0, 1.0, 1.0);
@@ -71,14 +73,19 @@ public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, flo
     result.emissive = emissive;
     result.n = surface.normal;
 
+    // assets can ship tangents parallel to the normal; normalizing the zero residual gives NaN
+    const float3 orthoTangent = surface.tangent.xyz - surface.normal * dot(surface.normal, surface.tangent.xyz);
+    const float orthoLengthSq = dot(orthoTangent, orthoTangent);
+
     // tangent-less meshes keep the vertex normal (spec B1 guard)
-    if (material.normalTex != kNoneIndex && material.normalSamp != kNoneIndex && surface.tangent.w != 0.0)
+    if (material.normalTex != kNoneIndex && material.normalSamp != kNoneIndex && surface.tangent.w != 0.0 &&
+        orthoLengthSq > kMinOrthoTangentLengthSq)
     {
         float3 tangentNormal =
             sampleSlot(material.normalTex, material.normalSamp, material.normalUv, surface, lodBias, one).xyz * 2.0 -
             1.0;
         tangentNormal.xy *= material.normalScale;
-        const float3 t = normalize(surface.tangent.xyz - surface.normal * dot(surface.normal, surface.tangent.xyz));
+        const float3 t = orthoTangent / sqrt(orthoLengthSq);
         // back faces flipped the normal; the bitangent follows it
         const float3 b = cross(surface.normal, t) * surface.tangent.w;
         result.n = normalize(tangentNormal.x * t + tangentNormal.y * b + tangentNormal.z * surface.normal);

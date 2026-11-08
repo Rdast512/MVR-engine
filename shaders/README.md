@@ -11,7 +11,6 @@
 | `rt/*` | Payload, trace helpers, shared hit |
 | `gi/rtxgi` | Cache mode switch (SHaRC / NRC / both) |
 | `gi/sharc` | Hash / accum / resolved buffers + update/query/resolve |
-| `post/gbuffer` | DLSS-RR guide packing (color, depth, MV, albedo, spec albedo, n+rough, hitT) |
 | `post/dlss` | Jitter / exposure contract only — NGX is not Slang |
 | `passes/*` | Compile units, one dispatch or RT pipeline each |
 

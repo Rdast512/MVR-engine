@@ -128,7 +128,6 @@ Library files become Slang modules in M0 (PBR A2). Vendor headers are textual in
 | `raytracing/hit.slang` | [stub] | the one minimal closest-hit (`ClusterID`, needs `allowClusterAccelerationStructure`) and miss; skipped if Slang exposes cluster id on `HitObject` (Q8) |
 | `raytracing/trace.slang` | [stub] | `HitObject::TraceRay` + `ReorderThread` with the material-bin hint; ray-query `traceVisibility` for visibility rays; `FORCE_OPACITY_MICROMAP_2_STATE` / `FORCE_OPAQUE` flags from the instance |
 | **postprocessing/** | | |
-| `postprocessing/gbuffer.slang` | [stub] | shading-surface and guide layout of §4, pack/unpack (M1) |
 | `postprocessing/dlss.slang` | [stub] → [delete] | jitter and exposure move to `GpuFrameRoot` (M0); NGX is host-only |
 | **passes/** | | see §5 |
 
@@ -249,6 +248,7 @@ Closed by the spec (2026-10-31 to 2026-11-07): visibility buffer over raster G-b
 
 | Date | Change |
 |---|---|
+| 2026-11-08 | `postprocessing/gbuffer.slang` deleted: the guide layout is `GuideImage` in `types.slang` (PBR task A3) |
 | 2026-11-08 | Library files converted to Slang modules (PBR task A2); `gi/sharc.slang` stays textual until its bridge |
 | 2026-11-07 | Visibility buffer plan applied: 32-bit payload, `geometry/surface`, `present`; `mesh_debug` removed in M1; open decision 4 answered |
 | 2026-11-07 | Moved to `spec/` and realigned with [engine_spec.md](../docs/engine_spec.md): vis buffer + compute resolve replace the raster G-buffer; RT pipelines with SER, cluster AS, SHaRC + NRC behind `IRadianceCache`, ReSTIR GI; `raytracing/*`, `gi/sharc`, `pathtrace*`, `sharc_resolve` back in scope; culling, Hi-Z and triangle-cull files added; §2 maps spec §5 stages to passes; §6 follows spec milestones M0–M9, L1–L3; open decisions from spec §18 |

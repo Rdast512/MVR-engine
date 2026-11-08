@@ -360,6 +360,9 @@ namespace
         bool collectImageUses = false;
         // every heap index the model got from a texture load (may repeat)
         std::vector<uint32_t> textureRefs{};
+        // primitives that lacked the stream and got it generated
+        uint32_t generatedNormalPrimitives = 0;
+        uint32_t generatedTangentPrimitives = 0;
     };
 
     static std::string extrasJsonOf(const tg3_extras_ext& ext)
@@ -1319,7 +1322,7 @@ namespace
     }
 
     void fillUvRange(std::vector<glm::vec2>& dst, uint32_t first, uint32_t count, const std::vector<float>& src,
-                            uint32_t comps, bool flipV)
+                            uint32_t comps)
     {
         if (src.empty() || comps < 2) {
             return;
@@ -1329,7 +1332,7 @@ namespace
             if (base + 1 >= src.size()) {
                 break;
             }
-            dst[first + i] = {src[base], flipV ? 1.0f - src[base + 1] : src[base + 1]};
+            dst[first + i] = {src[base], src[base + 1]};
         }
     }
 
@@ -1414,7 +1417,7 @@ namespace
             const std::vector<float> uvs = readAccessorFloats(model, accessorIdx);
             logDebug(std::format("glTF attr '{}' accessor={} floats={}", name, accessorIdx, uvs.size()),
                       "AssetLoader");
-            fillUvRange(geometry.uv1, firstVertex, vertexCount, uvs, accessorCompCount(model, accessorIdx), true);
+            fillUvRange(geometry.uv1, firstVertex, vertexCount, uvs, accessorCompCount(model, accessorIdx));
             geometry.presentStreams |= GpuModelAttribute::Uv1;
             return;
         }
@@ -1427,6 +1430,23 @@ namespace
             return;
         }
         logDebug(std::format("glTF attr '{}' accessor={} skipped", name, accessorIdx), "AssetLoader");
+    }
+
+    // glTF: no NORMAL gets flat normals, no TANGENT on a normal-mapped primitive gets MikkTSpace; never replaces a stream
+    static ShadingAttributeRequest missingShadingAttributes(
+        const std::vector<std::pair<std::string_view, int32_t>>& attributes, const GpuMaterial& material, bool hasUv0)
+    {
+        const auto hasAttribute = [&attributes](std::string_view name) {
+            return std::ranges::any_of(attributes, [name](const auto& attribute) { return attribute.first == name; });
+        };
+        // the shader clamps the UV set to 0 or 1 (material/pbr.slang)
+        const bool isUv0 = material.normalUv == 0;
+        const bool hasNormalUv = isUv0 ? hasUv0 : hasAttribute("TEXCOORD_1");
+        return {
+            .needsNormals = !hasAttribute("NORMAL"),
+            .needsTangents = material.normalTex != kNoneIndex && !hasAttribute("TANGENT") && hasNormalUv,
+            .tangentUvSet = isUv0 ? 0u : 1u,
+        };
     }
 
     struct GltfMeshInstance
@@ -1621,13 +1641,28 @@ namespace
             fillVec3Range(geometry.positions, firstVertex, vertexCount, positions, posComps);
 
             const std::vector<float> texcoords = readAccessorFloats(model, tc0Acc);
-            fillUvRange(geometry.uv0, firstVertex, vertexCount, texcoords, accessorCompCount(model, tc0Acc), true);
+            fillUvRange(geometry.uv0, firstVertex, vertexCount, texcoords, accessorCompCount(model, tc0Acc));
 
             for (const auto& [name, acc] : extraAttrs) {
                 storeVertexAttribute(geometry, firstVertex, vertexCount, model, name, acc);
             }
 
-            for (uint32_t v = 0; v < vertexCount; ++v) {
+            uint32_t materialId = ctx.materials.defaultMaterialId();
+            if (prim.material >= 0 && static_cast<uint32_t>(prim.material) < ctx.materialIds.size()) {
+                materialId = ctx.materialIds[static_cast<uint32_t>(prim.material)];
+            }
+
+            // before packing and clustering: clusters, CLAS and OMM must see the final vertex set
+            const ShadingAttributeRequest missing =
+                missingShadingAttributes(extraAttrs, ctx.materials.infos[materialId].material, tc0Acc >= 0);
+            uint32_t storedVertexCount = vertexCount;
+            if (missing.needsNormals || missing.needsTangents) {
+                storedVertexCount = geometry.generateShadingAttributes(firstVertex, triIndices, missing);
+                ctx.generatedNormalPrimitives += missing.needsNormals ? 1u : 0u;
+                ctx.generatedTangentPrimitives += missing.needsTangents ? 1u : 0u;
+            }
+
+            for (uint32_t v = 0; v < storedVertexCount; ++v) {
                 geometry.packVertex(firstVertex + v);
             }
 
@@ -1637,15 +1672,10 @@ namespace
             }
             const uint32_t indexCount = static_cast<uint32_t>(triIndices.size());
 
-            uint32_t materialId = ctx.materials.defaultMaterialId();
-            if (prim.material >= 0 && static_cast<uint32_t>(prim.material) < ctx.materialIds.size()) {
-                materialId = ctx.materialIds[static_cast<uint32_t>(prim.material)];
-            }
-
             PrimitiveDraw draw{};
             draw.materialId = materialId;
             draw.firstVertex = firstVertex;
-            draw.vertexCount = vertexCount;
+            draw.vertexCount = storedVertexCount;
             draw.firstIndex = firstIndex;
             draw.indexCount = indexCount;
             // draw.meshlets is filled by buildGltfMeshlets once every primitive is appended
@@ -1655,7 +1685,7 @@ namespace
             ++storedPrimitives;
 
             logDebug(std::format("glTF mesh[{}].prim[{}] POSITION verts={} TEXCOORD_0 floats={} indices={} stored={}",
-                                  mi, pi, vertexCount, texcoords.size(), indexCount, indexCount),
+                                  mi, pi, storedVertexCount, texcoords.size(), indexCount, indexCount),
                       "AssetLoader");
         }
         return storedPrimitives;
@@ -1669,7 +1699,7 @@ namespace
         return model.accessors[accessorIdx].count;
     }
 
-    // Upper bound from accessor counts, so the per-vertex arrays and indices allocate once per model.
+    // From accessor counts, so the per-vertex arrays and indices allocate once per model; generated streams may grow them.
     static void reserveGltfGeometry(GeometryStore& geometry, const tg3_model& model,
                                     const std::vector<uint32_t>& meshes)
     {
@@ -1755,6 +1785,9 @@ namespace
             meshPrimitives[mi].count = appendGltfMesh(ctx, model, mi);
         }
         const uint32_t storedPrimitives = static_cast<uint32_t>(geometry.primitiveDraws.size()) - firstPrimitive;
+        logInfo(std::format("glTF generated normals for {} and tangents for {} of {} primitives",
+                             ctx.generatedNormalPrimitives, ctx.generatedTangentPrimitives, storedPrimitives),
+                 "AssetLoader");
         buildGltfMeshlets(geometry, firstPrimitive);
 
         // a mesh's primitives append their vertices back to back
@@ -1847,7 +1880,7 @@ AssetsLoader::AssetsLoader(ObjectStorage& objectStorageIn, TextureManager& textu
 
 std::optional<std::filesystem::path> AssetsLoader::resolveModelPath(const std::filesystem::path& modelPath)
 {
-    // Folder packs (models/<name>/*) or a direct file. Prefer .gltf, then .glb, then .obj.
+    // Folder packs (models/<name>/*) or a direct file. Prefer .gltf, then .glb.
     std::error_code errorCode;
     // one spelling per file, so the model cache key matches however the path was written
     std::filesystem::path path = std::filesystem::weakly_canonical(modelPath, errorCode);
@@ -1858,7 +1891,6 @@ std::optional<std::filesystem::path> AssetsLoader::resolveModelPath(const std::f
     if (std::filesystem::is_directory(path, errorCode)) {
         std::filesystem::path gltf;
         std::filesystem::path glb;
-        std::filesystem::path obj;
         for (const auto& entry : std::filesystem::directory_iterator(
                  path, std::filesystem::directory_options::skip_permission_denied, errorCode)) {
             if (errorCode || !entry.is_regular_file(errorCode)) {
@@ -1871,18 +1903,14 @@ std::optional<std::filesystem::path> AssetsLoader::resolveModelPath(const std::f
                 gltf = entry.path();
             } else if (extension == ".glb" && glb.empty()) {
                 glb = entry.path();
-            } else if (extension == ".obj" && obj.empty()) {
-                obj = entry.path();
             }
         }
         if (!gltf.empty()) {
             path = std::move(gltf);
         } else if (!glb.empty()) {
             path = std::move(glb);
-        } else if (!obj.empty()) {
-            path = std::move(obj);
         } else {
-            logError(std::format("Model folder has no .gltf/.glb/.obj: {}", path.string()), "AssetLoader");
+            logError(std::format("Model folder has no .gltf/.glb: {}", path.string()), "AssetLoader");
             return std::nullopt;
         }
         path.make_preferred();
@@ -1900,15 +1928,10 @@ std::optional<EntityId> AssetsLoader::loadModel(std::string modelPath, glm::vec3
 
     const std::string pathString = path->string();
     const bool isGltf = pathString.ends_with(".gltf") || pathString.ends_with(".glb");
-    const bool isObj = pathString.ends_with(".obj");
 
     materialStore.beginModel();
     if (isGltf) {
         return loadGltfModel(pathString, xyz);
-    }
-
-    if (isObj) {
-        return loadObjModel(pathString, xyz);
     }
 
     logError(std::format("Unsupported model format: {}", pathString), "AssetLoader");
@@ -2000,100 +2023,6 @@ std::optional<EntityId> AssetsLoader::loadGltfModel(const std::string& modelPath
              "AssetLoader");
 
     logInfo(std::format("Model loaded (glTF): {} | vertices: {} | indices: {} | total meshlets: {}", modelPath,
-                         geometryStore.vertices.size(), geometryStore.indices.size(), geometryStore.meshlets.size()),
-             "AssetLoader");
-    return id;
-}
-
-std::optional<EntityId> AssetsLoader::loadObjModel(const std::string& modelPath, glm::vec3 xyz)
-{
-    ZoneScopedN("AssetsLoader::loadObjModel");
-    logInfo(std::format("Loading OBJ: {}", modelPath), "AssetLoader");
-    tinyobj::attrib_t attrib;
-    std::vector<tinyobj::shape_t> shapes;
-    std::vector<tinyobj::material_t> materials;
-    std::string err;
-
-    // tinyobj wraps standard C file I/O — native separators are correct.
-    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &err, modelPath.c_str())) {
-        logError(std::format("Failed to load OBJ: {}", err), "AssetLoader");
-        return std::nullopt;
-    }
-
-    const uint32_t firstVertex = static_cast<uint32_t>(geometryStore.positions.size());
-    const uint32_t firstIndex = static_cast<uint32_t>(geometryStore.indices.size());
-    const uint32_t firstPrimitive = static_cast<uint32_t>(geometryStore.primitiveDraws.size());
-
-    // one vertex per face corner; meshopt welds bitwise-identical corners in first-use order
-    std::vector<GpuVertex> corners;
-    for (const auto& [name, mesh] : shapes) {
-        for (const auto& index : mesh.indices) {
-            corners.push_back(GpuVertex{
-                .pos = {attrib.vertices[3 * index.vertex_index + 0], attrib.vertices[3 * index.vertex_index + 1],
-                        attrib.vertices[3 * index.vertex_index + 2]},
-                .color = {1.0f, 1.0f, 1.0f},
-                .texCoord = {attrib.texcoords[2 * index.texcoord_index + 0],
-                             1.0f - attrib.texcoords[2 * index.texcoord_index + 1]},
-            });
-        }
-    }
-
-    std::vector<uint32_t> triIndices(corners.size());
-    const size_t uniqueCount = meshopt_generateVertexRemap(triIndices.data(), nullptr, corners.size(), corners.data(),
-                                                           corners.size(), sizeof(GpuVertex));
-    std::vector<GpuVertex> unique(uniqueCount);
-    meshopt_remapVertexBuffer(unique.data(), corners.data(), corners.size(), sizeof(GpuVertex), triIndices.data());
-    // unindexed input: the remap table is the welded index buffer
-    // pos is the first GpuVertex member
-    filterRedundantTriangles(triIndices, reinterpret_cast<const float*>(unique.data()), unique.size(),
-                             sizeof(GpuVertex));
-
-    geometryStore.resizeVertices(firstVertex + static_cast<uint32_t>(uniqueCount));
-    for (uint32_t v = 0; v < uniqueCount; ++v) {
-        const uint32_t id = firstVertex + v;
-        geometryStore.positions[id] = unique[v].pos;
-        geometryStore.uv0[id] = unique[v].texCoord;
-        geometryStore.colors[id] = glm::vec4{1.0f};
-        geometryStore.packVertex(id);
-    }
-    for (const uint32_t local : triIndices) {
-        geometryStore.indices.push_back(firstVertex + local);
-    }
-    const auto indexCount = static_cast<uint32_t>(triIndices.size());
-
-    GpuMaterial gpu{};
-    const auto objTexture = (std::filesystem::path(modelPath).parent_path() / TEXTURE_PATH.filename()).string();
-    std::vector<uint32_t> heapIndices;
-    ModelTextureRefs textureRefs(textureManager, heapIndices);
-    gpu.baseColorTex = textureManager.loadTexture(objTexture);
-    heapIndices.push_back(gpu.baseColorTex);
-    gpu.baseColorSamp = textureManager.getOrCreateSampler(-1, -1, TG3_TEXTURE_WRAP_REPEAT, TG3_TEXTURE_WRAP_REPEAT);
-    const uint32_t materialId = materialStore.add(gpu, {}, std::filesystem::path(modelPath).stem().string());
-
-    PrimitiveDraw draw{};
-    draw.materialId = materialId;
-    draw.firstVertex = firstVertex;
-    draw.vertexCount = static_cast<uint32_t>(geometryStore.positions.size()) - firstVertex;
-    draw.firstIndex = firstIndex;
-    draw.indexCount = indexCount;
-    geometryStore.buildMeshletsForRange(firstIndex, indexCount, firstVertex, draw.vertexCount, draw);
-    geometryStore.primitiveDraws.push_back(draw);
-    geometryStore.nodeDraws.push_back(NodeDraw{
-        .localToModel = glm::mat4{1.0f},
-        .boundingSphere = geometryStore.boundingSphere(firstVertex, draw.vertexCount),
-        .meshBounds = geometryStore.boundingBox(firstVertex, draw.vertexCount),
-        .firstPrimitive = firstPrimitive,
-        .primitiveCount = 1,
-        .flags = 0,
-    });
-
-    const Transform transform{.position = xyz};
-    const EntityId id = objectStorage.create(transform, draw.meshlets, firstPrimitive, 1, modelPath);
-    geometryStore.textureRefs = textureRefs.commit();
-    logInfo(std::format("Loaded model entity {} | primitives=[{}, {}) | meshlets: {} (first {})", id, firstPrimitive,
-                         firstPrimitive + 1, draw.meshlets.meshletCount, draw.meshlets.firstMeshlet),
-             "AssetLoader");
-    logInfo(std::format("Model loaded (OBJ): {} | vertices: {} | indices: {} | total meshlets: {}", modelPath,
                          geometryStore.vertices.size(), geometryStore.indices.size(), geometryStore.meshlets.size()),
              "AssetLoader");
     return id;

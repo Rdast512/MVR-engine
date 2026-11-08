@@ -120,9 +120,9 @@ Resource details: [resource_architecture.md](./resource_architecture.md). Vis-bu
 | Guides | done, two sets: `NormalRoughness` RGBA16F, `GeoNormal` RG16_SNORM (oct), `DiffuseAlbedo` RGBA8 (`cDiff`, **a = 1: AO not stored yet**), `SpecularF0` RGBA8, `SpecAlbedo` RGBA8 (`envBrdfApprox`), `Emissive` B10G11R11, `Motion` RG16F |
 | `geometry/surface.slang`, `geometry/visbuffer.slang` | done: `TriangleCorners`, `loadTriangleCorners`, `Surface`, `buildSurface` (geometric-normal fallback, tangent sign flip under `FlipWinding`), payload pack/unpack, `computeBarycentrics` |
 | `material/pbr.slang` | **B1 done**: `SampledMaterial`, `sampleMaterial(GpuMaterial, Surface, lodBias)`, `sampleSlot` with `NonUniformResourceIndex`, unlit handling. `KHR_texture_transform` matrices are in `GpuMaterial` (A1) but not applied yet (M3, E1) |
-| `material/brdf.slang` | `envBrdfApprox`, `kDielectricF0`. `evalLambert` stub still present. No GGX, sampling or pdf |
+| `material/brdf.slang` | `envBrdfApprox`, `kDielectricF0`. No GGX, sampling or pdf |
 | Debug views | Guides category done (depth, shading/geometric normal, roughness, albedo, F0, spec albedo, emissive, motion). `LightingOnly` and `DlssInput` reserved, not implemented |
-| Vertex streams | `GpuVertex` 32 B (pos, color, uv0); normals, tangents, uv1 as separate float32 streams. **No generation (A4)**: the resolve falls back to the geometric normal and skips normal mapping without tangents |
+| Vertex streams | `GpuVertex` 32 B (pos, color, uv0); normals, tangents, uv1 as separate float32 streams. Missing normals and needed tangents are generated at load (A4); the resolve's fallbacks to the geometric normal and no normal mapping remain only as guards |
 | Animation code | removed (2026-11-08): no morph or skin data is loaded or uploaded; glTF files load in their base pose |
 | Lights | `GpuLight` 64 B per entity in model space, `type` a `GpuLightType`; placed by `loadWorldLight` |
 | Clusters | `clusterlod.h` level 0 (Flex builder, cone weight 0, `optimizeMeshletLevel` 1), groups via `partitionClusters` |
@@ -130,7 +130,7 @@ Resource details: [resource_architecture.md](./resource_architecture.md). Vis-bu
 | `src/render/vk_pbr.{hpp,cpp}` | empty files |
 | Slang modules | done (A2): library files are `module x;`, passes `import` what they use. `gi/sharc.slang` stays a textual include until its bridge replaces it (it needs `#define`s set before the vendor header) |
 | `ThirdParty/` | meshoptimizer v1.3, `rtxdi`, `sharc`, `nrc`, `dlss` fetched; linkage tests in `tests/`. NVIDIA OMM SDK 1.9.2 fetched and built as `omm-lib` (CPU baker), no caller until D1 |
-| Shader stubs | kept, back in scope (spec §17): `gi/sharc`, `gi/rtxgi`, `raytracing/{hit,payload,trace}`, `passes/pathtrace*`, `passes/sharc_resolve`, `passes/composite`, `postprocessing/dlss`. Obsolete: `postprocessing/gbuffer.slang` (the guide layout is `GuideImage` in `types.slang`) |
+| Shader stubs | kept, back in scope (spec §17): `gi/sharc`, `gi/rtxgi`, `raytracing/{hit,payload,trace}`, `passes/pathtrace*`, `passes/sharc_resolve`, `passes/composite`, `postprocessing/dlss`. The guide layout is `GuideImage` in `types.slang` |
 
 Toolchain facts (re-probed 2026-11-08 on Slang v2026.20, task A2):
 
@@ -263,7 +263,7 @@ Each task lists **Do**, **Done when**, and **Must not** where relevant, plus its
 - **Do:** convert library files to modules (§4.1). `ResourceManager::writeFrameRoot` also fills `frameIndex` and `exposure` (1.0 until H2); the new addresses stay 0 until their tasks. Re-probe the §3 toolchain facts on Slang v2026.20 and update the table.
 - **Done when:** `mesh_raster`, `mesh_fragment`, `meshlet_cull`, `hiz_build`, `resolve`, `debug_view` and `present` compile and render unchanged; every guide debug view matches a capture taken before the conversion. Met by a stronger check: the release SPIR-V of all eight passes is byte-identical before and after.
 
-#### A3 · Remove what the plan no longer uses
+#### A3 · Remove what the plan no longer uses — done (2026-11-08)
 
 - **Files:** `shaders/**`
 - **Do:** delete `postprocessing/gbuffer.slang` and `evalLambert`. Keep the RT pipeline, SER and cluster AS extensions and the stubs listed in §3 (spec §17 reverses the old A3).
@@ -277,10 +277,10 @@ Each task lists **Do**, **Done when**, and **Must not** where relevant, plus its
 - **Do,** per primitive, after the accessors are read and before clusters are built (clusters, CLAS and OMM must see the final vertex set):
   - **Normals missing:** flat normals. Deindex the primitive, then `meshopt_generateNormals(…, crease_angle = 0, smoothing = 0)` per corner (experimental in v1.3; pin the call behind one helper).
   - **Tangents missing, normal texture used by the primitive's material:** `meshopt_generateTangents(result, indices, …, positions, normals, uv, meshopt_TangentCompatible)` per corner, on the UV set named by `normalTexture.texCoord`. `meshopt_TangentCompatible` matches MikkTSpace, which baked normal maps assume.
-  - **UV orientation:** the loader stores `v' = 1 - v` (`fillUvRange(…, flipV = true)`), which mirrors UV space and inverts tangent handedness. Feed `meshopt_generateTangents` the file's UVs (undo the flip in the scratch copy) so `w` matches MikkTSpace on the original asset, as file-provided tangents do. Confirm the flip on `NormalTangentTest` / `TextureCoordinateTest` with the shading-normal debug view.
+  - **UV orientation:** the loader stores the file's UVs as they are, since glTF and Vulkan share a top-left origin. Feed `meshopt_generateTangents` `1 - v` in a scratch copy. Measured on `NormalTangentMirrorTest`: `1 - v` matches the shipped `w` on 2770 of 2770 vertices, the file's `v` on 0 of 2770; direction differs by at most 0.034° either way. glTF normal maps are +Y up while its `v` points down, so the shipped tangents are MikkTSpace over the flipped `v`.
   - **Reindex:** both functions return per-corner data. Weld with `meshopt_generateVertexRemapMulti` over every vertex stream plus the new per-corner stream, then `meshopt_remapVertexBuffer` / `meshopt_remapIndexBuffer`. Vertices split only on seams (UV mirror, hard edges).
   - Set `GpuModelAttribute::Normals` / `Tangents` so the streams upload.
-- **Done when:** `NormalTangentTest` (provided tangents) and `NormalTangentMirrorTest` with `TANGENT` stripped show the same shading-normal debug view within the generator's tolerance; a mesh without `NORMAL` shows flat facets; the resolve's fallbacks remain only as guards; the cache-hit path (`instantiateModel`) is untouched.
+- **Done when:** `NormalTangentMirrorTest` with and without its `TANGENT` accessor shows the same shading-normal debug view within the generator's tolerance (`NormalTangentTest` ships no `TANGENT` and always takes the generated path); a mesh without `NORMAL` shows flat facets; the resolve's fallbacks remain only as guards; the cache-hit path (`instantiateModel`) is untouched.
 - **Must not:** generate tangents for primitives without a normal texture, overwrite file-provided tangents or normals, or write a homegrown generator.
 
 ### Phase B — Shading library
@@ -325,7 +325,7 @@ SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodB
 
 #### B2 · BRDF (M3)
 
-- **Files:** `shaders/material/brdf.slang` (keeps `envBrdfApprox` and `kDielectricF0`; `evalLambert` goes in A3)
+- **Files:** `shaders/material/brdf.slang` (keeps `envBrdfApprox` and `kDielectricF0`)
 
 ```slang
 public float3 fresnelSchlick(float3 f0, float vDotH)
@@ -700,7 +700,7 @@ A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
 
 | Milestone (spec §16.2) | Tasks |
 |---|---|
-| M0 Contracts | A1, A2 (**done**), A3, A4, animation removal (**done**) |
+| M0 Contracts | A1, A2, A3, A4 (**done**; A4 shading-normal view not yet checked by eye), animation removal (**done**) |
 | M1 Vis buffer | B1, E1 (**done**); 32-bit payload kept, V8 deferred; culling image checked |
 | M2 Cluster RT bring-up | C1, C2, C3 |
 | M3 First lit frame | B1 extensions, B2, B3, E1 open items, E2 (punctual), F1–F3, H1, H2 |

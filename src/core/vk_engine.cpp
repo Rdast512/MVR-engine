@@ -525,6 +525,7 @@ void Engine::drawImGui()
             drawLoadPanel();
             drawLoadedModelsPanel();
             drawAssetsPanel();
+            drawCameraPanel();
             drawDebugViewPanel();
             drawCullingPanel();
             drawInstanceFieldPanel();
@@ -581,7 +582,7 @@ void Engine::drawLoadPanel()
 
     constexpr float kVisibleRows = 8.0f;
     if (discoveredAssets.empty()) {
-        ImGui::TextDisabled("No model folders with a .gltf/.glb/.obj found");
+        ImGui::TextDisabled("No model folders with a .gltf/.glb found");
     } else if (ImGui::BeginListBox("##models", {-FLT_MIN, kVisibleRows * ImGui::GetTextLineHeightWithSpacing()})) {
         for (std::size_t i = 0; i < discoveredAssets.size(); ++i) {
             const bool isSelected = selectedAssetIndex == static_cast<int>(i);
@@ -783,6 +784,21 @@ void Engine::drawEntityTransformControls()
     ImGui::SetItemTooltip("radians");
     ImGui::DragFloat3("Scale", &transform.scale.x, 0.01f);
     ImGui::SetItemTooltip("a negative axis mirrors the instance");
+#endif
+}
+
+void Engine::drawCameraPanel()
+{
+#if ENGINE_ENABLE_IMGUI
+    if (!ImGui::CollapsingHeader("Camera")) {
+        return;
+    }
+    const glm::vec3& position = camera->cameraData.cameraPos;
+    ImGui::Text("Position: %.2f, %.2f, %.2f", position.x, position.y, position.z);
+    ImGui::InputFloat3("Coordinates", teleportPosition.data());
+    if (ImGui::Button("Teleport")) {
+        camera->teleportTo(glm::make_vec3(teleportPosition.data()));
+    }
 #endif
 }
 
@@ -1218,7 +1234,7 @@ void Engine::scanFolder()
             std::ranges::transform(extension, extension.begin(), [](unsigned char character) -> char
                                    { return static_cast<char>(std::tolower(character)); });
             // same formats AssetsLoader::loadModel picks from a folder
-            if (extension == ".gltf" || extension == ".glb" || extension == ".obj") {
+            if (extension == ".gltf" || extension == ".glb") {
                 return true;
             }
         }

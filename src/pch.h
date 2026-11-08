@@ -44,7 +44,6 @@
 #include <vulkan/vulkan_raii.hpp>
 #include <vulkan/vk_platform.h>
 #include "vma/vk_mem_alloc.h"
-#include "tiny_obj_loader.h"
 #include "tiny_gltf_v3.h"
 #include "termcolor.hpp"
 #if ENGINE_USE_MIMALLOC

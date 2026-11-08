@@ -52,6 +52,7 @@ class Engine
     int selectedAssetIndex = -1;
     bool hasScannedAssets = false;
     std::array<float, 3> loadedModelPosition{};
+    std::array<float, 3> teleportPosition{};
     char assetsPathInput[260] = ENGINE_MODELS_DIR;
     std::string loadStatus;
     bool isLoadStatusError = false;
@@ -76,6 +77,7 @@ class Engine
     void drawAssetsPanel() const;
     void drawDebugViewPanel();
     void drawEntityTransformControls();
+    void drawCameraPanel();
     void drawCullingPanel();
     void drawInstanceFieldPanel();
     void applyPendingModelActions();
@@ -93,6 +95,6 @@ public:
     void initialize();
     void run();
     void cleanup();
-    // fills discoveredAssets with the subfolders of assetsPathInput holding a .gltf/.glb/.obj
+    // fills discoveredAssets with the subfolders of assetsPathInput holding a .gltf/.glb
     void scanFolder();
 };
