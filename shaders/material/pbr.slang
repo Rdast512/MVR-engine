@@ -4,7 +4,14 @@ import types;
 import core.binding;
 import geometry.surface;
 
-// glTF metallic-roughness material at a surface (spec/pbr_implementation_plan.md B1); no KHR_texture_transform yet
+// glTF metallic-roughness material at a surface (spec/pbr_implementation_plan.md B1)
+
+// index GpuMaterial.uvMatrices; same order as the kMaterialFlagUvTransform* bits
+static const uint kUvSlotBaseColor = 0;
+static const uint kUvSlotMetalRough = 1;
+static const uint kUvSlotNormal = 2;
+static const uint kUvSlotOcclusion = 3;
+static const uint kUvSlotEmissive = 4;
 
 public struct SampledMaterial
 {
@@ -25,7 +32,7 @@ public struct TextureGradients
 };
 
 // lodBias: log2(render / display) once upscaling lands; applied by scaling the gradients
-TextureGradients textureGradients(Surface surface, uint uvSet, float lodBias)
+TextureGradients textureGradients(GpuMaterial material, uint slot, Surface surface, uint uvSet, float lodBias)
 {
     const uint set = min(uvSet, 1u);
     const float scale = exp2(lodBias);
@@ -33,36 +40,65 @@ TextureGradients textureGradients(Surface surface, uint uvSet, float lodBias)
     result.uv = surface.uv[set];
     result.ddx = surface.uvDdx[set] * scale;
     result.ddy = surface.uvDdy[set] * scale;
+    if ((material.flags & (kMaterialFlagUvTransformBaseColor << slot)) != 0)
+    {
+        const GpuUvMatrix transform = material.uvMatrices[slot];
+        const float3 homogeneousUv = float3(result.uv, 1.0);
+        result.uv = float2(dot(transform.row0, homogeneousUv), dot(transform.row1, homogeneousUv));
+        // gradients are directions: no translation
+        result.ddx = float2(dot(transform.row0.xy, result.ddx), dot(transform.row1.xy, result.ddx));
+        result.ddy = float2(dot(transform.row0.xy, result.ddy), dot(transform.row1.xy, result.ddy));
+    }
     return result;
 }
 
 // absent texture: the factor alone (kNoneIndex never becomes a handle)
-float4 sampleSlot(uint texture, uint samplerIndex, uint uvSet, Surface surface, float lodBias, float4 fallback)
+float4 sampleSlot(GpuMaterial material, uint slot, uint texture, uint samplerIndex, uint uvSet, Surface surface,
+                  float lodBias, float4 fallback)
 {
     if (texture == kNoneIndex || samplerIndex == kNoneIndex)
     {
         return fallback;
     }
-    const TextureGradients gradients = textureGradients(surface, uvSet, lodBias);
+    const TextureGradients gradients = textureGradients(material, slot, surface, uvSet, lodBias);
     return tex2D(NonUniformResourceIndex(texture))
         .SampleGrad(samplerOf(NonUniformResourceIndex(samplerIndex)), gradients.uv, gradients.ddx, gradients.ddy);
 }
 
 static const float kMinOrthoTangentLengthSq = 1e-8;
+static const float kMinUvTransformDeterminant = 1e-8;
+
+// normal map axes follow dP/du' and -dP/dv' (+y up, v grows down), from the inverse of the uv matrix's 2x2 part
+void transformTangentFrame(GpuUvMatrix transform, inout float3 t, inout float3 b)
+{
+    const float determinant = transform.row0.x * transform.row1.y - transform.row0.y * transform.row1.x;
+    // zero scale has no inverse
+    if (abs(determinant) <= kMinUvTransformDeterminant)
+    {
+        return;
+    }
+    const float orientation = determinant < 0.0 ? -1.0 : 1.0;
+    const float3 tangent = normalize((transform.row1.y * t + transform.row1.x * b) * orientation);
+    const float3 bitangent = normalize((transform.row0.y * t + transform.row0.x * b) * orientation);
+    t = tangent;
+    b = bitangent;
+}
 
 public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodBias)
 {
     const float4 one = float4(1.0, 1.0, 1.0, 1.0);
     // sRGB views decode base color and emissive in hardware
     const float4 baseColor = material.baseColorFactor * float4(surface.color, 1.0) *
-        sampleSlot(material.baseColorTex, material.baseColorSamp, material.baseColorUv, surface, lodBias, one);
+        sampleSlot(material, kUvSlotBaseColor, material.baseColorTex, material.baseColorSamp, material.baseColorUv,
+                   surface, lodBias, one);
     // B metal, G rough
-    const float4 metalRough =
-        sampleSlot(material.metalRoughTex, material.metalRoughSamp, material.metalRoughUv, surface, lodBias, one);
-    const float occlusion =
-        sampleSlot(material.occlusionTex, material.occlusionSamp, material.occlusionUv, surface, lodBias, one).r;
+    const float4 metalRough = sampleSlot(material, kUvSlotMetalRough, material.metalRoughTex, material.metalRoughSamp,
+                                         material.metalRoughUv, surface, lodBias, one);
+    const float occlusion = sampleSlot(material, kUvSlotOcclusion, material.occlusionTex, material.occlusionSamp,
+                                       material.occlusionUv, surface, lodBias, one).r;
     const float3 emissive = material.emissiveFactor *
-        sampleSlot(material.emissiveTex, material.emissiveSamp, material.emissiveUv, surface, lodBias, one).rgb;
+        sampleSlot(material, kUvSlotEmissive, material.emissiveTex, material.emissiveSamp, material.emissiveUv, surface,
+                   lodBias, one).rgb;
 
     SampledMaterial result;
     result.baseColor = baseColor.rgb;
@@ -81,13 +117,17 @@ public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, flo
     if (material.normalTex != kNoneIndex && material.normalSamp != kNoneIndex && surface.tangent.w != 0.0 &&
         orthoLengthSq > kMinOrthoTangentLengthSq)
     {
-        float3 tangentNormal =
-            sampleSlot(material.normalTex, material.normalSamp, material.normalUv, surface, lodBias, one).xyz * 2.0 -
-            1.0;
+        const float3 encodedNormal = sampleSlot(material, kUvSlotNormal, material.normalTex, material.normalSamp,
+                                                material.normalUv, surface, lodBias, one).xyz;
+        float3 tangentNormal = encodedNormal * 2.0 - 1.0;
         tangentNormal.xy *= material.normalScale;
-        const float3 t = orthoTangent / sqrt(orthoLengthSq);
+        float3 t = orthoTangent / sqrt(orthoLengthSq);
         // back faces flipped the normal; the bitangent follows it
-        const float3 b = cross(surface.normal, t) * surface.tangent.w;
+        float3 b = cross(surface.normal, t) * surface.tangent.w;
+        if ((material.flags & kMaterialFlagUvTransformNormal) != 0)
+        {
+            transformTangentFrame(material.uvMatrices[kUvSlotNormal], t, b);
+        }
         result.n = normalize(tangentNormal.x * t + tangentNormal.y * b + tangentNormal.z * surface.normal);
     }
 

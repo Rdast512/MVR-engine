@@ -119,7 +119,7 @@ Resource details: [resource_architecture.md](./resource_architecture.md). Vis-bu
 | Resolve | done: one tiled compute dispatch (8×8). Olano–Greer homogeneous barycentrics evaluated at (+1, 0) and (0, +1), `SampleGrad`, motion from current and previous transforms. `debug_view` writes the display image; `present` draws it into the sRGB swapchain with ImGui in the same rendering |
 | Guides | done, two sets: `NormalRoughness` RGBA16F, `GeoNormal` RG16_SNORM (oct), `DiffuseAlbedo` RGBA8 (`cDiff`, **a = 1: AO not stored yet**), `SpecularF0` RGBA8, `SpecAlbedo` RGBA8 (`envBrdfApprox`), `Emissive` B10G11R11, `Motion` RG16F |
 | `geometry/surface.slang`, `geometry/visbuffer.slang` | done: `TriangleCorners`, `loadTriangleCorners`, `Surface`, `buildSurface` (geometric-normal fallback, tangent sign flip under `FlipWinding`), payload pack/unpack, `computeBarycentrics` |
-| `material/pbr.slang` | **B1 done**: `SampledMaterial`, `sampleMaterial(GpuMaterial, Surface, lodBias)`, `sampleSlot` with `NonUniformResourceIndex`, unlit handling. `KHR_texture_transform` matrices are in `GpuMaterial` (A1) but not applied yet (M3, E1) |
+| `material/pbr.slang` | **B1 done**: `SampledMaterial`, `sampleMaterial(GpuMaterial, Surface, lodBias)`, `sampleSlot` with `NonUniformResourceIndex`, unlit handling, `KHR_texture_transform` per slot from the A1 `GpuMaterial` matrices (2026-11-09) |
 | `material/brdf.slang` | `envBrdfApprox`, `kDielectricF0`. No GGX, sampling or pdf |
 | Debug views | Guides category done (depth, shading/geometric normal, roughness, albedo, F0, spec albedo, emissive, motion). `LightingOnly` and `DlssInput` reserved, not implemented |
 | Vertex streams | `GpuVertex` 32 B (pos, color, uv0); normals, tangents, uv1 as separate float32 streams. Missing normals and needed tangents are generated at load (A4); the resolve's fallbacks to the geometric normal and no normal mapping remain only as guards |
@@ -316,9 +316,9 @@ SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodB
   - `Surface` carries per-UV-set `uv`, `uvDdx`, `uvDdy`; `textureGradients` scales them by `exp2(lodBias)`. The resolve passes analytic gradients; hits pass ray-cone gradients (C3). One function serves both.
   - Normals and tangents are transformed by the node instance's normal matrix; the bitangent sign flips under `FlipWinding`; back faces of two-sided materials flip the normal in `buildSurface`.
   - **Unlit:** `baseColor = 0`, `metallic = 0`, the color goes into `emissive`. Every consumer then handles unlit with no special case.
-- **Open (M3, with E1):**
-  - `KHR_texture_transform` per slot from the A1 `GpuMaterial` matrices, applied in `textureGradients` only when the slot's flag bit is set: `uv' = M·(uv, 1)`, and the matrix's 2×2 part on `ddx`/`ddy`.
+  - **`KHR_texture_transform`** (2026-11-09): per slot from the A1 `GpuMaterial` matrices, applied in `textureGradients` only when the slot's flag bit is set: `uv' = M·(uv, 1)`, and the matrix's 2×2 part on `ddx`/`ddy`. The normal slot also moves the tangent frame to `dP/du'`, `-dP/dv'` (`transformTangentFrame`).
   - `KHR_materials_emissive_strength`: nothing in the shader; A1 folds it into `emissiveFactor`.
+- **Open (M3, with E1):**
   - `lodBias = log2(render / display)` once DLSS-RR sets the render resolution.
 - **Done when:** the roughness and F0 debug views on `MetalRoughSpheres` match the texture layout; `TextureTransformTest` matches the Khronos screenshot in kind.
 - **Must not:** sRGB-sample metal-rough/normal/occlusion, use Unity ORM on the metal-rough slot, flip normal Y, or sample with implicit LOD outside a fragment shader.
