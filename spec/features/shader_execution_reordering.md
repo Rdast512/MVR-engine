@@ -79,7 +79,7 @@ Done when: the image is identical with reorder on and off; the on/off numbers ar
 
 | # | Task | Milestone |
 |---|---|---|
-| SER1 | query and cache `VkPhysicalDeviceRayTracingInvocationReorderPropertiesEXT`, log the hint | M0 (trivial, do now) |
+| SER1 | query and cache `VkPhysicalDeviceRayTracingInvocationReorderPropertiesEXT`, log the hint (**done**) | M0 |
 | SER2 | `vk_rt_pipeline`: RT pipeline + SBT builder (1 raygen, 1 miss, 1 hit group), `traceRaysIndirect2` dispatch, descriptor-heap flag | M4 (G1) |
 | SER3 | `raytracing/*` modules: payload (24 B), minimal closest-hit, miss, the §3 raygen skeleton | M4 |
 | SER4 | compile probe on the pinned Slang: EXT `HitObject` + `GetTriangleVertexPositions` + cluster AS in one pipeline, `spirv-val` clean; recheck whether `GetClusterID` works on the EXT path (would drop the invoke) | M4, first |

@@ -34,10 +34,10 @@ Vendor SDKs own all lighting. The engine writes only the glue they need.
 | RT geometry | **Mega Geometry**: CLAS per cluster, cluster BLAS per primitive, GPU TLAS | load-time builds, GPU instance write |
 | Direct light | **RTXDI** ReSTIR DI (punctual + emissive-triangle lights) | `RAB_*` bridge, GPU light buffer, two CS entry points |
 | Indirect light | one SER bounce + **SHaRC** (floor) / **NRC** (reference) behind `IRadianceCache` + **RTXDI ReSTIR GI** | raygen, minimal closest-hit, cache bridges, resolve passes |
-| Alpha-tested rays | **meshoptimizer** OMM baker + `VK_EXT_opacity_micromap`, per cluster | load-time bake, micromap build, CLAS attach |
+| Alpha-tested rays | **NVIDIA OMM SDK** CPU baker + `VK_EXT_opacity_micromap`, attached per cluster | load-time bake, micromap build, CLAS attach |
 | Denoise + upscale | **DLSS Ray Reconstruction** (NGX) | guides (exist), host evaluate |
 
-Load-time geometry processing (tangents, normals, clusters, OMM) is **meshoptimizer**. The engine has no tangent, normal, clustering or OMM algorithm of its own.
+Load-time geometry processing (tangents, normals, clusters) is **meshoptimizer**; OMM baking is the **NVIDIA OMM SDK**. The engine has no tangent, normal, clustering or OMM algorithm of its own.
 
 Everything else is the minimum those SDKs need:
 
@@ -56,7 +56,7 @@ Spec §5 is the authority. Task ids in brackets.
 ```
 load (once per asset)
   clean-up, normals/tangents (meshopt)                                                   [A4]
-  clusters (clusterlod level 0) → optimize level 1 → OMM bake per cluster                [D1]
+  clusters (clusterlod level 0) → optimize level 1 → OMM bake per primitive              [D1]
   micromaps → CLAS per cluster → cluster BLAS per primitive                              [D2 C1]
 
 every frame                                     GRAPHICS                     ASYNC COMPUTE
@@ -99,7 +99,7 @@ Every ray pass reads the TLAS address from `GpuFrameRoot.tlas`.
 | 13 | **Scene data per frame:** the CPU writes `GpuFrameRoot`, the camera and changed transforms. Ray instances, the TLAS and the RTXDI light buffer are written on the GPU from the persistent tables (spec P2) |
 | 14 | **C++ style** (`cpp-guidelines` skill, `.clang-tidy`): PascalCase types and `enum class` enumerators; camelCase functions, members, locals; class constants `kPascalCase`; getters `getX` / `isX` / `hasX`; no `m_` or trailing `_`. RAII owners of AS, micromaps, RT pipelines and SDK objects are move-only (Rule of Five); everything else follows the Rule of Zero. `const`/`constexpr` by default, `explicit` single-argument constructors, `[[nodiscard]]` on getters, named constants instead of magic numbers. Failures throw `std::runtime_error` with context. `.hpp` + `#pragma once`, no `using namespace` in headers |
 | 15 | **Comments** (`main-guidelines` skill), in C++ and Slang: lowercase, 2–8 words, why or non-obvious behavior only, no trailing period |
-| 16 | **Geometry processing:** meshoptimizer v1.3 for missing tangents (`meshopt_generateTangents`, `meshopt_TangentCompatible`), missing normals, clusters (`clusterlod.h` level 0) and OMM baking (`meshopt_opacityMap*`). No homegrown version of any of these |
+| 16 | **Geometry processing:** meshoptimizer v1.3 for missing tangents (`meshopt_generateTangents`, `meshopt_TangentCompatible`), missing normals and clusters (`clusterlod.h` level 0). OMM baking is the NVIDIA OMM SDK's CPU baker. No homegrown version of any of these |
 | 17 | **Static geometry only** (spec §7.3): no skinning or morph targets. The animation code is removed in M0, before A4 |
 | 18 | **Texture LOD:** the resolve uses `SampleGrad` with analytic barycentric gradients; ray hits use ray-cone gradients through the same function. LOD bias `log2(render / display)` from M3. Implicit-LOD `Sample` only in the alpha-tested fragment shader |
 | 19 | **Material model** (spec §9.4): glTF metallic-roughness, `KHR_texture_transform`, `KHR_materials_emissive_strength`. Further KHR PBR extensions become separate material bins (M7+) |
@@ -113,34 +113,35 @@ Resource details: [resource_architecture.md](./resource_architecture.md). Vis-bu
 | Piece | State |
 |---|---|
 | glTF parse → `MaterialStore` / `LightStore` / `GeometryStore`, shared refcounted models and materials, mesh/node split, `GpuNodeInstance` | done |
-| Frame root | `GpuFrameRoot` 136 B: camera, instances, models, primitives, materials, pbrExtensions, lights, `tlas` (0), nodeInstances, drawRecords, visibleMeshlets, 4 counts, `lateVisibleBase`, `debugView`, `cullCounters`, `triangleCull`, `subpixelSnap`, `targets`. Missing for this plan: `rayInstances`, `frameIndex`, `exposure`, SDK constants blocks |
+| Frame root | `GpuFrameRoot` 176 B: camera, instances, models, primitives, materials, pbrExtensions, lights, `tlas` (0), nodeInstances, drawRecords, visibleMeshlets, 4 counts, `lateVisibleBase`, `debugView`, `cullCounters`, `triangleCull`, `subpixelSnap`, `targets`, `frameFlags`, `rayInstances` / `rtxdiConstants` / `cacheConstants` (0 until their tasks), `frameIndex`, `exposure` (1 until H2) |
 | Render targets | done: `RenderTargets` ([vk_render_targets.cpp](../src/render/vk_render_targets.cpp)); `GpuTargets` 144 B per frame slot: vis buffer, depth, display (RGBA16F), linear sampler, render size, `current` / `previous` guide sets by frame parity |
 | Culling + raster | done: two-phase GPU culling, reverse Z, 3-level Hi-Z, `RasterBin {Opaque, AlphaTested}` with `DrawRecordFlag::TwoSided` and winding flip. Both bins share one fragment shader and DGC state until M6 |
 | Resolve | done: one tiled compute dispatch (8×8). Olano–Greer homogeneous barycentrics evaluated at (+1, 0) and (0, +1), `SampleGrad`, motion from current and previous transforms. `debug_view` writes the display image; `present` draws it into the sRGB swapchain with ImGui in the same rendering |
 | Guides | done, two sets: `NormalRoughness` RGBA16F, `GeoNormal` RG16_SNORM (oct), `DiffuseAlbedo` RGBA8 (`cDiff`, **a = 1: AO not stored yet**), `SpecularF0` RGBA8, `SpecAlbedo` RGBA8 (`envBrdfApprox`), `Emissive` B10G11R11, `Motion` RG16F |
 | `geometry/surface.slang`, `geometry/visbuffer.slang` | done: `TriangleCorners`, `loadTriangleCorners`, `Surface`, `buildSurface` (geometric-normal fallback, tangent sign flip under `FlipWinding`), payload pack/unpack, `computeBarycentrics` |
-| `material/pbr.slang` | **B1 done**: `SampledMaterial`, `sampleMaterial(GpuMaterial, Surface, lodBias)`, `sampleSlot` with `NonUniformResourceIndex`, unlit handling. No `KHR_texture_transform`; `kMaterialFlagUnlit` is declared locally, not in `types.slang` |
+| `material/pbr.slang` | **B1 done**: `SampledMaterial`, `sampleMaterial(GpuMaterial, Surface, lodBias)`, `sampleSlot` with `NonUniformResourceIndex`, unlit handling. `KHR_texture_transform` matrices are in `GpuMaterial` (A1) but not applied yet (M3, E1) |
 | `material/brdf.slang` | `envBrdfApprox`, `kDielectricF0`. `evalLambert` stub still present. No GGX, sampling or pdf |
 | Debug views | Guides category done (depth, shading/geometric normal, roughness, albedo, F0, spec albedo, emissive, motion). `LightingOnly` and `DlssInput` reserved, not implemented |
 | Vertex streams | `GpuVertex` 32 B (pos, color, uv0); normals, tangents, uv1 as separate float32 streams. **No generation (A4)**: the resolve falls back to the geometric normal and skips normal mapping without tangents |
 | Animation code | removed (2026-11-08): no morph or skin data is loaded or uploaded; glTF files load in their base pose |
-| Lights | `GpuLight` 64 B per entity in model space, `type` a raw `uint` (`GpuLightType` **missing**); placed by `loadWorldLight` |
+| Lights | `GpuLight` 64 B per entity in model space, `type` a `GpuLightType`; placed by `loadWorldLight` |
 | Clusters | `clusterlod.h` level 0 (Flex builder, cone weight 0, `optimizeMeshletLevel` 1), groups via `partitionClusters` |
-| Device | AS, ray query, RT pipeline, SER, OMM enabled. Cluster AS optional (`hasClusterAccelerationStructure`). OMM properties queried but **not cached**. Position fetch and cooperative vectors **not enabled**. Fragment barycentrics removed |
+| Device | AS, ray query, RT pipeline, SER, OMM enabled. Cluster AS optional (`hasClusterAccelerationStructure`). OMM and SER properties cached in `HardwareCapabilities`, SER hint logged. Position fetch and cooperative vectors **not enabled**. Fragment barycentrics removed |
 | `src/render/vk_pbr.{hpp,cpp}` | empty files |
-| Slang modules | not used: every file is `#include` + `#ifndef` guards |
-| `ThirdParty/` | meshoptimizer v1.3, `rtxdi`, `sharc`, `nrc`, `dlss` fetched; linkage tests in `tests/`. The `omm` fetch is unused (D1 bakes with meshoptimizer) |
+| Slang modules | done (A2): library files are `module x;`, passes `import` what they use. `gi/sharc.slang` stays a textual include until its bridge replaces it (it needs `#define`s set before the vendor header) |
+| `ThirdParty/` | meshoptimizer v1.3, `rtxdi`, `sharc`, `nrc`, `dlss` fetched; linkage tests in `tests/`. NVIDIA OMM SDK 1.9.2 fetched and built as `omm-lib` (CPU baker), no caller until D1 |
 | Shader stubs | kept, back in scope (spec §17): `gi/sharc`, `gi/rtxgi`, `raytracing/{hit,payload,trace}`, `passes/pathtrace*`, `passes/sharc_resolve`, `passes/composite`, `postprocessing/dlss`. Obsolete: `postprocessing/gbuffer.slang` (the guide layout is `GuideImage` in `types.slang`) |
 
-Toolchain facts (from the 2026-10-25 probe on Slang 2026.14.1; **re-probe on v2026.20**, task A2):
+Toolchain facts (re-probed 2026-11-08 on Slang v2026.20, task A2):
 
 | Fact | Consequence |
 |---|---|
 | `RaytracingAccelerationStructure(uint64_t)` → `OpConvertUToAccelerationStructureKHR` | the TLAS address goes straight into `GpuFrameRoot.tlas` with no AS descriptor |
-| `module` / `import a.b;`, typed pointers in structs, `enum X : uint`, `RWTexture2D<float4>.Handle` in push data all validate | adopt them (§4) |
-| heap access never emitted `NonUniform`, even with `NonUniformResourceIndex` | §4.4 |
-| `[format(...)]` is accepted on globals only, not on heap handles | storage guides use write-without-format, checked at startup (`RenderTargets::checkFormatSupport`) |
-| `slangc -depfile` exists | replace hand-written `DEPENDS` lists (§4.5) |
+| `module` / `import a.b;`, typed pointers in structs, `enum X : uint`, `RWTexture2D<float4>.Handle` in push data all validate | adopted (§4). The module name is a plain identifier (`module binding;`, no dots); the path is in the import (`import core.binding;`) |
+| command-line `-D` reaches imported modules; `#define`s in a source file do not | one module per define value works (`CULLING_REVERSED_Z` in the Hi-Z test); vendor headers that need `#define`s first stay textual |
+| heap access still emits no `NonUniform`, even with `NonUniformResourceIndex` | §4.4 |
+| `[format(...)]` on a heap handle is accepted but has no effect: `OpTypeImage` stays `Unknown` | storage guides use write-without-format, checked at startup (`RenderTargets::checkFormatSupport`) |
+| `slangc -depfile` lists imported modules and works with Ninja | hand-written `DEPENDS` lists removed (§4.5) |
 
 ---
 
@@ -189,10 +190,10 @@ public struct GpuRayInstance
     public uint primitiveRow;      // row in GpuFrameRoot.primitives
 }
 
-// appended to the existing GpuFrameRoot (136 B today), after targets
+// appended to GpuFrameRoot after frameFlags (176 B in total)
 public struct GpuFrameRoot
 {
-    // ... existing fields through `targets` ...
+    // ... existing fields through `frameFlags` ...
     public uint64_t rayInstances;   // GpuRayInstance[], 0 until C2
     public uint64_t rtxdiConstants; // F1, 0 until M3
     public uint64_t cacheConstants; // SHaRC or NRC constants, 0 until M4
@@ -222,7 +223,7 @@ C++ mirrors use `vk::DeviceAddress` for every pointer, with `static_assert(sizeo
 
 Material texture indices diverge across a wave in the resolve and at hits. Every material fetch goes through `sampleSlot` (`material/pbr.slang`, the spec's `sampleOr`), which wraps the index in `NonUniformResourceIndex`. Slang 2026.14.1 dropped the resulting `NonUniform` decoration on heap access; NVIDIA drivers tolerate it, but it is UB by spec.
 
-Re-probe on every Slang upgrade, starting with v2026.20: compile `resolve.slang`, `spirv-dis`, grep `NonUniform`. If it is still missing and artifacts appear, add a `WaveReadLaneFirst` waterfall inside `sampleSlot` only.
+Re-probe on every Slang upgrade: compile `resolve.slang`, `spirv-dis`, grep `NonUniform` (still missing on v2026.20). If artifacts appear, add a `WaveReadLaneFirst` waterfall inside `sampleSlot` only.
 
 ### 4.5 CMake
 
@@ -239,7 +240,7 @@ Each task lists **Do**, **Done when**, and **Must not** where relevant, plus its
 
 ### Phase A — Contracts (M0)
 
-#### A1 · POD layouts and constants
+#### A1 · POD layouts and constants — done (2026-11-08)
 
 - **Files:** `src/core/types.hpp`, `src/render/push_data.hpp`, `shaders/types.slang`, `src/core/vk_device.cpp`
 - **Do:**
@@ -249,23 +250,23 @@ Each task lists **Do**, **Done when**, and **Must not** where relevant, plus its
   - Cache `vk::PhysicalDeviceOpacityMicromapPropertiesEXT` in `HardwareCapabilities::opacityMicromap`, and `vk::PhysicalDeviceRayTracingInvocationReorderPropertiesEXT` with its hint logged at startup ([shader_execution_reordering.md](./features/shader_execution_reordering.md) SER1).
   - **Core-material data lives in `GpuMaterial`** (decided 2026-11-08). The resolve and every hit already load one `GpuMaterial` row; a second table would add a pointer load and a second row of cache lines per pixel, and `GpuMaterialExtension` (724 B per row) is mostly data no shader reads yet. So:
     - `KHR_materials_emissive_strength` is folded into `emissiveFactor` on the CPU when the row is packed: no field, no shader math;
-    - `KHR_texture_transform` is precomputed on the CPU into one 2×3 float matrix per slot (`M = T · R · S`; 24 B × 5 slots), so the shader does no `sin`/`cos`;
+    - `KHR_texture_transform` is precomputed on the CPU into one 2×3 float matrix per slot (`M = T · R · S`; 24 B × 5 slots), so the shader does no `sin`/`cos`. Rotation block in rows is `[c s; −s c]`, as in the Khronos sample renderer and the extension's example (v grows down); the GLSL snippet in the extension README has the opposite sign;
     - flag bits 4–8 (`kMaterialFlagUvTransformBaseColor` … `Emissive`) mark slots with a non-identity transform; the shader reads a slot's matrix only when its bit is set, so identity materials (almost all) load no extra bytes. `texCoord` overrides are already resolved into the slot's UV index.
 
     `GpuMaterial` grows from 112 to 240 B; update the asserts on both sides. `GpuMaterialExtension` keeps the other KHR extensions for their future material bins.
 - **Done when:** changing any field or pad breaks the build.
 - **Must not:** add a Slang mirror of `GpuMaterialExtension` or read it per pixel before a KHR extension bin needs it.
 
-#### A2 · Slang modules + frame root fields
+#### A2 · Slang modules + frame root fields — done (2026-11-08)
 
 - **Files:** all `shaders/**`, `CMakeLists.txt`, `src/core/vk_resource_manager.cpp`
 - **Do:** convert library files to modules (§4.1). `ResourceManager::writeFrameRoot` also fills `frameIndex` and `exposure` (1.0 until H2); the new addresses stay 0 until their tasks. Re-probe the §3 toolchain facts on Slang v2026.20 and update the table.
-- **Done when:** `mesh_raster`, `mesh_fragment`, `meshlet_cull`, `hiz_build`, `resolve`, `debug_view` and `present` compile and render unchanged; every guide debug view matches a capture taken before the conversion.
+- **Done when:** `mesh_raster`, `mesh_fragment`, `meshlet_cull`, `hiz_build`, `resolve`, `debug_view` and `present` compile and render unchanged; every guide debug view matches a capture taken before the conversion. Met by a stronger check: the release SPIR-V of all eight passes is byte-identical before and after.
 
 #### A3 · Remove what the plan no longer uses
 
-- **Files:** `shaders/**`, `ThirdParty/CMakeLists.txt`
-- **Do:** delete `postprocessing/gbuffer.slang`, `evalLambert`, and the `omm` fetch. Keep the RT pipeline, SER and cluster AS extensions and the stubs listed in §3 (spec §17 reverses the old A3).
+- **Files:** `shaders/**`
+- **Do:** delete `postprocessing/gbuffer.slang` and `evalLambert`. Keep the RT pipeline, SER and cluster AS extensions and the stubs listed in §3 (spec §17 reverses the old A3).
 - **Done when:** the tree builds and renders unchanged.
 
 #### A4 · Shading vertex attributes (meshoptimizer)
@@ -475,25 +476,29 @@ public Surface decodeHit(GpuFrameRoot f, uint rayInstance, uint meshletRow, uint
 
 Spec §8.2, §10.5.
 
-#### D1 · Bake per cluster
+#### D1 · Bake per primitive, index per cluster
 
 - **Files:** `src/core/omm_baker.{hpp,cpp}` (new)
-- **Baker:** meshoptimizer v1.3 `meshopt_opacityMapMeasure` → `meshopt_opacityMapRasterize` → `meshopt_opacityMapCompact`. Output is the `VK_EXT_opacity_micromap` layout directly (bird order, 1 or 2 bits per micro-triangle, special indices `-1..-4`).
+- **Baker:** NVIDIA OMM SDK 1.9 **CPU baker** (`ThirdParty::omm`, `ommBakerType_CPU`): `ommCreateBaker` → `ommCpuCreateTexture` → `ommCpuBake` → `ommCpuGetBakeResultDesc`. Output is the `VK_EXT_opacity_micromap` layout directly (format values and special indices `-1..-4` match Vulkan). Move-only RAII owners for the baker, texture and result handles; a failed `ommResult` throws with context; `messageInterface` goes to the engine log.
 - **Do:**
   - Qualify: `AlphaMode::Mask` (cutoff = `alphaCutoff`) and `AlphaMode::Blend` (cutoff 0.5) with a base-color alpha texture. Anything else is opaque for rays.
-  - Bake from the **final** cluster triangles, after `meshopt_optimizeMeshletLevel` 1, which may rotate corners (spec §7.1 step 4–5). Micromap data is corner-sensitive, so never bake from an earlier order or from the index buffer.
-  - Per cluster, an OMM index buffer that maps the cluster-local triangle to its bake entry. Cached with the model's geometry (spec §7.2).
-  - The loader keeps the base-color alpha (UNORM8, mip 0) of qualifying textures until the bake; decoded pixels are freed after it.
-  - `maxLevel` from §9 clamped to `opacityMicromap.maxOpacity4StateSubdivisionLevel`; `targetEdge > 0` makes the level adaptive to texel area.
-  - `meshopt_opacityMapRasterize(…, states = 4, …)`: the instance flag collapses unknown states to 2-state at trace time.
-  - **Cutoff:** meshopt rasterizes at a fixed 0.5. For `Mask` with another `alphaCutoff`, give the baker a remapped alpha copy: `[0, cutoff] → [0, 0.5]`, `[cutoff, 1] → [0.5, 1]`, so the threshold lands where raster `discard` puts it.
-  - UVs and texture in the orientation the shader samples, or the micromap is mirrored against `discard`.
-- **Done when:** the cache round-trips, and baker stats show > 70 % known micro-triangles on Sponza foliage.
+  - **Unit of work:** one `ommCpuBake` per qualifying primitive, not per cluster, so the SDK's reuse passes span all of the primitive's clusters. The input index buffer is the **final** cluster triangles concatenated in cluster order, after `meshopt_optimizeMeshletLevel` 1, which may rotate corners (spec §7.1 step 4–5). Micromap data is corner-sensitive, so never bake from an earlier order or from the primitive's index buffer.
+  - **Output:** `arrayData`, `descArray`, `descArrayHistogram` and `indexBuffer` are copied out, then `ommCpuDestroyBakeResult`. `indexBuffer` has one entry per input triangle in input order, so each cluster's OMM index buffer is a subrange of it. Use the reported `indexFormat` (16 or 32 bit; `Allow8BitIndices` stays off). All of it is cached with the model's geometry (spec §7.2).
+  - **Alpha input** must be what the shader reads (SDK guide, "Texture Compression"): one `ommCpuTexture` per image, UNORM8, mip 0 only. Uncompressed sources use their decoded alpha; a KTX2/BC texture is decoded from its runtime blocks, not from the source image. The loader keeps this alpha until the bake and frees it after.
+  - **Cutoff:** `alphaCutoff` in `ommCpuBakeInputDesc`. The shader tests `baseColorFactor.a × texture.a`, so the baked value is `cutoff / baseColorFactor.a`. `alphaMode = ommAlphaMode_Test` for both glTF modes, matching the raster `discard` (D3).
+  - **Sampler:** `runtimeSamplerDesc` from the glTF sampler. The SDK takes one address mode for both axes: mixed `wrapS` / `wrapT` logs a warning and uses `wrapS`.
+  - **UVs:** `ommTexCoordFormat_UV32_FLOAT` from the slot's UV set, with the slot's `KHR_texture_transform` matrix (`GpuMaterial::uvMatrices`) applied first, since the SDK bakes exactly the UVs it is given. Same orientation as the shader samples, or the micromap is mirrored against `discard`.
+  - **Level:** `maxSubdivisionLevel` from §9 clamped to `opacityMicromap.maxOpacity4StateSubdivisionLevel`; `dynamicSubdivisionScale` from §9 makes it adaptive to texel area.
+  - **States:** `ommFormat_OC1_4_State` with `ommUnknownStatePromotion_ForceOpaque` (the SDK's recommendation); the instance flag collapses unknown states to 2-state at trace time.
+  - **Threading:** `ommCpuBake` is thread-safe on one baker. Run one bake per job on the loader's workers (spec X3). Never set `EnableInternalThreads`: it needs OpenMP, which the build turns off.
+  - Debug builds set `ommCpuBakeFlags_EnableValidation`; `ommDebugSaveAsImages` is the tool for checking a bake against its texture.
+- **Done when:** the cache round-trips, and `ommDebugGetStats` shows > 70 % known micro-triangles on Sponza foliage.
+- **Must not:** bake from the source image of a BC texture, or per cluster.
 
 #### D2 · Build and attach to CLAS
 
 - **Do:**
-  - Micromap buffers with `eMicromapBuildInputReadOnlyEXT` / `eMicromapStorageEXT`; one `VkMicromapTriangleEXT { dataOffset, subdivisionLevel, format = OPACITY_4_STATE }` per bake entry; `vkGetMicromapBuildSizesEXT` → `vkCmdBuildMicromapsEXT`, RAII-owned, built before C1 in the same command buffer.
+  - Micromap buffers with `eMicromapBuildInputReadOnlyEXT` / `eMicromapStorageEXT`; one micromap per baked primitive; D1's `descArray` is the `VkMicromapTriangleEXT` array (same layout: `dataOffset`, `subdivisionLevel`, `format`); `descArrayHistogram` converted field by field to `VkMicromapUsageEXT`; `vkGetMicromapBuildSizesEXT` → `vkCmdBuildMicromapsEXT`, RAII-owned, built before C1 in the same command buffer.
   - CLAS build info: `opacityMicromapArray`, `opacityMicromapIndexBuffer` (the per-cluster map of D1), `opacityMicromapIndexType`; the build sets `VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_CLUSTER_OPACITY_MICROMAPS_BIT_NV` (VUID-…-opacityMicromapArray-10881).
 - **Done when:** validation is clean, and shadow rays through `AlphaBlendModeTest` foliage show cut-outs.
 
@@ -695,7 +700,7 @@ A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
 
 | Milestone (spec §16.2) | Tasks |
 |---|---|
-| M0 Contracts | A1, A2, A3, A4, animation removal (**done**) |
+| M0 Contracts | A1, A2 (**done**), A3, A4, animation removal (**done**) |
 | M1 Vis buffer | B1, E1 (**done**); 32-bit payload kept, V8 deferred; culling image checked |
 | M2 Cluster RT bring-up | C1, C2, C3 |
 | M3 First lit frame | B1 extensions, B2, B3, E1 open items, E2 (punctual), F1–F3, H1, H2 |
@@ -714,7 +719,7 @@ PR order follows the milestones. The **first lit pixel** is F3 through the H2 br
 |---|---|
 | `vk_render_targets` (exists) | vis buffer, display image, guide sets, `GpuTargets` per slot; gains `directRadiance`, `indirectRadiance`, `noisyColor` |
 | `vk_mega_geometry` | CLAS and cluster BLAS groups per model, per-slot instance + `GpuRayInstance` + TLAS buffers, instance-write pass, async-compute submit and timeline semaphore |
-| `omm_baker` | meshopt bake + cache, `VkMicromapEXT` RAII |
+| `omm_baker` | OMM SDK bake + cache, SDK handle and `VkMicromapEXT` RAII |
 | `vk_rt_pipeline` | SER RT pipelines and SBTs, `traceRaysIndirect2` dispatch |
 | `vk_pbr` (`PbrPass`, empty today) | `combine` and `post`; the resolve stays in `Renderer` until M7 moves it to binned dispatch |
 | `vk_rtxdi` | `ReSTIRDIContext` + ReSTIR GI, reservoirs, neighbor offsets, light-buffer pass, constants, `rtxdi_initial` / `rtxdi_shade` / `restir_gi` |
@@ -736,7 +741,7 @@ Rules: `MaterialStore` / `LightStore` stay on `Scene`. `ResourceManager::flushGp
 | lights | `dot(spotDir, L)`. Node scale on intensity/range/cone. A CPU loop over lights per frame |
 | visibility | alpha tests or material fetches in the opaque raster bin. Alpha tests in the resolve. A fragment G-buffer |
 | rays | any-hit. Candidate loops in ray queries. KHR triangle BLASes. CPU-written TLAS instances. Camera culling on TLAS instances. Shading hits outside the SER pipeline shape |
-| OMM | OMM on opaque primitives. Baking from any triangle order other than the final cluster triangles. Baking before A4. A second baker next to meshoptimizer |
+| OMM | OMM on opaque primitives. Baking from any triangle order other than the final cluster triangles. Baking before A4. A second baker next to the OMM SDK |
 | geometry | homegrown tangent, normal, cluster or OMM code (§2 #16). Overwriting file-provided tangents or normals. Animation |
 | Slang | implicit-LOD `Sample` outside fragment shaders. Material fetches bypassing `sampleSlot`. Preprocessor variants beyond vendor-mandated defines |
 | SDKs | NGX calls from Slang. Unpinned SDK versions. Optional or disabled SDK builds |
@@ -752,8 +757,8 @@ Rules: `MaterialStore` / `LightStore` stay on `Scene`. `ResourceManager::flushGp
 | Indirect resolution | full on the reference tier, half + checkerboard on the floor tier |
 | CLAS `positionTruncateBitCount` | 0; raise only with measured memory gain and the §10.2 origin rule |
 | `Blend` | treated as mask (cutoff 0.5) |
-| OMM subdivision level | max 5, clamped to device max; adaptive via `meshopt_opacityMapMeasure` `targetEdge` (start at 2 texels) |
-| OMM baker | meshoptimizer (D1). The NVIDIA OMM SDK (GPU baker) only if meshopt's CPU bake is too slow on Bistro |
+| OMM subdivision level | max 5, clamped to device max; adaptive via `dynamicSubdivisionScale` (start at 2 texels, the SDK default) |
+| OMM baker | NVIDIA OMM SDK CPU baker (D1), at load and cached: the SDK's choice for pre-baked content, with reuse and spatial-sort steps the GPU baker lacks. Its GPU baker only if load-time baking is too slow on Bistro; it needs the SDK's shaders and a binding adapter for descriptor heaps |
 | Cache scene AABB / `kMaxBounces` | `GeometryStore` world bounds, recomputed on load / 4 |
 | NRC training budget | SDK default for the render resolution |
 | DLSS quality mode | Quality on every tier (spec §2.1) |
@@ -775,7 +780,7 @@ Rules: `MaterialStore` / `LightStore` stay on `Scene`. `ResourceManager::flushGp
 | §2 #11, G: NRC only | SHaRC + NRC behind `IRadianceCache`, plus ReSTIR GI and the one-bounce indirect pass (G1–G6) | spec §11.3–11.5 |
 | §2 #12, §9: `Uniform` only, emissive meshes out | `Power_RIS` with emissive-triangle lights in M7 | spec §11.2 |
 | E2: CPU transforms light rows | GPU light-buffer pass | spec P2 |
-| A3: delete RT pipeline, SER, cluster AS and their stubs | keep them; delete only `postprocessing/gbuffer.slang`, `evalLambert`, the `omm` fetch | spec §17 |
+| A3: delete RT pipeline, SER, cluster AS and their stubs | keep them; delete only `postprocessing/gbuffer.slang`, `evalLambert` | spec §17 |
 | A4 morph-delta remap | dropped: animation is removed first | spec §7.3 |
 | §4.3 `SampleLevel(…, 0)` outside fragment; B1 "no `KHR_texture_transform`" | `SampleGrad` with analytic or ray-cone gradients, LOD bias; `KHR_texture_transform` and emissive strength in B1 | spec S10, §9.4, §12.2 |
 | §4.4 `sampleOr` | `sampleSlot` (as built), re-probe on Slang v2026.20 | code |
@@ -790,7 +795,7 @@ Rules: `MaterialStore` / `LightStore` stay on `Scene`. `ResourceManager::flushGp
 | §3 state from `fa2222941` (80 B frame root, 24 B push data, one draw per entity × primitive, model-relative `materialId`, lights dropped after flush) | §3 re-verified on `fd67395d1`: shader objects, shared refcounted models and materials, mesh/node split with `GpuNodeInstance`, 16 B push data + `GpuDrawRecord`, debug views, per-entity lights | the tree moved on; the plan's ids and layouts must match it |
 | `GpuRayInstance { instanceIndex, primitiveIndex }`, TLAS instance per entity × primitive, BLAS group destroyed by `eraseModel` | `{ nodeInstanceIndex, primitiveIndex }`, TLAS instance per node instance × mesh primitive with the node world matrix, BLAS group lives while the model's `refCount` > 0 | meshes are stored once and placed by nodes; models are shared by entities |
 | `GpuFrameRoot` 96 B with `debugFlags` | 120 B: existing `nodeInstances`, `drawRecords`, counts and `debugView` + new `rayInstances`, `frameIndex`, `exposure` | `debugView` already exists and lighting debug modes are `DebugView` entries |
-| NVIDIA OMM SDK baker (D1) | meshoptimizer `meshopt_opacityMap*` | already linked; outputs the Vulkan micromap layout and special indices directly; one dependency fewer. The `omm` fetch joins A3's deletions |
+| meshoptimizer `meshopt_opacityMap*` baker (D1) | NVIDIA OMM SDK CPU baker, one bake per primitive (decided 2026-11-08) | contour-based resampling maximizes known states; reuse passes and spatial sort; cutoff, sampler and unknown-state promotion are bake inputs, so no alpha remap. The `omm` fetch stays |
 | "Normal map only when a tangent exists"; no rule for missing normals | A4: MikkTSpace-compatible `meshopt_generateTangents` where a normal texture is used, flat `meshopt_generateNormals` where `NORMAL` is missing | glTF requires both; normal maps on tangent-less assets would otherwise be ignored |
 | E2 "keep light rows after flush" | done (`LightStore::uploaded`, `loadWorldLight`); E2 is only the per-frame RTXDI light buffer | lights became per-entity rows with the shared-model work |
 | — | C1 keeps `Indices` uploaded (overrides data-layout finding 5) | the index slice is the BLAS input |

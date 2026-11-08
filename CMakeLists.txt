@@ -135,7 +135,7 @@ foreach (CONFIG DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
 endforeach ()
 
 # --- Shader Compilation (Slang only) ---
-# Include-only libraries (types/, core/, geometry/, material/, …) are not compiled.
+# Library modules (types, core/, geometry/, material/, …) are imported, not compiled on their own.
 # Compile units live in shaders/passes/ and each lists its slangc -entry names.
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/shaders)
 set(ENGINE_SLANG_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/shaders")
@@ -230,7 +230,7 @@ set(ENGINE_SLANG_FLAGS
 set(COMPILED_SHADERS)
 
 function(engine_add_slang_pass rel_path)
-  cmake_parse_arguments(PARSE_ARGV 1 ARG "" "" "ENTRIES;DEPENDS")
+  cmake_parse_arguments(PARSE_ARGV 1 ARG "" "" "ENTRIES")
   set(_src "${ENGINE_SLANG_INCLUDE_DIR}/${rel_path}")
   get_filename_component(_rel_dir ${rel_path} DIRECTORY)
   get_filename_component(_name_we ${_src} NAME_WE)
@@ -246,11 +246,6 @@ function(engine_add_slang_pass rel_path)
     list(APPEND _entry_args -entry ${_e})
   endforeach ()
 
-  set(_depends "${_src}" ${ENGINE_SLANG_THIRDPARTY_HEADERS})
-  foreach (_d IN LISTS ARG_DEPENDS)
-    list(APPEND _depends "${ENGINE_SLANG_INCLUDE_DIR}/${_d}")
-  endforeach ()
-
   add_custom_command(
       OUTPUT ${_spv}
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_out_dir}
@@ -258,41 +253,25 @@ function(engine_add_slang_pass rel_path)
       ${_src}
       ${ENGINE_SLANG_FLAGS}
       ${_entry_args}
+      -depfile ${_spv}.d
       -o ${_spv}
-      DEPENDS ${_depends}
+      DEPENDS ${_src}
+      DEPFILE ${_spv}.d
       COMMENT "Compiling Slang shader ${rel_path}"
       VERBATIM
   )
   set(COMPILED_SHADERS ${_spv} ${COMPILED_SHADERS} PARENT_SCOPE)
 endfunction()
 
-set(ENGINE_SLANG_SURFACE_DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang
-    core/culling.slang geometry/mesh.slang geometry/visbuffer.slang geometry/surface.slang)
-engine_add_slang_pass(passes/mesh_raster.slang
-    ENTRIES meshMain
-    DEPENDS types.slang core/binding.slang core/frame.slang core/math.slang geometry/mesh.slang
-            geometry/triangle_cull.slang geometry/visbuffer.slang core/culling.slang)
-engine_add_slang_pass(passes/mesh_fragment.slang
-    ENTRIES fragMain
-    DEPENDS types.slang)
-engine_add_slang_pass(passes/resolve.slang
-    ENTRIES resolveMain
-    DEPENDS ${ENGINE_SLANG_SURFACE_DEPENDS} material/brdf.slang material/pbr.slang)
-engine_add_slang_pass(passes/debug_view.slang
-    ENTRIES debugViewMain
-    DEPENDS ${ENGINE_SLANG_SURFACE_DEPENDS})
-engine_add_slang_pass(passes/present.slang
-    ENTRIES presentMesh presentFrag
-    DEPENDS types.slang core/binding.slang core/frame.slang)
+engine_add_slang_pass(passes/mesh_raster.slang ENTRIES meshMain)
+engine_add_slang_pass(passes/mesh_fragment.slang ENTRIES fragMain)
+engine_add_slang_pass(passes/resolve.slang ENTRIES resolveMain)
+engine_add_slang_pass(passes/debug_view.slang ENTRIES debugViewMain)
+engine_add_slang_pass(passes/present.slang ENTRIES presentMesh presentFrag)
 engine_add_slang_pass(passes/meshlet_cull.slang
-    ENTRIES cullInstances cullMeshlets cullRejectedMeshlets buildMeshSequences
-    DEPENDS types.slang core/binding.slang core/culling.slang)
-engine_add_slang_pass(passes/hiz_view.slang
-    ENTRIES hizViewMesh hizViewFrag
-    DEPENDS types.slang core/binding.slang)
-engine_add_slang_pass(passes/hiz_build.slang
-    ENTRIES hizBuild
-    DEPENDS types.slang core/binding.slang core/culling.slang)
+    ENTRIES cullInstances cullMeshlets cullRejectedMeshlets buildMeshSequences)
+engine_add_slang_pass(passes/hiz_view.slang ENTRIES hizViewMesh hizViewFrag)
+engine_add_slang_pass(passes/hiz_build.slang ENTRIES hizBuild)
 
 add_custom_target(Shaders ALL DEPENDS ${COMPILED_SHADERS})
 

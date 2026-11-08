@@ -989,15 +989,15 @@ namespace
         }
     }
 
-    static uint8_t lightTypeFromName(std::string_view type)
+    static GpuLightType lightTypeFromName(std::string_view type)
     {
         if (type == "directional") {
-            return 0;
+            return GpuLightType::Directional;
         }
         if (type == "spot") {
-            return 2;
+            return GpuLightType::Spot;
         }
-        return 1;
+        return GpuLightType::Point;
     }
 
     static glm::mat4 gltfNodeLocalMatrix(const tg3_node& node)

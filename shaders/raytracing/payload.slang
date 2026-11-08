@@ -1,13 +1,10 @@
-#ifndef ENGINE_RT_PAYLOAD_SLANG
-#define ENGINE_RT_PAYLOAD_SLANG
+module payload;
 
-struct RtPayload
+public struct RtPayload
 {
-    float3 color;
-    float hitT;
-    uint instanceId;
-    uint primitiveId;
-    uint clusterId;
+    public float3 color;
+    public float hitT;
+    public uint instanceId;
+    public uint primitiveId;
+    public uint clusterId;
 };
-
-#endif

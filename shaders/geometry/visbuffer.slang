@@ -1,34 +1,33 @@
-#ifndef ENGINE_GEOMETRY_VISBUFFER_SLANG
-#define ENGINE_GEOMETRY_VISBUFFER_SLANG
+module visbuffer;
 
-#include "types.slang"
+import types;
 
 // R32_UINT visibility buffer (spec/features/visibility_buffer.md §3.1): (visibleRow << kVisTriangleBits) | triangle.
 // Empty pixels are decided by depth (reverse-Z clear 0), never by the payload
 
 static const uint kVisTriangleMask = (1u << kVisTriangleBits) - 1u;
 
-uint packVisPayload(uint visibleRow, uint triangle)
+public uint packVisPayload(uint visibleRow, uint triangle)
 {
     return (visibleRow << kVisTriangleBits) | triangle;
 }
 
-uint visPayloadRow(uint payload)
+public uint visPayloadRow(uint payload)
 {
     return payload >> kVisTriangleBits;
 }
 
-uint visPayloadTriangle(uint payload)
+public uint visPayloadTriangle(uint payload)
 {
     return payload & kVisTriangleMask;
 }
 
 // perspective-correct barycentrics at a pixel and their exact screen derivatives on the triangle's plane
-struct Barycentrics
+public struct Barycentrics
 {
-    float3 lambda;
-    float3 ddx; // per pixel step in x
-    float3 ddy; // per pixel step in y
+    public float3 lambda;
+    public float3 ddx; // per pixel step in x
+    public float3 ddy; // per pixel step in y
 };
 
 // homogeneous edge functions (Olano-Greer): the rows of inverse([a.xyw b.xyw c.xyw]) up to scale. No divide by w,
@@ -41,7 +40,7 @@ float3 edgeWeights(float3 e0, float3 e1, float3 e2, float2 p)
 }
 
 // clip corners as the rasterizer saw them (jittered); ndc of the pixel center; one pixel in NDC per axis
-Barycentrics computeBarycentrics(float4 a, float4 b, float4 c, float2 ndc, float2 pixelNdc)
+public Barycentrics computeBarycentrics(float4 a, float4 b, float4 c, float2 ndc, float2 pixelNdc)
 {
     const float3 e0 = cross(b.xyw, c.xyw);
     const float3 e1 = cross(c.xyw, a.xyw);
@@ -54,29 +53,27 @@ Barycentrics computeBarycentrics(float4 a, float4 b, float4 c, float2 ndc, float
     return result;
 }
 
-float2 interpolate(Barycentrics bary, float2 a, float2 b, float2 c)
+public float2 interpolate(Barycentrics bary, float2 a, float2 b, float2 c)
 {
     return bary.lambda.x * a + bary.lambda.y * b + bary.lambda.z * c;
 }
 
-float3 interpolate(Barycentrics bary, float3 a, float3 b, float3 c)
+public float3 interpolate(Barycentrics bary, float3 a, float3 b, float3 c)
 {
     return bary.lambda.x * a + bary.lambda.y * b + bary.lambda.z * c;
 }
 
-float4 interpolate(Barycentrics bary, float4 a, float4 b, float4 c)
+public float4 interpolate(Barycentrics bary, float4 a, float4 b, float4 c)
 {
     return bary.lambda.x * a + bary.lambda.y * b + bary.lambda.z * c;
 }
 
-float2 interpolateDdx(Barycentrics bary, float2 a, float2 b, float2 c)
+public float2 interpolateDdx(Barycentrics bary, float2 a, float2 b, float2 c)
 {
     return bary.ddx.x * a + bary.ddx.y * b + bary.ddx.z * c;
 }
 
-float2 interpolateDdy(Barycentrics bary, float2 a, float2 b, float2 c)
+public float2 interpolateDdy(Barycentrics bary, float2 a, float2 b, float2 c)
 {
     return bary.ddy.x * a + bary.ddy.y * b + bary.ddy.z * c;
 }
-
-#endif

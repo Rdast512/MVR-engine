@@ -24,7 +24,7 @@ Legend: **[exists]** has real code today · **[stub]** placeholder file · **[ne
 The spec's S1–S11 apply; shader-side consequences:
 
 - **One path, no fallbacks.** No vendor checks, raster-only mode or old-technique toggles. Tiers change resolution, ray counts, cache choice and LOD error only (spec P1).
-- **Slang modules.** Library code is `module x;` / `import a.b;` (S2). Today every file is still a textual include with guards; the conversion is PBR task A2 in M0. Vendor HLSL (RTXDI, SHaRC, NRC) is `#include`d only from bridge and pass files.
+- **Slang modules.** Library code is `module x;` / `import a.b;` (S2). Vendor HLSL (RTXDI, SHaRC, NRC) is `#include`d only from bridge and pass files.
 - **Bindless only.** Buffers through typed BDA pointers (`bdaPtr<T>`), read once into locals; images and samplers through heap handles (S3, S4). No descriptor-set bindings, no `StructuredBuffer` for engine data.
 - **One root pointer.** Every pass reaches scene data from `GpuFrameRoot`; push data carries the root address plus pass-local values, within `maxPushDataSize` (S7). Render-target heap indices live in the per-frame `GpuTargets` block reached from the root (M0).
 - **Shaded rays use RT pipelines with SER.** `HitObject::TraceRay` → `ReorderThread(hit, materialBin)` → minimal closest-hit returning `{instance, cluster, triangle, barycentrics, hitT}` → shade in raygen with the same `decodeHit` and `sampleMaterial` as the vis-buffer resolve (spec §11.1). One raygen, one miss, one closest-hit per SBT; no any-hit, no per-material hit groups. Visibility-only rays are ray queries.
@@ -249,6 +249,7 @@ Closed by the spec (2026-10-31 to 2026-11-07): visibility buffer over raster G-b
 
 | Date | Change |
 |---|---|
+| 2026-11-08 | Library files converted to Slang modules (PBR task A2); `gi/sharc.slang` stays textual until its bridge |
 | 2026-11-07 | Visibility buffer plan applied: 32-bit payload, `geometry/surface`, `present`; `mesh_debug` removed in M1; open decision 4 answered |
 | 2026-11-07 | Moved to `spec/` and realigned with [engine_spec.md](../docs/engine_spec.md): vis buffer + compute resolve replace the raster G-buffer; RT pipelines with SER, cluster AS, SHaRC + NRC behind `IRadianceCache`, ReSTIR GI; `raytracing/*`, `gi/sharc`, `pathtrace*`, `sharc_resolve` back in scope; culling, Hi-Z and triangle-cull files added; §2 maps spec §5 stages to passes; §6 follows spec milestones M0–M9, L1–L3; open decisions from spec §18 |
 | 2026-10-23 | Aligned with the PBR plan: NRC replaces SHaRC; ray queries in compute, no RT pipeline, SER or mega geometry (reversed 2026-11-07) |

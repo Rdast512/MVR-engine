@@ -130,6 +130,8 @@ public:
     // frozen culling camera with a pyramid of the freeze frame: the renderer skips both builds so it stays
 
     [[nodiscard]] bool isPyramidFrozen() const noexcept { return isPyramidFrozenThisFrame; }
+    // after prepareFrame: last frame's node-instance and visible rows mean something else now
+    [[nodiscard]] bool isSceneLayoutChanged() const noexcept { return isLayoutChangedThisFrame; }
 
     MeshletCullSettings settings;
 
@@ -212,5 +214,7 @@ private:
     OcclusionHistory lastHistory = OcclusionHistory::Valid;
     // set by prepareFrame: frozen since an earlier frame, so this frame skips both pyramid builds
     bool isPyramidFrozenThisFrame = false;
+    // set by prepareFrame
+    bool isLayoutChangedThisFrame = false;
     uint32_t fallbackFrames = 0;
 };

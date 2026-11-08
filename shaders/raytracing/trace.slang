@@ -1,8 +1,5 @@
-#ifndef ENGINE_RT_TRACE_SLANG
-#define ENGINE_RT_TRACE_SLANG
+module trace;
 
-#include "types.slang"
-#include "core/binding.slang"
-#include "raytracing/payload.slang"
-
-#endif
+import types;
+import core.binding;
+import raytracing.payload;

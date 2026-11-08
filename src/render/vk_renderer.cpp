@@ -87,7 +87,13 @@ void Renderer::drawFrame()
     }
     {
         ZoneScopedN("UpdateUBO");
-        resourceManager.updateUniformBuffers(currentFrame, debugView.packed());
+        // resize and swapchain recreation arrive as camera cuts
+        const bool isHistoryReset = camera.isCut() || culling.isSceneLayoutChanged();
+        if (isHistoryReset) {
+            TracyMessageL("History reset");
+        }
+        resourceManager.updateUniformBuffers(currentFrame, debugView.packed(),
+                                             isHistoryReset ? FrameFlag::HistoryReset : 0u, frameNumber);
     }
     {
         ZoneScopedN("QueueSubmitFrame");
@@ -415,7 +421,7 @@ void Renderer::recordResolve(const vk::raii::CommandBuffer& cmd)
 
 void Renderer::recordDebugView(const vk::raii::CommandBuffer& cmd)
 {
-    // guide writes -> guide reads
+    // guide writes -> guide reads; submission order also covers the previous frame's set (Reprojection)
     const vk::MemoryBarrier2 guideBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,

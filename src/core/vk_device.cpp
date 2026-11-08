@@ -650,6 +650,7 @@ void Device::queryCapabilities()
         vk::PhysicalDeviceMaintenance7PropertiesKHR, vk::PhysicalDeviceMaintenance9PropertiesKHR,
         vk::PhysicalDeviceMaintenance10PropertiesKHR, vk::PhysicalDevicePipelineBinaryPropertiesKHR,
         vk::PhysicalDeviceRayTracingPipelinePropertiesKHR,
+        vk::PhysicalDeviceRayTracingInvocationReorderPropertiesEXT,
         vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV,
         vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV>
         propertiesChain;
@@ -753,6 +754,16 @@ void Device::queryCapabilities()
     capabilities.maintenance10 = propertiesChain.get<vk::PhysicalDeviceMaintenance10PropertiesKHR>();
     capabilities.pipelineBinary = propertiesChain.get<vk::PhysicalDevicePipelineBinaryPropertiesKHR>();
     capabilities.rayTracingPipeline = propertiesChain.get<vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
+    capabilities.opacityMicromap = propertiesChain.get<vk::PhysicalDeviceOpacityMicromapPropertiesEXT>();
+    capabilities.rayTracingInvocationReorder =
+        propertiesChain.get<vk::PhysicalDeviceRayTracingInvocationReorderPropertiesEXT>();
+    {
+        // eNone: reorder calls are legal no-ops
+        const auto& ser = capabilities.rayTracingInvocationReorder;
+        logInfo(std::format("SER: hint={} maxSbtRecordIndex={}", vk::to_string(ser.rayTracingInvocationReorderReorderingHint),
+                             ser.maxShaderBindingTableRecordIndex),
+                 "Device");
+    }
     capabilities.partitionedAccelerationStructure =
         propertiesChain.get<vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV>();
     capabilities.clusterAccelerationStructure =

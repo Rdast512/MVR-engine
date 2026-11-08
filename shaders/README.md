@@ -19,4 +19,4 @@
 
 The frame order is [docs/engine_spec.md §5](../docs/engine_spec.md#5-frame-overview).
 
-`types.slang` and `base.slang` stay at the shader root so your current includes keep working. Fill bodies next; do not add descriptor-set bindings — keep handles + BDA only.
+Library files are Slang modules: a pass writes `import core.frame;` for each module it uses, and imports are not transitive. Exports are `public`, including every member of a shared struct. Vendor HLSL headers are `#include`d only from pass and bridge files. Fill bodies next; do not add descriptor-set bindings — keep handles + BDA only.

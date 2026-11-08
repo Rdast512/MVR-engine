@@ -1,9 +1,9 @@
-#include "types.slang"
-#include "core/binding.slang"
-#include "core/frame.slang"
-#include "core/math.slang"
-#include "geometry/surface.slang"
-#include "geometry/visbuffer.slang"
+import types;
+import core.binding;
+import core.frame;
+import core.math;
+import geometry.surface;
+import geometry.visbuffer;
 
 // the display image until lighting (M3): the albedo guide, or the selected debug view (src/render/debug_view.hpp)
 
@@ -70,7 +70,18 @@ float depthShade(float depth, GpuCameraData camera)
     return 1.0 - saturate(log(linearZ / camera.nearZ) / log(camera.farZ / camera.nearZ));
 }
 
-float3 guideViewColor(uint mode, GpuTargets targets, GpuCameraData camera, uint2 pixel, float depth)
+// this frame's albedo against last frame's at the reprojected position (spec/features/motion_vectors.md §5)
+float3 reprojectionError(GpuTargets targets, uint2 pixel)
+{
+    const float2 motion = loadGuide(targets.current, kGuideMotion, pixel).xy;
+    const float2 uv = (float2(pixel) + 0.5 + motion) / float2(targets.renderSize);
+    const float3 previous = tex2D(targets.previous.sampled[kGuideDiffuseAlbedo])
+                                .SampleLevel(samplerOf(targets.linearSampler), uv, 0.0)
+                                .rgb;
+    return saturate(abs(loadGuide(targets.current, kGuideDiffuseAlbedo, pixel).rgb - previous) * 4.0);
+}
+
+float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCameraData camera, uint2 pixel, float depth)
 {
     const GpuGuideSet set = targets.current;
     switch (mode)
@@ -96,6 +107,9 @@ float3 guideViewColor(uint mode, GpuTargets targets, GpuCameraData camera, uint2
         const float2 motion = loadGuide(set, kGuideMotion, pixel).xy;
         return float3(saturate(abs(motion) / 16.0), 0.0) + (all(motion == 0.0) ? 0.0 : 0.1);
     }
+    case kDebugViewReprojection:
+        // a reset frame has nothing valid to compare against
+        return hasHistory(root) ? reprojectionError(targets, pixel) : float3(0.0, 0.0, 0.0);
     default:
         return loadGuide(set, kGuideDiffuseAlbedo, pixel).rgb;
     }
@@ -120,7 +134,7 @@ void debugViewMain(uint3 id : SV_DispatchThreadID)
     float3 color = float3(0.0, 0.0, 0.0);
     if (!isIdView(mode))
     {
-        color = guideViewColor(mode, targets, camera, id.xy, depth);
+        color = guideViewColor(mode, root, targets, camera, id.xy, depth);
     }
     if (!isEmpty && (isIdView(mode) || isEdges))
     {

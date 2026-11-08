@@ -1,6 +1,6 @@
-#include "types.slang"
-#include "core/binding.slang"
-#include "core/culling.slang"
+import types;
+import core.binding;
+import core.culling;
 
 // instances -> draw records -> per raster bin visible lists -> DGC sequences + counts; run once per CullPhase
 

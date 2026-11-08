@@ -1,31 +1,27 @@
-#ifndef ENGINE_MATERIAL_PBR_SLANG
-#define ENGINE_MATERIAL_PBR_SLANG
+module pbr;
 
-#include "types.slang"
-#include "core/binding.slang"
-#include "core/frame.slang"
-#include "geometry/surface.slang"
+import types;
+import core.binding;
+import geometry.surface;
 
 // glTF metallic-roughness material at a surface (spec/pbr_implementation_plan.md B1); no KHR_texture_transform yet
 
-static const uint kMaterialFlagUnlit = 1u << 3;
-
-struct SampledMaterial
+public struct SampledMaterial
 {
-    float3 baseColor; // linear, x COLOR_0
-    float opacity;
-    float metallic;
-    float roughness; // perceptual
-    float3 emissive;
-    float ao;
-    float3 n; // world, normal-mapped, facing-corrected
+    public float3 baseColor; // linear, x COLOR_0
+    public float opacity;
+    public float metallic;
+    public float roughness; // perceptual
+    public float3 emissive;
+    public float ao;
+    public float3 n; // world, normal-mapped, facing-corrected
 };
 
-struct TextureGradients
+public struct TextureGradients
 {
-    float2 uv;
-    float2 ddx;
-    float2 ddy;
+    public float2 uv;
+    public float2 ddx;
+    public float2 ddy;
 };
 
 // lodBias: log2(render / display) once upscaling lands; applied by scaling the gradients
@@ -52,7 +48,7 @@ float4 sampleSlot(uint texture, uint samplerIndex, uint uvSet, Surface surface, 
         .SampleGrad(samplerOf(NonUniformResourceIndex(samplerIndex)), gradients.uv, gradients.ddx, gradients.ddy);
 }
 
-SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodBias)
+public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodBias)
 {
     const float4 one = float4(1.0, 1.0, 1.0, 1.0);
     // sRGB views decode base color and emissive in hardware
@@ -97,5 +93,3 @@ SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodB
     }
     return result;
 }
-
-#endif

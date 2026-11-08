@@ -18,7 +18,7 @@ Before designing or writing any C++ or Slang code, follow this sequence:
    - Adapt proven patterns, data layouts, and shader structures from local reference samples instead of inventing custom designs from scratch.
 2. **Never Reinvent What a Proven Library Already Solves:**
    - Check third-party dependencies in the project before writing algorithms from scratch.
-   - Use industry-standard libraries to their fullest: e.g., **meshoptimizer** (for meshlets, spatial clustering, LOD DAGs, simplification, quantization, OMM baking, vertex fetch remap), **VMA** (memory allocation), **RTXDI / RTXGI** (resampling and radiance caches), and **DLSS / Streamline / NGX**. Write only integration glue.
+   - Use industry-standard libraries to their fullest: e.g., **meshoptimizer** (for meshlets, spatial clustering, LOD DAGs, simplification, quantization, vertex fetch remap), **NVIDIA OMM SDK** (OMM baking), **VMA** (memory allocation), **RTXDI / RTXGI** (resampling and radiance caches), and **DLSS / Streamline / NGX**. Write only integration glue.
 3. **Verify the Vulkan SDK & VUIDs First:**
    - Never guess or hallucinate Vulkan struct names, enum values, extension interactions, or VUID rules.
    - If uncertain, search the installed Vulkan SDK headers (`vulkan_structs.hpp`, `vulkan_raii.hpp`, `vulkan_enums.hpp`, `vulkan_core.h`) and `share/vulkan/registry/validusage.json` first.

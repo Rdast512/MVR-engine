@@ -1,4 +1,4 @@
-#include "types.slang"
+import types;
 
 // opaque bin: no material access, no discard, so depth testing runs early
 

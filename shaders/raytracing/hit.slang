@@ -1,7 +1,4 @@
-#ifndef ENGINE_RT_HIT_SLANG
-#define ENGINE_RT_HIT_SLANG
+module hit;
 
-#include "types.slang"
-#include "raytracing/payload.slang"
-
-#endif
+import types;
+import raytracing.payload;

@@ -9,9 +9,9 @@
  * - far pyramid only (NV_HIZ_OUTPUT_NEAR 0), reverse Z (NV_HIZ_REVERSED_Z 1) from core/culling.slang
  * License text: ThirdParty/licenses/nvpro-samples-vk_lod_clusters-Apache-2.0.txt
  */
-#include "types.slang"
-#include "core/binding.slang"
-#include "core/culling.slang"
+import types;
+import core.binding;
+import core.culling;
 
 // far-depth pyramid: a texel keeps the farthest depth of its footprint, up to kHiZLevelsPerDispatch mips per dispatch
 

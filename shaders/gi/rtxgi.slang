@@ -1,5 +1,4 @@
-#ifndef ENGINE_GI_RTXGI_SLANG
-#define ENGINE_GI_RTXGI_SLANG
+module rtxgi;
 
 // cache mode switch (sharc / nrc / both). host sets define at compile.
 
@@ -7,9 +6,7 @@
 #define GI_CACHE_MODE 0
 #endif
 
-static const uint kGiCacheNone = 0;
-static const uint kGiCacheSharc = 1;
-static const uint kGiCacheNrc = 2;
-static const uint kGiCacheBoth = 3;
-
-#endif
+public static const uint kGiCacheNone = 0;
+public static const uint kGiCacheSharc = 1;
+public static const uint kGiCacheNrc = 2;
+public static const uint kGiCacheBoth = 3;

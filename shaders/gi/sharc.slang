@@ -1,9 +1,6 @@
 #ifndef ENGINE_GI_SHARC_SLANG
 #define ENGINE_GI_SHARC_SLANG
 
-#include "types.slang"
-#include "gi/rtxgi.slang"
-
 // one SHaRC mode per compile unit, set before this include:
 //   passes/pathtrace_update.slang  SHARC_UPDATE (sparse paths write the cache)
 //   passes/pathtrace_query.slang   SHARC_QUERY  (paths terminate into the cache)

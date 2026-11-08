@@ -143,7 +143,26 @@ namespace GpuMaterialFlag
     inline constexpr uint32_t AlphaModeMask = 3u;
     inline constexpr uint32_t DoubleSided = 1u << 2;
     inline constexpr uint32_t Unlit = 1u << 3;
+    // non-identity KHR_texture_transform, one bit per GpuMaterial::uvMatrices slot
+    inline constexpr uint32_t UvTransformBaseColor = 1u << 4;
+    inline constexpr uint32_t UvTransformMetalRough = 1u << 5;
+    inline constexpr uint32_t UvTransformNormal = 1u << 6;
+    inline constexpr uint32_t UvTransformOcclusion = 1u << 7;
+    inline constexpr uint32_t UvTransformEmissive = 1u << 8;
 } // namespace GpuMaterialFlag
+
+inline constexpr uint32_t kMaterialUvSlotCount = 5;
+
+// rows of M = T * R * S: uv' = M * (uv, 1), gradients take the 2x2 part
+struct GpuUvMatrix
+{
+    glm::vec3 row0{1.0f, 0.0f, 0.0f};
+    glm::vec3 row1{0.0f, 1.0f, 0.0f};
+
+    bool operator==(const GpuUvMatrix&) const = default;
+};
+static_assert(sizeof(GpuUvMatrix) == 24);
+static_assert(offsetof(GpuUvMatrix, row1) == 12);
 
 struct alignas(16) GpuMaterial
 {
@@ -173,14 +192,47 @@ struct alignas(16) GpuMaterial
     uint8_t normalUv = 0;
     uint8_t occlusionUv = 0;
     uint8_t emissiveUv = 0;
+    uint8_t pad0 = 0;
+    uint8_t pad1 = 0;
+    uint8_t pad2 = 0;
+    std::array<uint32_t, 3> pad3{};
+
+    // base color, metal-rough, normal, occlusion, emissive; valid only where the GpuMaterialFlag::UvTransform* bit is set
+    std::array<GpuUvMatrix, kMaterialUvSlotCount> uvMatrices{};
+    std::array<uint32_t, 2> pad4{};
 
     bool operator==(const GpuMaterial&) const = default;
 };
-// types.slang pads the 97 B of fields to this stride
-static_assert(sizeof(GpuMaterial) == 112);
+static_assert(sizeof(GpuMaterial) == 240);
+static_assert(offsetof(GpuMaterial, baseColorFactor) == 0);
+static_assert(offsetof(GpuMaterial, emissiveFactor) == 16);
+static_assert(offsetof(GpuMaterial, metallicFactor) == 28);
+static_assert(offsetof(GpuMaterial, roughnessFactor) == 32);
+static_assert(offsetof(GpuMaterial, normalScale) == 36);
+static_assert(offsetof(GpuMaterial, occlusionStrength) == 40);
+static_assert(offsetof(GpuMaterial, alphaCutoff) == 44);
+static_assert(offsetof(GpuMaterial, flags) == 48);
 static_assert(offsetof(GpuMaterial, baseColorTex) == 52);
+static_assert(offsetof(GpuMaterial, metalRoughTex) == 56);
+static_assert(offsetof(GpuMaterial, normalTex) == 60);
+static_assert(offsetof(GpuMaterial, occlusionTex) == 64);
+static_assert(offsetof(GpuMaterial, emissiveTex) == 68);
 static_assert(offsetof(GpuMaterial, baseColorSamp) == 72);
+static_assert(offsetof(GpuMaterial, metalRoughSamp) == 76);
+static_assert(offsetof(GpuMaterial, normalSamp) == 80);
+static_assert(offsetof(GpuMaterial, occlusionSamp) == 84);
+static_assert(offsetof(GpuMaterial, emissiveSamp) == 88);
+static_assert(offsetof(GpuMaterial, baseColorUv) == 92);
+static_assert(offsetof(GpuMaterial, metalRoughUv) == 93);
+static_assert(offsetof(GpuMaterial, normalUv) == 94);
+static_assert(offsetof(GpuMaterial, occlusionUv) == 95);
 static_assert(offsetof(GpuMaterial, emissiveUv) == 96);
+static_assert(offsetof(GpuMaterial, pad0) == 97);
+static_assert(offsetof(GpuMaterial, pad1) == 98);
+static_assert(offsetof(GpuMaterial, pad2) == 99);
+static_assert(offsetof(GpuMaterial, pad3) == 100);
+static_assert(offsetof(GpuMaterial, uvMatrices) == 112);
+static_assert(offsetof(GpuMaterial, pad4) == 232);
 
 // GPU mirror of one primitive. Values are relative to the owning model's slices (GpuModel)
 struct GpuPrimitive
@@ -591,9 +643,17 @@ static_assert(offsetof(GpuMaterialExtension, thickness) == 468);
 static_assert(offsetof(GpuMaterialExtension, iridescence) == 520);
 static_assert(offsetof(GpuMaterialExtension, diffuseTransmission) == 652);
 
+// GpuLight::type, matches LightType in shaders/types.slang
+enum class GpuLightType : uint32_t
+{
+    Directional = 0,
+    Point = 1,
+    Spot = 2,
+};
+
 struct LightDef
 {
-    uint8_t type = 1;
+    GpuLightType type = GpuLightType::Point;
     glm::vec3 color{1.0f};
     float intensity = 1.0f;
     float range = 0.0f;
@@ -618,7 +678,7 @@ struct alignas(16) GpuLight
     glm::vec3 direction{0.0f, 0.0f, -1.0f};
     float intensity = 1.0f;
     glm::vec3 color{1.0f};
-    uint32_t type = 1;
+    GpuLightType type = GpuLightType::Point;
     float innerCone = 0.0f;
     float outerCone = 0.785398163f;
     // owning entity, absolute: shifts down on unload like every entity id
@@ -626,6 +686,16 @@ struct alignas(16) GpuLight
     float pad0 = 0.0f;
 };
 static_assert(sizeof(GpuLight) == 64, "GpuLight must stay 64 B");
+static_assert(offsetof(GpuLight, position) == 0);
+static_assert(offsetof(GpuLight, range) == 12);
+static_assert(offsetof(GpuLight, direction) == 16);
+static_assert(offsetof(GpuLight, intensity) == 28);
+static_assert(offsetof(GpuLight, color) == 32);
+static_assert(offsetof(GpuLight, type) == 44);
+static_assert(offsetof(GpuLight, innerCone) == 48);
+static_assert(offsetof(GpuLight, outerCone) == 52);
+static_assert(offsetof(GpuLight, instanceIndex) == 56);
+static_assert(offsetof(GpuLight, pad0) == 60);
 
 namespace AuxOwnerKind
 {
@@ -795,6 +865,25 @@ struct GpuTargets
 static_assert(sizeof(GpuTargets) == 144);
 static_assert(offsetof(GpuTargets, current) == 32);
 
+// GpuFrameRoot::frameFlags, matches shaders/types.slang kFrameFlag*
+namespace FrameFlag
+{
+    // last frame's images and rows do not apply: motion is zero, temporal passes skip reuse
+    inline constexpr uint32_t HistoryReset = 1u << 0;
+} // namespace FrameFlag
+
+// [InstanceIndex()] of a TLAS instance; rewritten on the gpu with the tlas
+struct GpuRayInstance
+{
+    // row in GpuFrameRoot::nodeInstances
+    uint32_t nodeInstanceIndex = 0;
+    // row in GpuFrameRoot::primitives
+    uint32_t primitiveRow = 0;
+};
+static_assert(sizeof(GpuRayInstance) == 8);
+static_assert(offsetof(GpuRayInstance, nodeInstanceIndex) == 0);
+static_assert(offsetof(GpuRayInstance, primitiveRow) == 4);
+
 // per-frame entry point for every shader: the only address the push data carries
 struct GpuFrameRoot
 {
@@ -834,11 +923,48 @@ struct GpuFrameRoot
     float subpixelSnap = 0.0f;
     // GpuTargets of this frame slot
     vk::DeviceAddress targets = 0;
+    // FrameFlag
+    uint32_t frameFlags = 0;
+    uint32_t pad0 = 0;
+    // GpuRayInstance[], 0 until the RT scene exists
+    vk::DeviceAddress rayInstances = 0;
+    // RTXDI constants, 0 until M3
+    vk::DeviceAddress rtxdiConstants = 0;
+    // SHaRC or NRC constants, 0 until M4
+    vk::DeviceAddress cacheConstants = 0;
+    uint32_t frameIndex = 0;
+    // pre-exposure, 1 until auto exposure
+    float exposure = 1.0f;
 };
-static_assert(sizeof(GpuFrameRoot) == 136);
-static_assert(offsetof(GpuFrameRoot, targets) == 128);
-static_assert(offsetof(GpuFrameRoot, cullCounters) == 112);
+static_assert(sizeof(GpuFrameRoot) == 176);
+static_assert(offsetof(GpuFrameRoot, camera) == 0);
+static_assert(offsetof(GpuFrameRoot, instances) == 8);
+static_assert(offsetof(GpuFrameRoot, models) == 16);
+static_assert(offsetof(GpuFrameRoot, primitives) == 24);
+static_assert(offsetof(GpuFrameRoot, materials) == 32);
+static_assert(offsetof(GpuFrameRoot, pbrExtensions) == 40);
+static_assert(offsetof(GpuFrameRoot, lights) == 48);
+static_assert(offsetof(GpuFrameRoot, tlas) == 56);
+static_assert(offsetof(GpuFrameRoot, nodeInstances) == 64);
+static_assert(offsetof(GpuFrameRoot, drawRecords) == 72);
+static_assert(offsetof(GpuFrameRoot, visibleMeshlets) == 80);
 static_assert(offsetof(GpuFrameRoot, lightCount) == 88);
+static_assert(offsetof(GpuFrameRoot, instanceCount) == 92);
+static_assert(offsetof(GpuFrameRoot, primitiveCount) == 96);
+static_assert(offsetof(GpuFrameRoot, nodeInstanceCount) == 100);
+static_assert(offsetof(GpuFrameRoot, lateVisibleBase) == 104);
+static_assert(offsetof(GpuFrameRoot, debugView) == 108);
+static_assert(offsetof(GpuFrameRoot, cullCounters) == 112);
+static_assert(offsetof(GpuFrameRoot, triangleCull) == 120);
+static_assert(offsetof(GpuFrameRoot, subpixelSnap) == 124);
+static_assert(offsetof(GpuFrameRoot, targets) == 128);
+static_assert(offsetof(GpuFrameRoot, frameFlags) == 136);
+static_assert(offsetof(GpuFrameRoot, pad0) == 140);
+static_assert(offsetof(GpuFrameRoot, rayInstances) == 144);
+static_assert(offsetof(GpuFrameRoot, rtxdiConstants) == 152);
+static_assert(offsetof(GpuFrameRoot, cacheConstants) == 160);
+static_assert(offsetof(GpuFrameRoot, frameIndex) == 168);
+static_assert(offsetof(GpuFrameRoot, exposure) == 172);
 
 
 struct EngineSettings
@@ -902,6 +1028,8 @@ struct HardwareCapabilities
     vk::PhysicalDeviceMaintenance10PropertiesKHR maintenance10;
     vk::PhysicalDevicePipelineBinaryPropertiesKHR pipelineBinary;
     vk::PhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingPipeline;
+    vk::PhysicalDeviceOpacityMicromapPropertiesEXT opacityMicromap;
+    vk::PhysicalDeviceRayTracingInvocationReorderPropertiesEXT rayTracingInvocationReorder;
     vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV clusterAccelerationStructure;
     vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV partitionedAccelerationStructure;
 

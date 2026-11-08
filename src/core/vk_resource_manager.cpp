@@ -88,6 +88,30 @@ namespace
         return (size + alignment - 1) / alignment * alignment;
     }
 
+    // M = T * R * S. v grows down: the rotation sign follows the Khronos sample renderer and the extension's example
+    [[nodiscard]] GpuUvMatrix packUvMatrix(const MaterialUvTransform& uv)
+    {
+        const float c = std::cos(uv.rotation);
+        const float s = std::sin(uv.rotation);
+        return {.row0 = {c * uv.scale.x, s * uv.scale.y, uv.offset.x},
+                .row1 = {-s * uv.scale.x, c * uv.scale.y, uv.offset.y}};
+    }
+
+    // the store keeps authored values for dedup and the UI; the GPU row is precomputed
+    [[nodiscard]] GpuMaterial packMaterial(GpuMaterial material, const MaterialPbrExtension& ext)
+    {
+        material.emissiveFactor *= ext.emissiveStrength;
+        const std::array<MaterialUvTransform, kMaterialUvSlotCount> transforms = {
+            ext.baseColorUv, ext.metalRoughUv, ext.normalUv, ext.occlusionUv, ext.emissiveUv};
+        for (uint32_t slot = 0; slot < kMaterialUvSlotCount; ++slot) {
+            if (transforms[slot] != MaterialUvTransform{}) {
+                material.uvMatrices[slot] = packUvMatrix(transforms[slot]);
+                material.flags |= GpuMaterialFlag::UvTransformBaseColor << slot;
+            }
+        }
+        return material;
+    }
+
     [[nodiscard]] GpuUvTransform packUvTransform(const MaterialUvTransform& uv)
     {
         return {.offset = uv.offset, .scale = uv.scale, .rotation = uv.rotation};
@@ -279,7 +303,7 @@ void ResourceManager::rebuildModelTable()
             "ResourceManager");
 }
 
-void ResourceManager::writeFrameRoot(uint32_t frameSlot, uint32_t debugView)
+void ResourceManager::writeFrameRoot(uint32_t frameSlot, uint32_t debugView, uint32_t frameFlags, uint32_t frameIndex)
 {
     *static_cast<GpuFrameRoot*>(frameRoots[frameSlot].mapped) = GpuFrameRoot{
         .camera = cameraAddresses[frameSlot],
@@ -303,6 +327,13 @@ void ResourceManager::writeFrameRoot(uint32_t frameSlot, uint32_t debugView)
         .triangleCull = triangleCullFlags[frameSlot],
         .subpixelSnap = subpixelSnap,
         .targets = targetsAddresses[frameSlot],
+        .frameFlags = frameFlags,
+        .pad0 = 0,
+        .rayInstances = 0,
+        .rtxdiConstants = 0,
+        .cacheConstants = 0,
+        .frameIndex = frameIndex,
+        .exposure = 1.0f,
     };
 }
 
@@ -416,21 +447,24 @@ void ResourceManager::createSyncObjects()
     }
 }
 
-void ResourceManager::updateUniformBuffers(uint32_t currentImage, uint32_t debugView)
+void ResourceManager::updateUniformBuffers(uint32_t currentImage, uint32_t debugView, uint32_t frameFlags,
+                                           uint32_t frameIndex)
 {
     ZoneScopedN("ResourceManager::updateUniformBuffer");
     ensureInstanceCapacity(objectStorage.size());
-    writeFrameRoot(currentImage, debugView);
+    writeFrameRoot(currentImage, debugView, frameFlags, frameIndex);
     // reads prevModelMatrices before the entity loop below advances them
     writeNodeInstances(currentImage);
 
     // write-combined memory: whole rows, never read back
     auto* instances = static_cast<GpuObjectUB*>(instanceUbos[currentImage].mapped);
     for (EntityId id = 0; id < objectStorage.size(); ++id) {
+        const glm::mat4 model = computeModelMatrix(objectStorage.transforms[id]);
         if ((objectStorage.flags[id] & EntityFlag::Active) == 0) {
+            // reactivation must not jump by the whole pause's motion
+            objectStorage.prevModelMatrices[id] = model;
             continue;
         }
-        const glm::mat4 model = computeModelMatrix(objectStorage.transforms[id]);
         instances[id] = GpuObjectUB{
             .modelMatrix = model,
             .prevModelMatrix = objectStorage.prevModelMatrices[id],
@@ -1015,7 +1049,7 @@ void ResourceManager::appendMaterialUploads(PackedScratch& packed, std::vector<A
     std::vector<MaterialPbrExtension> extensions;
     extensions.reserve(packed.materialRows.size());
     for (const uint32_t id : packed.materialRows) {
-        packed.materials.push_back(materialStore.infos[id].material);
+        packed.materials.push_back(packMaterial(materialStore.infos[id].material, materialStore.infos[id].extension));
         extensions.push_back(materialStore.infos[id].extension);
     }
     packed.extensions = packMaterialExtensions(extensions);

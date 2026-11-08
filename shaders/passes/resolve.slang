@@ -1,11 +1,11 @@
-#include "types.slang"
-#include "core/binding.slang"
-#include "core/frame.slang"
-#include "core/math.slang"
-#include "geometry/surface.slang"
-#include "geometry/visbuffer.slang"
-#include "material/brdf.slang"
-#include "material/pbr.slang"
+import types;
+import core.binding;
+import core.frame;
+import core.math;
+import geometry.surface;
+import geometry.visbuffer;
+import material.brdf;
+import material.pbr;
 
 // vis buffer -> shading surface -> guides of this frame's set (spec/features/visibility_buffer.md §3.5)
 
@@ -14,10 +14,10 @@ static const uint kResolveTile = 8; // matches src/render/vk_renderer.cpp
 [[vk::push_constant]] ConstantBuffer<FramePushData> push;
 
 // render-resolution pixels from this frame's unjittered position to last frame's
-float2 motionPixels(float4 currentClip, float4 previousClip, float2 targetSize)
+float2 motionPixels(GpuFrameRoot root, float4 currentClip, float4 previousClip, float2 targetSize)
 {
-    // no history yet: the previous matrix is zero
-    if (previousClip.w <= 0.0 || currentClip.w <= 0.0)
+    // a point behind either camera has no screen position
+    if (!hasHistory(root) || previousClip.w <= 0.0 || currentClip.w <= 0.0)
     {
         return float2(0.0, 0.0);
     }
@@ -61,7 +61,7 @@ void resolveMain(uint3 id : SV_DispatchThreadID)
         const float4 currentClip = mul(camera.viewProj, float4(direction, 0.0));
         const float3 none = float3(0.0, 0.0, 0.0);
         writeGuides(targets.current, id.xy, float4(0.0, 0.0, 0.0, 0.0), float2(0.0, 0.0), none, none, none, none,
-                    motionPixels(currentClip, previousClip, targetSize));
+                    motionPixels(root, currentClip, previousClip, targetSize));
         return;
     }
 
@@ -83,5 +83,5 @@ void resolveMain(uint3 id : SV_DispatchThreadID)
     const float4 previousClip = mul(camera.prevViewProj, float4(surface.prevPosition, 1.0));
     writeGuides(targets.current, id.xy, float4(material.n, material.roughness), octEncode(surface.geoNormal),
                 material.baseColor * (1.0 - material.metallic), specularF0, specAlbedo, material.emissive,
-                motionPixels(currentClip, previousClip, targetSize));
+                motionPixels(root, currentClip, previousClip, targetSize));
 }

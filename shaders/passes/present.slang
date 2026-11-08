@@ -1,6 +1,6 @@
-#include "types.slang"
-#include "core/binding.slang"
-#include "core/frame.slang"
+import types;
+import core.binding;
+import core.frame;
 
 // display image -> swapchain, scaled when render != display; ImGui draws after it in the same rendering.
 // M3's composite keeps this stage: the sRGB swapchain has no storage support

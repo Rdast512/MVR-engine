@@ -46,9 +46,9 @@ foreach (_convention IN ITEMS Standard Reversed)
       OUTPUT ${_spirv}
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_hizShaderDir}
       COMMAND ${SLANGC_EXECUTABLE} ${_hizShader} ${ENGINE_SLANG_FLAGS} -DCULLING_REVERSED_Z=${_reversed}
-              -entry footprintMain -o ${_spirv}
-      DEPENDS ${_hizShader} ${ENGINE_SLANG_INCLUDE_DIR}/core/culling.slang
-              ${ENGINE_SLANG_INCLUDE_DIR}/core/binding.slang
+              -entry footprintMain -depfile ${_spirv}.d -o ${_spirv}
+      DEPENDS ${_hizShader}
+      DEPFILE ${_spirv}.d
       COMMENT "Compiling Hi-Z test shader footprintMain (${_convention} Z)"
       VERBATIM
   )

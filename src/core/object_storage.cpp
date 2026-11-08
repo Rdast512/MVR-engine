@@ -13,7 +13,8 @@ EntityId ObjectStorage::create(const Transform& transform, const MeshletDraw& me
 {
     const auto id = static_cast<EntityId>(transforms.size());
     transforms.push_back(transform);
-    prevModelMatrices.emplace_back(1.0f);
+    // a new entity has no motion on its first frame
+    prevModelMatrices.push_back(computeModelMatrix(transform));
     meshletDraws.push_back(meshletDraw);
     flags.push_back(EntityFlag::Active | EntityFlag::Dynamic);
     names.emplace_back(name);

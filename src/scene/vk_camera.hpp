@@ -48,8 +48,8 @@ public:
 
     void updateCameraData(uint8_t currentImage);
 
-    // after updateCameraData: first frame, focusOn or a projection change; prevViewProj does not match the
-    // previous frame's image then
+    // after updateCameraData: first frame, focusOn, a projection change, or any swapchain recreation (setRenderExtent);
+    // cameraData.prevViewProj equals viewProj then
     [[nodiscard]] bool isCut() const noexcept { return isCutFrame; }
 
     // stable gpu handles, accessed directly

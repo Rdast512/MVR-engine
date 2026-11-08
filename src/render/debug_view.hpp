@@ -29,6 +29,8 @@ enum class DebugView : uint32_t
     SpecularAlbedo,
     Emissive,
     MotionVectors,
+    // albedo against last frame's at the reprojected position: only disocclusions light up
+    Reprojection,
     // reserved, not implemented yet
     LightingOnly,
     DlssInput,
@@ -90,6 +92,7 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"Specular albedo", DebugViewCategory::Guides, true},
     {"Emissive", DebugViewCategory::Guides, true},
     {"Motion vectors", DebugViewCategory::Guides, true},
+    {"Reprojection", DebugViewCategory::Guides, true},
     {"Lighting only", DebugViewCategory::Lighting, false},
     {"DLSS input", DebugViewCategory::Upscaling, false},
 }};

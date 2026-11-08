@@ -12,10 +12,9 @@
  * - isSubPixel: the pixel-bbox test applied to a box's clip rect (engine extension)
  * License text: ThirdParty/licenses/nvpro-samples-vk_lod_clusters-Apache-2.0.txt
  */
-#ifndef ENGINE_CORE_CULLING_SLANG
-#define ENGINE_CORE_CULLING_SLANG
+module culling;
 
-#include "core/binding.slang"
+import core.binding;
 
 // frustum, Hi-Z, size and triangle tests shared by the cull passes and the mesh shaders. Bounds are boxes given as
 // clip-space corners; the pyramid keeps the farthest depth of its footprint
@@ -25,13 +24,13 @@
 #endif
 
 #if CULLING_REVERSED_Z
-static const float kNearestDepth = 1.0;
+public static const float kNearestDepth = 1.0;
 #else
-static const float kNearestDepth = 0.0;
+public static const float kNearestDepth = 0.0;
 #endif
 
 // the pyramid reduction (passes/hiz_build.slang) and the sampler reduction mode (HiZPyramid) follow it
-float farthestDepth(float a, float b)
+public float farthestDepth(float a, float b)
 {
 #if CULLING_REVERSED_Z
     return min(a, b);
@@ -79,18 +78,18 @@ float4 getBoxCorner(float3 bboxMin, float3 bboxMax, uint n)
 }
 
 // clip-space bounds of a box: xyz / |w| per corner, xy clamped to the screen after clipBoundsEnd
-struct ClipBounds
+public struct ClipBounds
 {
-    float4 clipMin;
-    float4 clipMax;
+    public float4 clipMin;
+    public float4 clipMax;
     // false: a corner sits on the eye plane, behind the eye or before the near plane. The rect and depth are then
     // meaningless and the box counts as visible for the Hi-Z, size and sub-pixel tests
-    bool isValid;
-    uint andBits; // all corners outside one plane: outside the frustum
-    uint orBits;
+    public bool isValid;
+    public uint andBits; // all corners outside one plane: outside the frustum
+    public uint orBits;
 };
 
-ClipBounds clipBoundsBegin()
+public ClipBounds clipBoundsBegin()
 {
     ClipBounds bounds;
     bounds.clipMin = float4(3.402823466e+38);
@@ -123,7 +122,7 @@ bool clipBoundsEnd(inout ClipBounds bounds)
 }
 
 // object-space box under world
-bool intersectFrustum(float4x4 viewProj, float3 bboxMin, float3 bboxMax, float4x4 world, out ClipBounds bounds)
+public bool intersectFrustum(float4x4 viewProj, float3 bboxMin, float3 bboxMax, float4x4 world, out ClipBounds bounds)
 {
     const float4x4 worldViewProj = mul(viewProj, world);
     bounds = clipBoundsBegin();
@@ -136,7 +135,7 @@ bool intersectFrustum(float4x4 viewProj, float3 bboxMin, float3 bboxMax, float4x
 }
 
 // world-space AABB of a world-space sphere; clip(center + r * e_i) = clip(center) + r * column i of viewProj
-bool intersectFrustumSphere(float4x4 viewProj, float3 center, float radius, out ClipBounds bounds)
+public bool intersectFrustumSphere(float4x4 viewProj, float3 center, float radius, out ClipBounds bounds)
 {
     const float4 clipCenter = mul(viewProj, float4(center, 1.0));
     const float4 dx = radius * float4(viewProj[0][0], viewProj[1][0], viewProj[2][0], viewProj[3][0]);
@@ -175,12 +174,12 @@ bool intersectSize(ClipBounds bounds, float threshold, float2 viewport)
 }
 
 // screen rect in [0, 1], y down like the framebuffer
-float4 clipUvRect(ClipBounds bounds)
+public float4 clipUvRect(ClipBounds bounds)
 {
     return float4(bounds.clipMin.xy, bounds.clipMax.xy) * 0.5 + 0.5;
 }
 
-float clipNearestDepth(ClipBounds bounds)
+public float clipNearestDepth(ClipBounds bounds)
 {
 #if CULLING_REVERSED_Z
     return bounds.clipMax.z;
@@ -191,7 +190,7 @@ float clipNearestDepth(ClipBounds bounds)
 
 // mip where the rect spans at most 1 texel, so the 2x2 footprint of one fetch at its center covers it; one finer when
 // the rect fits a 2x2 block there without straddling (niagara acb8c83). Mips stop halving at 1 texel
-float hizMip(float4 uvRect, uint2 hizSize)
+public float hizMip(float4 uvRect, uint2 hizSize)
 {
     const float2 uvSize = uvRect.zw - uvRect.xy;
     const float2 extent = uvSize * float2(hizSize);
@@ -207,7 +206,7 @@ float hizMip(float4 uvRect, uint2 hizSize)
 
 // intersectHiz: one far-reduction fetch at the rect center. Samples past the last mip clamp to the 1x1 level, which
 // covers the whole screen. An invalid box is never occluded
-bool isHiZOccluded(ClipBounds bounds, uint2 hizSize, uint pyramidIndex, uint farSamplerIndex)
+public bool isHiZOccluded(ClipBounds bounds, uint2 hizSize, uint pyramidIndex, uint farSamplerIndex)
 {
     if (!bounds.isValid)
     {
@@ -227,7 +226,7 @@ bool isHiZOccluded(ClipBounds bounds, uint2 hizSize, uint pyramidIndex, uint far
 ////////////////////////////////////////////////////////////////////////////
 // pixel and triangle tests
 
-float2 getScreenPos(float4 hPos, float2 viewport)
+public float2 getScreenPos(float4 hPos, float2 viewport)
 {
     return ((hPos.xy / hPos.w) * 0.5 + 0.5) * viewport;
 }
@@ -253,7 +252,7 @@ bool pixelViewportCull(float2 pixelMin, float2 pixelMax, float2 viewport)
 }
 
 // true: the triangle may cover a pixel center
-bool testTrianglePixel(float2 a, float2 b, float2 c, bool isFrustum, float2 viewport, float subpixelSnap)
+public bool testTrianglePixel(float2 a, float2 b, float2 c, bool isFrustum, float2 viewport, float subpixelSnap)
 {
     float2 pixelMin = min(a, min(b, c));
     float2 pixelMax = max(a, max(b, c));
@@ -269,14 +268,14 @@ bool testTrianglePixel(float2 a, float2 b, float2 c, bool isFrustum, float2 view
 // homogeneous orientation (Olano-Greer; https://zeux.io/2023/04/28/triangle-backface-culling/): no divide, valid for
 // triangles crossing the eye plane. With proj[1][1] flipped, a positive viewport height and frontFace = CCW, front
 // faces are <= 0
-bool isFrontFacingHW(float4 ha, float4 hb, float4 hc)
+public bool isFrontFacingHW(float4 ha, float4 hb, float4 hc)
 {
     return determinant(float3x3(ha.xyw, hb.xyw, hc.xyw)) <= 0.0;
 }
 
 // engine extension: the pixel-bbox test on a box's rect. Lossless, since the rect is conservative: no pixel center
 // inside on one axis means nothing in the box can produce a fragment. Invalid boxes are never sub-pixel
-bool isSubPixel(ClipBounds bounds, float2 viewport, float subpixelSnap)
+public bool isSubPixel(ClipBounds bounds, float2 viewport, float subpixelSnap)
 {
     if (!bounds.isValid)
     {
@@ -288,5 +287,3 @@ bool isSubPixel(ClipBounds bounds, float2 viewport, float subpixelSnap)
     pixelBboxEpsilon(pixelMin, pixelMax, subpixelSnap);
     return pixelBboxCull(pixelMin, pixelMax);
 }
-
-#endif

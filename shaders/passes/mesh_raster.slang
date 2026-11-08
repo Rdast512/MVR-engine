@@ -1,10 +1,10 @@
-#include "types.slang"
-#include "core/binding.slang"
-#include "core/frame.slang"
-#include "core/math.slang"
-#include "geometry/mesh.slang"
-#include "geometry/triangle_cull.slang"
-#include "geometry/visbuffer.slang"
+import types;
+import core.frame;
+import core.math;
+import core.culling;
+import geometry.mesh;
+import geometry.triangle_cull;
+import geometry.visbuffer;
 
 // vis-buffer raster: position per vertex, the payload per primitive (passes/mesh_fragment.slang writes it)
 

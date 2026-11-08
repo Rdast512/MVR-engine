@@ -78,12 +78,12 @@ namespace
         }
     }
 
-    [[nodiscard]] const char* lightTypeName(uint32_t type)
+    [[nodiscard]] const char* lightTypeName(GpuLightType type)
     {
         switch (type) {
-        case 0:  return "Directional";
-        case 2:  return "Spot";
-        default: return "Point";
+        case GpuLightType::Directional: return "Directional";
+        case GpuLightType::Spot:        return "Spot";
+        default:                        return "Point";
         }
     }
 
@@ -753,12 +753,36 @@ void Engine::drawDebugViewPanel()
     case DebugViewCategory::Guides:
         if (settings.view == DebugView::MotionVectors) {
             ImGui::TextDisabled("|x| red, |y| green, 16 px saturates");
+            drawEntityTransformControls();
+        } else if (settings.view == DebugView::Reprojection) {
+            ImGui::TextDisabled("albedo error x4: black except disocclusions");
+            drawEntityTransformControls();
         }
         break;
     case DebugViewCategory::Lighting:
     case DebugViewCategory::Upscaling:
         break;
     }
+#endif
+}
+
+// moves an entity by hand: the motion test cases of spec/features/motion_vectors.md §5
+void Engine::drawEntityTransformControls()
+{
+#if ENGINE_ENABLE_IMGUI
+    ObjectStorage& storage = scene->objectStorage;
+    if (storage.empty()) {
+        return;
+    }
+    const int lastEntity = static_cast<int>(storage.size()) - 1;
+    transformTestEntity = std::min(transformTestEntity, lastEntity);
+    ImGui::SliderInt("Entity", &transformTestEntity, 0, lastEntity);
+    Transform& transform = storage.transforms[static_cast<EntityId>(transformTestEntity)];
+    ImGui::DragFloat3("Position", &transform.position.x, 0.01f);
+    ImGui::DragFloat3("Rotation", &transform.rotation.x, 0.01f);
+    ImGui::SetItemTooltip("radians");
+    ImGui::DragFloat3("Scale", &transform.scale.x, 0.01f);
+    ImGui::SetItemTooltip("a negative axis mirrors the instance");
 #endif
 }
 
@@ -1122,21 +1146,21 @@ void Engine::drawAssetsPanel() const
             if (isOpen) {
                 propertyRow("Color", "({:.2f}, {:.2f}, {:.2f})", light.color.r, light.color.g, light.color.b);
                 propertyRow("Intensity", "{:.2f}", light.intensity);
-                if (light.type != 0) {
+                if (light.type != GpuLightType::Directional) {
                     propertyRow("Range", "{}", light.range > 0.0f ? std::format("{:.2f}", light.range) : "infinite");
                 }
-                if (light.type == 2) {
+                if (light.type == GpuLightType::Spot) {
                     propertyRow("Cone inner / outer", "{:.1f} / {:.1f} deg", glm::degrees(light.innerCone),
                                 glm::degrees(light.outerCone));
                 }
                 // GPU rows are model space; the shader applies the owner's model matrix
                 const glm::mat4 model =
                     hasOwner ? computeModelMatrix(storage.transforms[light.instanceIndex]) : glm::mat4{1.0f};
-                if (light.type != 0) {
+                if (light.type != GpuLightType::Directional) {
                     const glm::vec3 position{model * glm::vec4(light.position, 1.0f)};
                     propertyRow("Position", "({:.2f}, {:.2f}, {:.2f})", position.x, position.y, position.z);
                 }
-                if (light.type != 1) {
+                if (light.type != GpuLightType::Point) {
                     const glm::vec3 direction = glm::normalize(glm::mat3(model) * light.direction);
                     propertyRow("Direction", "({:.2f}, {:.2f}, {:.2f})", direction.x, direction.y, direction.z);
                 }
@@ -1343,6 +1367,8 @@ void Engine::spawnInstanceField()
     std::span<const Transform> remaining = transforms;
     if (loaded) {
         scene->objectStorage.transforms[*loaded] = transforms.front();
+        // placement, not motion
+        scene->objectStorage.prevModelMatrices[*loaded] = computeModelMatrix(transforms.front());
         remaining = remaining.subspan(1);
     }
     if (!remaining.empty()) {

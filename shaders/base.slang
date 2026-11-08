@@ -1,10 +1,8 @@
-#ifndef ENGINE_BASE_SLANG
-#define ENGINE_BASE_SLANG
+module base;
+
+import types;
+import core.binding;
+import geometry.mesh;
+import material.pbr;
 
 // raster compile units: passes/mesh_raster.slang + passes/mesh_fragment.slang
-#include "types.slang"
-#include "core/binding.slang"
-#include "geometry/mesh.slang"
-#include "material/pbr.slang"
-
-#endif

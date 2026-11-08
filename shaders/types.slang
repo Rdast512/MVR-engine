@@ -1,535 +1,573 @@
-#ifndef ENGINE_TYPES_SLANG
-#define ENGINE_TYPES_SLANG
+module types;
 
 // scalar layout: must match src/core/types.hpp + MeshPushData (slangc -fvk-use-scalar-layout)
 
-static const uint kNoneIndex = 0xffffffffu;
-static const uint kMaxMeshletVertices = 64;
-static const uint kMaxMeshletTriangles = 126;
-static const uint kGroupSize = 32;
+public static const uint kNoneIndex = 0xffffffffu;
+public static const uint kMaxMeshletVertices = 64;
+public static const uint kMaxMeshletTriangles = 126;
+public static const uint kGroupSize = 32;
 // must match src/core/types.hpp kMeshletGroupMaxSize
-static const uint kMeshletGroupMaxSize = 32;
+public static const uint kMeshletGroupMaxSize = 32;
 
 // must match src/core/types.hpp kCullGroupSize / kRasterBinCount
-static const uint kCullGroupSize = 64;
-static const uint kRasterBinCount = 2;
-static const uint kRasterBinAlphaTested = 1;
+public static const uint kCullGroupSize = 64;
+public static const uint kRasterBinCount = 2;
+public static const uint kRasterBinAlphaTested = 1;
 
-struct GpuCameraData
+public struct GpuCameraData
 {
-    float4x4 view;
-    float4x4 proj;
-    float4x4 viewProj;
+    public float4x4 view;
+    public float4x4 proj;
+    public float4x4 viewProj;
 
-    float4x4 invView;
-    float4x4 invProj;
-    float4x4 invViewProj;
+    public float4x4 invView;
+    public float4x4 invProj;
+    public float4x4 invViewProj;
 
-    float4x4 prevViewProj;
+    public float4x4 prevViewProj;
 
-    float3 cameraPos;
-    float nearZ;
+    public float3 cameraPos;
+    public float nearZ;
 
-    float2 renderTargetSize;
-    float2 invRenderTargetSize;
+    public float2 renderTargetSize;
+    public float2 invRenderTargetSize;
 
-    float2 jitterOffset;
-    float farZ;
-    float frameDeltaTime;
+    public float2 jitterOffset;
+    public float farZ;
+    public float frameDeltaTime;
 
-    float4 cameraParams;
+    public float4 cameraParams;
 };
 
-struct GpuObjectUB
+public struct GpuObjectUB
 {
-    float4x4 modelMatrix;
-    float4x4 prevModelMatrix;
+    public float4x4 modelMatrix;
+    public float4x4 prevModelMatrix;
 
-    float4 boundingSphere;
+    public float4 boundingSphere;
 
-    uint modelIndex;
-    uint instanceFlags;
-    uint pad0;
-    uint pad1;
+    public uint modelIndex;
+    public uint instanceFlags;
+    public uint pad0;
+    public uint pad1;
 };
 
 // slice addresses of one model; data inside a slice is model-relative
-struct GpuModel
+public struct GpuModel
 {
-    uint64_t vertices;
-    uint64_t meshlets;
-    uint64_t meshletBounds; // GpuMeshletBounds[], parallel to meshlets
-    uint64_t meshletGroups; // GpuMeshletGroup[]
-    uint64_t meshletPrimitives; // uint per meshlet: its row of primitives
-    uint64_t meshletVertices;
-    uint64_t meshletTriangles;
-    uint64_t normals;
-    uint64_t tangents;
-    uint64_t uv1;
-    uint64_t indices;
-    uint64_t nodes;        // GpuNode[nodeCount]
-    uint64_t primitives;   // GpuPrimitive[], the model's slice of GpuFrameRoot.primitives
-    uint attributeMask;
-    uint nodeCount;
+    public uint64_t vertices;
+    public uint64_t meshlets;
+    public uint64_t meshletBounds; // GpuMeshletBounds[], parallel to meshlets
+    public uint64_t meshletGroups; // GpuMeshletGroup[]
+    public uint64_t meshletPrimitives; // uint per meshlet: its row of primitives
+    public uint64_t meshletVertices;
+    public uint64_t meshletTriangles;
+    public uint64_t normals;
+    public uint64_t tangents;
+    public uint64_t uv1;
+    public uint64_t indices;
+    public uint64_t nodes;        // GpuNode[nodeCount]
+    public uint64_t primitives;   // GpuPrimitive[], the model's slice of GpuFrameRoot.primitives
+    public uint attributeMask;
+    public uint nodeCount;
 };
 
-static const uint kNodeFlagFlipWinding = 1u;
+public static const uint kNodeFlagFlipWinding = 1u;
 
 // GpuModel.attributeMask; must match GpuModelAttribute in src/core/types.hpp
-static const uint kModelAttributeNormals = 1u << 0;
-static const uint kModelAttributeTangents = 1u << 1;
-static const uint kModelAttributeUv1 = 1u << 2;
+public static const uint kModelAttributeNormals = 1u << 0;
+public static const uint kModelAttributeTangents = 1u << 1;
+public static const uint kModelAttributeUv1 = 1u << 2;
 
 // GpuFrameRoot.debugView; must match src/render/debug_view.hpp
-static const uint kDebugViewLit = 0u;
-static const uint kDebugViewMeshlets = 1u;
-static const uint kDebugViewTriangles = 2u;
-static const uint kDebugViewPrimitives = 3u;
-static const uint kDebugViewNodeInstances = 4u;
-static const uint kDebugViewBins = 5u;
-static const uint kDebugViewCullPhase = 6u;
-static const uint kDebugViewHiZPyramid = 7u;
-static const uint kDebugViewDepth = 8u;
-static const uint kDebugViewShadingNormal = 9u;
-static const uint kDebugViewRoughness = 10u;
-static const uint kDebugViewGeometricNormal = 11u;
-static const uint kDebugViewDiffuseAlbedo = 12u;
-static const uint kDebugViewSpecularF0 = 13u;
-static const uint kDebugViewSpecularAlbedo = 14u;
-static const uint kDebugViewEmissive = 15u;
-static const uint kDebugViewMotionVectors = 16u;
-static const uint kDebugViewModeMask = 0xffu;
-static const uint kDebugViewFlagEdges = 1u << 8;
+public static const uint kDebugViewLit = 0u;
+public static const uint kDebugViewMeshlets = 1u;
+public static const uint kDebugViewTriangles = 2u;
+public static const uint kDebugViewPrimitives = 3u;
+public static const uint kDebugViewNodeInstances = 4u;
+public static const uint kDebugViewBins = 5u;
+public static const uint kDebugViewCullPhase = 6u;
+public static const uint kDebugViewHiZPyramid = 7u;
+public static const uint kDebugViewDepth = 8u;
+public static const uint kDebugViewShadingNormal = 9u;
+public static const uint kDebugViewRoughness = 10u;
+public static const uint kDebugViewGeometricNormal = 11u;
+public static const uint kDebugViewDiffuseAlbedo = 12u;
+public static const uint kDebugViewSpecularF0 = 13u;
+public static const uint kDebugViewSpecularAlbedo = 14u;
+public static const uint kDebugViewEmissive = 15u;
+public static const uint kDebugViewMotionVectors = 16u;
+public static const uint kDebugViewReprojection = 17u;
+public static const uint kDebugViewModeMask = 0xffu;
+public static const uint kDebugViewFlagEdges = 1u << 8;
 
 // one mesh placement inside its model, model-relative
-struct GpuNode
+public struct GpuNode
 {
-    float4 localToModel[3]; // affine rows
-    float4 boundingSphere;  // model space
-    uint firstPrimitive;
-    uint primitiveCount;
-    uint flags;
-    uint pad0;
-    float3 bboxMin; // mesh space, tested under GpuNodeInstance.worldMatrix
-    uint pad1;
-    float3 bboxMax;
-    uint pad2;
+    public float4 localToModel[3]; // affine rows
+    public float4 boundingSphere;  // model space
+    public uint firstPrimitive;
+    public uint primitiveCount;
+    public uint flags;
+    public uint pad0;
+    public float3 bboxMin; // mesh space, tested under GpuNodeInstance.worldMatrix
+    public uint pad1;
+    public float3 bboxMax;
+    public uint pad2;
 };
 
 // one entity x node, transforms precomputed per frame
-struct GpuNodeInstance
+public struct GpuNodeInstance
 {
-    float4x4 worldMatrix;
-    float4x4 prevWorldMatrix;
-    uint entityIndex;
-    uint modelIndex;
-    uint nodeIndex;
-    uint flags;
+    public float4x4 worldMatrix;
+    public float4x4 prevWorldMatrix;
+    public uint entityIndex;
+    public uint modelIndex;
+    public uint nodeIndex;
+    public uint flags;
 };
 
 // DrawRecordFlag
-static const uint kDrawRecordBinMask = 0x3u;
-static const uint kDrawRecordTwoSided = 1u << 2;
+public static const uint kDrawRecordBinMask = 0x3u;
+public static const uint kDrawRecordTwoSided = 1u << 2;
 
 // one render-list entry (vk_lod_clusters ClusterInfo); must match src/core/types.hpp
-struct GpuVisibleMeshlet
+public struct GpuVisibleMeshlet
 {
-    uint nodeInstanceIndex;
-    uint meshletRow; // row of the model's GpuMeshletDesc slice
+    public uint nodeInstanceIndex;
+    public uint meshletRow; // row of the model's GpuMeshletDesc slice
 };
 
+public enum AlphaMode : uint { Opaque = 0, Mask = 1, Blend = 2 }
+// matches GpuLightType in src/core/types.hpp
+public enum LightType : uint { Directional = 0, Point = 1, Spot = 2 }
+
 // GpuMaterial.flags; must match GpuMaterialFlag in src/core/types.hpp
-static const uint kMaterialFlagDoubleSided = 1u << 2;
+public static const uint kMaterialAlphaModeMask = 0x3u;
+public static const uint kMaterialFlagDoubleSided = 1u << 2;
+public static const uint kMaterialFlagUnlit = 1u << 3;
+public static const uint kMaterialFlagUvTransformBaseColor = 1u << 4;
+public static const uint kMaterialFlagUvTransformMetalRough = 1u << 5;
+public static const uint kMaterialFlagUvTransformNormal = 1u << 6;
+public static const uint kMaterialFlagUvTransformOcclusion = 1u << 7;
+public static const uint kMaterialFlagUvTransformEmissive = 1u << 8;
+public static const uint kMaterialUvSlotCount = 5;
 
 // one meshlet cull work item: one GpuMeshletGroup of one primitive placed by one node instance
-struct GpuDrawRecord
+public struct GpuDrawRecord
 {
-    uint nodeInstanceIndex;
-    uint primitiveIndex; // absolute row of GpuFrameRoot.primitives
-    uint meshletOffset;  // the group's first meshlet, relative to the primitive
-    uint flags;          // kDrawRecord*
-    uint groupOffset;    // relative to GpuPrimitive.firstGroup
+    public uint nodeInstanceIndex;
+    public uint primitiveIndex; // absolute row of GpuFrameRoot.primitives
+    public uint meshletOffset;  // the group's first meshlet, relative to the primitive
+    public uint flags;          // kDrawRecord*
+    public uint groupOffset;    // relative to GpuPrimitive.firstGroup
 };
 
 // one node instance for the instance pass; its draw record templates are contiguous
-struct GpuInstanceCullItem
+public struct GpuInstanceCullItem
 {
-    uint nodeInstanceIndex;
-    uint firstDrawRecord; // row of GpuCullView.drawRecordTemplates
-    uint drawRecordCount;
+    public uint nodeInstanceIndex;
+    public uint firstDrawRecord; // row of GpuCullView.drawRecordTemplates
+    public uint drawRecordCount;
 };
 
 // CullFlag
-static const uint kCullFrustum = 1u << 0;
-static const uint kCullCone = 1u << 1;
-static const uint kCullStats = 1u << 2;
-static const uint kCullInstanceFrustum = 1u << 3;
-static const uint kCullOcclusion = 1u << 4;
-static const uint kCullLatePhase = 1u << 5;
-static const uint kCullSubPixel = 1u << 6;
+public static const uint kCullFrustum = 1u << 0;
+public static const uint kCullCone = 1u << 1;
+public static const uint kCullStats = 1u << 2;
+public static const uint kCullInstanceFrustum = 1u << 3;
+public static const uint kCullOcclusion = 1u << 4;
+public static const uint kCullLatePhase = 1u << 5;
+public static const uint kCullSubPixel = 1u << 6;
 
 // GpuFrameRoot.triangleCull, matches TriangleCullFlag in src/core/types.hpp
-static const uint kTriangleCullBackface = 1u << 0;
-static const uint kTriangleCullSmall = 1u << 1;
-static const uint kTriangleCullStats = 1u << 2;
+public static const uint kTriangleCullBackface = 1u << 0;
+public static const uint kTriangleCullSmall = 1u << 1;
+public static const uint kTriangleCullStats = 1u << 2;
 
-struct GpuCullView
+public struct GpuCullView
 {
-    float3 cameraPos;
-    uint flags; // kCull*
-    uint64_t visibleMeshlets;     // GpuVisibleMeshlet[], one region per raster bin
-    uint64_t counters;            // GpuCullCounters
-    uint64_t sequences;           // MeshDgcSequence[]
-    uint64_t instanceItems;       // GpuInstanceCullItem[instanceCount]
-    uint64_t drawRecordTemplates; // GpuDrawRecord[], copied to GpuFrameRoot.drawRecords
-    uint instanceCount;
-    uint maxMeshletsPerSequence;
-    uint binVisibleOffset[kRasterBinCount];
-    uint binSequenceOffset[kRasterBinCount];
-    float4x4 occlusionViewProj; // early: previous frame's, late: current
-    uint hizPyramid;            // resource heap, full mip chain
-    uint hizFarSampler;         // sampler heap: far-depth reduction
-    uint2 hizSize;              // mip 0
-    uint64_t instanceCandidates; // uint[]: instance items occluded early, re-tested late
-    uint64_t lateCounters;       // GpuCullCounters counting the candidates; early view only
-    uint drawRecordBase;         // first GpuFrameRoot.drawRecords row of this phase
-    uint rejectRecordBase;       // first row of the early phase's records, which rejectMasks is indexed by
-    uint64_t rejectMasks;        // uint per early draw record: meshlets occluded early, re-tested late
-    float4x4 cullViewProj;       // frustum and sub-pixel tests: current, or the frozen cull camera
-    float2 targetSize;           // render target in pixels
-    float subpixelSnap;          // pixels a vertex may move when snapped to the subpixel grid
-    uint instanceCandidateCapacity; // list capacities; appends past them are dropped and counted
-    uint drawRecordCapacity;        // rows of this phase's drawRecords region, also the reject masks
-    uint binVisibleCapacity[kRasterBinCount];
-    uint pad1;
+    public float3 cameraPos;
+    public uint flags; // kCull*
+    public uint64_t visibleMeshlets;     // GpuVisibleMeshlet[], one region per raster bin
+    public uint64_t counters;            // GpuCullCounters
+    public uint64_t sequences;           // MeshDgcSequence[]
+    public uint64_t instanceItems;       // GpuInstanceCullItem[instanceCount]
+    public uint64_t drawRecordTemplates; // GpuDrawRecord[], copied to GpuFrameRoot.drawRecords
+    public uint instanceCount;
+    public uint maxMeshletsPerSequence;
+    public uint binVisibleOffset[kRasterBinCount];
+    public uint binSequenceOffset[kRasterBinCount];
+    public float4x4 occlusionViewProj; // early: previous frame's, late: current
+    public uint hizPyramid;            // resource heap, full mip chain
+    public uint hizFarSampler;         // sampler heap: far-depth reduction
+    public uint2 hizSize;              // mip 0
+    public uint64_t instanceCandidates; // uint[]: instance items occluded early, re-tested late
+    public uint64_t lateCounters;       // GpuCullCounters counting the candidates; early view only
+    public uint drawRecordBase;         // first GpuFrameRoot.drawRecords row of this phase
+    public uint rejectRecordBase;       // first row of the early phase's records, which rejectMasks is indexed by
+    public uint64_t rejectMasks;        // uint per early draw record: meshlets occluded early, re-tested late
+    public float4x4 cullViewProj;       // frustum and sub-pixel tests: current, or the frozen cull camera
+    public float2 targetSize;           // render target in pixels
+    public float subpixelSnap;          // pixels a vertex may move when snapped to the subpixel grid
+    public uint instanceCandidateCapacity; // list capacities; appends past them are dropped and counted
+    public uint drawRecordCapacity;        // rows of this phase's drawRecords region, also the reject masks
+    public uint binVisibleCapacity[kRasterBinCount];
+    public uint pad1;
 };
 
-struct GpuCullCounters
+public struct GpuCullCounters
 {
-    uint visibleMeshlets[kRasterBinCount];
-    uint sequenceCount[kRasterBinCount];
-    uint meshletDispatch[3]; // VkDispatchIndirectCommand: x = draw records of visible instances
-    uint instanceDispatch[3]; // VkDispatchIndirectCommand: x = late candidates
-    uint meshletsRetested; // late, kCullStats only: reject-mask bits re-tested
-    uint instancesCulled; // frustum
-    uint instancesDrawn;
-    uint instancesOccluded;
-    uint testedMeshlets;
-    uint frustumCulled;
-    uint coneCulled;
-    uint occlusionCulled; // early: set in the reject masks, late: still occluded
-    uint trianglesTested; // mesh shader, kTriangleCullStats only
-    uint trianglesBackface;
-    uint trianglesSmall;
-    uint instancesSubPixel; // kCullStats only
-    uint meshletsSubPixel;
-    uint groupsTested; // kCullStats only
-    uint groupsCulled; // whole group by its box: frustum, sub-pixel or occluded
-    uint candidatesOverflowed; // always counted: appends dropped at capacity
-    uint drawRecordsOverflowed;
-    uint visibleOverflowed;
+    public uint visibleMeshlets[kRasterBinCount];
+    public uint sequenceCount[kRasterBinCount];
+    public uint meshletDispatch[3]; // VkDispatchIndirectCommand: x = draw records of visible instances
+    public uint instanceDispatch[3]; // VkDispatchIndirectCommand: x = late candidates
+    public uint meshletsRetested; // late, kCullStats only: reject-mask bits re-tested
+    public uint instancesCulled; // frustum
+    public uint instancesDrawn;
+    public uint instancesOccluded;
+    public uint testedMeshlets;
+    public uint frustumCulled;
+    public uint coneCulled;
+    public uint occlusionCulled; // early: set in the reject masks, late: still occluded
+    public uint trianglesTested; // mesh shader, kTriangleCullStats only
+    public uint trianglesBackface;
+    public uint trianglesSmall;
+    public uint instancesSubPixel; // kCullStats only
+    public uint meshletsSubPixel;
+    public uint groupsTested; // kCullStats only
+    public uint groupsCulled; // whole group by its box: frustum, sub-pixel or occluded
+    public uint candidatesOverflowed; // always counted: appends dropped at capacity
+    public uint drawRecordsOverflowed;
+    public uint visibleOverflowed;
 };
 
 // values are relative to the owning model's slices
-struct GpuPrimitive
+public struct GpuPrimitive
 {
-    uint firstMeshlet;
-    uint meshletCount;
-    uint materialId; // absolute row of GpuFrameRoot.materials, kNoneIndex = default material (row 0)
-    uint firstVertex;
-    uint vertexCount;
-    uint firstIndex;
-    uint indexCount;
-    uint firstGroup;       // rows of model.meshletGroups
-    uint groupCount;
+    public uint firstMeshlet;
+    public uint meshletCount;
+    public uint materialId; // absolute row of GpuFrameRoot.materials, kNoneIndex = default material (row 0)
+    public uint firstVertex;
+    public uint vertexCount;
+    public uint firstIndex;
+    public uint indexCount;
+    public uint firstGroup;       // rows of model.meshletGroups
+    public uint groupCount;
 };
 
-struct GpuVertex
+public struct GpuVertex
 {
-    float3 pos;
-    float3 color;
-    float2 texCoord;
+    public float3 pos;
+    public float3 color;
+    public float2 texCoord;
 };
 
-struct GpuMeshletDesc
+public struct GpuMeshletDesc
 {
-    uint vertexOffset;
-    uint triangleOffset;
-    uint8_t vertexCount;
-    uint8_t triangleCount;
-    uint8_t pad0;
-    uint8_t pad1;
+    public uint vertexOffset;
+    public uint triangleOffset;
+    public uint8_t vertexCount;
+    public uint8_t triangleCount;
+    public uint8_t pad0;
+    public uint8_t pad1;
     // normal cone in object space, snorm8 (x / 127)
-    int8_t coneAxisX;
-    int8_t coneAxisY;
-    int8_t coneAxisZ;
-    int8_t coneCutoff;
-    float4 boundingSphere;
+    public int8_t coneAxisX;
+    public int8_t coneAxisY;
+    public int8_t coneAxisZ;
+    public int8_t coneCutoff;
+    public float4 boundingSphere;
 };
 
 // a run of a primitive's meshlets culled as one box first
-struct GpuMeshletGroup
+public struct GpuMeshletGroup
 {
-    float3 bboxMin; // object space, union of the meshlet boxes
-    uint firstMeshlet; // relative to the primitive
-    float3 bboxMax;
-    uint meshletCount; // <= kMeshletGroupMaxSize
+    public float3 bboxMin; // object space, union of the meshlet boxes
+    public uint firstMeshlet; // relative to the primitive
+    public float3 bboxMax;
+    public uint meshletCount; // <= kMeshletGroupMaxSize
 };
 
 // object-space box of one meshlet, parallel to GpuMeshletDesc
-struct GpuMeshletBounds
+public struct GpuMeshletBounds
 {
-    float3 bboxMin;
-    float shortestEdge; // shortest and longest triangle edge, object space
-    float3 bboxMax;
-    float longestEdge;
+    public float3 bboxMin;
+    public float shortestEdge; // shortest and longest triangle edge, object space
+    public float3 bboxMax;
+    public float longestEdge;
 };
 
-struct GpuMaterial
+// rows of M = T * R * S: uv' = M * (uv, 1), gradients take the 2x2 part
+public struct GpuUvMatrix
 {
-    float4 baseColorFactor;
-    float3 emissiveFactor;
-    float metallicFactor;
-    float roughnessFactor;
-    float normalScale;
-    float occlusionStrength;
-    float alphaCutoff;
-    uint flags;
+    public float3 row0;
+    public float3 row1;
+};
 
-    uint baseColorTex;
-    uint metalRoughTex;
-    uint normalTex;
-    uint occlusionTex;
-    uint emissiveTex;
+public struct GpuMaterial
+{
+    public float4 baseColorFactor;
+    public float3 emissiveFactor;
+    public float metallicFactor;
+    public float roughnessFactor;
+    public float normalScale;
+    public float occlusionStrength;
+    public float alphaCutoff;
+    public uint flags;
 
-    uint baseColorSamp;
-    uint metalRoughSamp;
-    uint normalSamp;
-    uint occlusionSamp;
-    uint emissiveSamp;
+    public uint baseColorTex;
+    public uint metalRoughTex;
+    public uint normalTex;
+    public uint occlusionTex;
+    public uint emissiveTex;
 
-    uint8_t baseColorUv;
-    uint8_t metalRoughUv;
-    uint8_t normalUv;
-    uint8_t occlusionUv;
-    uint8_t emissiveUv;
+    public uint baseColorSamp;
+    public uint metalRoughSamp;
+    public uint normalSamp;
+    public uint occlusionSamp;
+    public uint emissiveSamp;
 
-    // C++ alignas(16) stride is 112 B
-    uint8_t pad0;
-    uint8_t pad1;
-    uint8_t pad2;
-    uint3 pad3;
+    public uint8_t baseColorUv;
+    public uint8_t metalRoughUv;
+    public uint8_t normalUv;
+    public uint8_t occlusionUv;
+    public uint8_t emissiveUv;
+
+    // C++ alignas(16) stride is 240 B
+    public uint8_t pad0;
+    public uint8_t pad1;
+    public uint8_t pad2;
+    public uint3 pad3;
+
+    // valid only where the slot's kMaterialFlagUvTransform* bit is set
+    public GpuUvMatrix uvMatrices[kMaterialUvSlotCount];
+    public uint2 pad4;
 };
 
 // model space; loadWorldLight moves it to world space through its owning instance
-struct GpuLight
+public struct GpuLight
 {
-    float3 position;
-    float range;
-    float3 direction;
-    float intensity;
-    float3 color;
-    uint type;
-    float innerCone;
-    float outerCone;
-    uint instanceIndex;
-    float pad0;
+    public float3 position;
+    public float range;
+    public float3 direction;
+    public float intensity;
+    public float3 color;
+    public LightType type;
+    public float innerCone;
+    public float outerCone;
+    public uint instanceIndex;
+    public float pad0;
 };
 
-struct GpuUvTransform
+public struct GpuUvTransform
 {
-    float2 offset;
-    float2 scale;
-    float rotation;
+    public float2 offset;
+    public float2 scale;
+    public float rotation;
 };
 
-struct GpuTextureRef
+public struct GpuTextureRef
 {
-    uint tex;  // kNoneIndex = absent
-    uint samp;
-    uint uv;
-    float normalScale;
-    GpuUvTransform uvXform;
+    public uint tex;  // kNoneIndex = absent
+    public uint samp;
+    public uint uv;
+    public float normalScale;
+    public GpuUvTransform uvXform;
 };
 
 // 724 B, one row per GpuMaterial row (same index)
-struct GpuMaterialExtension
+public struct GpuMaterialExtension
 {
-    uint flags; // MaterialExtFlag::*
+    public uint flags; // MaterialExtFlag::*
 
-    GpuUvTransform baseColorUv;
-    GpuUvTransform metalRoughUv;
-    GpuUvTransform normalUv;
-    GpuUvTransform occlusionUv;
-    GpuUvTransform emissiveUv;
+    public GpuUvTransform baseColorUv;
+    public GpuUvTransform metalRoughUv;
+    public GpuUvTransform normalUv;
+    public GpuUvTransform occlusionUv;
+    public GpuUvTransform emissiveUv;
 
-    float ior;
-    float emissiveStrength;
-    float dispersion;
+    public float ior;
+    public float emissiveStrength;
+    public float dispersion;
 
-    float specularFactor;
-    float3 specularColorFactor;
-    GpuTextureRef specular;
-    GpuTextureRef specularColor;
+    public float specularFactor;
+    public float3 specularColorFactor;
+    public GpuTextureRef specular;
+    public GpuTextureRef specularColor;
 
-    float clearcoatFactor;
-    float clearcoatRoughnessFactor;
-    GpuTextureRef clearcoat;
-    GpuTextureRef clearcoatRoughness;
-    GpuTextureRef clearcoatNormal;
+    public float clearcoatFactor;
+    public float clearcoatRoughnessFactor;
+    public GpuTextureRef clearcoat;
+    public GpuTextureRef clearcoatRoughness;
+    public GpuTextureRef clearcoatNormal;
 
-    float3 sheenColorFactor;
-    float sheenRoughnessFactor;
-    GpuTextureRef sheenColor;
-    GpuTextureRef sheenRoughness;
+    public float3 sheenColorFactor;
+    public float sheenRoughnessFactor;
+    public GpuTextureRef sheenColor;
+    public GpuTextureRef sheenRoughness;
 
-    float transmissionFactor;
-    GpuTextureRef transmission;
+    public float transmissionFactor;
+    public GpuTextureRef transmission;
 
-    float thicknessFactor;
-    float attenuationDistance; // 0 = infinite
-    float3 attenuationColor;
-    GpuTextureRef thickness;
+    public float thicknessFactor;
+    public float attenuationDistance; // 0 = infinite
+    public float3 attenuationColor;
+    public GpuTextureRef thickness;
 
-    float iridescenceFactor;
-    float iridescenceIor;
-    float iridescenceThicknessMin;
-    float iridescenceThicknessMax;
-    GpuTextureRef iridescence;
-    GpuTextureRef iridescenceThickness;
+    public float iridescenceFactor;
+    public float iridescenceIor;
+    public float iridescenceThicknessMin;
+    public float iridescenceThicknessMax;
+    public GpuTextureRef iridescence;
+    public GpuTextureRef iridescenceThickness;
 
-    float anisotropyStrength;
-    float anisotropyRotation;
-    GpuTextureRef anisotropy;
+    public float anisotropyStrength;
+    public float anisotropyRotation;
+    public GpuTextureRef anisotropy;
 
-    float diffuseTransmissionFactor;
-    float3 diffuseTransmissionColorFactor;
-    GpuTextureRef diffuseTransmission;
-    GpuTextureRef diffuseTransmissionColor;
+    public float diffuseTransmissionFactor;
+    public float3 diffuseTransmissionColorFactor;
+    public GpuTextureRef diffuseTransmission;
+    public GpuTextureRef diffuseTransmissionColor;
 };
 
 // 16 B, matches src/render/push_data.hpp
-struct MeshPushData
+public struct MeshPushData
 {
-    uint64_t frameRoot;
-    uint firstVisible; // row of GpuFrameRoot.visibleMeshlets for group 0
-    uint meshletCount; // groups in this batch
+    public uint64_t frameRoot;
+    public uint firstVisible; // row of GpuFrameRoot.visibleMeshlets for group 0
+    public uint meshletCount; // groups in this batch
 };
 
 // one DGC sequence: PUSH_DATA + DRAW_MESH_TASKS, 32 B stride
-struct MeshDgcSequence
+public struct MeshDgcSequence
 {
-    MeshPushData push;
-    uint3 groupCount;
-    uint pad0;
+    public MeshPushData push;
+    public uint3 groupCount;
+    public uint pad0;
 };
 
 // 16 B, matches src/render/push_data.hpp
-struct CullPushData
+public struct CullPushData
 {
-    uint64_t frameRoot;
-    uint64_t cullView; // GpuCullView
+    public uint64_t frameRoot;
+    public uint64_t cullView; // GpuCullView
 };
 
 // 24 B, matches src/render/push_data.hpp
-struct HiZViewPushData
+public struct HiZViewPushData
 {
-    uint pyramid; // resource heap, full mip chain
-    uint mip;
-    float nearZ;
-    float farZ;
-    uint2 screenSize;
+    public uint pyramid; // resource heap, full mip chain
+    public uint mip;
+    public float nearZ;
+    public float farZ;
+    public uint2 screenSize;
 };
 
 // 48 B, matches src/render/push_data.hpp
-struct HiZPushData
+public struct HiZPushData
 {
-    uint srcImage;     // resource heap: depth for mip 0, the pyramid's full-chain view otherwise
-    uint dstImages[3]; // resource heap: storage views of the written mips, first levelCount valid
-    uint srcMip;       // pyramid mip the first written level halves; unused from depth
-    uint isFromDepth;
-    uint levelCount;
-    uint pad0;
-    uint2 srcSize;
-    uint2 dstSize;     // first written level
+    public uint srcImage;     // resource heap: depth for mip 0, the pyramid's full-chain view otherwise
+    public uint dstImages[3]; // resource heap: storage views of the written mips, first levelCount valid
+    public uint srcMip;       // pyramid mip the first written level halves; unused from depth
+    public uint isFromDepth;
+    public uint levelCount;
+    public uint pad0;
+    public uint2 srcSize;
+    public uint2 dstSize;     // first written level
 };
 
 // 8 B, matches src/render/push_data.hpp: fullscreen passes reach everything through the root
-struct FramePushData
+public struct FramePushData
 {
-    uint64_t frameRoot;
+    public uint64_t frameRoot;
 };
 
 // 16 B, matches src/render/push_data.hpp
-struct PresentPushData
+public struct PresentPushData
 {
-    uint64_t frameRoot;
-    uint2 displaySize; // swapchain extent
+    public uint64_t frameRoot;
+    public uint2 displaySize; // swapchain extent
 };
 
 // vis-buffer raster: position only, the payload is per primitive
-struct MeshVertexOut
+public struct MeshVertexOut
 {
-    float4 pos : SV_Position;
+    public float4 pos : SV_Position;
 };
 
 // must match src/core/types.hpp kVisTriangleBits
-static const uint kVisTriangleBits = 7;
+public static const uint kVisTriangleBits = 7;
 
 // GpuGuideSet rows; must match GuideImage in src/core/types.hpp
-static const uint kGuideNormalRoughness = 0;
-static const uint kGuideGeoNormal = 1;
-static const uint kGuideDiffuseAlbedo = 2;
-static const uint kGuideSpecularF0 = 3;
-static const uint kGuideSpecAlbedo = 4;
-static const uint kGuideEmissive = 5;
-static const uint kGuideMotion = 6;
-static const uint kGuideImageCount = 7;
+public static const uint kGuideNormalRoughness = 0;
+public static const uint kGuideGeoNormal = 1;
+public static const uint kGuideDiffuseAlbedo = 2;
+public static const uint kGuideSpecularF0 = 3;
+public static const uint kGuideSpecAlbedo = 4;
+public static const uint kGuideEmissive = 5;
+public static const uint kGuideMotion = 6;
+public static const uint kGuideImageCount = 7;
 
-struct GpuGuideSet
+public struct GpuGuideSet
 {
-    uint storage[kGuideImageCount]; // written by the resolve
-    uint sampled[kGuideImageCount];
+    public uint storage[kGuideImageCount]; // written by the resolve
+    public uint sampled[kGuideImageCount];
 };
 
 // render-resolution targets of one frame; matches GpuTargets in src/core/types.hpp
-struct GpuTargets
+public struct GpuTargets
 {
-    uint visBuffer; // sampled R32_UINT
-    uint depth;     // sampled, reverse Z
-    uint displayStorage;
-    uint displaySampled;
-    uint linearSampler; // sampler heap
-    uint pad0;
-    uint2 renderSize;
-    GpuGuideSet current; // this frame's, by frame parity
-    GpuGuideSet previous;
+    public uint visBuffer; // sampled R32_UINT
+    public uint depth;     // sampled, reverse Z
+    public uint displayStorage;
+    public uint displaySampled;
+    public uint linearSampler; // sampler heap
+    public uint pad0;
+    public uint2 renderSize;
+    public GpuGuideSet current; // this frame's, by frame parity
+    public GpuGuideSet previous;
 };
+
+// [InstanceIndex()] of a TLAS instance; rewritten on the gpu with the tlas
+public struct GpuRayInstance
+{
+    public uint nodeInstanceIndex; // row in GpuFrameRoot.nodeInstances
+    public uint primitiveRow;      // row in GpuFrameRoot.primitives
+};
+
+// GpuFrameRoot.frameFlags, matches FrameFlag in src/core/types.hpp
+public static const uint kFrameFlagHistoryReset = 1u << 0;
 
 // per-frame root, matches GpuFrameRoot in src/core/types.hpp
-struct GpuFrameRoot
+public struct GpuFrameRoot
 {
-    uint64_t camera;
-    uint64_t instances;     // GpuObjectUB[entity]
-    uint64_t models;        // GpuModel[model]
-    uint64_t primitives;    // GpuPrimitive[], absolute rows
-    uint64_t materials;     // whole GpuMaterial[]; only row 0 (default) is read here
-    uint64_t pbrExtensions; // whole GpuMaterialExtension[], parallel to materials
-    uint64_t lights;        // GpuLight[lightCount]
-    uint64_t tlas;
-    uint64_t nodeInstances; // GpuNodeInstance[nodeInstanceCount]
-    uint64_t drawRecords;     // GpuDrawRecord[], written by the instance cull pass
-    uint64_t visibleMeshlets; // GpuVisibleMeshlet[]
-    uint lightCount;
-    uint instanceCount;
-    uint primitiveCount;
-    uint nodeInstanceCount;
-    uint lateVisibleBase; // first visibleMeshlets row of the late phase
-    uint debugView; // kDebugView* mode in the low byte, kDebugViewFlag* above
-    uint64_t cullCounters; // GpuCullCounters[kCullPhaseCount]; the mesh shader adds its triangle counts
-    uint triangleCull;     // kTriangleCull*
-    float subpixelSnap;    // pixels a vertex may move when snapped to the subpixel grid
-    uint64_t targets;      // GpuTargets
+    public uint64_t camera;
+    public uint64_t instances;     // GpuObjectUB[entity]
+    public uint64_t models;        // GpuModel[model]
+    public uint64_t primitives;    // GpuPrimitive[], absolute rows
+    public uint64_t materials;     // whole GpuMaterial[]; only row 0 (default) is read here
+    public uint64_t pbrExtensions; // whole GpuMaterialExtension[], parallel to materials
+    public uint64_t lights;        // GpuLight[lightCount]
+    public uint64_t tlas;
+    public uint64_t nodeInstances; // GpuNodeInstance[nodeInstanceCount]
+    public uint64_t drawRecords;     // GpuDrawRecord[], written by the instance cull pass
+    public uint64_t visibleMeshlets; // GpuVisibleMeshlet[]
+    public uint lightCount;
+    public uint instanceCount;
+    public uint primitiveCount;
+    public uint nodeInstanceCount;
+    public uint lateVisibleBase; // first visibleMeshlets row of the late phase
+    public uint debugView; // kDebugView* mode in the low byte, kDebugViewFlag* above
+    public uint64_t cullCounters; // GpuCullCounters[kCullPhaseCount]; the mesh shader adds its triangle counts
+    public uint triangleCull;     // kTriangleCull*
+    public float subpixelSnap;    // pixels a vertex may move when snapped to the subpixel grid
+    public uint64_t targets;      // GpuTargets
+    public uint frameFlags;       // kFrameFlag*
+    public uint pad0;
+    public uint64_t rayInstances;   // GpuRayInstance[], 0 until the RT scene exists
+    public uint64_t rtxdiConstants; // 0 until M3
+    public uint64_t cacheConstants; // SHaRC or NRC constants, 0 until M4
+    public uint frameIndex;
+    public float exposure;          // pre-exposure, 1 until auto exposure
 };
-
-#endif

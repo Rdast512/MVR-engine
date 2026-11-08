@@ -1,6 +1,6 @@
 // runs core/culling.slang on known spheres, through both the sphere and the box path; tests/hiz_footprint_test.cpp
 // checks the results
-#include "core/culling.slang"
+import core.culling;
 
 // scalar layout: must match FootprintPush in tests/hiz_footprint_test.cpp
 struct FootprintPush

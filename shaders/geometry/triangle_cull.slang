@@ -1,21 +1,20 @@
-#ifndef ENGINE_GEOMETRY_TRIANGLE_CULL_SLANG
-#define ENGINE_GEOMETRY_TRIANGLE_CULL_SLANG
+module triangle_cull;
 
-#include "types.slang"
-#include "core/binding.slang"
-#include "core/frame.slang"
-#include "core/culling.slang"
+import types;
+import core.binding;
+import core.frame;
+import core.culling;
 
 // per-triangle culling in the mesh shaders, flagged through SV_CullPrimitive. Corners are the clip positions the
 // rasterizer receives, so a projection jitter is accounted for once it lives in proj. Single sample: coverage is
 // decided at pixel centers. The tests are isFrontFacingHW and testTrianglePixel from core/culling.slang
 
-static const uint kTriangleKept = 0;
-static const uint kTriangleBackface = 1;
-static const uint kTriangleSmall = 2;
+public static const uint kTriangleKept = 0;
+public static const uint kTriangleBackface = 1;
+public static const uint kTriangleSmall = 2;
 
 // tri must already carry the winding the rasterizer sees (loadFrontFacingTriangle)
-uint triangleCullReason(float4 a, float4 b, float4 c, uint flags, bool isDoubleSided, float2 targetSize,
+public uint triangleCullReason(float4 a, float4 b, float4 c, uint flags, bool isDoubleSided, float2 targetSize,
                         float subpixelSnap)
 {
     // no divide, so valid before the eye-plane guard; zero area counts as front facing, as in vk_lod_clusters
@@ -41,7 +40,7 @@ uint triangleCullReason(float4 a, float4 b, float4 c, uint flags, bool isDoubleS
 }
 
 // per-lane tallies of one mesh workgroup; one atomic per counter per wave
-void countTriangles(DrawContext draw, uint tested, uint backface, uint small)
+public void countTriangles(DrawContext draw, uint tested, uint backface, uint small)
 {
     const uint waveTested = WaveActiveSum(tested);
     const uint waveBackface = WaveActiveSum(backface);
@@ -55,5 +54,3 @@ void countTriangles(DrawContext draw, uint tested, uint backface, uint small)
         InterlockedAdd(counters.trianglesSmall, waveSmall);
     }
 }
-
-#endif

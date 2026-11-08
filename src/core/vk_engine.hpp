@@ -58,6 +58,8 @@ class Engine
     // UI actions run after the ImGui frame so no panel iterates storage that changes under it
     bool hasPendingLoad = false;
     std::optional<EntityId> pendingUnload;
+    // entity moved by the motion-vector debug controls
+    int transformTestEntity = 0;
     // instance field: side x side grid of INSTANCE_FIELD_MODEL_PATH centered on loadedModelPosition
     int instanceFieldSide = 16;
     // cell size in model bounding diameters
@@ -73,6 +75,7 @@ class Engine
     void drawLoadedModelsPanel();
     void drawAssetsPanel() const;
     void drawDebugViewPanel();
+    void drawEntityTransformControls();
     void drawCullingPanel();
     void drawInstanceFieldPanel();
     void applyPendingModelActions();

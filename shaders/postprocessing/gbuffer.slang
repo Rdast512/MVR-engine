@@ -1,18 +1,13 @@
-#ifndef ENGINE_POST_GBUFFER_SLANG
-#define ENGINE_POST_GBUFFER_SLANG
+module gbuffer;
 
-#include "types.slang"
-
-struct GbufferGuides
+public struct GbufferGuides
 {
-    float3 color;
-    float depth;
-    float2 motion;
-    float3 albedo;
-    float3 specAlbedo;
-    float3 normal;
-    float roughness;
-    float hitT;
+    public float3 color;
+    public float depth;
+    public float2 motion;
+    public float3 albedo;
+    public float3 specAlbedo;
+    public float3 normal;
+    public float roughness;
+    public float hitT;
 };
-
-#endif

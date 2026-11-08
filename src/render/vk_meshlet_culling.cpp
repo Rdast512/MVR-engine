@@ -113,8 +113,8 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera, cons
     frame = frameSlot;
     readBackCounters(frameSlot);
 
-    const bool isLayoutChanged = templates.generation != resourceManager.nodeInstanceLayoutGeneration;
-    if (isLayoutChanged) {
+    isLayoutChangedThisFrame = templates.generation != resourceManager.nodeInstanceLayoutGeneration;
+    if (isLayoutChangedThisFrame) {
         buildTemplates();
     }
     // a freeze starts when newly set, or again when the pyramid lost its content (resize): that frame captures the
@@ -126,7 +126,7 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera, cons
     }
     wasCameraFrozen = settings.isCameraFrozen;
     isPyramidFrozenThisFrame = settings.isCameraFrozen && !isFreezeStart;
-    const OcclusionHistory history = occlusionHistory(camera, hiz, isLayoutChanged);
+    const OcclusionHistory history = occlusionHistory(camera, hiz, isLayoutChangedThisFrame);
     if (history != OcclusionHistory::Valid && history != OcclusionHistory::Disabled) {
         ++fallbackFrames;
     }

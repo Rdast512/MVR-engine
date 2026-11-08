@@ -1,28 +1,27 @@
-#ifndef ENGINE_GEOMETRY_SURFACE_SLANG
-#define ENGINE_GEOMETRY_SURFACE_SLANG
+module surface;
 
-#include "types.slang"
-#include "core/binding.slang"
-#include "core/culling.slang"
-#include "core/frame.slang"
-#include "core/math.slang"
-#include "geometry/mesh.slang"
-#include "geometry/visbuffer.slang"
+import types;
+import core.binding;
+import core.frame;
+import core.math;
+import core.culling;
+import geometry.mesh;
+import geometry.visbuffer;
 
 // one triangle's surface at a pixel, rebuilt from (node instance, meshlet, triangle): the vis-buffer resolve here,
 // ray hits (M2 decodeHit) with ray barycentrics and ray-cone gradients
 
 // the triangle's corners as the rasterizer saw them
-struct TriangleCorners
+public struct TriangleCorners
 {
-    uint3 vertexIndex; // model-relative, in meshlet order (not winding-adjusted)
-    float3 objectPos[3];
-    float4 clip[3];      // jittered
+    public uint3 vertexIndex; // model-relative, in meshlet order (not winding-adjusted)
+    public float3 objectPos[3];
+    public float4 clip[3];      // jittered
     // front face of the winding the rasterizer received (FlipWinding applied)
-    bool isFrontFacing;
+    public bool isFrontFacing;
 };
 
-TriangleCorners loadTriangleCorners(DrawContext draw, GpuCameraData camera, uint triangle)
+public TriangleCorners loadTriangleCorners(DrawContext draw, GpuCameraData camera, uint triangle)
 {
     const GpuMeshletDesc meshlet = loadMeshlet(draw);
     const uint3 local = loadMeshletTriangle(draw, meshlet, triangle);
@@ -42,18 +41,18 @@ TriangleCorners loadTriangleCorners(DrawContext draw, GpuCameraData camera, uint
     return corners;
 }
 
-struct Surface
+public struct Surface
 {
-    float3 position;     // world
-    float3 prevPosition; // world, previous instance transform
-    float3 geoNormal;    // world, toward the viewer's side for visible back faces
-    float3 normal;       // world vertex normal, facing-corrected; geoNormal when the mesh has none
-    float4 tangent;      // world xyz, w = bitangent sign; w = 0 when the mesh has none
-    float3 color;        // COLOR_0
-    float2 uv[2];
-    float2 uvDdx[2];
-    float2 uvDdy[2];
-    bool isFrontFacing;
+    public float3 position;     // world
+    public float3 prevPosition; // world, previous instance transform
+    public float3 geoNormal;    // world, toward the viewer's side for visible back faces
+    public float3 normal;       // world vertex normal, facing-corrected; geoNormal when the mesh has none
+    public float4 tangent;      // world xyz, w = bitangent sign; w = 0 when the mesh has none
+    public float3 color;        // COLOR_0
+    public float2 uv[2];
+    public float2 uvDdx[2];
+    public float2 uvDdy[2];
+    public bool isFrontFacing;
 };
 
 // a zero row in an optional stream means the primitive has no such attribute
@@ -78,7 +77,7 @@ float2 loadVertexUv1(DrawContext draw, uint vertexIndex)
         : float2(0.0, 0.0);
 }
 
-Surface buildSurface(DrawContext draw, TriangleCorners corners, Barycentrics bary)
+public Surface buildSurface(DrawContext draw, TriangleCorners corners, Barycentrics bary)
 {
     const float4x4 world = draw.nodeInstance.worldMatrix;
     const float3 objectPos = interpolate(bary, corners.objectPos[0], corners.objectPos[1], corners.objectPos[2]);
@@ -132,5 +131,3 @@ Surface buildSurface(DrawContext draw, TriangleCorners corners, Barycentrics bar
     surface.uvDdy[1] = interpolateDdy(bary, uv1[0], uv1[1], uv1[2]);
     return surface;
 }
-
-#endif

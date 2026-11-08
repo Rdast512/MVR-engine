@@ -109,7 +109,7 @@ Usage for all: `TransferSrc | TransferDst | StorageBuffer | ShaderDeviceAddress`
 | `Tangents` | `float4` (16 B) | xyz + handedness; same rule | reachable, unused |
 | `Uv1` | `float2` (8 B) | same rule | reachable, unused |
 | `Indices` | `uint32` | model-relative vertex ids | reachable, unused |
-| `Materials` | `GpuMaterial` (112 B) | factors, flags, 5 texture + 5 sampler heap indices, 5 UV sets | fragment via `loadMaterial`; `DoubleSided` flag read by `loadDrawContext` |
+| `Materials` | `GpuMaterial` (240 B) | factors (emissive strength folded in), flags, 5 texture + 5 sampler heap indices, 5 UV sets, 5 UV matrices | fragment via `loadMaterial`; `DoubleSided` flag read by `loadDrawContext` |
 | `PbrExt` | `GpuMaterialExtension` (724 B) | glTF extension rows, parallel to `Materials` | `loadMaterialExtension`, no consumer yet |
 | `Lights` | `GpuLight` (64 B) | model-space punctual lights + owning `instanceIndex` | `loadWorldLight`, no consumer yet |
 | `Primitives` | `GpuPrimitive` (36 B) | one row per **mesh** primitive: meshlet/vertex/index/group ranges, `materialId`, model-relative | mesh + fragment via `loadDrawContext`; cull |
@@ -323,7 +323,7 @@ Rules:
 | `GpuCullView` | 272 | key offsets asserted |
 | `GpuCullCounters` | 112 | key offsets asserted |
 | `GpuObjectUB` | 160 | `modelIndex` @ 144 |
-| `GpuMaterial` | 112 | `alignas(16)` in C++; explicit tail pad in Slang |
+| `GpuMaterial` | 240 | `alignas(16)` in C++; explicit pads on both sides |
 | `GpuLight` | 64 | model space; `instanceIndex` @ 56; `type` is a raw `uint` |
 | `GpuMaterialExtension` | 724 | `GpuTextureRef` 36 B, `GpuUvTransform` 20 B; key offsets asserted |
 | `GpuVertex` | 32 | |
@@ -452,7 +452,7 @@ What the target architecture adds to or removes from the resources above, by spe
 | M2 | Per-cluster CLAS (object space, shared by instances), one cluster BLAS per primitive, GPU-written `VkAccelerationStructureInstanceKHR[]` + `GpuRayInstance[]`, TLAS; build scratch freed after load, CLAS moved to final size; `tlas` and `rayInstances` in the frame root | §10.2–10.3 |
 | M2 | Async compute queue for the RT scene build, timeline semaphore before the first ray pass | §5, §13 |
 | M3–M5 | RTXDI reservoirs, light buffer and constants; SHaRC hash/resolved buffers; NRC SDK buffers; `directRadiance`, `indirectRadiance`, `noisyColor`, DLSS output (display resolution); per-SDK constants in the frame root | §11, §12 |
-| M6 | OMM arrays per cluster with a per-cluster OMM index buffer, baked from the final cluster triangles | §7.1, §10.5 |
+| M6 | OMM arrays per primitive (NVIDIA OMM SDK) with a per-cluster OMM index buffer, baked from the final cluster triangles | §7.1, §10.5 |
 | M7 | Material bin tile lists, counts and the per-pixel bin-id image; DGC compute execution set | §9.1–9.2 |
 | M7 | Emissive-triangle light list built on the GPU at load | §6.1, §11.2 |
 | M8 | Uploads through GDeflate pages in ReBAR staging, `vkCmdDecompressMemoryEXT` on a graphics or compute queue; host image copy only for first-load source images; KTX2 BC7 / BC5 produced automatically and cached; geometry cache per asset + processing version | §3, §6.4, §7.2 |

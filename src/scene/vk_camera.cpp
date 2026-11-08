@@ -108,10 +108,10 @@ void Camera::updateCameraData(uint8_t currentImage)
         updateProjection();
     }
 
-    cameraData.prevViewProj = prevViewProj;
-
     cameraData.view = glm::lookAt(cameraData.cameraPos, cameraData.cameraPos + forward, worldUp);
     cameraData.viewProj = cameraData.proj * cameraData.view;
+    // a cut has no previous view: no camera motion instead of a one-frame jump
+    cameraData.prevViewProj = isCutFrame ? cameraData.viewProj : prevViewProj;
 
     // inverses for screen-to-world reconstruction
     cameraData.invView = glm::inverse(cameraData.view);

@@ -1,5 +1,5 @@
-#include "types.slang"
-#include "core/binding.slang"
+import types;
+import core.binding;
 
 // fullscreen view of one Hi-Z mip: one mesh workgroup emits a screen-covering triangle
 

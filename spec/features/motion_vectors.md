@@ -1,6 +1,6 @@
 # Feature: motion vectors
 
-**Date:** 2026-11-08 · **Status:** computed in the resolve (M1); correctness under motion unverified, two history bugs open (§3) · **Milestone:** M3 ([engine_spec.md](../../docs/engine_spec.md) §16.2), before DLSS-RR and RTXDI temporal reuse
+**Date:** 2026-11-08 · **Status:** computed in the resolve (M1); history bugs fixed, reset flag and reprojection view in (MV1–MV3); the §5 test list still has to be run; MV4–MV5 wait for DLSS (plan H1) · **Milestone:** M3 ([engine_spec.md](../../docs/engine_spec.md) §16.2), before DLSS-RR and RTXDI temporal reuse
 **Implements:** engine spec §9.2 step 3, §9.3 `motion`, §12.2
 **Related:** [visibility_buffer.md](./visibility_buffer.md) §3.6, §10; [pbr_implementation_plan.md](../pbr_implementation_plan.md) E1, H1
 
@@ -28,16 +28,19 @@ Every temporal consumer (DLSS-RR, RTXDI and ReSTIR GI temporal reuse) finds a pi
 
 ## 2. Current implementation
 
-- `resolve.slang` `motionPixels(currentClip, previousClip, targetSize)`: `(prevNdc − curNdc) · 0.5 · targetSize`; zero when either `w ≤ 0` (also covers the first frame, where `prevViewProj` is zero).
+- `resolve.slang` `motionPixels(currentClip, previousClip, targetSize)`: `(prevNdc − curNdc) · 0.5 · targetSize`; zero on a history-reset frame (§4) and when either `w ≤ 0`.
 - `currentClip = viewProj · surface.position`, `previousClip = prevViewProj · surface.prevPosition`; `surface.prevPosition = prevWorldMatrix · objectPos` (`buildSurface`).
 - Empty pixels use `w = 0` directions through `viewProj` and `prevViewProj`.
-- `Camera::updateCameraData` copies last frame's `viewProj` into `prevViewProj`; `jitterOffset` is applied in shaders through `jitterClip`, so `viewProj` stays unjittered.
+- `Camera::updateCameraData` copies last frame's `viewProj` into `prevViewProj`, or this frame's on a cut; `jitterOffset` is applied in shaders through `jitterClip`, so `viewProj` stays unjittered.
 - `ObjectStorage::prevModelMatrices` is per entity and advanced in `ResourceManager::updateUniformBuffers` after `writeNodeInstances` has read it, so it follows the entity through unload compaction.
 - Debug view `MotionVectors` shows `|motion| / 16` as red/green.
+- Debug views `MotionVectors` and `Reprojection` show entity transform controls (`Engine::drawEntityTransformControls`) for the §5 cases.
 
 ---
 
 ## 3. Bugs found
+
+All fixed (MV1). B4 needs no code of its own: every recreation goes through `Renderer::rebuildSwapchainResources` → `Camera::setRenderExtent`, which makes the next frame a cut.
 
 | # | Bug | Effect | Fix |
 |---|---|---|---|
@@ -50,7 +53,7 @@ Every temporal consumer (DLSS-RR, RTXDI and ReSTIR GI temporal reuse) finds a pi
 
 ## 4. History reset
 
-One per-frame bit, `kFrameFlagHistoryReset` in a new `GpuFrameRoot::frameFlags` field (added with the plan's A1 fields), set on the CPU when:
+One per-frame bit, `kFrameFlagHistoryReset` in `GpuFrameRoot::frameFlags` (`FrameFlag::HistoryReset` on the CPU), set in `Renderer::drawFrame` when:
 
 - `Camera::isCut()` (teleport, projection change, resize);
 - the render extent changed (`RenderTargets::recreate`);
@@ -90,9 +93,9 @@ Both guide sets already exist, so this needs no new images. Albedo is jitter-fre
 
 | # | Task | Milestone |
 |---|---|---|
-| MV1 | fix B1–B4 | M3, first |
-| MV2 | `kFrameFlagHistoryReset` in `GpuFrameRoot` (with the A1 fields), set per §4 | M3 |
-| MV3 | `DebugView::Reprojection` (§5) and the test list | M3 |
+| MV1 | fix B1–B4 (**done**) | M3, first |
+| MV2 | `kFrameFlagHistoryReset` in `GpuFrameRoot`, set per §4 (**done**) | M3 |
+| MV3 | `DebugView::Reprojection` (§5) (**done**) and the test list (open) | M3 |
 | MV4 | jitter (plan E1): Halton(2,3), phase count `8 · (display / render)²`; verify §5 stays black | M3 |
 | MV5 | DLSS-RR inputs: `MVLowRes`, `DepthInverted`, `InMVScale = 1`, `InJitterOffset`, `InReset` (plan H1) | M3 |
 
