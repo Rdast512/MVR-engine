@@ -45,10 +45,6 @@ DeviceGeneratedCommands::~DeviceGeneratedCommands()
 
 void DeviceGeneratedCommands::init()
 {
-    if (descriptorManager.descriptorBindingMode != DescriptorBindingMode::DescriptorHeaps) {
-        throw std::runtime_error("DGC requires descriptor heaps for PUSH_DATA tokens");
-    }
-
     const auto& props = device.capabilities.deviceGeneratedCommands;
     if (props.maxIndirectSequenceCount == 0 || props.maxIndirectCommandsTokenCount < 2) {
         throw std::runtime_error("DGC sequence/token limits too small");

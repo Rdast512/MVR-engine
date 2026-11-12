@@ -117,13 +117,21 @@ public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, flo
     if (material.normalTex != kNoneIndex && material.normalSamp != kNoneIndex && surface.tangent.w != 0.0 &&
         orthoLengthSq > kMinOrthoTangentLengthSq)
     {
-        const float3 encodedNormal = sampleSlot(material, kUvSlotNormal, material.normalTex, material.normalSamp,
-                                                material.normalUv, surface, lodBias, one).xyz;
-        float3 tangentNormal = encodedNormal * 2.0 - 1.0;
+        const float2 encodedNormal = sampleSlot(material, kUvSlotNormal, material.normalTex, material.normalSamp,
+                                                material.normalUv, surface, lodBias, one).xy;
+        // z from xy: two-channel (BC5) maps have no blue channel
+        float3 tangentNormal;
+        tangentNormal.xy = encodedNormal * 2.0 - 1.0;
+        tangentNormal.z = sqrt(saturate(1.0 - dot(tangentNormal.xy, tangentNormal.xy)));
         tangentNormal.xy *= material.normalScale;
         float3 t = orthoTangent / sqrt(orthoLengthSq);
         // back faces flipped the normal; the bitangent follows it
         float3 b = cross(surface.normal, t) * surface.tangent.w;
+        // negate t too, so the back-face normal is the exact negation of the front-face one (Khronos sample viewer)
+        if (!surface.isFrontFacing)
+        {
+            t = -t;
+        }
         if ((material.flags & kMaterialFlagUvTransformNormal) != 0)
         {
             transformTangentFrame(material.uvMatrices[kUvSlotNormal], t, b);

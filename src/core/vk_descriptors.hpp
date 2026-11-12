@@ -54,7 +54,6 @@ public:
     VmaAllocator allocator;
     const std::vector<uint32_t>& queueFamilyIndices;
     const HardwareCapabilities& capabilities;
-    DescriptorBindingMode descriptorBindingMode = DescriptorBindingMode::DescriptorHeaps;
 
 
     vk::raii::Buffer resourceHeapBuffer = nullptr;
@@ -74,7 +73,4 @@ public:
     vk::DeviceSize samplerDescriptorOffset = 0;
     vk::DeviceSize nextSamplerDescriptorOffset = 0;
     uint32_t defaultSamplerHeapIndex = 0;
-    vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
-    vk::raii::DescriptorPool descriptorPool = nullptr;
-    std::vector<vk::raii::DescriptorSet> descriptorSets;
 };

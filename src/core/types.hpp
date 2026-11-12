@@ -63,6 +63,7 @@ static_assert(offsetof(GpuMeshletBounds, bboxMax) == 16);
 
 // meshlets per GpuMeshletGroup, per GpuDrawRecord and per meshlet-cull workgroup (vk_lod_clusters' group size)
 inline constexpr uint32_t kMeshletGroupMaxSize = 32;
+static_assert(kMeshletGroupMaxSize <= 32, "meshlet_cull reject mask is one uint per group");
 
 // a run of a primitive's meshlets that are close in space (meshopt_partitionClusters), culled as one box before its
 // meshlets are tested; the unit a cluster LOD level will be built from
@@ -718,13 +719,6 @@ struct AuxBlob
     std::vector<std::pair<std::string, std::string>> extensions;
 };
 
-struct GpuUniformBufferObject
-{
-    alignas(16) glm::mat4 model;
-    alignas(16) glm::mat4 view;
-    alignas(16) glm::mat4 proj;
-};
-
 
 struct alignas(16) GpuCameraData {
     // Primary Matrices
@@ -967,25 +961,7 @@ static_assert(offsetof(GpuFrameRoot, frameIndex) == 168);
 static_assert(offsetof(GpuFrameRoot, exposure) == 172);
 
 
-struct EngineSettings
-{
-    uint8_t xResolution;
-    uint8_t yResolution;
-    uint8_t mipmapLevel;
-    bool hdr;
-    bool fullscreen;
-    bool vsync;
-    bool debug;
-    bool windowed;
-};
-
-enum class DescriptorBindingMode : uint8_t
-{
-    LegacySets = 0,
-    DescriptorHeaps = 1,
-};
-
-// radiance cache tier chosen at device creation; values match shaders/gi/rtxgi.slang kGiCache*
+// radiance cache tier chosen at device creation
 enum class GiCache : uint32_t
 {
     None = 0,
@@ -1038,10 +1014,4 @@ struct HardwareCapabilities
     bool hasPartitionedAccelerationStructure = false;
     // NRC when its extensions and features exist, else SHaRC, else none
     GiCache giCache = GiCache::None;
-};
-
-struct EngineContext
-{
-    EngineSettings settings;
-    HardwareCapabilities hardwareCapabilities;
 };

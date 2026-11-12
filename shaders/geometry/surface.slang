@@ -25,7 +25,7 @@ public TriangleCorners loadTriangleCorners(DrawContext draw, GpuCameraData camer
 {
     const GpuMeshletDesc meshlet = loadMeshlet(draw);
     const uint3 local = loadMeshletTriangle(draw, meshlet, triangle);
-    const float4x4 worldViewProj = mul(camera.viewProj, draw.nodeInstance.worldMatrix);
+    const float4x4 worldViewProj = objectToClip(camera, draw.nodeInstance.worldMatrix);
     TriangleCorners corners;
     [unroll]
     for (uint i = 0; i < 3; ++i)
@@ -77,6 +77,11 @@ float2 loadVertexUv1(DrawContext draw, uint vertexIndex)
         : float2(0.0, 0.0);
 }
 
+// below this normalize can return inf or NaN
+static const float kMinGeoNormalLengthSq = 1e-30;
+// degenerate triangle without vertex normals: any unit vector keeps the guides finite
+static const float3 kFallbackNormal = float3(0.0, 0.0, 1.0);
+
 public Surface buildSurface(DrawContext draw, TriangleCorners corners, Barycentrics bary)
 {
     const float4x4 world = draw.nodeInstance.worldMatrix;
@@ -86,13 +91,6 @@ public Surface buildSurface(DrawContext draw, TriangleCorners corners, Barycentr
     surface.isFrontFacing = corners.isFrontFacing;
     surface.position = mul(world, float4(objectPos, 1.0)).xyz;
     surface.prevPosition = mul(draw.nodeInstance.prevWorldMatrix, float4(objectPos, 1.0)).xyz;
-
-    // front faces wind counter-clockwise in object space; the normal matrix keeps it outward under mirroring
-    const float3x3 toWorldNormal = normalMatrix(world);
-    const float3 objectGeoNormal =
-        cross(corners.objectPos[1] - corners.objectPos[0], corners.objectPos[2] - corners.objectPos[0]);
-    const float facing = corners.isFrontFacing ? 1.0 : -1.0;
-    surface.geoNormal = normalize(mul(toWorldNormal, objectGeoNormal)) * facing;
 
     GpuVertex vertices[3];
     float3 normals[3];
@@ -107,10 +105,19 @@ public Surface buildSurface(DrawContext draw, TriangleCorners corners, Barycentr
         uv1[i] = loadVertexUv1(draw, corners.vertexIndex[i]);
     }
 
+    // front faces wind counter-clockwise in object space; the normal matrix keeps it outward under mirroring
+    const float3x3 toWorldNormal = normalMatrix(world);
+    const float facing = corners.isFrontFacing ? 1.0 : -1.0;
+    const float3 worldGeoNormal = mul(
+        toWorldNormal, cross(corners.objectPos[1] - corners.objectPos[0], corners.objectPos[2] - corners.objectPos[0]));
     const float3 objectNormal = interpolate(bary, normals[0], normals[1], normals[2]);
-    surface.normal = dot(objectNormal, objectNormal) > 0.0
-        ? normalize(mul(toWorldNormal, objectNormal)) * facing
-        : surface.geoNormal;
+    const bool hasGeoNormal = dot(worldGeoNormal, worldGeoNormal) > kMinGeoNormalLengthSq;
+    const bool hasVertexNormal = dot(objectNormal, objectNormal) > 0.0;
+    const float3 vertexNormal =
+        hasVertexNormal ? normalize(mul(toWorldNormal, objectNormal)) * facing : kFallbackNormal;
+    // slivers underflow the cross product: the vertex normal stands in
+    surface.geoNormal = hasGeoNormal ? normalize(worldGeoNormal) * facing : vertexNormal;
+    surface.normal = hasVertexNormal ? vertexNormal : surface.geoNormal;
 
     const float4 objectTangent = interpolate(bary, tangents[0], tangents[1], tangents[2]);
     surface.tangent = float4(0.0, 0.0, 0.0, 0.0);

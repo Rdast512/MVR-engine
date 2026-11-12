@@ -36,6 +36,18 @@ No finding affects the culling results: the two-phase logic, list appends and ov
 | C6 | **Reject mask width is tied to a constant by convention only.** `1u << lane` needs `kMeshletGroupMaxSize ≤ 32` | [meshlet_cull.slang:282](../shaders/passes/meshlet_cull.slang#L282), [:344](../shaders/passes/meshlet_cull.slang#L344) | silent wrap if the group size is ever raised | a static assert next to the constant |
 | C7 | **Heap indices lose `NonUniform`.** Known (spec S6, Q5): Slang drops the decoration, NVIDIA tolerates it | [pbr.slang:64-65](../shaders/material/pbr.slang#L64-L65) | undefined by the spec | already tracked; re-probe on each Slang upgrade |
 
+**Applied 2026-11-12** (debug and release build clean, `ctest` 5/5; the image checks are still open):
+
+| ID | Change | Open check |
+|---|---|---|
+| C1 | `sampleMaterial` negates `t` for back faces, after `b` is built from the flipped normal | two-sided normal-mapped asset viewed from behind |
+| C2 | `objectToClip` is `viewProj · world`; raster and `loadTriangleCorners` both call it | — |
+| C3 | `fresnelSchlick` saturates `1 − cosine` | — |
+| C4 | `buildSurface`: the geometric normal falls back to the vertex normal below a squared length of 1e-30 (to a fixed unit vector when neither exists). `edgeWeights` bounds the weight sum to 1e-6 of the weights' magnitude, so neighbour barycentrics and UV gradients stay finite | — |
+| C5 | normal-map Z is always rebuilt from XY, with no material flag: one path for BC7/PNG today and BC5 later. Mip-averaged (shortened) texels now come out slightly flatter than before | normal-mapped asset at distance, before/after |
+| C6 | `static_assert(kMeshletGroupMaxSize <= 32)` in `cullMeshlets` and in `types.hpp`. Slang 2026.20 accepts `static_assert` only as a statement, not at module scope; a probe confirmed it fires | — |
+| C7 | re-probed: `resolve.spv` from Slang 2026.20 has no `NonUniform` decoration on the heap access chains. Q5 stays open | next Slang upgrade |
+
 ---
 
 ## 3. Performance
@@ -80,8 +92,8 @@ One more behaviour to be aware of, not a cost today: a box that was outside the 
 
 ## 5. Suggested order
 
-1. C1, after confirming it on a two-sided normal-mapped asset. It is the only finding that changes the image today.
-2. C2 and C3: two small edits; C2 also removes a matrix multiply per mesh-shader lane.
+1. ~~C1–C7~~ applied 2026-11-12 (§2); confirm C1 and C5 on assets.
+2. ~~C2 and C3~~ (done).
 3. Record the M0/M1 timings the spec still owes (§16.2), then measure P1–P3 on the instance-field scene and P4–P7 on Sponza.
 4. P4 and P5 together with M2: the two-sided bit and the position stream both touch the load path that M2 changes for CLAS.
-5. C5 with the BC5 path (M8); C4 and C6 whenever those files are next edited.
+5. ~~C5 with the BC5 path (M8); C4 and C6 whenever those files are next edited~~ (done).

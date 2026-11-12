@@ -173,6 +173,8 @@ void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
 [numthreads(kMeshletGroupMaxSize, 1, 1)]
 void cullMeshlets(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    // one reject-mask bit per lane; cullRejectedMeshlets reads the same width
+    static_assert(kMeshletGroupMaxSize <= 32, "reject mask is one uint per group");
     const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
     const GpuCullView view = bdaPtr<GpuCullView>(push.cullView)[0];
     // the dispatch counts dropped records too; group-uniform and before any barrier

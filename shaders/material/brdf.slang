@@ -29,7 +29,8 @@ public BrdfInputs fromMaterial(SampledMaterial material)
 
 public float3 fresnelSchlick(float3 f0, float vDotH)
 {
-    return f0 + (1.0 - f0) * pow(1.0 - vDotH, 5.0);
+    // a dot of unit vectors can round above 1; pow of a negative base is undefined
+    return f0 + (1.0 - f0) * pow(saturate(1.0 - vDotH), 5.0);
 }
 
 public float ggxD(float nDotH, float a2)

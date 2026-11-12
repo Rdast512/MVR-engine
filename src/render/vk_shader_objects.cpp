@@ -1,5 +1,4 @@
 #include "vk_shader_objects.hpp"
-#include "../core/vk_descriptors.hpp"
 #include "../util/debug.hpp"
 
 #include <array>
@@ -29,10 +28,7 @@ namespace
     }
 } // namespace
 
-ShaderObjects::ShaderObjects(DescriptorManager& descriptorManager, const vk::raii::Device& device) :
-    device(device), descriptorManager(descriptorManager)
-{
-}
+ShaderObjects::ShaderObjects(const vk::raii::Device& device) : device(device) {}
 
 void ShaderObjects::init()
 {
@@ -40,11 +36,6 @@ void ShaderObjects::init()
     createCullShaders();
     createHiZShaders();
     createFrameShaders();
-}
-
-bool ShaderObjects::usesDescriptorHeaps() const
-{
-    return descriptorManager.descriptorBindingMode == DescriptorBindingMode::DescriptorHeaps;
 }
 
 void ShaderObjects::createMeshShaders()
@@ -96,16 +87,13 @@ vk::raii::ShaderEXT ShaderObjects::createComputeShader(std::string_view file, co
                                                        std::string_view debugName) const
 {
     const auto spirv = readFile((std::filesystem::path(ENGINE_SHADER_DIR) / "passes" / file).string());
-    const bool useDescriptorHeaps = usesDescriptorHeaps();
     const vk::ShaderCreateInfoEXT createInfo{
-        .flags = useDescriptorHeaps ? vk::ShaderCreateFlagBitsEXT::eDescriptorHeap : vk::ShaderCreateFlagsEXT{},
+        .flags = vk::ShaderCreateFlagBitsEXT::eDescriptorHeap,
         .stage = vk::ShaderStageFlagBits::eCompute,
         .codeType = vk::ShaderCodeTypeEXT::eSpirv,
         .codeSize = spirv.size(),
         .pCode = spirv.data(),
         .pName = entry,
-        .setLayoutCount = useDescriptorHeaps ? 0u : 1u,
-        .pSetLayouts = useDescriptorHeaps ? nullptr : &*descriptorManager.descriptorSetLayout,
     };
     vk::raii::ShaderEXT shader = device.createShaderEXT(createInfo);
     setDebugName(device, shader, std::format("ShaderObject_{}_Compute", debugName));
@@ -124,16 +112,11 @@ ShaderObjects::MeshShaderPair ShaderObjects::createMeshShaderPair(const MeshShad
     const auto meshSpirv = readFile((passDir / source.meshFile).string());
     const auto fragSpirv =
         source.fragmentFile == source.meshFile ? meshSpirv : readFile((passDir / source.fragmentFile).string());
-    const bool useDescriptorHeaps = usesDescriptorHeaps();
 
-    // link stage lets the driver optimize the mesh->fragment interface like a monolithic pipeline
-    vk::ShaderCreateFlagsEXT linkFlags = vk::ShaderCreateFlagBitsEXT::eLinkStage;
-    if (useDescriptorHeaps) {
-        // heap mode runs without set layouts or push constant ranges
-        linkFlags |= vk::ShaderCreateFlagBitsEXT::eDescriptorHeap;
-    }
-    const uint32_t setLayoutCount = useDescriptorHeaps ? 0u : 1u;
-    const vk::DescriptorSetLayout* setLayouts = useDescriptorHeaps ? nullptr : &*descriptorManager.descriptorSetLayout;
+    // link stage lets the driver optimize the mesh->fragment interface like a monolithic pipeline;
+    // heap mode runs without set layouts or push constant ranges
+    constexpr vk::ShaderCreateFlagsEXT linkFlags =
+        vk::ShaderCreateFlagBitsEXT::eLinkStage | vk::ShaderCreateFlagBitsEXT::eDescriptorHeap;
 
     const std::array createInfos = {
         // mesh-only: no task stage, no vertex input
@@ -145,8 +128,6 @@ ShaderObjects::MeshShaderPair ShaderObjects::createMeshShaderPair(const MeshShad
             .codeSize = meshSpirv.size(),
             .pCode = meshSpirv.data(),
             .pName = source.meshEntry,
-            .setLayoutCount = setLayoutCount,
-            .pSetLayouts = setLayouts,
         },
         vk::ShaderCreateInfoEXT{
             .flags = linkFlags,
@@ -155,8 +136,6 @@ ShaderObjects::MeshShaderPair ShaderObjects::createMeshShaderPair(const MeshShad
             .codeSize = fragSpirv.size(),
             .pCode = fragSpirv.data(),
             .pName = source.fragmentEntry,
-            .setLayoutCount = setLayoutCount,
-            .pSetLayouts = setLayouts,
         },
     };
 

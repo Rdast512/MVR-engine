@@ -1,9 +1,7 @@
 set(UTIL_SOURCES
         debug.cpp
         ../static_headers/logger.cpp
-        maths.cpp
         vk_tracy.cpp
-        vk_shaders.cpp
         vk_utils.cpp
 )
 

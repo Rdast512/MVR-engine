@@ -1,6 +1,5 @@
 set(SCENE_SOURCES
         vk_camera.cpp
-        vk_mesh.cpp
         vk_scene.cpp
 )
 

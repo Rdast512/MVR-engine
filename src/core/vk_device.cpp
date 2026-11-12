@@ -805,7 +805,7 @@ void Device::createLogicalDevice()
         enableFeatures(featureChain, kPartitionedAccelerationStructureFeatures);
         enabledExtensions.push_back(vk::NVPartitionedAccelerationStructureExtensionName);
     }
-    // also under NRC, so both caches can run side by side (GI_CACHE_MODE both)
+    // also under NRC, so both caches can run side by side
     if (giCacheSupport.hasSharc) {
         enableFeatures(featureChain, kSharcFeatures);
     }

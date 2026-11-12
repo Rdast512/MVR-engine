@@ -165,14 +165,6 @@ bool intersectFrustumOnly(float4x4 viewProj, float3 bboxMin, float3 bboxMax, flo
     return andBits == 0u;
 }
 
-// rect larger than threshold pixels in at least one axis. vk_lod_clusters culls below 1 px inside its occlusion
-// test; the engine uses the exact isSubPixel instead
-bool intersectSize(ClipBounds bounds, float threshold, float2 viewport)
-{
-    const float2 rect = (bounds.clipMax.xy - bounds.clipMin.xy) * 0.5 * viewport;
-    return any(rect > float2(threshold));
-}
-
 // screen rect in [0, 1], y down like the framebuffer
 public float4 clipUvRect(ClipBounds bounds)
 {

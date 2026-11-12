@@ -83,11 +83,11 @@ The spec's §5 frame, stage by stage, with the shader that runs it.
 | 8 | Classify: vis buffer → material tiles, bin-id image | `classify` | graphics | [new] | M7 |
 | 9 | Resolve + shade → shading surface + DLSS guides | `resolve` (one tiled dispatch until M7, then one shader per bin through a DGC execution set) | graphics | [new] | M1, M7 |
 | 10 | ReSTIR DI: initial → spatiotemporal → visibility | `rtxdi_presample` (M7), `rtxdi_initial`, `rtxdi_resample`, `rtxdi_shade` | graphics | [new] | M3 |
-| 11 | GI cache + indirect | SHaRC: `pathtrace_update` → `sharc_resolve` → `pathtrace_query`; NRC: same path sources with `NRC_*` defines → `QueryAndTrain` (host) → `nrc_resolve` | graphics | [stub] | M4 (SHaRC), M5 (NRC) |
+| 11 | GI cache + indirect | SHaRC: `pathtrace_update` → `sharc_resolve` → `pathtrace_query`; NRC: same path sources with `NRC_*` defines → `QueryAndTrain` (host) → `nrc_resolve` | graphics | [new] | M4 (SHaRC), M5 (NRC) |
 | 12 | ReSTIR GI: temporal + spatial | `restir_gi` | graphics | [new] | M4 |
 | 13 | Combine: direct + indirect + emissive | `combine` | graphics | [new] | M4 |
 | 14 | DLSS-RR | host NGX | graphics | — | M3 |
-| 15 | Post: auto exposure → tonemap → swapchain, ImGui | `exposure`, `composite` | graphics | [new], [stub] | M3 |
+| 15 | Post: auto exposure → tonemap → swapchain, ImGui | `exposure`, `composite` | graphics | [new] | M3 |
 
 Debug passes: `mesh_debug` [exists] → [delete] in M1 (its geometry and culling views move into `debug_view`, read from the vis buffer), `hiz_view` [exists], `rt_debug` [new, M2] (ray-query cluster colors, primary self-hit distance after L2), `debug_view` [new, M1] (every §4 target, reservoirs, cache debug resolve, DLSS input vs output).
 
@@ -100,7 +100,6 @@ Library files become Slang modules in M0 (PBR A2). Vendor headers are textual in
 | Path | Status | Purpose |
 |---|---|---|
 | `types.slang` | [exists] | POD mirrors of `src/core/types.hpp` and `push_data.hpp`. To do: `GpuTargets`, `GpuRayInstance`, frame root fields (M0, M2). Morph types removed (2026-11-08) |
-| `base.slang`, `base/mesh.slang` | [exists] → [delete] | include bundles from before the pass split; not compiled by any pass; removed with modules (M0) |
 | **core/** | | |
 | `core/binding.slang` | [exists] | `tex2D`, `storageTex2D`, `samplerOf`, `bdaPtr`. To do: `sampleOr` (S6) |
 | `core/frame.slang` | [exists] | `loadDrawContext`, `loadCamera`, `loadMaterial`, `loadMaterialExtension`, `loadWorldLight` |
@@ -122,13 +121,10 @@ Library files become Slang modules in M0 (PBR A2). Vendor headers are textual in
 | `gi/radiance_cache.slang` | [new] | `IRadianceCache { update, query }`; the cache is a generic parameter, chosen per tier (spec §11.4) |
 | `gi/sharc.slang` | [exists], partial | SHaRC through BDA (`RW_STRUCTURED_BUFFER` → pointer), `SHARC_UPDATE` / `SHARC_QUERY` per compile unit; implements `IRadianceCache` (M4) |
 | `gi/nrc_bridge.slang` | [new] | NRC buffers + `NrcConstants`, matching the SDK's HLSL packing; implements `IRadianceCache` (M5) |
-| `gi/rtxgi.slang` | [stub] | cache-mode constants; replaced by the generic choice in `radiance_cache`, then [delete] (M4) |
 | **raytracing/** | | |
-| `raytracing/payload.slang` | [stub] | minimal hit record `{instance, cluster, triangle, barycentrics, hitT}` |
-| `raytracing/hit.slang` | [stub] | the one minimal closest-hit (`ClusterID`, needs `allowClusterAccelerationStructure`) and miss; skipped if Slang exposes cluster id on `HitObject` (Q8) |
-| `raytracing/trace.slang` | [stub] | `HitObject::TraceRay` + `ReorderThread` with the material-bin hint; ray-query `traceVisibility` for visibility rays; `FORCE_OPACITY_MICROMAP_2_STATE` / `FORCE_OPAQUE` flags from the instance |
-| **postprocessing/** | | |
-| `postprocessing/dlss.slang` | [stub] → [delete] | jitter and exposure move to `GpuFrameRoot` (M0); NGX is host-only |
+| `raytracing/payload.slang` | [new] | minimal hit record `{instance, cluster, triangle, barycentrics, hitT}` |
+| `raytracing/hit.slang` | [new] | the one minimal closest-hit (`ClusterID`, needs `allowClusterAccelerationStructure`) and miss; skipped if Slang exposes cluster id on `HitObject` (Q8) |
+| `raytracing/trace.slang` | [new] | `HitObject::TraceRay` + `ReorderThread` with the material-bin hint; ray-query `traceVisibility` for visibility rays; `FORCE_OPACITY_MICROMAP_2_STATE` / `FORCE_OPAQUE` flags from the instance |
 | **passes/** | | see §5 |
 
 ---
@@ -181,17 +177,17 @@ Buffers (BDA, [resource_architecture.md](./resource_architecture.md) §12):
 | `rt_debug` | [new] | compute + ray query | TLAS, `decodeHit` | debug image | M2 |
 | `rtxdi_presample` | [new] | compute | light list | PDF texture, RIS buffers | M7 (`Power_RIS`) |
 | `rtxdi_initial`, `rtxdi_resample`, `rtxdi_shade` | [new] | compute + ray query | guides (both sets), motion, lights, TLAS | reservoirs, `directRadiance` | M3 |
-| `pathtrace_update` | [stub] | RT pipeline + SER | guides, TLAS, slices, materials, lights, cache | cache training (SHaRC `SHARC_UPDATE`, NRC `NRC_UPDATE`) | M4, M5 |
-| `pathtrace_query` | [stub] | RT pipeline + SER | same | ReSTIR GI initial samples, cache query records | M4, M5 |
-| `pathtrace` | [stub] | — | — | — | shared path code; becomes a module imported by the two above |
-| `sharc_resolve` | [stub] | compute | SHaRC buffers | resolved cache | M4 |
+| `pathtrace_update` | [new] | RT pipeline + SER | guides, TLAS, slices, materials, lights, cache | cache training (SHaRC `SHARC_UPDATE`, NRC `NRC_UPDATE`) | M4, M5 |
+| `pathtrace_query` | [new] | RT pipeline + SER | same | ReSTIR GI initial samples, cache query records | M4, M5 |
+| `pathtrace` | [new] | — | — | — | shared path code; becomes a module imported by the two above |
+| `sharc_resolve` | [new] | compute | SHaRC buffers | resolved cache | M4 |
 | NRC `QueryAndTrain` | host SDK | — | NRC buffers | inference + one training step | M5 |
 | `nrc_resolve` | [new] | compute | NRC query results | `throughput × cached radiance` into the ReSTIR GI samples | M5 |
 | `restir_gi` | [new] | compute + ray query | GI samples, guides, motion | `indirectRadiance`, optional `specHitDistance` | M4 |
 | `combine` | [new] | compute | `directRadiance`, `indirectRadiance`, `emissive` | `noisyColor` | M4 |
 | DLSS-RR | host NGX | — | `noisyColor` + guides | output color | M3 |
 | `exposure` | [new] | compute | output color | luminance histogram, exposure | M3 |
-| `composite` | [stub] | compute | output color, exposure | swapchain (tonemap once) | M3 |
+| `composite` | [new] | compute | output color, exposure | swapchain (tonemap once) | M3 |
 | `debug_view` | [new] | compute | vis buffer, any §4 target | `displayColor` | M1 onward |
 
 There is one path loop (`pathtrace`). Direct light at secondary hits calls RTXDI sampling without reuse plus one visibility ray; there is no second light loop. Path code is shared between SHaRC and NRC through `IRadianceCache`.
@@ -204,7 +200,7 @@ The spec's §16. Each step renders something testable and is measured against sp
 
 | # | Shader work | Visible result |
 |---|---|---|
-| M0 | PBR A1, A2 (modules), A4; `GpuTargets`; ~~remove morph code~~ (done); delete `base*`, `dlss`; capacity checks in `meshlet_cull` | same image; structs asserted |
+| M0 | PBR A1, A2 (modules), A4; `GpuTargets`; ~~remove morph code~~ (done); ~~delete `base*`, `dlss`~~ (done, AU7); capacity checks in `meshlet_cull` | same image; structs asserted |
 | M1 | per [visibility_buffer.md](./features/visibility_buffer.md): reverse Z + `nvhiz`; `visbuffer`, `surface`, vis-buffer `mesh_fragment`, opaque bin with winding flip; `resolve` as one tiled dispatch with `sampleMaterial` (B1); `gbuffer` layout; `debug_view`, `present`; `mesh_debug` removed | guide debug views; same geometry and cull counts as today |
 | M2 | `geometry/hit`, `rt_instances`, `rt_debug` | debug colors by cluster; unload keeps other models traceable |
 | M3 | `sampleMaterial`, BRDF, `evalLight` (PBR B); RTXDI passes; `exposure`, `composite`; culling jitter rule | stable direct light |
@@ -248,6 +244,7 @@ Closed by the spec (2026-10-31 to 2026-11-07): visibility buffer over raster G-b
 
 | Date | Change |
 |---|---|
+| 2026-11-12 | Stub files deleted (engine spec AU7, [dead_code_removal.md](./features/dead_code_removal.md)): `base*`, `raytracing/*`, `postprocessing/dlss`, `gi/rtxgi`, `pathtrace*`, `sharc_resolve`, `composite`; their rows are [new] at their milestone |
 | 2026-11-08 | `postprocessing/gbuffer.slang` deleted: the guide layout is `GuideImage` in `types.slang` (PBR task A3) |
 | 2026-11-08 | Library files converted to Slang modules (PBR task A2); `gi/sharc.slang` stays textual until its bridge |
 | 2026-11-07 | Visibility buffer plan applied: 32-bit payload, `geometry/surface`, `present`; `mesh_debug` removed in M1; open decision 4 answered |

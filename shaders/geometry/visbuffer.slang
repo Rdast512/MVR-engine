@@ -30,13 +30,22 @@ public struct Barycentrics
     public float3 ddy; // per pixel step in y
 };
 
+static const float kMinRelativeWeightSum = 1e-6;
+// keeps 0 / 0 finite for a degenerate triangle
+static const float kMinWeightSum = 1e-30;
+
 // homogeneous edge functions (Olano-Greer): the rows of inverse([a.xyw b.xyw c.xyw]) up to scale. No divide by w,
 // so they hold for triangles crossing the eye plane; evaluated at NDC p they give unnormalized barycentrics
 float3 edgeWeights(float3 e0, float3 e1, float3 e2, float2 p)
 {
     const float3 q = float3(p, 1.0);
     const float3 weights = float3(dot(e0, q), dot(e1, q), dot(e2, q));
-    return weights / (weights.x + weights.y + weights.z);
+    // the sum is zero where p lies on the plane's horizon line: bound the ratio, keep the sign. Huge but finite
+    // gradients make SampleGrad pick the coarsest mip, the right answer at grazing angles
+    const float sum = weights.x + weights.y + weights.z;
+    const float weightScale = abs(weights.x) + abs(weights.y) + abs(weights.z);
+    const float minSum = max(kMinRelativeWeightSum * weightScale, kMinWeightSum);
+    return weights / (sum < 0.0 ? min(sum, -minSum) : max(sum, minSum));
 }
 
 // clip corners as the rasterizer saw them (jittered); ndc of the pixel center; one pixel in NDC per axis

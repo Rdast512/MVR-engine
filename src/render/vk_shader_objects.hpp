@@ -6,13 +6,11 @@
 #include <array>
 #include <string_view>
 
-class DescriptorManager;
-
 // linked mesh + fragment VK_EXT_shader_object pairs plus the unlinked compute shaders; all raster state is dynamic
 class ShaderObjects
 {
 public:
-    ShaderObjects(DescriptorManager& descriptorManager, const vk::raii::Device& device);
+    explicit ShaderObjects(const vk::raii::Device& device);
     ~ShaderObjects() = default;
 
     void init();
@@ -31,7 +29,6 @@ public:
     static void bindComputeShader(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader);
 
     const vk::raii::Device& device;
-    DescriptorManager& descriptorManager;
     struct MeshShaderPair
     {
         vk::raii::ShaderEXT mesh = nullptr;
@@ -92,5 +89,4 @@ private:
     // file under ENGINE_SHADER_DIR/passes
     [[nodiscard]] vk::raii::ShaderEXT createComputeShader(std::string_view file, const char* entry,
                                                           std::string_view debugName) const;
-    [[nodiscard]] bool usesDescriptorHeaps() const;
 };

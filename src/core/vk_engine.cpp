@@ -80,7 +80,7 @@ void Engine::initialize()
                            tracySetupCommandBuffers.front(), "Graphics Queue");
     }
 
-    shaderObjects = std::make_unique<ShaderObjects>(*descriptorManager, device->vkdevice);
+    shaderObjects = std::make_unique<ShaderObjects>(device->vkdevice);
     shaderObjects->init();
 
     renderer = std::make_unique<Renderer>(*device, *swapChain, *allocator, *frameSync, *scene, *assetBuffers,

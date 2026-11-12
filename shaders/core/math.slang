@@ -20,9 +20,10 @@ public void buildOrthonormalBasis(float3 n, out float3 t, out float3 b)
     b = float3(c, s + n.y * n.y * a, -n.y);
 }
 
+// the one object-to-clip product: raster and the resolve must see bit-identical corners
 public float4x4 objectToClip(GpuCameraData camera, float4x4 worldMatrix)
 {
-    return mul(camera.proj, mul(camera.view, worldMatrix));
+    return mul(camera.viewProj, worldMatrix);
 }
 
 // raster jitter as a clip-space offset (engine spec §12.2): raster and the resolve's barycentrics use it, culling
