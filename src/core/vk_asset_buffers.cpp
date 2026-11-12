@@ -520,6 +520,9 @@ std::vector<GpuPrimitive> AssetBuffers::packScratchPrimitives() const
         const PrimitiveDraw& draw = geometryStore.primitiveDraws[p];
         const bool isDefaultMaterial =
             draw.materialId == kNoneIndex || draw.materialId == materialStore.defaultMaterialId();
+        const uint32_t materialRow = isDefaultMaterial ? materialStore.defaultMaterialId() : draw.materialId;
+        const bool isDoubleSided =
+            (materialStore.infos[materialRow].material.flags & GpuMaterialFlag::DoubleSided) != 0;
         packed.push_back(GpuPrimitive{
             .firstMeshlet = draw.meshlets.firstMeshlet,
             .meshletCount = draw.meshlets.meshletCount,
@@ -532,6 +535,7 @@ std::vector<GpuPrimitive> AssetBuffers::packScratchPrimitives() const
             // catalog rows past the watermark are this model's, so subtracting it makes them model-relative
             .firstGroup = draw.firstGroup - geometryStore.flushedGroupCount,
             .groupCount = draw.groupCount,
+            .flags = isDoubleSided ? GpuPrimitiveFlag::DoubleSided : 0u,
         });
     }
     return packed;

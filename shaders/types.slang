@@ -254,7 +254,11 @@ public struct GpuPrimitive
     public uint indexCount;
     public uint firstGroup;       // rows of model.meshletGroups
     public uint groupCount;
+    public uint flags;            // kPrimitiveFlag*
 };
+
+// must match src/core/types.hpp GpuPrimitiveFlag
+public static const uint kPrimitiveFlagDoubleSided = 1u << 0;
 
 public struct GpuVertex
 {

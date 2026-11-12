@@ -1,6 +1,7 @@
 #pragma once
 #include "../Constants.h"
 #include "assets_loader.hpp"
+#include "engine_bench.hpp"
 #include "texture_manager.hpp"
 #include "../render/vk_renderer.hpp"
 #include "../render/vk_shader_objects.hpp"
@@ -53,6 +54,8 @@ class Engine
     // after renderer: reads it through UiContext, destroyed before it
     std::unique_ptr<EngineUi> ui;
 #endif
+    // set from the environment: fixed camera, no input, uncapped present, quits after logging GPU timings
+    std::optional<EngineBench> bench;
     bool initialized = false;
     std::chrono::high_resolution_clock::time_point lastTime;
     std::chrono::high_resolution_clock::time_point fpsTime;

@@ -112,7 +112,7 @@ Usage for all: `TransferSrc | TransferDst | StorageBuffer | ShaderDeviceAddress`
 | `Materials` | `GpuMaterial` (240 B) | factors (emissive strength folded in), flags, 5 texture + 5 sampler heap indices, 5 UV sets, 5 UV matrices | fragment via `loadMaterial`; `DoubleSided` flag read by `loadDrawContext` |
 | `PbrExt` | `GpuMaterialExtension` (724 B) | glTF extension rows, parallel to `Materials` | `loadMaterialExtension`, no consumer yet |
 | `Lights` | `GpuLight` (64 B) | model-space punctual lights + owning `instanceIndex` | `loadWorldLight`, no consumer yet |
-| `Primitives` | `GpuPrimitive` (36 B) | one row per **mesh** primitive: meshlet/vertex/index/group ranges, `materialId`, model-relative | mesh + fragment via `loadDrawContext`; cull |
+| `Primitives` | `GpuPrimitive` (40 B) | one row per **mesh** primitive: meshlet/vertex/index/group ranges, `materialId`, `flags` (material double-sided bit, copied at pack), model-relative | mesh + fragment via `loadDrawContext`; cull |
 | `Nodes` | `GpuNode` (112 B) | mesh placements: affine `localToModel` rows, model-space sphere, mesh-space box, primitive range, `NodeFlag` | instance cull (box) |
 
 `DeviceBuffer` = `{buffer, memory, address, usedBytes, capacityBytes}`. `uploadedCount(id) = usedBytes / stride`.
@@ -313,7 +313,7 @@ Rules:
 | `GpuModel` | 112 | `meshletBounds` @ 16, `primitives` @ 96, `attributeMask` @ 104 |
 | `GpuNode` | 112 | affine rows; `firstPrimitive` @ 64, `bboxMin` @ 80 |
 | `GpuNodeInstance` | 144 | `entityIndex` @ 128 |
-| `GpuPrimitive` | 36 | `firstGroup` @ 28 |
+| `GpuPrimitive` | 40 | `firstGroup` @ 28, `flags` @ 36 |
 | `GpuMeshletDesc` | 32 | `coneAxis` @ 12, `boundingSphere` @ 16 |
 | `GpuMeshletBounds` | 32 | `bboxMax` @ 16 |
 | `GpuMeshletGroup` | 32 | `bboxMax` @ 16 |

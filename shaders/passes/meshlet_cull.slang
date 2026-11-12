@@ -58,27 +58,15 @@ uint waveAppend(inout uint counter, bool predicate)
 groupshared uint instanceRecordBase;
 groupshared uint groupRejectMask;
 
-// early: one workgroup per instance item; occluded ones become late candidates.
-// late: one per candidate (dispatched indirectly), re-tested against the fresh pyramid.
-// a visible instance appends its draw record templates, all lanes copying
-[shader("compute")]
-[numthreads(kCullGroupSize, 1, 1)]
-void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
+// one lane's work: the instance tests, the candidate append and the record-base append. Returns the base of the
+// instance's draw records in the phase region, or kNoneIndex when the instance is not drawn this phase
+uint cullInstance(GpuFrameRoot root, GpuCullView view, uint itemIndex, GpuInstanceCullItem item)
 {
-    const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
-    const GpuCullView view = bdaPtr<GpuCullView>(push.cullView)[0];
     GpuCullCounters* counters = bdaPtr<GpuCullCounters>(view.counters);
     const bool isLate = (view.flags & kCullLatePhase) != 0;
     const bool isStats = (view.flags & kCullStats) != 0;
-    // the late dispatch counts dropped candidates too
-    if (isLate && groupId.x >= view.instanceCandidateCapacity)
-    {
-        return;
-    }
-    const uint itemIndex = isLate ? bdaPtr<uint>(view.instanceCandidates)[groupId.x] : groupId.x;
-    const GpuInstanceCullItem item = bdaPtr<GpuInstanceCullItem>(view.instanceItems)[itemIndex];
 
-    // group-uniform: every lane tests the same box, the node's mesh box under the instance matrix
+    // the node's mesh box under the instance matrix
     GpuNodeInstance* instance = bdaPtr<GpuNodeInstance>(root.nodeInstances) + item.nodeInstanceIndex;
     GpuModel* model = bdaPtr<GpuModel>(root.models) + instance.modelIndex;
     GpuNode* node = bdaPtr<GpuNode>(model.nodes) + instance.nodeIndex;
@@ -92,20 +80,20 @@ void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
             intersectFrustum(view.cullViewProj, bboxMin, bboxMax, instance.worldMatrix, bounds);
         if ((view.flags & kCullInstanceFrustum) != 0 && !isInFrustum)
         {
-            if (lane == 0 && isStats)
+            if (isStats)
             {
                 InterlockedAdd(counters.instancesCulled, 1);
             }
-            return;
+            return kNoneIndex;
         }
         // final, so a sub-pixel instance never becomes a candidate
         if ((view.flags & kCullSubPixel) != 0 && isSubPixel(bounds, view.targetSize, view.subpixelSnap))
         {
-            if (lane == 0 && isStats)
+            if (isStats)
             {
                 InterlockedAdd(counters.instancesSubPixel, 1);
             }
-            return;
+            return kNoneIndex;
         }
     }
     if ((view.flags & kCullOcclusion) != 0)
@@ -113,47 +101,71 @@ void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
         // early: where the instance was when the previous pyramid was drawn
         if (isBoxOccluded(view, isLate ? instance.worldMatrix : instance.prevWorldMatrix, bboxMin, bboxMax))
         {
-            if (lane == 0)
+            if (!isLate)
             {
-                if (!isLate)
+                uint slot;
+                InterlockedAdd(bdaPtr<GpuCullCounters>(view.lateCounters).instanceDispatch[0], 1, slot);
+                if (slot < view.instanceCandidateCapacity)
                 {
-                    uint slot;
-                    InterlockedAdd(bdaPtr<GpuCullCounters>(view.lateCounters).instanceDispatch[0], 1, slot);
-                    if (slot < view.instanceCandidateCapacity)
-                    {
-                        bdaPtr<uint>(view.instanceCandidates)[slot] = itemIndex;
-                    }
-                    else
-                    {
-                        InterlockedAdd(counters.candidatesOverflowed, 1);
-                    }
+                    bdaPtr<uint>(view.instanceCandidates)[slot] = itemIndex;
                 }
-                if (isStats)
+                else
                 {
-                    InterlockedAdd(counters.instancesOccluded, 1);
+                    InterlockedAdd(counters.candidatesOverflowed, 1);
                 }
             }
-            return;
+            if (isStats)
+            {
+                InterlockedAdd(counters.instancesOccluded, 1);
+            }
+            return kNoneIndex;
         }
     }
 
     // the dispatch x of the meshlet cull doubles as the append counter
+    uint recordBase;
+    InterlockedAdd(counters.meshletDispatch[0], item.drawRecordCount, recordBase);
+    const uint end = recordBase + item.drawRecordCount;
+    if (end > view.drawRecordCapacity)
+    {
+        InterlockedAdd(counters.drawRecordsOverflowed, end - max(recordBase, view.drawRecordCapacity));
+    }
+    if (isStats)
+    {
+        InterlockedAdd(counters.instancesDrawn, 1);
+    }
+    return recordBase;
+}
+
+// early: one workgroup per instance item; occluded ones become late candidates.
+// late: one per candidate (dispatched indirectly), re-tested against the fresh pyramid.
+// lane 0 tests (the verdict is group-uniform); a visible instance's draw record templates are copied by all lanes
+[shader("compute")]
+[numthreads(kCullGroupSize, 1, 1)]
+void cullInstances(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
+    const GpuCullView view = bdaPtr<GpuCullView>(push.cullView)[0];
+    const bool isLate = (view.flags & kCullLatePhase) != 0;
+    // the late dispatch counts dropped candidates too
+    if (isLate && groupId.x >= view.instanceCandidateCapacity)
+    {
+        return;
+    }
+    const uint itemIndex = isLate ? bdaPtr<uint>(view.instanceCandidates)[groupId.x] : groupId.x;
+    const GpuInstanceCullItem item = bdaPtr<GpuInstanceCullItem>(view.instanceItems)[itemIndex];
+
     if (lane == 0)
     {
-        InterlockedAdd(counters.meshletDispatch[0], item.drawRecordCount, instanceRecordBase);
-        const uint end = instanceRecordBase + item.drawRecordCount;
-        if (end > view.drawRecordCapacity)
-        {
-            InterlockedAdd(counters.drawRecordsOverflowed, end - max(instanceRecordBase, view.drawRecordCapacity));
-        }
-        if (isStats)
-        {
-            InterlockedAdd(counters.instancesDrawn, 1);
-        }
+        instanceRecordBase = cullInstance(root, view, itemIndex, item);
     }
     GroupMemoryBarrierWithGroupSync();
+    if (instanceRecordBase == kNoneIndex)
+    {
+        return;
+    }
 
-    // records past the region's capacity are dropped (counted above)
+    // records past the region's capacity are dropped (counted in cullInstance)
     const uint fitting = instanceRecordBase >= view.drawRecordCapacity
         ? 0
         : min(item.drawRecordCount, view.drawRecordCapacity - instanceRecordBase);

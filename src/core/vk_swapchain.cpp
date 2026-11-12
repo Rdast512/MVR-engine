@@ -4,6 +4,8 @@
 #include "../static_headers/logger.hpp"
 #include "../util/vk_tracy.hpp"
 
+#include <algorithm>
+
 namespace
 {
 // triple buffering unless the surface demands more
@@ -38,7 +40,10 @@ vk::SurfaceFormatKHR SwapChain::chooseSwapSurfaceFormat(
 }
 
 vk::PresentModeKHR SwapChain::chooseSwapPresentMode(
-    const std::vector<vk::PresentModeKHR> &availablePresentModes) {
+    const std::vector<vk::PresentModeKHR> &availablePresentModes) const {
+    if (isUncapped && std::ranges::contains(availablePresentModes, vk::PresentModeKHR::eImmediate)) {
+        return vk::PresentModeKHR::eImmediate;
+    }
     for (const auto &availablePresentMode : availablePresentModes) {
         if (availablePresentMode == vk::PresentModeKHR::eFifoLatestReady) {
             return availablePresentMode;

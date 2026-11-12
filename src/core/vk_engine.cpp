@@ -43,7 +43,12 @@ void Engine::initialize()
                                                             device->queueFamilyIndices, device->capabilities);
     descriptorManager->init();
 
+    if (const std::optional<EngineBench::Config> benchConfig = EngineBench::readConfig()) {
+        bench.emplace(*benchConfig);
+    }
+
     swapChain = std::make_unique<SwapChain>(window, *device);
+    swapChain->isUncapped = bench.has_value();
     swapChain->init();
 
     camera = std::make_unique<Camera>(*swapChain);
@@ -101,6 +106,16 @@ void Engine::initialize()
     });
 #endif
 
+    if (bench && bench->getConfig().fieldSide > 0) {
+        constexpr float kBenchFieldSpacing = 1.5f;
+        const SceneActionStatus status = spawnInstanceField(initialAssetPos, bench->getConfig().fieldSide,
+                                                            kBenchFieldSpacing);
+        if (status.isError) {
+            throw std::runtime_error(status.text);
+        }
+        logInfo(status.text, "Bench");
+    }
+
     initialized = true;
 }
 
@@ -120,6 +135,8 @@ void Engine::run()
     constexpr double kUnfocusedTargetMs = 1000.0 / 30.0;
     constexpr float kCameraSpeed = 5.0f;
     auto& deviceRef = device->vkdevice;
+    // the bench view stays where initialize put it
+    const bool isCameraInputEnabled = !bench;
 
     // game focus captures the mouse and hides the cursor; UI focus (I key) frees both
     const auto setGameFocus = [this](bool gameFocused)
@@ -179,9 +196,9 @@ void Engine::run()
                 else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !isUiOpen && e.button.button == SDL_BUTTON_LEFT) {
                     // SDL may drop relative mode on focus loss until a click
                     setGameFocus(true);
-                } else if (e.type == SDL_EVENT_MOUSE_MOTION && !isUiOpen) {
+                } else if (e.type == SDL_EVENT_MOUSE_MOTION && !isUiOpen && isCameraInputEnabled) {
                     camera->rotate(-e.motion.xrel, e.motion.yrel);
-                } else if (e.type == SDL_EVENT_MOUSE_WHEEL && !isUiOpen) {
+                } else if (e.type == SDL_EVENT_MOUSE_WHEEL && !isUiOpen && isCameraInputEnabled) {
                     camera->addFov(-e.wheel.y * 2.0f); // scroll up = zoom in (narrower FOV)
                 } else if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
                     windowFocused = true;
@@ -207,7 +224,7 @@ void Engine::run()
 
         if (!minimized && !quit) {
             // WASD moves, LShift up, LCtrl down
-            if (!isUiOpen) {
+            if (!isUiOpen && isCameraInputEnabled) {
                 ZoneScopedN("CameraInput");
                 const float dt = std::chrono::duration<float>(currentTime - lastTime).count();
                 const float step = kCameraSpeed * dt;
@@ -245,7 +262,7 @@ void Engine::run()
         }
 
         // unfocused windows often lose vsync pacing and burn CPU/GPU
-        if (!windowFocused && !minimized && !quit) {
+        if (!windowFocused && !minimized && !quit && !bench) {
             ZoneScopedN("UnfocusedFramePacing");
             const auto frameEndTime = std::chrono::high_resolution_clock::now();
             const double elapsedMs = std::chrono::duration<double, std::milli>(frameEndTime - currentTime).count();
@@ -256,6 +273,9 @@ void Engine::run()
 
         lastTime = currentTime;
         FrameMark;
+        if (bench && !minimized && bench->onFrame(renderer->getGpuTimer(), renderer->getCulling().getStats())) {
+            quit = true;
+        }
     }
     deviceRef.waitIdle();
 }

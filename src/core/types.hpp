@@ -249,9 +249,18 @@ struct GpuPrimitive
     // rows of the model's GpuMeshletGroup slice
     uint32_t firstGroup = 0;
     uint32_t groupCount = 0;
+    // GpuPrimitiveFlag bits
+    uint32_t flags = 0;
 };
-static_assert(sizeof(GpuPrimitive) == 36);
+static_assert(sizeof(GpuPrimitive) == 40);
 static_assert(offsetof(GpuPrimitive, firstGroup) == 28);
+static_assert(offsetof(GpuPrimitive, flags) == 36);
+
+// material bits copied at load, so raster and the draw context skip the material row (materials are immutable)
+namespace GpuPrimitiveFlag
+{
+    inline constexpr uint32_t DoubleSided = 1u << 0;
+} // namespace GpuPrimitiveFlag
 
 // GPU mirror of NodeDraw, model-relative; read by culling and ray tracing, the raster path uses GpuNodeInstance
 struct GpuNode

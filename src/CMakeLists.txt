@@ -69,7 +69,8 @@ add_subdirectory(render)
 add_subdirectory(scene)
 
 # ui/engine_ui.cpp is empty when Constants.h sets ENGINE_ENABLE_IMGUI to 0
-add_library(engine_runtime SHARED core/vk_engine.cpp core/vk_engine.hpp ui/engine_ui.cpp ui/engine_ui.hpp)
+add_library(engine_runtime SHARED core/vk_engine.cpp core/vk_engine.hpp core/engine_bench.cpp core/engine_bench.hpp
+    ui/engine_ui.cpp ui/engine_ui.hpp)
 target_compile_definitions(engine_runtime PRIVATE ENGINE_LOG_DLL=\"runtime\")
 target_link_libraries(engine_runtime
     PUBLIC

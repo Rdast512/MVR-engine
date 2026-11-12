@@ -7,7 +7,8 @@
 class SwapChain
 {
     static vk::SurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR> &availableFormats);
-    static vk::PresentModeKHR chooseSwapPresentMode(const std::vector<vk::PresentModeKHR> &availablePresentModes);
+    [[nodiscard]] vk::PresentModeKHR chooseSwapPresentMode(
+        const std::vector<vk::PresentModeKHR> &availablePresentModes) const;
     vk::Extent2D chooseSwapExtent(const vk::SurfaceCapabilitiesKHR &capabilities) const;
     void createSwapChain();
     void createImageViews();
@@ -19,6 +20,8 @@ public:
 
     SDL_Window *window = nullptr;
     const Device &device;
+    // set before init: IMMEDIATE when available, so GPU clocks are not idled by vsync (bench runs)
+    bool isUncapped = false;
 
     const vk::raii::PhysicalDevice &physicalDevice;
     const vk::raii::SurfaceKHR &surface;

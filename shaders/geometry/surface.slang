@@ -16,6 +16,9 @@ public struct TriangleCorners
 {
     public uint3 vertexIndex; // model-relative, in meshlet order (not winding-adjusted)
     public float3 objectPos[3];
+    // kept from the position load, so buildSurface does not fetch the vertices again
+    public float3 color[3];
+    public float2 texCoord[3];
     public float4 clip[3];      // jittered
     // front face of the winding the rasterizer received (FlipWinding applied)
     public bool isFrontFacing;
@@ -32,7 +35,10 @@ public TriangleCorners loadTriangleCorners(DrawContext draw, GpuCameraData camer
     {
         const uint vertexIndex = loadMeshletVertexIndex(draw, meshlet, local[i]);
         corners.vertexIndex[i] = vertexIndex;
-        corners.objectPos[i] = loadVertex(draw, vertexIndex).pos;
+        const GpuVertex vertex = loadVertex(draw, vertexIndex);
+        corners.objectPos[i] = vertex.pos;
+        corners.color[i] = vertex.color;
+        corners.texCoord[i] = vertex.texCoord;
         corners.clip[i] = jitterClip(camera, mul(worldViewProj, float4(corners.objectPos[i], 1.0)));
     }
     const bool isFlipped = (draw.nodeInstance.flags & kNodeFlagFlipWinding) != 0;
@@ -92,14 +98,12 @@ public Surface buildSurface(DrawContext draw, TriangleCorners corners, Barycentr
     surface.position = mul(world, float4(objectPos, 1.0)).xyz;
     surface.prevPosition = mul(draw.nodeInstance.prevWorldMatrix, float4(objectPos, 1.0)).xyz;
 
-    GpuVertex vertices[3];
     float3 normals[3];
     float4 tangents[3];
     float2 uv1[3];
     [unroll]
     for (uint i = 0; i < 3; ++i)
     {
-        vertices[i] = loadVertex(draw, corners.vertexIndex[i]);
         normals[i] = loadVertexNormal(draw, corners.vertexIndex[i]);
         tangents[i] = loadVertexTangent(draw, corners.vertexIndex[i]);
         uv1[i] = loadVertexUv1(draw, corners.vertexIndex[i]);
@@ -129,10 +133,10 @@ public Surface buildSurface(DrawContext draw, TriangleCorners corners, Barycentr
         surface.tangent = float4(normalize(mul((float3x3)world, objectTangent.xyz)), sign);
     }
 
-    surface.color = interpolate(bary, vertices[0].color, vertices[1].color, vertices[2].color);
-    surface.uv[0] = interpolate(bary, vertices[0].texCoord, vertices[1].texCoord, vertices[2].texCoord);
-    surface.uvDdx[0] = interpolateDdx(bary, vertices[0].texCoord, vertices[1].texCoord, vertices[2].texCoord);
-    surface.uvDdy[0] = interpolateDdy(bary, vertices[0].texCoord, vertices[1].texCoord, vertices[2].texCoord);
+    surface.color = interpolate(bary, corners.color[0], corners.color[1], corners.color[2]);
+    surface.uv[0] = interpolate(bary, corners.texCoord[0], corners.texCoord[1], corners.texCoord[2]);
+    surface.uvDdx[0] = interpolateDdx(bary, corners.texCoord[0], corners.texCoord[1], corners.texCoord[2]);
+    surface.uvDdy[0] = interpolateDdy(bary, corners.texCoord[0], corners.texCoord[1], corners.texCoord[2]);
     surface.uv[1] = interpolate(bary, uv1[0], uv1[1], uv1[2]);
     surface.uvDdx[1] = interpolateDdx(bary, uv1[0], uv1[1], uv1[2]);
     surface.uvDdy[1] = interpolateDdy(bary, uv1[0], uv1[1], uv1[2]);

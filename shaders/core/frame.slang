@@ -13,7 +13,8 @@ public struct DrawContext
     public GpuModel model;
     public uint primitiveRow; // row of the model's primitives slice
     public GpuPrimitive primitive;
-    public bool isDoubleSided; // the material's, also DrawRecordFlag::TwoSided (MeshletCulling::drawRecordFlagsOf)
+    // the material's, copied into the primitive at load; also DrawRecordFlag::TwoSided
+    public bool isDoubleSided;
     public uint visibleRow;    // row of root.visibleMeshlets; >= root.lateVisibleBase in the late phase
 };
 
@@ -28,10 +29,7 @@ public DrawContext loadDrawContext(GpuFrameRoot root, GpuVisibleMeshlet visible,
     draw.model = bdaPtr<GpuModel>(draw.root.models)[draw.nodeInstance.modelIndex];
     draw.primitiveRow = bdaPtr<uint>(draw.model.meshletPrimitives)[draw.visible.meshletRow];
     draw.primitive = bdaPtr<GpuPrimitive>(draw.model.primitives)[draw.primitiveRow];
-    // materialRow below; kNoneIndex is the default material, row 0
-    const uint material = draw.primitive.materialId == kNoneIndex ? 0 : draw.primitive.materialId;
-    GpuMaterial* materialRef = bdaPtr<GpuMaterial>(draw.root.materials) + material;
-    draw.isDoubleSided = (materialRef.flags & kMaterialFlagDoubleSided) != 0;
+    draw.isDoubleSided = (draw.primitive.flags & kPrimitiveFlagDoubleSided) != 0;
     return draw;
 }
 

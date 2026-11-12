@@ -66,6 +66,22 @@ Ordered by expected gain. Each needs a before and after number on both cards.
 | P8 | **Hi-Z depth nudge is absolute.** `kHiZDepthNudge` is two ulps at depth 1. Under reverse Z far depths are near 0, where two real surfaces can differ by less than that | [culling.slang:45](../shaders/core/culling.slang#L45), [:220](../shaders/core/culling.slang#L220) | conservative, never wrong: distant occludees behind distant occluders are drawn | a nudge relative to the sampled depth; check the cull counters on a long view before and after |
 | P9 | **Hi-Z mip reduction uses four `Load`s per texel** | [hiz_build.slang:48-58](../shaders/passes/hiz_build.slang#L48-L58) | minor: four fetches where one gather or one min-reduction sample would do | only if the Hi-Z rows of the timer show it |
 
+**Measured 2026-11-12** on the RTX 5070 at P0, release build, validation layers off (no validation output in the log), `IMMEDIATE` present. Each variant alternated with its reference over 2–3 runs of 6,000 frames (50 windows of 120). Scenes: Sponza from the startup camera, and Sponza plus a 128×128 bunny field (16,384 instances). Run-to-run noise is about ±5% on a scope's mean, less on its best window. The RTX 2060 Super has not been measured.
+
+| ID | Outcome | Numbers (mean, best window in parentheses) |
+|---|---|---|
+| P1 | **landed**: lane 0 runs `cullInstance` and publishes the record base through `groupshared` | field: late cull 0.0330 → 0.0308 ms, every round (−7%); early cull unchanged within noise |
+| P2 | reverted | no change in either scene: a 32-lane group is one NVIDIA warp, so the redundant group tests ran in parallel lanes for free |
+| P3 | reverted (the shader change and a CPU flag that guarded the matrix equality) | late cull 0.0310 vs 0.0306 ms: within noise |
+| P4 | **landed**: `GpuPrimitive::flags` (40 B) with `GpuPrimitiveFlag::DoubleSided`, copied from the immutable material at pack time; `loadDrawContext` no longer reads the material row | debug view (0.0276) → (0.0267) ms on all 4 runs (−3%); raster and resolve unchanged within noise |
+| P5 | moved to M2 with the CLAS build input | — |
+| P6 | **landed**: `TriangleCorners` keeps color and UV0 from the position load | resolve 0.148 → 0.141 ms, every round (−4.5%) |
+| P7 | no change: at `-O3` Slang emits per-field loads in `mesh_raster`, `resolve` and `meshlet_cull`; the only whole-struct load is the 5-field `GpuDrawRecord`, which is used whole | — |
+| P8 | reverted | identical cull counters (field: 1,040 visible / 2,194 occluded; Sponza: 396 / 575) and timings within noise. The bench views are short; retest from a long view before landing |
+| P9 | no change: early and late Hi-Z build are 0.012 and 0.011 ms in total, and the four-`Load` path covers only the levels after the first dispatch | — |
+
+**Bench mode** (`src/core/engine_bench.*`): `ENGINE_BENCH_FRAMES=<n>` runs a fixed-camera, input-free, uncapped session. It logs per-scope GPU timer means and best windows, plus the last frame's cull counters, to `logs/engine.log`, then quits. `ENGINE_BENCH_FIELD=<side>` spawns the bunny field first. Turn validation off for the run (`VK_LOADER_LAYERS_DISABLE=*validation*`, or vkconfig's override off) and check that the log has no validation output.
+
 One more behaviour to be aware of, not a cost today: a box that was outside the **previous** frustum has its clip rect clamped to the screen edge, so the early Hi-Z test compares it against an edge texel ([culling.slang:116-122](../shaders/core/culling.slang#L116-L122)). It can be classified as occluded and then drawn in the late phase. The image is correct; geometry entering the screen during a fast turn may shift from the early to the late phase.
 
 ---
@@ -94,6 +110,6 @@ One more behaviour to be aware of, not a cost today: a box that was outside the 
 
 1. ~~C1–C7~~ applied 2026-11-12 (§2); confirm C1 and C5 on assets.
 2. ~~C2 and C3~~ (done).
-3. Record the M0/M1 timings the spec still owes (§16.2), then measure P1–P3 on the instance-field scene and P4–P7 on Sponza.
-4. P4 and P5 together with M2: the two-sided bit and the position stream both touch the load path that M2 changes for CLAS.
+3. ~~Measure P1–P9~~ (done 2026-11-12, §3): P1, P4, P6 landed; P2, P3, P8 reverted; P7, P9 not needed. The M0/M1 timings on both cards are still owed (§16.2); the bench mode records them.
+4. P5 with M2: the position stream is the CLAS build input.
 5. ~~C5 with the BC5 path (M8); C4 and C6 whenever those files are next edited~~ (done).
