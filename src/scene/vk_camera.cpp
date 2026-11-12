@@ -1,4 +1,6 @@
 #include "vk_camera.hpp"
+#include "Constants.h"
+#include "static_headers/logger.hpp"
 #include "util/vk_tracy.hpp"
 #include "util/vk_utils.hpp"
 
@@ -53,6 +55,29 @@ Camera::~Camera()
             cameraBuffersMapped[i] = nullptr;
         }
         destroyVmaBuffer(allocator, cameraBuffers[i], cameraBuffersMemory[i]);
+    }
+}
+
+void Camera::createBuffers(const Device& device, const VkAllocator& vkAllocator)
+{
+    logInfo("createBuffers() started", "Camera");
+    allocator = vkAllocator.allocator;
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        constexpr vk::DeviceSize bufferSize = sizeof(GpuCameraData);
+        vk::raii::Buffer buffer({});
+        VmaAllocation bufferMem = nullptr;
+        createBuffer(bufferSize,
+                     vk::BufferUsageFlagBits2::eUniformBuffer | vk::BufferUsageFlagBits2::eStorageBuffer |
+                         vk::BufferUsageFlagBits2::eShaderDeviceAddress,
+                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, buffer,
+                     bufferMem, allocator, device.vkdevice, device.queueFamilyIndices,
+                     std::format("CameraUniformBuffer_{}", i));
+        cameraBuffers[i] = std::move(buffer);
+        cameraBuffersMemory[i] = bufferMem;
+        void* data = nullptr;
+        vmaMapMemory(allocator, bufferMem, &data);
+        cameraBuffersMapped[i] = data;
+        cameraBufferAddresses[i] = device.vkdevice.getBufferAddress({.buffer = *cameraBuffers[i]});
     }
 }
 

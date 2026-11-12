@@ -59,10 +59,15 @@ namespace
     constexpr uint32_t divideRoundUp(uint32_t value, uint32_t divisor) { return (value + divisor - 1) / divisor; }
 } // namespace
 
-MeshletCulling::MeshletCulling(Device& device, ResourceManager& resourceManager, ShaderObjects& shaderObjects,
+MeshletCulling::MeshletCulling(Device& device, const VkAllocator& vkAllocator, const Scene& scene,
+                               const AssetBuffers& assets, const FrameData& frameData, ShaderObjects& shaderObjects,
                                DeviceGeneratedCommands& dgc) :
-    device(device), resourceManager(resourceManager), shaderObjects(shaderObjects), dgc(dgc)
+    device(device), vkAllocator(vkAllocator), scene(scene), assets(assets), frameData(frameData),
+    shaderObjects(shaderObjects), dgc(dgc)
 {
+    // round-to-nearest onto a 2^-bits grid moves a vertex by at most half a step
+    const uint32_t subPixelBits = device.capabilities.properties2.properties.limits.subPixelPrecisionBits;
+    subpixelSnap = std::ldexp(1.0f, -static_cast<int>(subPixelBits) - 1);
     createFrameBuffers();
 }
 
@@ -70,7 +75,7 @@ MeshletCulling::~MeshletCulling() { destroyFrameBuffers(); }
 
 void MeshletCulling::createFrameBuffers()
 {
-    const VmaAllocator allocator = resourceManager.allocator.allocator;
+    const VmaAllocator allocator = vkAllocator.allocator;
     // fixed size and count: not Tracy memory pools
     for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
         createMappedBuffer(frames[slot].cullView, sizeof(PhaseCullViews), vk::BufferUsageFlagBits2::eStorageBuffer,
@@ -88,7 +93,7 @@ void MeshletCulling::createFrameBuffers()
 
 void MeshletCulling::destroyFrameBuffers()
 {
-    const VmaAllocator allocator = resourceManager.allocator.allocator;
+    const VmaAllocator allocator = vkAllocator.allocator;
     for (FrameBuffers& buffers : frames) {
         // persistently mapped (MAPPED_BIT): VMA unmaps on destroy
         destroyVmaBuffer(allocator, buffers.cullView.buffer, buffers.cullView.memory);
@@ -113,7 +118,7 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera, cons
     frame = frameSlot;
     readBackCounters(frameSlot);
 
-    isLayoutChangedThisFrame = templates.generation != resourceManager.nodeInstanceLayoutGeneration;
+    isLayoutChangedThisFrame = templates.generation != frameData.layoutGeneration();
     if (isLayoutChangedThisFrame) {
         buildTemplates();
     }
@@ -140,22 +145,15 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera, cons
     if (frames[frameSlot].generation != templates.generation) {
         uploadTemplates(frameSlot);
     }
-    resourceManager.drawRecordAddresses[frameSlot] = frames[frameSlot].drawRecords.address;
-    resourceManager.visibleMeshletAddresses[frameSlot] = frames[frameSlot].visibleMeshlets.address;
-    resourceManager.cullCounterAddresses[frameSlot] = frames[frameSlot].counters.address;
     const bool isTriangleCulling = settings.isTriangleBackfaceEnabled || settings.isSmallTriangleEnabled;
-    resourceManager.triangleCullFlags[frameSlot] =
-        (settings.isTriangleBackfaceEnabled ? TriangleCullFlag::Backface : 0u) |
+    frames[frameSlot].triangleCullFlags = (settings.isTriangleBackfaceEnabled ? TriangleCullFlag::Backface : 0u) |
         (settings.isSmallTriangleEnabled ? TriangleCullFlag::Small : 0u) |
         (settings.isStatsEnabled && isTriangleCulling ? TriangleCullFlag::Stats : 0u);
-    // round-to-nearest onto a 2^-bits grid moves a vertex by at most half a step
-    const uint32_t subPixelBits = device.capabilities.properties2.properties.limits.subPixelPrecisionBits;
-    resourceManager.subpixelSnap = std::ldexp(1.0f, -static_cast<int>(subPixelBits) - 1);
 
     // every template may survive, so the per-group meshlet totals bound the visible lists and sequences
     const uint32_t totalMeshlets = std::reduce(templates.binMeshlets.begin(), templates.binMeshlets.end(), 0u);
     // one visible region of totalMeshlets rows per phase
-    resourceManager.lateVisibleBases[frameSlot] = totalMeshlets * std::to_underlying(CullPhase::Late);
+    frames[frameSlot].lateVisibleBase = totalMeshlets * std::to_underlying(CullPhase::Late);
     const uint32_t perSequence = meshletsPerSequence(totalMeshlets);
     std::array<uint32_t, kRasterBinCount> maxSequences{};
     std::ranges::transform(templates.binMeshlets, maxSequences.begin(),
@@ -213,7 +211,7 @@ void MeshletCulling::readBackCounters(uint32_t frameSlot)
 // alpha-masked materials stay opaque until the M6 alpha-tested bin
 uint32_t MeshletCulling::drawRecordFlagsOf(const PrimitiveDraw& primitive) const
 {
-    const MaterialStore& materials = resourceManager.materialStore;
+    const MaterialStore& materials = scene.materialStore;
     const uint32_t materialId = primitive.materialId == kNoneIndex ? materials.defaultMaterialId() : primitive.materialId;
     const bool isTwoSided = (materials.infos[materialId].material.flags & GpuMaterialFlag::DoubleSided) != 0;
     return std::to_underlying(RasterBin::Opaque) | (isTwoSided ? DrawRecordFlag::TwoSided : 0u);
@@ -223,24 +221,25 @@ uint32_t MeshletCulling::drawRecordFlagsOf(const PrimitiveDraw& primitive) const
 void MeshletCulling::buildTemplates()
 {
     ZoneScopedN("MeshletCulling::buildTemplates");
-    const auto& storage = resourceManager.objectStorage;
-    const auto& geometry = resourceManager.geometryStore;
+    const auto& storage = scene.objectStorage;
+    const auto& geometry = scene.geometryStore;
     templates.instances.clear();
     templates.drawRecords.clear();
     templates.binMeshlets = {};
-    templates.generation = resourceManager.nodeInstanceLayoutGeneration;
+    templates.generation = frameData.layoutGeneration();
 
-    const uint32_t entityCount = resourceManager.asset(AssetBuffer::Primitives).address == 0 ? 0 : storage.size();
+    const uint32_t entityCount = assets.asset(AssetBuffer::Primitives).address == 0 ? 0 : storage.size();
+    const std::span<const uint32_t> nodeInstanceFirsts = frameData.entityNodeInstanceFirst();
     for (EntityId id = 0; id < entityCount; ++id) {
         // an entity whose load is not flushed yet has no GPU model and no node-instance rows
         if ((storage.flags[id] & EntityFlag::Active) == 0 || storage.modelIds[id] == kInvalidModelId) {
             continue;
         }
-        const ElementRange nodes = resourceManager.modelAllocations[storage.modelIds[id]].nodes;
+        const ElementRange nodes = assets.models()[storage.modelIds[id]].nodes;
         for (uint32_t k = 0; k < nodes.count; ++k) {
             const NodeDraw& node = geometry.nodeDraws[nodes.first + k];
             GpuInstanceCullItem item{
-                .nodeInstanceIndex = resourceManager.entityNodeInstanceFirst[id] + k,
+                .nodeInstanceIndex = nodeInstanceFirsts[id] + k,
                 .firstDrawRecord = static_cast<uint32_t>(templates.drawRecords.size()),
             };
             for (uint32_t p = node.firstPrimitive; p < node.firstPrimitive + node.primitiveCount; ++p) {
@@ -286,7 +285,7 @@ void MeshletCulling::uploadTemplates(uint32_t frameSlot)
 {
     ZoneScopedN("MeshletCulling::uploadTemplates");
     FrameBuffers& buffers = frames[frameSlot];
-    const VmaAllocator allocator = resourceManager.allocator.allocator;
+    const VmaAllocator allocator = vkAllocator.allocator;
     constexpr vk::MemoryPropertyFlags kHostProperties =
         vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent;
 
@@ -408,7 +407,7 @@ void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, con
         .rejectMasks = buffers.rejectMasks.address,
         .cullViewProj = viewProj,
         .targetSize = camera.cameraData.renderTargetSize,
-        .subpixelSnap = resourceManager.subpixelSnap,
+        .subpixelSnap = subpixelSnap,
         .instanceCandidateCapacity = buffers.instanceCapacity,
         // the phase regions are templates.drawRecords.size() apart (drawRecordBase below)
         .drawRecordCapacity = static_cast<uint32_t>(templates.drawRecords.size()),
@@ -469,7 +468,7 @@ void MeshletCulling::recordCull(const vk::raii::CommandBuffer& cmd, CullPhase ph
 
     if (!templates.instances.empty()) {
         const CullPushData push{
-            .frameRoot = resourceManager.frameRootAddress(frame),
+            .frameRoot = frameData.frameRootAddress(frame),
             .cullView = buffers.cullView.address + std::to_underlying(phase) * sizeof(GpuCullView),
         };
         cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});

@@ -61,6 +61,27 @@ target_link_libraries(hiz_footprint_test PRIVATE engine_test_support)
 add_test(NAME hiz_footprint COMMAND hiz_footprint_test)
 set_tests_properties(hiz_footprint PROPERTIES SKIP_RETURN_CODE 77)
 
+# --- BRDF: worked numbers and sampler consistency (shaders/material/brdf.slang) ---
+set(_brdfShader "${CMAKE_CURRENT_SOURCE_DIR}/shaders/brdf_numbers.slang")
+set(_brdfShaderDir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+set(_brdfSpirv "${_brdfShaderDir}/brdfMain.spv")
+add_custom_command(
+    OUTPUT ${_brdfSpirv}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${_brdfShaderDir}
+    COMMAND ${SLANGC_EXECUTABLE} ${_brdfShader} ${ENGINE_SLANG_FLAGS} -entry brdfMain -depfile ${_brdfSpirv}.d
+            -o ${_brdfSpirv}
+    DEPENDS ${_brdfShader}
+    DEPFILE ${_brdfSpirv}.d
+    COMMENT "Compiling BRDF test shader brdfMain"
+    VERBATIM
+)
+
+add_executable(brdf_test brdf_test.cpp ${_brdfSpirv})
+target_compile_definitions(brdf_test PRIVATE BRDF_TEST_SHADER_DIR="${_brdfShaderDir}")
+target_link_libraries(brdf_test PRIVATE engine_test_support)
+add_test(NAME brdf COMMAND brdf_test)
+set_tests_properties(brdf PROPERTIES SKIP_RETURN_CODE 77)
+
 # --- NRC: Windows-only binaries ---
 if (WIN32)
     add_executable(nrc_library_test nrc_library_test.cpp)

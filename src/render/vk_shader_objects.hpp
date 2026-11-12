@@ -2,7 +2,6 @@
 
 #include <vulkan/vulkan_raii.hpp>
 #include "../core/types.hpp"
-#include "../core/vk_resource_manager.hpp"
 
 #include <array>
 #include <string_view>

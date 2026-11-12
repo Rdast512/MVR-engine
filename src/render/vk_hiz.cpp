@@ -34,9 +34,9 @@ namespace
     }
 } // namespace
 
-HiZPyramid::HiZPyramid(const Device& device, ResourceManager& resourceManager, DescriptorManager& descriptorManager,
-                       const ShaderObjects& shaderObjects) :
-    device(device), resourceManager(resourceManager), descriptorManager(descriptorManager),
+HiZPyramid::HiZPyramid(const Device& device, const VkAllocator& allocator, FrameSync& frameSync,
+                       DescriptorManager& descriptorManager, const ShaderObjects& shaderObjects) :
+    device(device), allocator(allocator), frameSync(frameSync), descriptorManager(descriptorManager),
     shaderObjects(shaderObjects)
 {
     checkFormatSupport(device);
@@ -55,7 +55,7 @@ HiZPyramid::HiZPyramid(const Device& device, ResourceManager& resourceManager, D
 }
 
 // the descriptor manager may already be gone; only the image is released
-HiZPyramid::~HiZPyramid() { destroyVmaImage(resourceManager.allocator.allocator, image, memory); }
+HiZPyramid::~HiZPyramid() { destroyVmaImage(allocator.allocator, image, memory); }
 
 void HiZPyramid::freeDescriptors()
 {
@@ -71,30 +71,30 @@ void HiZPyramid::freeDescriptors()
     }
 }
 
-void HiZPyramid::recreate()
+void HiZPyramid::recreate(const RenderTargets& targets)
 {
     freeDescriptors();
-    destroyVmaImage(resourceManager.allocator.allocator, image, memory);
+    destroyVmaImage(allocator.allocator, image, memory);
     isBuilt = false;
 
-    depthExtent = resourceManager.renderExtent;
+    depthImage = targets.getDepthImage();
+    depthExtent = targets.getExtent();
     extent = {std::bit_floor(depthExtent.width), std::bit_floor(depthExtent.height)};
     const auto mipCount = static_cast<uint32_t>(std::bit_width(std::max(extent.width, extent.height)));
-    resourceManager.allocator.createImage2D(extent.width, extent.height, mipCount, vk::SampleCountFlagBits::e1,
-                                            kFormat,
-                                            vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled,
-                                            image, memory, "HiZPyramidMemory");
+    allocator.createImage2D(extent.width, extent.height, mipCount, vk::SampleCountFlagBits::e1, kFormat,
+                            vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, image, memory,
+                            "HiZPyramidMemory");
     // recreated only on resize: not a Tracy memory pool
     setDebugName(device.vkdevice, image, "HiZPyramid");
 
-    vk::raii::CommandBuffer& cmd = resourceManager.commandBuffers[0];
+    vk::raii::CommandBuffer& cmd = frameSync.commandBuffers[0];
     cmd.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     transitionImageLayout(&cmd, *image, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral,
                           {vk::ImageAspectFlagBits::eColor, 0, mipCount, 0, 1}, VK_QUEUE_FAMILY_IGNORED,
                           VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eTopOfPipe,
                           vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eNone,
                           vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eShaderSampledRead);
-    submitAndWait(cmd, resourceManager.graphicsQueue);
+    submitAndWait(cmd, device.graphicsQueue);
 
     const auto pyramidView = [this](uint32_t baseMip, uint32_t levels) {
         return vk::ImageViewCreateInfo{.image = *image,
@@ -110,9 +110,9 @@ void HiZPyramid::recreate()
             pyramidView(mip, 1), vk::DescriptorType::eStorageImage, vk::ImageLayout::eGeneral));
     }
     depthIndex = descriptorManager.writeImageDescriptor(
-        vk::ImageViewCreateInfo{.image = *resourceManager.depthAttachment.image,
+        vk::ImageViewCreateInfo{.image = depthImage,
                                 .viewType = vk::ImageViewType::e2D,
-                                .format = resourceManager.findDepthFormat(),
+                                .format = targets.getDepthFormat(),
                                 .subresourceRange = {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}},
         vk::DescriptorType::eSampledImage, vk::ImageLayout::eShaderReadOnlyOptimal);
 }
@@ -136,7 +136,7 @@ void HiZPyramid::recordBuild(const vk::raii::CommandBuffer& cmd, bool isFrozen)
         .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = *resourceManager.depthAttachment.image,
+        .image = depthImage,
         .subresourceRange = {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1},
     };
     // fragment: the Hi-Z debug view samples it in the late raster pass

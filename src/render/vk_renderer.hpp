@@ -1,8 +1,12 @@
 #pragma once
+#include "core/vk_allocator.hpp"
+#include "core/vk_asset_buffers.hpp"
 #include "core/vk_descriptors.hpp"
-#include "core/vk_resource_manager.hpp"
+#include "core/vk_frame_data.hpp"
+#include "core/vk_frame_sync.hpp"
 #include "core/vk_swapchain.hpp"
 #include "scene/vk_camera.hpp"
+#include "scene/vk_scene.hpp"
 #include "vk_dgc.hpp"
 #include "vk_gpu_timer.hpp"
 #include "vk_hiz.hpp"
@@ -16,9 +20,9 @@ class VkTracyContext;
 class Renderer
 {
 public:
-    Renderer(Device& device, SwapChain& swapChain, ResourceManager& resourceManager,
-             DescriptorManager& descriptorManager, ShaderObjects& shaderObjects, Camera& camera,
-             VkTracyContext* tracyContext = nullptr, bool imguiEnabled = false);
+    Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allocator, FrameSync& frameSync,
+             const Scene& scene, const AssetBuffers& assets, FrameData& frameData, DescriptorManager& descriptorManager,
+             ShaderObjects& shaderObjects, Camera& camera, VkTracyContext* tracyContext = nullptr);
 
     void setTracyContext(VkTracyContext* tracyContextIn);
     void rebuildSwapchainResources();
@@ -52,7 +56,9 @@ private:
 
     Device& device;
     SwapChain& swapChain;
-    ResourceManager& resourceManager;
+    const VkAllocator& allocator;
+    FrameSync& frameSync;
+    FrameData& frameData;
     DescriptorManager& descriptorManager;
     Camera& camera;
     const ShaderObjects& shaderObjects;
@@ -60,10 +66,8 @@ private:
     // after dgc: writes into its sequence buffers
     MeshletCulling culling;
     HiZPyramid hiz;
-    // after hiz: both are recreated from the depth attachment
+    // owns the depth attachment hiz is built from; recreated before it
     RenderTargets targets;
     GpuTimer gpuTimer;
     VkTracyContext* tracyContext = nullptr;
-    // unused when imgui is compiled out
-    [[maybe_unused]] bool imguiEnabled = false;
 };

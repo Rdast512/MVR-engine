@@ -1,10 +1,10 @@
 # Resource architecture
 
-**Date:** 2026-10-24, updated 2026-11-07
+**Date:** 2026-10-24, updated 2026-11-11
 **Status:** §1–§11 describe the working tree on `7dc04f965`; §12 lists the resource changes the target architecture requires. Living document: update it in the same change that alters resource code, and log the change in [Changelog](#changelog).
 **Target:** [engine_spec.md](../docs/engine_spec.md) is normative for the end state. Where this document describes code that the spec removes or replaces, §12 says so.
 **Related:** [shader_architecture_plan.md](./shader_architecture_plan.md), [pbr_implementation_plan.md](./pbr_implementation_plan.md), [culling_comparison.md](../reference/culling_comparison.md)
-**Code:** `src/core/vk_resource_manager.*`, `src/core/types.hpp`, `src/core/geometry_store.*`, `src/render/push_data.hpp`, `src/core/texture_manager.*`, `src/core/vk_descriptors.*`, `src/render/vk_dgc.*`, `src/render/vk_meshlet_culling.*`, `src/render/vk_hiz.*`, `src/util/vk_utils.*`, `shaders/types.slang`, `shaders/core/{frame,binding}.slang`
+**Code:** `src/core/vk_asset_buffers.*`, `src/core/vk_frame_data.*`, `src/core/vk_frame_sync.*`, `src/render/vk_render_targets.*`, `src/core/types.hpp`, `src/core/geometry_store.*`, `src/render/push_data.hpp`, `src/core/texture_manager.*`, `src/core/vk_descriptors.*`, `src/render/vk_dgc.*`, `src/render/vk_meshlet_culling.*`, `src/render/vk_hiz.*`, `src/util/vk_utils.*`, `shaders/types.slang`, `shaders/core/{frame,binding}.slang`
 
 How the engine owns GPU memory, how asset data gets from a glTF file into GPU buffers, and how shaders reach it.
 
@@ -14,14 +14,14 @@ How the engine owns GPU memory, how asset data gets from a glTF file into GPU bu
 
 ```
 load:   AssetsLoader ──► scratch (GeometryStore, MaterialStore new rows, LightStore)
-                     ──► ResourceManager::flushGpuAssets  (one model per flush, one staging submit)
+                     ──► AssetBuffers::flush  (one model per flush, one staging submit)
                            ├─ 23 device-local asset buffers: 20 sliced per model; shared: Materials, PbrExt; per entity: Lights
                            └─ GpuModel table: slice addresses per model
         TextureManager ──► images (host image copy) ──► resource-heap slots
                            samplers (dedup)          ──► sampler-heap slots
 
-frame:  ResourceManager::updateUniformBuffers ──► GpuObjectUB[entity], GpuNodeInstance[entity × node], GpuFrameRoot
-        MeshletCulling::prepareFrame          ──► GpuCullView per phase, templates on layout change
+frame:  MeshletCulling::prepareFrame ──► GpuCullView per phase, templates on layout change
+        FrameData::write             ──► GpuObjectUB[entity], GpuNodeInstance[entity × node], GpuFrameRoot
         GPU: cull passes ──► GpuDrawRecord ──► GpuVisibleMeshlet lists ──► DGC sequences + counts
 
 shader: MeshPushData {frameRoot, firstVisible} ──► GpuVisibleMeshlet {nodeInstance, meshletRow}
@@ -43,18 +43,18 @@ Payloads never live in descriptor heaps; heaps never hold vertex or material byt
 
 | Kind | Owner / type | Memory | Count | Lifetime |
 |---|---|---|---|---|
-| Asset buffer | `ResourceManager::assetBuffers[AssetBuffer]`, `DeviceBuffer` | device-local | 23, shared | grows on load, compacts on unload |
-| Model table | `ResourceManager::modelTable`, `HostBuffer` | host-visible, mapped | 1 | rows rewritten in place on flush and unload; grows ×2 |
-| Frame root | `ResourceManager::frameRoots`, `HostBuffer` | host-visible, mapped | 1 per frame slot | rewritten every frame |
-| Instance rows (`GpuObjectUB`, `GpuNodeInstance`) | `ResourceManager::instanceUbos`, `nodeInstanceBuffers` | host-visible, mapped | 1 each per frame slot | rewritten every frame; grow ×2 |
-| Camera | `Camera`, created by `ResourceManager` | host-visible, `vmaMapMemory` | 1 per frame slot | rewritten every frame |
+| Asset buffer | `AssetBuffers::assetBuffers[AssetBuffer]`, `DeviceBuffer` | device-local | 23, shared | grows on load, compacts on unload |
+| Model table | `AssetBuffers::modelTable`, `HostBuffer` | host-visible, mapped | 1 | rows rewritten in place on flush and unload; grows ×2 |
+| Frame root | `FrameData::frameRoots`, `HostBuffer` | host-visible, mapped | 1 per frame slot | rewritten every frame |
+| Instance rows (`GpuObjectUB`, `GpuNodeInstance`) | `FrameData::instanceUbos`, `nodeInstanceBuffers` | host-visible, mapped | 1 each per frame slot | rewritten every frame; grow ×2 |
+| Camera | `Camera` (`createBuffers`) | host-visible, `vmaMapMemory` | 1 per frame slot | rewritten every frame |
 | Cull view, counters, instance items, draw-record templates | `MeshletCulling::FrameBuffers`, `HostBuffer` | host-visible, mapped | 1 each per frame slot | view every frame; templates on layout change |
 | Draw records, instance candidates, reject masks, visible lists | `MeshletCulling::FrameBuffers`, `DeviceBuffer` | device-local | 1 each per frame slot, one region per phase | GPU-written; resized on layout change |
 | DGC sequences | `DeviceGeneratedCommands` | device-local | 1 per frame slot | GPU-written by `buildMeshSequences` |
 | DGC preprocess | `DeviceGeneratedCommands` | device-local, dedicated | 1 per frame slot, one region per (phase, state group) | resized with the sequence capacity |
 | Descriptor heaps | `DescriptorManager` | host-visible, dedicated, `vmaMapMemory` | resource + sampler | engine lifetime |
 | Texture | `TextureManager::loadedTextures` → `TextureAsset` | device-local image | per unique image | refcounted per model |
-| Depth | `ResourceManager::depthAttachment`, `AttachmentImage` | device-local image | 1 | recreated on resize |
+| Depth | `RenderTargets::depthAttachment`, `AttachmentImage` | device-local image | 1 | recreated on resize |
 | Hi-Z pyramid | `HiZPyramid` | device-local image | 1 | recreated on resize |
 | Staging | local in `uploadAssetBuffers` | host-visible, `TransferSrc` only | 1 per batch | destroyed after the copy |
 
@@ -92,7 +92,7 @@ All buffers go through `createBuffer` (`src/util/vk_utils.cpp`); images through 
 
 ## 4. Asset buffers
 
-`enum class AssetBuffer` (`vk_resource_manager.hpp`) indexes `assetBuffers` and the metadata table `kAssetBufferInfo` (`vk_resource_manager.cpp`). Rows must follow the enum order; nothing checks it at compile time, and a swapped row corrupts every stride-based count.
+`enum class AssetBuffer` (`vk_asset_buffers.hpp`) indexes `assetBuffers` and the metadata table `kAssetBufferInfo` (`vk_asset_buffers.cpp`). Rows must follow the enum order; nothing checks it at compile time, and a swapped row corrupts every stride-based count.
 
 Usage for all: `TransferSrc | TransferDst | StorageBuffer | ShaderDeviceAddress`, device-local.
 
@@ -132,7 +132,7 @@ Optional streams (`Normals`, `Tangents`, `Uv1`) are uploaded only when `Geometry
 
 ## 5. Load path
 
-`Engine::loadSelectedModel` first resolves the folder to its model file (`AssetsLoader::resolveModelPath`, weakly canonical) and looks it up with `ResourceManager::findModel`. A hit calls `instantiateModel`: a new entity that shares the model's geometry, materials and textures; only its light rows are uploaded. A miss runs `waitIdle` → `AssetsLoader::loadModel` → `ResourceManager::flushGpuAssets` → `ensureInstanceCapacity`. Startup does the same through `ResourceManager::init`.
+`Engine::loadSelectedModel` first resolves the folder to its model file (`AssetsLoader::resolveModelPath`, weakly canonical) and looks it up with `AssetBuffers::findModel`. A hit calls `instantiateModel`: a new entity that shares the model's geometry, materials and textures; only its light rows are uploaded. A miss runs `waitIdle` → `AssetsLoader::loadModel` → `AssetBuffers::flush` → `FrameData::syncScene`. Startup does the same through the `AssetBuffers` and `FrameData` constructors.
 
 1. **Parse.** The loader fills `GeometryStore` scratch (SoA streams, packed `GpuVertex`, meshlets, indices, `textureRefs`), adds materials to `MaterialStore` (dedup by value against every live row, §6.1), fills `LightStore`, and creates the entity in `ObjectStorage` with `modelIds = kInvalidModelId`. Scratch is empty before each load, so scratch offsets are already model-relative. Geometry clean-up uses meshoptimizer: triangle lists drop degenerate and repeated triangles (`meshopt_filterIndexBuffer`) and every bounding sphere is `meshopt_computeSphereBounds`.
 2. **Meshlets and groups** (`GeometryStore::buildMeshlets`, level 0 of `clusterlod.h`'s `clodDefaultConfig`, spec §7.1):
@@ -141,7 +141,7 @@ Optional streams (`Normals`, `Tangents`, `Uv1`) are uploaded only when `Geometry
    - per primitive: position remap, spatial `meshopt_partitionClusters` with target 24 (its +1/3 worst case fits 32), groups spatially sorted, meshlets reordered so each group is contiguous, groups over 32 split. A primitive with ≤ 24 meshlets is one group. Groups never span primitives;
    - per node: the mesh-space box of the mesh's vertex range (`NodeDraw::meshBounds`).
 3. **Textures.** Uploaded during parse inside a `TextureUploadBatch` (§8).
-4. **Flush.** `flushGpuAssets`:
+4. **Flush.** `AssetBuffers::flush`:
    - throws `std::logic_error` if more than one entity is pending (`modelIds == kInvalidModelId`) or it is not the newest; discards scratch if none is;
    - packs `GpuPrimitive` rows from `primitiveDraws` **before** the remap, so they stay model-relative. `materialId` stays the absolute shared row, or `kNoneIndex` for the default material;
    - packs `GpuNode` rows from `nodeDraws` (`firstPrimitive` made model-relative);
@@ -155,7 +155,7 @@ Optional streams (`Normals`, `Tangents`, `Uv1`) are uploaded only when `Geometry
 
 ## 6. Model slices and unload
 
-`ModelAllocation` (`vk_resource_manager.hpp`) is one uploaded model file, shared by every entity loaded from it. It holds one `ElementRange` per model-sliced asset buffer (`isModelSliced`: all except `Materials`, `PbrExt`, `Lights`), CPU ranges (primitives, groups, nodes, aux blobs), the cache `key`, the light template, `materialRefs`, `textureRefs` and `refCount` (entities drawing it). `modelAllocations` is indexed by `ModelId`; `ObjectStorage::modelIds[entity]` and `GpuObjectUB::modelIndex` point into it.
+`ModelAllocation` (`vk_asset_buffers.hpp`) is one uploaded model file, shared by every entity loaded from it. It holds one `ElementRange` per model-sliced asset buffer (`isModelSliced`: all except `Materials`, `PbrExt`, `Lights`), CPU ranges (primitives, groups, nodes, aux blobs), the cache `key`, the light template, `materialRefs`, `textureRefs` and `refCount` (entities drawing it). `modelAllocations` (read through `AssetBuffers::models()`) is indexed by `ModelId`; `ObjectStorage::modelIds[entity]` and `GpuObjectUB::modelIndex` point into it.
 
 ### 6.1 Reference counts
 
@@ -188,7 +188,7 @@ Material rows are deduplicated by value (`GpuMaterial` + `MaterialPbrExtension`,
 
 Because slices are self-relative, unloading is a plain byte copy:
 
-`Engine::unloadModel`: `waitIdle` → `TextureManager::release(ResourceManager::eraseEntity(entity))`. `eraseEntity`:
+`Engine::unloadModel`: `waitIdle` → `TextureManager::release(AssetBuffers::eraseEntity(entity))` → `FrameData::syncScene`. `eraseEntity`:
 1. Lights: erase the entity's rows from `LightStore::uploaded`, decrement every `instanceIndex` above it; erase the entity.
 2. Decrement the model's `refCount`. At 0, `eraseModel`:
    - `compactAssetBuffers`: for every model-sliced buffer the model touched, an exact-fit new buffer receives the data before and after the slice, all in one submit + idle. A buffer left empty is destroyed (address 0);
@@ -198,7 +198,7 @@ Because slices are self-relative, unloading is a plain byte copy:
    - returns `textureRefs`, which the engine releases.
 3. `uploadLights`: rewrites the `Lights` buffer from the mirror and sets its used bytes to the mirror size (one more submit).
 
-Every `rebuildNodeInstanceLayout` (load, instance, erase) bumps `nodeInstanceLayoutGeneration`; `MeshletCulling` then rebuilds its templates and drops occlusion for one frame (`OcclusionHistory::SceneChanged`).
+Every flush, `instantiateModel` and `eraseEntity` bumps `AssetBuffers::sceneGeneration`; `FrameData::syncScene` then grows the instance rows, runs `rebuildNodeInstanceLayout` and bumps `FrameData::layoutGeneration`; `MeshletCulling` then rebuilds its templates and drops occlusion for one frame (`OcclusionHistory::SceneChanged`).
 
 Erasing an entity whose model has other entities touches only the light buffer and the node-instance layout. After a model erase, every buffer the model used, every later slice address and every later model id change. Buffers the model did not use keep their address; the material table never moves rows; the model table keeps its address unless it grew.
 
@@ -208,7 +208,7 @@ Erasing an entity whose model has other entities touches only the light buffer a
 
 A glTF mesh is stored **once** per model: its primitives, vertices and meshlets stay in mesh space. Every scene node that references it becomes a `NodeDraw` / `GpuNode` with its world matrix inside the model (`localToModel`), a model-space sphere, a mesh-space box and the mesh's primitive range. `EXT_mesh_gpu_instancing` expands into one node per instance (`node world × instance TRS`); such a node draws only its instances.
 
-Draw instance = entity × node. `rebuildNodeInstanceLayout` assigns rows entity-major (`entityNodeInstanceFirst`) and grows the per-frame `GpuNodeInstance` buffers; it runs after every flush, `instantiateModel` and `eraseEntity` (GPU idle). Each frame `writeNodeInstances` precomputes `world = entity × localToModel`, `prevWorld = prevEntity × localToModel`, and `NodeFlag::FlipWinding` from `det(world) < 0`. A mirrored instance keeps back-face culling: the mesh shader swaps two triangle corners instead of changing front-face state, which DGC cannot vary per sequence.
+Draw instance = entity × node. `rebuildNodeInstanceLayout` assigns rows entity-major (`entityNodeInstanceFirst`) and grows the per-frame `GpuNodeInstance` buffers; it runs from `FrameData::syncScene` after every flush, `instantiateModel` and `eraseEntity` (GPU idle). Each frame `writeNodeInstances` precomputes `world = entity × localToModel`, `prevWorld = prevEntity × localToModel`, and `NodeFlag::FlipWinding` from `det(world) < 0`. A mirrored instance keeps back-face culling: the mesh shader swaps two triangle corners instead of changing front-face state, which DGC cannot vary per sequence.
 
 ---
 
@@ -217,13 +217,13 @@ Draw instance = entity × node. `rebuildNodeInstanceLayout` assigns rows entity-
 ### Per-frame data
 
 Per frame, in recording order:
-- `ResourceManager::updateUniformBuffers(frameSlot)` writes:
-  - `GpuFrameRoot` into `frameRoots[frameSlot]` (`writeFrameRoot`), including this slot's draw-record, visible-list and counter addresses;
+- `MeshletCulling::prepareFrame(frameSlot)` reads back the slot's counters, rebuilds and uploads `GpuInstanceCullItem` / `GpuDrawRecord` templates when the layout generation changed, writes one `GpuCullView` per phase and sizes the DGC buffers.
+- `FrameData::write(frameSlot, FrameRootInputs)` writes:
+  - `GpuFrameRoot` into `frameRoots[frameSlot]` (`writeFrameRoot`). Values owned by other modules (camera, targets, this slot's draw-record, visible-list and counter addresses, late-visible base, triangle-cull flags) arrive in `FrameRootInputs`, which `Renderer::drawFrame` fills from their getters;
   - `GpuNodeInstance[entity × node]` into `nodeInstanceBuffers[frameSlot]` (`writeNodeInstances`, §6.2);
   - `GpuObjectUB[entity]` into `instanceUbos[frameSlot]`: model matrix, previous model matrix, world-space `boundingSphere`, `modelIndex`, `instanceFlags`. Only lights still place themselves with it.
 
   Inactive entities are skipped.
-- `MeshletCulling::prepareFrame(frameSlot)` reads back the slot's counters, rebuilds and uploads `GpuInstanceCullItem` / `GpuDrawRecord` templates when the layout generation changed, writes one `GpuCullView` per phase and sizes the DGC buffers.
 - On the GPU, per phase: `cullInstances` copies the templates of visible instances into `drawRecords`; `cullMeshlets` (early) or `cullRejectedMeshlets` (late) appends `GpuVisibleMeshlet` entries per state group; `buildMeshSequences` writes `MeshDgcSequence`s and their counts. The CPU never writes draw records or sequences.
 
 `GpuFrameRoot` (128 B):
@@ -400,7 +400,7 @@ Rules:
 1. **Scratch:** add the vector to its store. Per-vertex streams must also be resized in `GeometryStore::resizeVertices` and dropped in `clearScratch`.
 2. **Enum:** add a value to `AssetBuffer` before `Count`.
 3. **Metadata:** add the `kAssetBufferInfo` row **at the same position**: debug name, Tracy pool, two plot literals, `stride = sizeof(element)`.
-4. **Source:** add the `case` to `ResourceManager::scratchBytes` (`-Wswitch` catches a missing one).
+4. **Source:** add the `case` to `AssetBuffers::scratchBytes` (`-Wswitch` catches a missing one).
 5. **Offsets:** keep values inside the payload model-relative. Only CPU catalog fields go through `remapScratchOffsets`.
 6. **Reach:** add the slice address to `GpuModel` (+ a `GpuModelAttribute` bit if optional) in `types.hpp` and `types.slang`, fill it in `rebuildModelTable`, update the `static_assert`s.
 
@@ -416,7 +416,7 @@ Follow `MeshletCulling::FrameBuffers`: a `DeviceBuffer` per frame slot, one regi
 
 ### Add a swapchain-sized attachment
 
-Add an `AttachmentImage` member and a create function that calls `createAttachment` with an `AttachmentDesc`. Call it from `Renderer::rebuildSwapchainResources`, and destroy it in `~ResourceManager` with the same Tracy name (a `constexpr const char*` next to `kDepthTracyName`).
+Add an `AttachmentImage` member and a create function that calls `createAttachment` with an `AttachmentDesc`. Call it from `RenderTargets::recreate`, and destroy it with `destroyAttachment` in `~RenderTargets` with the same Tracy name.
 - `transitionImageLayout` infers stages only for `Undefined → ColorAttachmentOptimal / DepthStencilAttachmentOptimal / TransferDstOptimal` and `TransferDstOptimal → ShaderReadOnlyOptimal`.
 - Shader-visible targets need a resource-heap slot from `DescriptorManager`; once `GpuTargets` exists (§12), the slot goes there.
 
@@ -472,7 +472,7 @@ The binding model (§1, model slices, frame root, handle-or-address) carries ove
 | Normals and tangents are mesh-local; lighting will need the node instance's normal matrix (inverse-transpose of `worldMatrix`) | `GpuNodeInstance` |
 | The material and light buffers never shrink: freed material rows stay as reusable slots, light rows past the mirror stay stale | `MaterialStore`, `uploadLights` |
 | Models are cached by file path only: a file edited on disk while loaded is not re-read until all its entities are unloaded | `findModel` |
-| `GpuObjectUB::boundingSphere` is still written every frame but read by no shader | `updateUniformBuffers` |
+| `GpuObjectUB::boundingSphere` is still written every frame but read by no shader | `FrameData::write` |
 | `GpuMeshletBounds` edge lengths are stored but unused until software raster | `buildMeshlets` |
 | The late meshlet pass projects boxes twice (cull and occlusion matrices) even when they are equal | `meshlet_cull.slang` |
 | Buffer policy lives in `vk_utils.cpp` (`createBuffer`), image policy in `VkAllocator` (`vk_allocator.hpp`) | allocator |
@@ -485,6 +485,7 @@ The binding model (§1, model slices, frame root, handle-or-address) carries ove
 
 | Date | Change |
 |---|---|
+| 2026-11-11 | `ResourceManager` split ([resource_manager_split.md](./features/resource_manager_split.md)): `FrameSync` (fences, semaphores, command pools and buffers), `AssetBuffers` (asset buffers, model catalog, model table, lights), `FrameData` (frame roots, instance and node-instance rows); depth moved to `RenderTargets`, camera buffers to `Camera::createBuffers`. The frame root takes pass addresses through `FrameRootInputs`. No layout, address or upload-order change |
 | 2026-11-08 | Animation removed (engine spec §7.3): `Joints`, `Weights`, `MorphPos`, `MorphNrm`, `MorphTan`, `MorphTargets`, `MorphWeights` buffers, their `GpuModel` slices and attribute bits (`Indices` is now bit 3), `GpuPrimitive` morph ranges, `GpuMorphTarget`, `MorphTarget`, `DrawRecordFlag::SkipCulling` (`TwoSided` is now bit 2), `GpuInstanceCullItem::flags`, the `unculledMeshlets` counter. Sizes: `GpuModel` 112, `GpuPrimitive` 36, `GpuInstanceCullItem` 12, `GpuCullCounters` 112. glTF morph targets and skins are ignored; files load in their base pose |
 | 2026-11-07 | Moved to `spec/`. Re-verified against `7dc04f965`: GPU culling buffers and structs, GPU-written draw records and DGC sequences, `MeshletBounds` / `MeshletGroups` / `MeshletPrimitives` asset buffers, `GpuVisibleMeshlet` lookup chain (push data `{frameRoot, firstVisible, meshletCount}`), sizes (`GpuFrameRoot` 128, `GpuModel` 168, `GpuNode` 112, `GpuNodeInstance` 144, `GpuPrimitive` 48, `GpuDrawRecord` 20), meshlet build as `clusterlod.h` level 0, render targets (no MSAA, D32 depth, Hi-Z pyramid), debug views. New §12: resource changes per [engine_spec.md](../docs/engine_spec.md) milestone |
 | 2026-10-25 | meshoptimizer clean-up: `meshopt_computeSphereBounds` for vertex and node spheres (`mergeBoundingSpheres` removed), `meshopt_filterIndexBuffer` on glTF triangle lists and OBJ, OBJ welding via `meshopt_generateVertexRemap` (`std::hash<GpuVertex>` removed) |

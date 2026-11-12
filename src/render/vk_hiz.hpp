@@ -2,8 +2,10 @@
 
 #include "core/types.hpp"
 #include "core/vk_descriptors.hpp"
+#include "core/vk_allocator.hpp"
 #include "core/vk_device.hpp"
-#include "core/vk_resource_manager.hpp"
+#include "core/vk_frame_sync.hpp"
+#include "vk_render_targets.hpp"
 #include "vk_shader_objects.hpp"
 
 #include <vector>
@@ -14,8 +16,8 @@
 class HiZPyramid
 {
 public:
-    HiZPyramid(const Device& device, ResourceManager& resourceManager, DescriptorManager& descriptorManager,
-               const ShaderObjects& shaderObjects);
+    HiZPyramid(const Device& device, const VkAllocator& allocator, FrameSync& frameSync,
+               DescriptorManager& descriptorManager, const ShaderObjects& shaderObjects);
     ~HiZPyramid();
 
     HiZPyramid(const HiZPyramid&) = delete;
@@ -23,8 +25,8 @@ public:
     HiZPyramid(HiZPyramid&&) = delete;
     HiZPyramid& operator=(HiZPyramid&&) = delete;
 
-    // after ResourceManager::createDepthResources, with the device idle
-    void recreate();
+    // after RenderTargets::recreate, with the device idle; sized from and reads its depth attachment
+    void recreate(const RenderTargets& targets);
     // outside a render pass, heaps bound, depth in eDepthStencilAttachmentOptimal after the raster pass;
     // leaves depth in eShaderReadOnlyOptimal. isFrozen: only that transition, the pyramid keeps its content
     void recordBuild(const vk::raii::CommandBuffer& cmd, bool isFrozen = false);
@@ -41,12 +43,15 @@ private:
     [[nodiscard]] vk::Extent2D mipExtent(uint32_t mip) const;
 
     const Device& device;
-    ResourceManager& resourceManager;
+    const VkAllocator& allocator;
+    FrameSync& frameSync;
     DescriptorManager& descriptorManager;
     const ShaderObjects& shaderObjects;
 
     vk::raii::Image image = nullptr;
     VmaAllocation memory = nullptr;
+    // owned by RenderTargets; replaced only by recreate
+    vk::Image depthImage;
     vk::Extent2D depthExtent{};
     vk::Extent2D extent{};
 

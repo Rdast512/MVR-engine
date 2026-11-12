@@ -1,11 +1,10 @@
-#include "vk_resource_manager.hpp"
+#include "vk_asset_buffers.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <format>
 #include <span>
-#include <glm/gtc/matrix_transform.hpp>
 #include <stdexcept>
 #include "Constants.h"
 #include "static_headers/logger.hpp"
@@ -53,9 +52,7 @@ namespace
         {"NodeBuffer", "GPU/Nodes", "Vulkan/NodeBytes", "Vulkan/NodeCapacityBytes", sizeof(GpuNode)},
     }};
 
-    constexpr const char* kInstanceUboTracyName = "GPU/InstanceUBO";
     constexpr const char* kModelTableTracyName = "GPU/ModelTable";
-    constexpr const char* kNodeInstanceTracyName = "GPU/NodeInstances";
 
     // GpuNode stores the affine part as rows; glm is column-major
     [[nodiscard]] std::array<glm::vec4, 3> affineRows(const glm::mat4& matrix)
@@ -194,73 +191,44 @@ namespace
     }
 } // namespace
 
-ResourceManager::ResourceManager(const Device &deviceWrapper,
-               const VkAllocator &allocator,
-               GeometryStore &geometryStoreIn,
-               MaterialStore &materialStoreIn,
-               LightStore &lightStoreIn,
-               ObjectStorage &objectStorageIn)
-    : deviceWrapper(deviceWrapper),
-      allocator(allocator),
-      physicalDevice(deviceWrapper.physicalDevice),
+AssetBuffers::AssetBuffers(const Device& deviceWrapper, const VkAllocator& allocator, FrameSync& frameSync,
+                           GeometryStore& geometryStore, MaterialStore& materialStore, LightStore& lightStore,
+                           ObjectStorage& objectStorage)
+    : allocator(allocator),
       device(deviceWrapper.vkdevice),
       queueFamilyIndices(deviceWrapper.queueFamilyIndices),
-      graphicsQueue(deviceWrapper.graphicsQueue),
-      transferQueue(deviceWrapper.transferQueue),
-      objectStorage(objectStorageIn),
-      geometryStore(geometryStoreIn),
-      materialStore(materialStoreIn),
-      lightStore(lightStoreIn),
-      graphicsIndex(deviceWrapper.graphicsIndex),
-      transferIndex(deviceWrapper.transferIndex)
+      frameSync(frameSync),
+      objectStorage(objectStorage),
+      geometryStore(geometryStore),
+      materialStore(materialStore),
+      lightStore(lightStore)
 {
-    logInfo("Initialized", "ResourceManager");
+    logInfo("init() started", "AssetBuffers");
+    // the table exists even when the startup load failed: the frame root always holds its address
+    rebuildModelTable();
+    flush();
 }
 
-void ResourceManager::destroyInstanceUboBuffers()
+AssetBuffers::~AssetBuffers()
 {
-    ZoneScopedN("ResourceManager::destroyInstanceUboBuffers");
-    for (HostBuffer& ubo : instanceUbos)
-    {
-        destroyHostBuffer(ubo, kInstanceUboTracyName);
+    logInfo("Destructor called", "AssetBuffers");
+    destroyHostBuffer(allocator.allocator, modelTable, kModelTableTracyName);
+    for (size_t i = 0; i < kAssetBufferCount; ++i) {
+        destroyAssetBuffer(static_cast<AssetBuffer>(i));
     }
-    instanceCapacity = 0;
 }
 
-void ResourceManager::createHostBuffer(HostBuffer& target, vk::DeviceSize size, const std::string& debugName,
-                                       const char* tracyName) const
+void AssetBuffers::rebuildModelTable()
 {
-    createBuffer(size,
-                 vk::BufferUsageFlagBits2::eUniformBuffer | vk::BufferUsageFlagBits2::eStorageBuffer |
-                     vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, target.buffer,
-                 target.memory, allocator.allocator, device, queueFamilyIndices, debugName,
-                 VMA_ALLOCATION_CREATE_MAPPED_BIT);
-    VmaAllocationInfo allocationInfo{};
-    vmaGetAllocationInfo(allocator.allocator, target.memory, &allocationInfo);
-    target.mapped = allocationInfo.pMappedData;
-    target.address = device.getBufferAddress({.buffer = *target.buffer});
-    tracyResourceAlloc(static_cast<VkBuffer>(*target.buffer), static_cast<size_t>(size), tracyName);
-}
-
-void ResourceManager::destroyHostBuffer(HostBuffer& target, const char* tracyName) const
-{
-    // persistently mapped (MAPPED_BIT): VMA unmaps on destroy
-    destroyVmaBuffer(allocator.allocator, target.buffer, target.memory, tracyName);
-    target.mapped = nullptr;
-    target.address = 0;
-}
-
-void ResourceManager::rebuildModelTable()
-{
-    ZoneScopedN("ResourceManager::rebuildModelTable");
+    ZoneScopedN("AssetBuffers::rebuildModelTable");
     const auto modelCount = static_cast<uint32_t>(modelAllocations.size());
     // callers hold the GPU idle, so rows are rewritten in place; the address changes only on growth
     if (modelCount > modelTableCapacity || modelTable.memory == nullptr) {
-        destroyHostBuffer(modelTable, kModelTableTracyName);
+        destroyHostBuffer(allocator.allocator, modelTable, kModelTableTracyName);
         modelTableCapacity = std::max({modelCount, modelTableCapacity * 2, 1u});
-        createHostBuffer(modelTable, sizeof(GpuModel) * static_cast<vk::DeviceSize>(modelTableCapacity),
-                         "ModelTable", kModelTableTracyName);
+        modelTable = createHostBuffer(sizeof(GpuModel) * static_cast<vk::DeviceSize>(modelTableCapacity),
+                                      allocator.allocator, device, queueFamilyIndices, "ModelTable",
+                                      kModelTableTracyName);
     }
 
     auto* rows = static_cast<GpuModel*>(modelTable.mapped);
@@ -300,44 +268,10 @@ void ResourceManager::rebuildModelTable()
     }
     logInfo(std::format("model table: {} / {} rows bda=0x{:x}", modelCount, modelTableCapacity,
                          static_cast<uint64_t>(modelTable.address)),
-            "ResourceManager");
+            "AssetBuffers");
 }
 
-void ResourceManager::writeFrameRoot(uint32_t frameSlot, uint32_t debugView, uint32_t frameFlags, uint32_t frameIndex)
-{
-    *static_cast<GpuFrameRoot*>(frameRoots[frameSlot].mapped) = GpuFrameRoot{
-        .camera = cameraAddresses[frameSlot],
-        .instances = instanceUbos[frameSlot].address,
-        .models = modelTable.address,
-        .primitives = asset(AssetBuffer::Primitives).address,
-        .materials = asset(AssetBuffer::Materials).address,
-        .pbrExtensions = asset(AssetBuffer::PbrExt).address,
-        .lights = asset(AssetBuffer::Lights).address,
-        .tlas = 0,
-        .nodeInstances = nodeInstanceBuffers[frameSlot].address,
-        .drawRecords = drawRecordAddresses[frameSlot],
-        .visibleMeshlets = visibleMeshletAddresses[frameSlot],
-        .lightCount = lightStore.uploadedCount(),
-        .instanceCount = objectStorage.size(),
-        .primitiveCount = uploadedCount(AssetBuffer::Primitives),
-        .nodeInstanceCount = nodeInstanceCount,
-        .lateVisibleBase = lateVisibleBases[frameSlot],
-        .debugView = debugView,
-        .cullCounters = cullCounterAddresses[frameSlot],
-        .triangleCull = triangleCullFlags[frameSlot],
-        .subpixelSnap = subpixelSnap,
-        .targets = targetsAddresses[frameSlot],
-        .frameFlags = frameFlags,
-        .pad0 = 0,
-        .rayInstances = 0,
-        .rtxdiConstants = 0,
-        .cacheConstants = 0,
-        .frameIndex = frameIndex,
-        .exposure = 1.0f,
-    };
-}
-
-void ResourceManager::destroyAssetBuffer(AssetBuffer id)
+void AssetBuffers::destroyAssetBuffer(AssetBuffer id)
 {
     DeviceBuffer& target = assetBuffers[std::to_underlying(id)];
     if (target.memory == nullptr) {
@@ -346,25 +280,25 @@ void ResourceManager::destroyAssetBuffer(AssetBuffer id)
     const AssetBufferInfo& info = kAssetBufferInfo[std::to_underlying(id)];
     logInfo(std::format("destroy {} (used {} / cap {} bda=0x{:x})", info.tracyName, formatBytes(target.usedBytes),
                          formatBytes(target.capacityBytes), static_cast<uint64_t>(target.address)),
-             "ResourceManager");
+             "AssetBuffers");
     destroyVmaBuffer(allocator.allocator, target.buffer, target.memory, info.tracyName);
     target.address = 0;
     target.usedBytes = 0;
     target.capacityBytes = 0;
 }
 
-uint32_t ResourceManager::uploadedCount(AssetBuffer id) const noexcept
+uint32_t AssetBuffers::uploadedCount(AssetBuffer id) const noexcept
 {
     return static_cast<uint32_t>(asset(id).usedBytes / kAssetBufferInfo[std::to_underlying(id)].stride);
 }
 
-vk::DeviceAddress ResourceManager::modelAssetAddress(AssetBuffer id, ModelId modelId) const noexcept
+vk::DeviceAddress AssetBuffers::modelAssetAddress(AssetBuffer id, ModelId modelId) const noexcept
 {
     const vk::DeviceSize stride = kAssetBufferInfo[std::to_underlying(id)].stride;
     return asset(id).address + modelAllocations[modelId].gpu[std::to_underlying(id)].first * stride;
 }
 
-vk::DeviceSize ResourceManager::modelGpuBytes(ModelId modelId) const noexcept
+vk::DeviceSize AssetBuffers::modelGpuBytes(ModelId modelId) const noexcept
 {
     vk::DeviceSize bytes = 0;
     for (size_t i = 0; i < kAssetBufferCount; ++i) {
@@ -373,7 +307,7 @@ vk::DeviceSize ResourceManager::modelGpuBytes(ModelId modelId) const noexcept
     return bytes;
 }
 
-std::optional<ModelId> ResourceManager::findModel(std::string_view key) const
+std::optional<ModelId> AssetBuffers::findModel(std::string_view key) const
 {
     const auto it = std::ranges::find(modelAllocations, key, &ModelAllocation::key);
     if (it == modelAllocations.end()) {
@@ -382,7 +316,7 @@ std::optional<ModelId> ResourceManager::findModel(std::string_view key) const
     return static_cast<ModelId>(it - modelAllocations.begin());
 }
 
-std::pair<vk::DeviceSize, vk::DeviceSize> ResourceManager::assetTotals() const noexcept
+std::pair<vk::DeviceSize, vk::DeviceSize> AssetBuffers::assetTotals() const noexcept
 {
     vk::DeviceSize usedBytes = 0;
     vk::DeviceSize capacityBytes = 0;
@@ -393,137 +327,7 @@ std::pair<vk::DeviceSize, vk::DeviceSize> ResourceManager::assetTotals() const n
     return {usedBytes, capacityBytes};
 }
 
-vk::raii::CommandBuffer& ResourceManager::oneTimeTransferCmd()
-{
-    return transferCommandBuffer.empty() ? commandBuffers[0] : transferCommandBuffer[0];
-}
-
-const vk::raii::Queue& ResourceManager::oneTimeTransferQueue() const noexcept
-{
-    return transferCommandBuffer.empty() ? graphicsQueue : transferQueue;
-}
-
-ResourceManager::~ResourceManager()
-{
-    logInfo("Destructor called", "ResourceManager");
-    destroyInstanceUboBuffers();
-    for (HostBuffer& root : frameRoots) {
-        destroyHostBuffer(root, nullptr);
-    }
-    destroyHostBuffer(modelTable, kModelTableTracyName);
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-        destroyHostBuffer(nodeInstanceBuffers[i], kNodeInstanceTracyName);
-    }
-    for (size_t i = 0; i < kAssetBufferCount; ++i) {
-        destroyAssetBuffer(static_cast<AssetBuffer>(i));
-    }
-    destroyAttachment(depthAttachment, nullptr);
-}
-
-void ResourceManager::init()
-{
-    logInfo("init() started", "ResourceManager");
-    createCommandPool();
-    createCommandBuffers();
-    createUniformBuffers();
-    flushGpuAssets();
-}
-
-void ResourceManager::createSyncObjects()
-{
-    logInfo("createSyncObjects() started", "ResourceManager");
-    presentCompleteSemaphore.clear();
-    renderFinishedSemaphore.clear();
-    inFlightFences.clear();
-
-    // acquire semaphore and fence per frame-in-flight
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        presentCompleteSemaphore.emplace_back(device, vk::SemaphoreCreateInfo());
-        inFlightFences.emplace_back(device, vk::FenceCreateInfo{.flags = vk::FenceCreateFlagBits::eSignaled});
-    }
-    // present signal per swapchain image
-    for (size_t i = 0; i < swapChainImageCount; i++) {
-        renderFinishedSemaphore.emplace_back(device, vk::SemaphoreCreateInfo());
-    }
-}
-
-void ResourceManager::updateUniformBuffers(uint32_t currentImage, uint32_t debugView, uint32_t frameFlags,
-                                           uint32_t frameIndex)
-{
-    ZoneScopedN("ResourceManager::updateUniformBuffer");
-    ensureInstanceCapacity(objectStorage.size());
-    writeFrameRoot(currentImage, debugView, frameFlags, frameIndex);
-    // reads prevModelMatrices before the entity loop below advances them
-    writeNodeInstances(currentImage);
-
-    // write-combined memory: whole rows, never read back
-    auto* instances = static_cast<GpuObjectUB*>(instanceUbos[currentImage].mapped);
-    for (EntityId id = 0; id < objectStorage.size(); ++id) {
-        const glm::mat4 model = computeModelMatrix(objectStorage.transforms[id]);
-        if ((objectStorage.flags[id] & EntityFlag::Active) == 0) {
-            // reactivation must not jump by the whole pause's motion
-            objectStorage.prevModelMatrices[id] = model;
-            continue;
-        }
-        instances[id] = GpuObjectUB{
-            .modelMatrix = model,
-            .prevModelMatrix = objectStorage.prevModelMatrices[id],
-            .boundingSphere = transformBoundingSphere(model, objectStorage.localBounds[id]),
-            // entities loaded from one file share its model
-            .modelIndex = objectStorage.modelIds[id],
-            .instanceFlags = objectStorage.flags[id],
-            .pad0 = 0,
-            .pad1 = 0,
-        };
-        objectStorage.prevModelMatrices[id] = model;
-    }
-}
-
-void ResourceManager::createCommandPool()
-{
-    logInfo("createCommandPool() started", "ResourceManager");
-    vk::CommandPoolCreateInfo poolInfo{.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
-                                       .queueFamilyIndex = graphicsIndex};
-    commandPool = vk::raii::CommandPool(device, poolInfo);
-    setDebugName(device, commandPool, "GraphicsCommandPool");
-    if (deviceWrapper.hasDedicatedTransferQueue()) {
-        vk::CommandPoolCreateInfo transferPoolInfo{.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
-                                                   .queueFamilyIndex = transferIndex};
-        transferCommandPool = vk::raii::CommandPool(device, transferPoolInfo);
-        setDebugName(device, transferCommandPool, "TransferCommandPool");
-    }
-}
-
-void ResourceManager::createCommandBuffers()
-{
-    logInfo("createCommandBuffers() started", "ResourceManager");
-    commandBuffers.clear();
-    vk::CommandBufferAllocateInfo allocInfo{.commandPool = commandPool,
-                                            .level = vk::CommandBufferLevel::ePrimary,
-                                            .commandBufferCount = MAX_FRAMES_IN_FLIGHT};
-    commandBuffers = vk::raii::CommandBuffers(device, allocInfo);
-    for (size_t i = 0; i < commandBuffers.size(); ++i) {
-        setDebugName(device, commandBuffers[i], std::format("GraphicsCommandBuffer_{}", i));
-    }
-    presentCommandBuffers.clear();
-    presentCommandBuffers = vk::raii::CommandBuffers(device, allocInfo);
-    for (size_t i = 0; i < presentCommandBuffers.size(); ++i) {
-        setDebugName(device, presentCommandBuffers[i], std::format("PresentCommandBuffer_{}", i));
-    }
-    if (deviceWrapper.hasDedicatedTransferQueue()) {
-        vk::CommandBufferAllocateInfo transferAllocInfo{.commandPool = transferCommandPool,
-                                                        .level = vk::CommandBufferLevel::ePrimary,
-                                                        .commandBufferCount = MAX_FRAMES_IN_FLIGHT};
-        transferCommandBuffer = vk::raii::CommandBuffers(device, transferAllocInfo);
-        for (size_t i = 0; i < transferCommandBuffer.size(); ++i) {
-            setDebugName(device, transferCommandBuffer[i], std::format("TransferCommandBuffer_{}", i));
-        }
-    }
-    logInfo(std::format("Command buffers allocated: {}", commandBuffers.size()), "ResourceManager");
-    logInfo(std::format("Transfer command buffers allocated: {}", transferCommandBuffer.size()), "ResourceManager");
-}
-
-void ResourceManager::createAssetBuffer(AssetBuffer id, vk::DeviceSize capacity, vk::raii::Buffer& buffer,
+void AssetBuffers::createAssetBuffer(AssetBuffer id, vk::DeviceSize capacity, vk::raii::Buffer& buffer,
                                         VmaAllocation& memory) const
 {
     createBuffer(capacity,
@@ -533,7 +337,7 @@ void ResourceManager::createAssetBuffer(AssetBuffer id, vk::DeviceSize capacity,
                  queueFamilyIndices, kAssetBufferInfo[std::to_underlying(id)].debugName);
 }
 
-void ResourceManager::installAssetBuffer(AssetBuffer id, vk::raii::Buffer&& buffer, VmaAllocation memory,
+void AssetBuffers::installAssetBuffer(AssetBuffer id, vk::raii::Buffer&& buffer, VmaAllocation memory,
                                          vk::DeviceSize usedBytes, vk::DeviceSize capacityBytes)
 {
     destroyAssetBuffer(id);
@@ -548,9 +352,9 @@ void ResourceManager::installAssetBuffer(AssetBuffer id, vk::raii::Buffer&& buff
     tracyResourceAlloc(static_cast<VkBuffer>(*dst.buffer), static_cast<size_t>(capacityBytes), info.tracyName);
 }
 
-void ResourceManager::uploadAssetBuffers(std::span<const AssetUpload> uploads)
+void AssetBuffers::uploadAssetBuffers(std::span<const AssetUpload> uploads)
 {
-    ZoneScopedN("ResourceManager::uploadAssetBuffers");
+    ZoneScopedN("AssetBuffers::uploadAssetBuffers");
     std::vector<vk::DeviceSize> stagingOffsets(uploads.size());
     vk::DeviceSize stagingBytes = 0;
     for (size_t i = 0; i < uploads.size(); ++i) {
@@ -582,7 +386,8 @@ void ResourceManager::uploadAssetBuffers(std::span<const AssetUpload> uploads)
         vk::DeviceSize capacityBytes;
     };
     std::vector<Grown> grown;
-    vk::raii::CommandBuffer& cmd = oneTimeTransferCmd();
+    const FrameSync::OneTimeCommands oneTime = frameSync.oneTimeCommands();
+    vk::raii::CommandBuffer& cmd = oneTime.cmd;
     cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     for (size_t i = 0; i < uploads.size(); ++i) {
@@ -593,7 +398,7 @@ void ResourceManager::uploadAssetBuffers(std::span<const AssetUpload> uploads)
         if (srcBytes == 0) {
             logInfo(std::format("skip {}: empty scratch (used {} / cap {})", debugName, formatBytes(dst.usedBytes),
                                  formatBytes(dst.capacityBytes)),
-                     "ResourceManager");
+                     "AssetBuffers");
             continue;
         }
         const vk::DeviceSize writeEnd = upload.dstOffset + srcBytes;
@@ -603,7 +408,7 @@ void ResourceManager::uploadAssetBuffers(std::span<const AssetUpload> uploads)
         if (dst.memory != nullptr && writeEnd <= dst.capacityBytes) {
             logInfo(std::format("in place {}: {} at {} -> used {} (cap {})", debugName, formatBytes(srcBytes),
                                  formatBytes(upload.dstOffset), formatBytes(newUsed), formatBytes(dst.capacityBytes)),
-                     "ResourceManager");
+                     "AssetBuffers");
             cmd.copyBuffer(staging, dst.buffer, stagingCopy);
             dst.usedBytes = newUsed;
             continue;
@@ -613,7 +418,7 @@ void ResourceManager::uploadAssetBuffers(std::span<const AssetUpload> uploads)
         logInfo(std::format("{} {}: used {} -> {} (cap {} -> {})", dst.usedBytes == 0 ? "create" : "grow", debugName,
                              formatBytes(dst.usedBytes), formatBytes(newUsed), formatBytes(dst.capacityBytes),
                              formatBytes(newCapacity)),
-                 "ResourceManager");
+                 "AssetBuffers");
         Grown& next = grown.emplace_back(Grown{.id = upload.id, .buffer = nullptr, .memory = nullptr,
                                                .usedBytes = newUsed, .capacityBytes = newCapacity});
         createAssetBuffer(upload.id, newCapacity, next.buffer, next.memory);
@@ -630,7 +435,7 @@ void ResourceManager::uploadAssetBuffers(std::span<const AssetUpload> uploads)
         cmd.copyBuffer(staging, next.buffer, stagingCopy);
     }
 
-    submitAndWait(cmd, oneTimeTransferQueue());
+    submitAndWait(cmd, oneTime.queue);
     for (Grown& next : grown) {
         installAssetBuffer(next.id, std::move(next.buffer), next.memory, next.usedBytes, next.capacityBytes);
     }
@@ -644,12 +449,12 @@ void ResourceManager::uploadAssetBuffers(std::span<const AssetUpload> uploads)
         const std::string message =
             std::format("{} ready used {} / cap {} bda=0x{:x}", kAssetBufferInfo[std::to_underlying(upload.id)].debugName,
                         formatBytes(dst.usedBytes), formatBytes(dst.capacityBytes), static_cast<uint64_t>(dst.address));
-        logInfo(message, "ResourceManager");
+        logInfo(message, "AssetBuffers");
         TracyMessage(message.c_str(), message.size());
     }
 }
 
-std::span<const std::byte> ResourceManager::scratchBytes(AssetBuffer id, const PackedScratch& packed) const
+std::span<const std::byte> AssetBuffers::scratchBytes(AssetBuffer id, const PackedScratch& packed) const
 {
     // absent optional streams are zero-filled in scratch; skipping them leaves the slice empty and the bit clear
     const auto optionalStream = [this](const auto& column, uint32_t attribute) {
@@ -680,9 +485,9 @@ std::span<const std::byte> ResourceManager::scratchBytes(AssetBuffer id, const P
     return {};
 }
 
-void ResourceManager::remapScratchOffsets()
+void AssetBuffers::remapScratchOffsets()
 {
-    ZoneScopedN("ResourceManager::remapScratchOffsets");
+    ZoneScopedN("AssetBuffers::remapScratchOffsets");
     // GPU data stays model-relative (see ModelAllocation); only the CPU catalog becomes absolute
     GeometryStore& geometry = geometryStore;
     const uint32_t vertexBase = uploadedCount(AssetBuffer::Vertices);
@@ -692,7 +497,7 @@ void ResourceManager::remapScratchOffsets()
         static_cast<uint32_t>(geometry.primitiveDraws.size()) - geometry.flushedPrimitiveCount;
     logInfo(std::format("remap scratch: +{} prims onto gpu verts={} meshlets={} indices={}", newPrimitives,
                          vertexBase, meshletBase, indexBase),
-             "ResourceManager");
+             "AssetBuffers");
     for (uint32_t p = geometry.flushedPrimitiveCount; p < geometry.primitiveDraws.size(); ++p) {
         PrimitiveDraw& draw = geometry.primitiveDraws[p];
         draw.firstVertex += vertexBase;
@@ -706,9 +511,9 @@ void ResourceManager::remapScratchOffsets()
     }
 }
 
-std::vector<GpuPrimitive> ResourceManager::packScratchPrimitives() const
+std::vector<GpuPrimitive> AssetBuffers::packScratchPrimitives() const
 {
-    ZoneScopedN("ResourceManager::packScratchPrimitives");
+    ZoneScopedN("AssetBuffers::packScratchPrimitives");
     std::vector<GpuPrimitive> packed;
     packed.reserve(geometryStore.primitiveDraws.size() - geometryStore.flushedPrimitiveCount);
     for (uint32_t p = geometryStore.flushedPrimitiveCount; p < geometryStore.primitiveDraws.size(); ++p) {
@@ -733,7 +538,7 @@ std::vector<GpuPrimitive> ResourceManager::packScratchPrimitives() const
 }
 
 // before remapScratchOffsets: meshlet ranges are still scratch-relative, which is the model's slice
-std::vector<uint32_t> ResourceManager::packScratchMeshletPrimitives() const
+std::vector<uint32_t> AssetBuffers::packScratchMeshletPrimitives() const
 {
     std::vector<uint32_t> packed(geometryStore.meshlets.size(), 0);
     for (uint32_t p = geometryStore.flushedPrimitiveCount; p < geometryStore.primitiveDraws.size(); ++p) {
@@ -743,7 +548,7 @@ std::vector<uint32_t> ResourceManager::packScratchMeshletPrimitives() const
     return packed;
 }
 
-std::vector<GpuNode> ResourceManager::packScratchNodes() const
+std::vector<GpuNode> AssetBuffers::packScratchNodes() const
 {
     std::vector<GpuNode> packed;
     packed.reserve(geometryStore.nodeDraws.size() - geometryStore.flushedNodeCount);
@@ -766,71 +571,14 @@ std::vector<GpuNode> ResourceManager::packScratchNodes() const
     return packed;
 }
 
-void ResourceManager::rebuildNodeInstanceLayout()
+std::vector<GpuLight> AssetBuffers::packScratchLights() const
 {
-    entityNodeInstanceFirst.resize(objectStorage.size());
-    uint32_t rows = 0;
-    for (EntityId id = 0; id < objectStorage.size(); ++id) {
-        entityNodeInstanceFirst[id] = rows;
-        const ModelId modelId = objectStorage.modelIds[id];
-        if (modelId != kInvalidModelId) {
-            rows += modelAllocations[modelId].nodes.count;
-        }
-    }
-    nodeInstanceCount = rows;
-    ++nodeInstanceLayoutGeneration;
-    if (rows <= nodeInstanceCapacity && nodeInstanceBuffers[0].memory != nullptr) {
-        return;
-    }
-    // callers hold the GPU idle, so every frame slot can be replaced
-    nodeInstanceCapacity = std::max({rows, nodeInstanceCapacity * 2, 1u});
-    logInfo(std::format("node instances: {} rows, capacity {}", rows, nodeInstanceCapacity), "ResourceManager");
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-        destroyHostBuffer(nodeInstanceBuffers[i], kNodeInstanceTracyName);
-        createHostBuffer(nodeInstanceBuffers[i], sizeof(GpuNodeInstance) * static_cast<vk::DeviceSize>(nodeInstanceCapacity),
-                         std::format("NodeInstances_{}", i), kNodeInstanceTracyName);
-    }
-}
-
-void ResourceManager::writeNodeInstances(uint32_t frameSlot)
-{
-    ZoneScopedN("ResourceManager::writeNodeInstances");
-    // write-combined memory: whole rows, never read back
-    auto* rows = static_cast<GpuNodeInstance*>(nodeInstanceBuffers[frameSlot].mapped);
-    const auto entityCount = static_cast<EntityId>(entityNodeInstanceFirst.size());
-    for (EntityId id = 0; id < entityCount; ++id) {
-        const ModelId modelId = objectStorage.modelIds[id];
-        if (modelId == kInvalidModelId || (objectStorage.flags[id] & EntityFlag::Active) == 0) {
-            continue;
-        }
-        const glm::mat4 entityMatrix = computeModelMatrix(objectStorage.transforms[id]);
-        const glm::mat4& prevEntityMatrix = objectStorage.prevModelMatrices[id];
-        const ElementRange nodes = modelAllocations[modelId].nodes;
-        for (uint32_t k = 0; k < nodes.count; ++k) {
-            const NodeDraw& node = geometryStore.nodeDraws[nodes.first + k];
-            const glm::mat4 world = entityMatrix * node.localToModel;
-            // the entity transform can mirror too, so winding follows the combined matrix
-            const bool isMirrored = glm::determinant(glm::mat3(world)) < 0.0f;
-            rows[entityNodeInstanceFirst[id] + k] = GpuNodeInstance{
-                .worldMatrix = world,
-                .prevWorldMatrix = prevEntityMatrix * node.localToModel,
-                .entityIndex = id,
-                .modelIndex = modelId,
-                .nodeIndex = k,
-                .flags = (node.flags & ~NodeFlag::FlipWinding) | (isMirrored ? NodeFlag::FlipWinding : 0u),
-            };
-        }
-    }
-}
-
-std::vector<GpuLight> ResourceManager::packScratchLights() const
-{
-    ZoneScopedN("ResourceManager::packScratchLights");
+    ZoneScopedN("AssetBuffers::packScratchLights");
     std::vector<GpuLight> packed;
     packed.reserve(lightStore.instances.size());
     logInfo(std::format("pack lights: {} defs {} instances (gpu already {})", lightStore.defs.size(),
                          lightStore.instances.size(), lightStore.uploadedCount()),
-             "ResourceManager");
+             "AssetBuffers");
     for (const LightInstance& instance : lightStore.instances) {
         GpuLight light{};
         light.position = instance.position;
@@ -849,69 +597,10 @@ std::vector<GpuLight> ResourceManager::packScratchLights() const
     return packed;
 }
 
-void ResourceManager::createCameraBuffers(Camera& camera)
+void AssetBuffers::flush()
 {
-    logInfo("createCameraBuffers() started", "ResourceManager");
-    camera.allocator = allocator.allocator;
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        constexpr vk::DeviceSize bufferSize = sizeof(GpuCameraData);
-        vk::raii::Buffer buffer({});
-        VmaAllocation bufferMem = nullptr;
-        createBuffer(bufferSize,
-                     vk::BufferUsageFlagBits2::eUniformBuffer | vk::BufferUsageFlagBits2::eStorageBuffer |
-                         vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, buffer,
-                     bufferMem, allocator.allocator, device, queueFamilyIndices,
-                     std::format("CameraUniformBuffer_{}", i));
-        camera.cameraBuffers[i] = std::move(buffer);
-        camera.cameraBuffersMemory[i] = bufferMem;
-        void* data = nullptr;
-        vmaMapMemory(allocator.allocator, bufferMem, &data);
-        camera.cameraBuffersMapped[i] = data;
-        camera.cameraBufferAddresses[i] = device.getBufferAddress({.buffer = *camera.cameraBuffers[i]});
-        cameraAddresses[i] = camera.cameraBufferAddresses[i];
-    }
-}
-
-void ResourceManager::ensureInstanceCapacity(uint32_t entityCount)
-{
-    if (entityCount <= instanceCapacity)
-    {
-        return;
-    }
-
-    ZoneScopedN("ResourceManager::ensureInstanceCapacity");
-    // headroom so interactive loads do not reallocate every time
-    const uint32_t newCapacity = std::max(entityCount, instanceCapacity * 2);
-    logInfo(std::format("Growing instance GpuObjectUB capacity {} -> {}", instanceCapacity, newCapacity),
-             "ResourceManager");
-
-    destroyInstanceUboBuffers();
-    instanceCapacity = newCapacity;
-
-    const vk::DeviceSize bufferSize = sizeof(GpuObjectUB) * static_cast<vk::DeviceSize>(instanceCapacity);
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
-    {
-        createHostBuffer(instanceUbos[i], bufferSize, std::format("InstanceObjectUB_{}", i), kInstanceUboTracyName);
-    }
-}
-
-void ResourceManager::createUniformBuffers()
-{
-    logInfo("createUniformBuffers() started", "ResourceManager");
-    ensureInstanceCapacity(std::max(objectStorage.size(), 1u));
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-        // fixed size and count: not a Tracy memory pool
-        createHostBuffer(frameRoots[i], sizeof(GpuFrameRoot), std::format("FrameRoot_{}", i), nullptr);
-    }
-    rebuildModelTable();
-    rebuildNodeInstanceLayout();
-}
-
-void ResourceManager::flushGpuAssets()
-{
-    ZoneScopedN("ResourceManager::flushGpuAssets");
-    logInfo("flushGpuAssets() started", "ResourceManager");
+    ZoneScopedN("AssetBuffers::flush");
+    logInfo("flush() started", "AssetBuffers");
     logInfo(std::format("cpu scratch: verts={} meshlets={} meshletVerts={} triCorners={} indices={} "
                          "normals={} tangents={} uv1={} new materials={} lights={}/{} prims={} (flushed {})",
                          geometryStore.vertices.size(), geometryStore.meshlets.size(),
@@ -919,7 +608,7 @@ void ResourceManager::flushGpuAssets()
                          geometryStore.indices.size(), geometryStore.normals.size(), geometryStore.tangents.size(),
                          geometryStore.uv1.size(), materialStore.dirtyRows.size(), lightStore.defs.size(), lightStore.instances.size(), geometryStore.primitiveDraws.size(),
                          geometryStore.flushedPrimitiveCount),
-             "ResourceManager");
+             "AssetBuffers");
 
     // one model per flush keeps every slice contiguous and its GPU data model-relative
     const auto pendingEntities = std::ranges::count(objectStorage.modelIds, kInvalidModelId);
@@ -969,7 +658,7 @@ void ResourceManager::flushGpuAssets()
     logInfo(std::format("material cache: rows={} live={} new={} hits={} misses={}", materialStore.size(),
                          materialStore.liveCount(), materialStore.dirtyRows.size(), materialStore.cacheHits,
                          materialStore.cacheMisses),
-             "ResourceManager");
+             "AssetBuffers");
 
     std::array<uint32_t, kAssetBufferCount> firsts{};
     std::vector<AssetUpload> uploads;
@@ -996,7 +685,7 @@ void ResourceManager::flushGpuAssets()
     modelAllocations.push_back(std::move(allocation));
     attachEntity(entity, modelId);
     uploadLights();
-    rebuildNodeInstanceLayout();
+    ++generation;
 
     geometryStore.clearScratch();
     lightStore.clearScratch();
@@ -1012,15 +701,15 @@ void ResourceManager::flushGpuAssets()
                          uploadedCount(AssetBuffer::MeshletVertices), uploadedCount(AssetBuffer::MeshletTriangles),
                          uploadedCount(AssetBuffer::Indices), materialStore.liveCount(), lightStore.uploadedCount(),
                          geometryStore.primitiveDraws.size()),
-             "ResourceManager");
+             "AssetBuffers");
     const auto [gpuAssetBytes, gpuAssetCapacity] = assetTotals();
     logInfo(std::format("gpu ssbo total: used {} / cap {}", formatBytes(gpuAssetBytes),
                          formatBytes(gpuAssetCapacity)),
-             "ResourceManager");
+             "AssetBuffers");
     logInfo(std::format("cpu after flush: scratch verts={} meshlets={} | material cache={} lights scratch={}",
                          geometryStore.vertices.size(), geometryStore.meshlets.size(), materialStore.size(),
                          lightStore.instances.size()),
-             "ResourceManager");
+             "AssetBuffers");
 #ifdef TRACY_ENABLE
     const std::string tracyMsg = std::format(
         "flush gpu assets total={} verts={} meshlets={} materials={} lights={}", formatBytes(gpuAssetBytes),
@@ -1031,9 +720,9 @@ void ResourceManager::flushGpuAssets()
     tracyPlotResources();
 }
 
-void ResourceManager::discardScratch()
+void AssetBuffers::discardScratch()
 {
-    logInfo("flushGpuAssets: no new model, discarding load scratch", "ResourceManager");
+    logInfo("flushGpuAssets: no new model, discarding load scratch", "AssetBuffers");
     geometryStore.discardScratch();
     lightStore.clearScratch();
     materialStore.discardModel();
@@ -1042,7 +731,7 @@ void ResourceManager::discardScratch()
 #endif
 }
 
-void ResourceManager::appendMaterialUploads(PackedScratch& packed, std::vector<AssetUpload>& uploads) const
+void AssetBuffers::appendMaterialUploads(PackedScratch& packed, std::vector<AssetUpload>& uploads) const
 {
     packed.materialRows = materialStore.dirtyRows;
     std::ranges::sort(packed.materialRows);
@@ -1072,7 +761,7 @@ void ResourceManager::appendMaterialUploads(PackedScratch& packed, std::vector<A
     }
 }
 
-void ResourceManager::attachEntity(EntityId entity, ModelId modelId)
+void AssetBuffers::attachEntity(EntityId entity, ModelId modelId)
 {
     ModelAllocation& model = modelAllocations[modelId];
     objectStorage.modelIds[entity] = modelId;
@@ -1084,7 +773,7 @@ void ResourceManager::attachEntity(EntityId entity, ModelId modelId)
     }
 }
 
-void ResourceManager::uploadLights()
+void AssetBuffers::uploadLights()
 {
     const std::span<const std::byte> bytes = std::as_bytes(std::span(lightStore.uploaded));
     if (!bytes.empty()) {
@@ -1095,9 +784,9 @@ void ResourceManager::uploadLights()
     assetBuffers[std::to_underlying(AssetBuffer::Lights)].usedBytes = bytes.size_bytes();
 }
 
-EntityId ResourceManager::instantiateModel(ModelId modelId, std::span<const Transform> transforms)
+EntityId AssetBuffers::instantiateModel(ModelId modelId, std::span<const Transform> transforms)
 {
-    ZoneScopedN("ResourceManager::instantiateModel");
+    ZoneScopedN("AssetBuffers::instantiateModel");
     const ModelAllocation& model = modelAllocations.at(modelId);
     const auto first = static_cast<EntityId>(objectStorage.size());
     for (const Transform& transform : transforms) {
@@ -1107,23 +796,23 @@ EntityId ResourceManager::instantiateModel(ModelId modelId, std::span<const Tran
         materialStore.noteReuse(model.materialRefs);
     }
     uploadLights();
-    rebuildNodeInstanceLayout();
+    ++generation;
     logInfo(std::format("instance entities [{}, {}) of model {} '{}': {} entities share {} on GPU", first,
                          first + transforms.size(), modelId, model.key, model.refCount,
                          formatBytes(modelGpuBytes(modelId))),
-             "ResourceManager");
+             "AssetBuffers");
     tracyPlotResources();
     return first;
 }
 
-std::vector<uint32_t> ResourceManager::eraseEntity(EntityId id)
+std::vector<uint32_t> AssetBuffers::eraseEntity(EntityId id)
 {
-    ZoneScopedN("ResourceManager::eraseEntity");
+    ZoneScopedN("AssetBuffers::eraseEntity");
     if (id >= objectStorage.size()) {
         throw std::out_of_range(std::format("eraseEntity: no entity {}", id));
     }
     const ModelId modelId = objectStorage.modelIds[id];
-    logInfo(std::format("erase entity {} '{}' (model {})", id, objectStorage.names[id], modelId), "ResourceManager");
+    logInfo(std::format("erase entity {} '{}' (model {})", id, objectStorage.names[id], modelId), "AssetBuffers");
 
     // owners are entity ids, which shift down past the erased one
     std::vector<GpuLight>& lightRows = lightStore.uploaded;
@@ -1140,7 +829,7 @@ std::vector<uint32_t> ResourceManager::eraseEntity(EntityId id)
         releasedTextures = eraseModel(modelId);
     }
     uploadLights();
-    rebuildNodeInstanceLayout();
+    ++generation;
     if (objectStorage.empty()) {
         geometryStore.extensionsUsed.clear();
         geometryStore.extensionsRequired.clear();
@@ -1149,19 +838,19 @@ std::vector<uint32_t> ResourceManager::eraseEntity(EntityId id)
     const auto [gpuAssetBytes, gpuAssetCapacity] = assetTotals();
     logInfo(std::format("gpu ssbo total after erase: used {} / cap {}", formatBytes(gpuAssetBytes),
                          formatBytes(gpuAssetCapacity)),
-             "ResourceManager");
+             "AssetBuffers");
     tracyPlotResources();
     return releasedTextures;
 }
 
-std::vector<uint32_t> ResourceManager::eraseModel(ModelId modelId)
+std::vector<uint32_t> AssetBuffers::eraseModel(ModelId modelId)
 {
-    ZoneScopedN("ResourceManager::eraseModel");
+    ZoneScopedN("AssetBuffers::eraseModel");
     logInfo(std::format("erase model {} '{}': {} on GPU, {} primitives, {} materials, {} textures", modelId,
                          modelAllocations[modelId].key, formatBytes(modelGpuBytes(modelId)),
                          modelAllocations[modelId].primitives.count, modelAllocations[modelId].materialRefs.size(),
                          modelAllocations[modelId].textureRefs.size()),
-             "ResourceManager");
+             "AssetBuffers");
     ModelAllocation removed = std::move(modelAllocations[modelId]);
     compactAssetBuffers(removed);
     rebaseCatalog(modelId, removed);
@@ -1170,9 +859,9 @@ std::vector<uint32_t> ResourceManager::eraseModel(ModelId modelId)
     return std::move(removed.textureRefs);
 }
 
-void ResourceManager::compactAssetBuffers(const ModelAllocation& removed)
+void AssetBuffers::compactAssetBuffers(const ModelAllocation& removed)
 {
-    ZoneScopedN("ResourceManager::compactAssetBuffers");
+    ZoneScopedN("AssetBuffers::compactAssetBuffers");
     struct Compacted {
         AssetBuffer id;
         vk::raii::Buffer buffer;
@@ -1180,7 +869,8 @@ void ResourceManager::compactAssetBuffers(const ModelAllocation& removed)
         vk::DeviceSize usedBytes;
     };
     std::vector<Compacted> compacted;
-    vk::raii::CommandBuffer& cmd = oneTimeTransferCmd();
+    const FrameSync::OneTimeCommands oneTime = frameSync.oneTimeCommands();
+    vk::raii::CommandBuffer& cmd = oneTime.cmd;
     bool isRecording = false;
 
     for (size_t i = 0; i < kAssetBufferCount; ++i) {
@@ -1216,16 +906,16 @@ void ResourceManager::compactAssetBuffers(const ModelAllocation& removed)
     }
 
     if (isRecording) {
-        submitAndWait(cmd, oneTimeTransferQueue());
+        submitAndWait(cmd, oneTime.queue);
     }
     for (Compacted& next : compacted) {
         installAssetBuffer(next.id, std::move(next.buffer), next.memory, next.usedBytes, next.usedBytes);
     }
 }
 
-void ResourceManager::rebaseCatalog(ModelId modelId, const ModelAllocation& removed)
+void AssetBuffers::rebaseCatalog(ModelId modelId, const ModelAllocation& removed)
 {
-    ZoneScopedN("ResourceManager::rebaseCatalog");
+    ZoneScopedN("AssetBuffers::rebaseCatalog");
     const auto gpuRange = [&removed](AssetBuffer buffer) { return removed.gpu[std::to_underlying(buffer)]; };
     // references past a removed slice move down by its size; kNoneIndex stays
     const auto shift = [](uint32_t& value, ElementRange cut) {
@@ -1279,33 +969,7 @@ void ResourceManager::rebaseCatalog(ModelId modelId, const ModelAllocation& remo
     }
 }
 
-void ResourceManager::tracyPlotMemoryBudget() const
-{
-#ifdef TRACY_ENABLE
-    static const bool isConfigured = [] {
-        TracyPlotConfig("Vulkan/DeviceLocalUsageBytes", tracy::PlotFormatType::Memory, false, true, 0);
-        TracyPlotConfig("Vulkan/DeviceLocalBudgetBytes", tracy::PlotFormatType::Memory, false, false, 0);
-        return true;
-    }();
-    (void)isConfigured;
-    const VkPhysicalDeviceMemoryProperties* memoryProperties = nullptr;
-    vmaGetMemoryProperties(allocator.allocator, &memoryProperties);
-    std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
-    vmaGetHeapBudgets(allocator.allocator, budgets.data());
-    VkDeviceSize usage = 0;
-    VkDeviceSize budget = 0;
-    for (uint32_t heap = 0; heap < memoryProperties->memoryHeapCount; ++heap) {
-        if ((memoryProperties->memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
-            usage += budgets[heap].usage;
-            budget += budgets[heap].budget;
-        }
-    }
-    TracyPlot("Vulkan/DeviceLocalUsageBytes", static_cast<double>(usage));
-    TracyPlot("Vulkan/DeviceLocalBudgetBytes", static_cast<double>(budget));
-#endif
-}
-
-void ResourceManager::tracyPlotResources() const
+void AssetBuffers::tracyPlotResources() const
 {
 #ifdef TRACY_ENABLE
     uint32_t activeEntities = 0;
@@ -1341,106 +1005,11 @@ void ResourceManager::tracyPlotResources() const
     TracyPlot("Vulkan/GpuAssetCapacityBytes", static_cast<double>(gpuAssetCapacity));
     TracyPlot("Vulkan/CpuScratchVertices", static_cast<double>(geometryStore.vertices.size()));
     TracyPlot("Vulkan/CpuScratchMeshlets", static_cast<double>(geometryStore.meshlets.size()));
-    TracyPlot("Vulkan/InstanceCapacity", static_cast<double>(instanceCapacity));
-    TracyPlot("Vulkan/NodeInstanceCount", static_cast<double>(nodeInstanceCount));
     TracyPlot("Vulkan/NodeCount", static_cast<double>(geometryStore.nodeDraws.size()));
-    TracyPlot("Vulkan/InstanceUboBytes", static_cast<double>(sizeof(GpuObjectUB) * instanceCapacity));
     TracyPlot("Vulkan/MeshBdaReady",
               static_cast<double>(asset(AssetBuffer::Vertices).address != 0 &&
                                   asset(AssetBuffer::Meshlets).address != 0 &&
                                   asset(AssetBuffer::MeshletVertices).address != 0 &&
                                   asset(AssetBuffer::MeshletTriangles).address != 0));
 #endif
-}
-
-vk::Format ResourceManager::findSupportedFormat(const std::vector<vk::Format>& candidates, vk::ImageTiling tiling,
-                                                vk::FormatFeatureFlags features)
-{
-    for (const auto format : candidates) {
-        vk::FormatProperties props = physicalDevice.getFormatProperties2(format).formatProperties;
-
-        if (tiling == vk::ImageTiling::eLinear && (props.linearTilingFeatures & features) == features) {
-            return format;
-        }
-        if (tiling == vk::ImageTiling::eOptimal && (props.optimalTilingFeatures & features) == features) {
-            return format;
-        }
-    }
-    throw std::runtime_error("failed to find supported format!");
-}
-
-vk::raii::ImageView ResourceManager::createImageView(vk::raii::Image& image, vk::Format format,
-                                                     vk::ImageAspectFlags aspectFlags, uint32_t mipLevels)
-{
-    vk::ImageViewCreateInfo viewInfo{.image = image,
-                                     .viewType = vk::ImageViewType::e2D,
-                                     .format = format,
-                                     .subresourceRange = {.aspectMask = aspectFlags,
-                                                          .baseMipLevel = 0,
-                                                          .levelCount = mipLevels,
-                                                          .baseArrayLayer = 0,
-                                                          .layerCount = 1}};
-    return vk::raii::ImageView(device, viewInfo);
-}
-
-void ResourceManager::destroyAttachment(AttachmentImage& target, const char* tracyName)
-{
-    // view references the image, release it first
-    target.view = nullptr;
-    destroyVmaImage(allocator.allocator, target.image, target.memory, tracyName);
-}
-
-void ResourceManager::createAttachment(AttachmentImage& target, const AttachmentDesc& desc)
-{
-    destroyAttachment(target, desc.tracyName);
-    allocator.createImage2D(renderExtent.width, renderExtent.height, 1, vk::SampleCountFlagBits::e1,
-                            desc.format, desc.usage, target.image, target.memory,
-                            std::format("{}Memory", desc.debugName));
-    setDebugName(device, target.image, desc.debugName);
-    // approx footprint: 4 B/pixel
-    const vk::DeviceSize approxBytes = static_cast<vk::DeviceSize>(renderExtent.width) * renderExtent.height * 4u;
-    tracyResourceAlloc(static_cast<VkImage>(*target.image), static_cast<size_t>(approxBytes), desc.tracyName);
-
-    vk::raii::CommandBuffer& cmd = commandBuffers[0];
-    cmd.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    transitionImageLayout(&cmd, target.image, vk::ImageLayout::eUndefined, desc.layout,
-                          {.aspectMask = desc.aspect,
-                           .baseMipLevel = 0,
-                           .levelCount = 1,
-                           .baseArrayLayer = 0,
-                           .layerCount = 1});
-    submitAndWait(cmd, graphicsQueue);
-    target.view = createImageView(target.image, desc.format, desc.aspect, 1);
-}
-
-vk::Format ResourceManager::findDepthFormat()
-{
-    logInfo("findDepthFormat() started", "ResourceManager");
-    // hi-z reads depth as R32_SFLOAT; no stencil user. BestPractices-NVIDIA-CreateImage-Depth32Format (0xf00e92a8) is
-    // accepted: reverse Z needs float depth for its precision
-    return findSupportedFormat({vk::Format::eD32Sfloat}, vk::ImageTiling::eOptimal,
-                               vk::FormatFeatureFlagBits::eDepthStencilAttachment |
-                                   vk::FormatFeatureFlagBits::eSampledImage);
-}
-
-void ResourceManager::updateSwapChainExtent(const vk::Extent2D newExtent)
-{
-    swapChainExtent = newExtent;
-}
-
-void ResourceManager::createDepthResources()
-{
-    logInfo("createDepthResources() started", "ResourceManager");
-    const vk::Format depthFormat = findDepthFormat();
-    logInfo(std::format("Depth format selected: {}", vk::to_string(depthFormat)), "ResourceManager");
-
-    // sampled by the hi-z build, the resolve and the debug views
-    createAttachment(depthAttachment,
-                     {.format = depthFormat,
-                      .usage = vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled,
-                      .aspect = vk::ImageAspectFlagBits::eDepth,
-                      .layout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
-                      .debugName = "DepthImage",
-                      // recreated only on resize: not a Tracy memory pool
-                      .tracyName = nullptr});
 }

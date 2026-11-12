@@ -2,6 +2,24 @@ module math;
 
 import types;
 
+public static const float kPi = 3.14159265358979323846;
+
+// rec. 709 weights, linear input
+public float luminance(float3 color)
+{
+    return dot(color, float3(0.2126, 0.7152, 0.0722));
+}
+
+// duff et al. 2017: continuous except at n.z = 0, no singular pole
+public void buildOrthonormalBasis(float3 n, out float3 t, out float3 b)
+{
+    const float s = n.z >= 0.0 ? 1.0 : -1.0;
+    const float a = -1.0 / (s + n.z);
+    const float c = n.x * n.y * a;
+    t = float3(1.0 + s * n.x * n.x * a, s * c, -s * n.x);
+    b = float3(c, s + n.y * n.y * a, -n.y);
+}
+
 public float4x4 objectToClip(GpuCameraData camera, float4x4 worldMatrix)
 {
     return mul(camera.proj, mul(camera.view, worldMatrix));

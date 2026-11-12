@@ -2,7 +2,7 @@
 
 #include "../Constants.h"
 #include "core/vk_device.hpp"
-#include "core/vk_resource_manager.hpp"
+#include "core/vk_allocator.hpp"
 #include "vk_shader_objects.hpp"
 
 #include <array>
@@ -16,7 +16,7 @@ class DescriptorManager;
 class DeviceGeneratedCommands
 {
 public:
-    DeviceGeneratedCommands(Device& device, ResourceManager& resourceManager, DescriptorManager& descriptorManager,
+    DeviceGeneratedCommands(Device& device, const VkAllocator& allocator, DescriptorManager& descriptorManager,
                             ShaderObjects& shaderObjects);
     ~DeviceGeneratedCommands();
 
@@ -56,7 +56,7 @@ private:
     [[nodiscard]] vk::GeneratedCommandsInfoEXT generatedCommandsInfo(CullPhase phase, RasterBin group) const;
 
     Device& device;
-    ResourceManager& resourceManager;
+    const VkAllocator& allocator;
     DescriptorManager& descriptorManager;
     ShaderObjects& shaderObjects;
 

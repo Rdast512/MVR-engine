@@ -1,0 +1,47 @@
+#pragma once
+#include "vk_device.hpp"
+
+#include <cstdint>
+#include <vector>
+#include <vulkan/vulkan_raii.hpp>
+
+// fences, semaphores and command buffers of the frame slots, plus the command buffer for load-time work
+class FrameSync {
+public:
+    // command buffer and the queue it is submitted to
+    struct OneTimeCommands {
+        vk::raii::CommandBuffer& cmd;
+        const vk::raii::Queue& queue;
+    };
+
+    explicit FrameSync(const Device& device);
+
+    FrameSync(const FrameSync&) = delete;
+    FrameSync& operator=(const FrameSync&) = delete;
+    FrameSync(FrameSync&&) = delete;
+    FrameSync& operator=(FrameSync&&) = delete;
+
+    // device idle: recreates every fence (signaled) and semaphore; one present signal per swapchain image
+    void recreate(uint32_t swapChainImageCount);
+    // load-time copies: the transfer pool when a transfer family exists, frame slot 0's buffer otherwise
+    [[nodiscard]] OneTimeCommands oneTimeCommands();
+
+    // Acquire: one per frame-in-flight. Present signal: one per swapchain image.
+    std::vector<vk::raii::Semaphore> presentCompleteSemaphore;
+    std::vector<vk::raii::Semaphore> renderFinishedSemaphore;
+    std::vector<vk::raii::Fence> inFlightFences;
+    // declared before the buffers: destroyed after them
+    vk::raii::CommandPool commandPool = nullptr;
+    vk::raii::CommandPool transferCommandPool = nullptr;
+    // per frame slot: the frame's work, submitted before the swapchain image is acquired
+    std::vector<vk::raii::CommandBuffer> commandBuffers;
+    // per frame slot: present pass + UI, the only work that waits for the acquired image
+    std::vector<vk::raii::CommandBuffer> presentCommandBuffers;
+    std::vector<vk::raii::CommandBuffer> transferCommandBuffer;
+
+private:
+    void createCommandPool();
+    void createCommandBuffers();
+
+    const Device& device;
+};

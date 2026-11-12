@@ -76,12 +76,11 @@ void resolveMain(uint3 id : SV_DispatchThreadID)
     const SampledMaterial material = sampleMaterial(loadMaterial(root, materialRow(draw.primitive)), surface, 0.0);
 
     const float3 view = normalize(camera.cameraPos - surface.position);
-    const float3 specularF0 = lerp(float3(kDielectricF0, kDielectricF0, kDielectricF0), material.baseColor,
-                                   material.metallic);
-    const float3 specAlbedo = envBrdfApprox(specularF0, saturate(dot(material.n, view)), material.roughness);
+    const BrdfInputs brdfInputs = fromMaterial(material);
+    const float3 specAlbedo = envBrdfApprox(brdfInputs.f0, saturate(dot(material.n, view)), material.roughness);
     const float4 currentClip = mul(camera.viewProj, float4(surface.position, 1.0));
     const float4 previousClip = mul(camera.prevViewProj, float4(surface.prevPosition, 1.0));
     writeGuides(targets.current, id.xy, float4(material.n, material.roughness), octEncode(surface.geoNormal),
-                material.baseColor * (1.0 - material.metallic), specularF0, specAlbedo, material.emissive,
+                brdfInputs.cDiff, brdfInputs.f0, specAlbedo, material.emissive,
                 motionPixels(root, currentClip, previousClip, targetSize));
 }

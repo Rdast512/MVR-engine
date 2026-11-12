@@ -1,0 +1,818 @@
+# Engine end-goal specification
+
+**Date:** 2026-10-31, updated 2026-11-10 · **Status:** target architecture, normative for new work · **Working tree:** `feature-pbr` on `bfb8d1587`
+**Audit:** §20 holds the 2026-11-10 architecture audit, its decisions and the documents named below that are not in the repository (§20.4).
+**Inputs:** [end_goal.md](./end_goal.md) (target), [pbr_implementation_plan.md](../spec/pbr_implementation_plan.md), [resource_architecture.md](../spec/resource_architecture.md), [shader_architecture_plan.md](../spec/shader_architecture_plan.md), [meshoptimizer.md](./meshoptimizer.md), [meshlet_culling_options.md](./meshlet_culling_options.md), [culling_comparison.md](../reference/culling_comparison.md), [dgc_comparison.md](../reference/dgc_comparison.md)
+**Precedence:** where this spec and an input disagree, this spec wins. §17 lists every overridden decision. Detailed task plans (PBR plan tasks, culling stages) stay valid wherever they don't conflict.
+
+The engine is a **GPU-driven, bindless, hybrid visibility + real-time path tracing renderer**. Its purpose is to show how far a renderer gets when it uses only current GPU features and current algorithms, without legacy fallbacks.
+
+---
+
+## 1. Scope
+
+### 1.1 Goals
+
+1. **60 fps with full ray-traced lighting** (direct + multi-bounce indirect, no raster lighting, no baked data) on the target tiers of §2.
+2. **Zero CPU per-object work per frame.** The CPU writes O(1) frame constants and O(changed) scene deltas. Culling, draw generation, acceleration-structure builds and material binning run on the GPU.
+3. **Every stage optimized and measured.** Each pass has a GPU budget (§2.3), a timer and a Tracy zone. A pass over budget is a bug.
+4. **Latest hardware paths only:** mesh shaders, shader objects, descriptor heaps, BDA, DGC, RTX Mega Geometry, OMM, SER, cooperative vectors, DLSS Ray Reconstruction, GPU memory decompression.
+5. **Compressed uploads.** Textures and geometry cross PCIe GDeflate-compressed and are decompressed on the GPU with `VK_EXT_memory_decompression`; textures are converted to GPU-native KTX2 automatically ([texture_pipeline_plan.md](./texture_pipeline_plan.md)).
+6. **CPU and GPU work in parallel.**
+   - The CPU never waits for the GPU inside a frame, and the GPU never idles waiting for the CPU.
+   - Independent GPU work overlaps across queues: RT structure builds on async compute while graphics rasterizes.
+   - Long CPU jobs (asset processing, conversion, cache I/O) run on worker threads while the GPU renders.
+   - The jobs and their milestones are in §13.1.
+
+**Final goal (version 1.0):** the full Bistro scene loaded and lit by the complete lighting stack (§11) at the §2.1 targets (milestone M9).
+
+**Post-1.0 targets:**
+- the same Bistro scene rendered entirely from Nanite-like cluster-LOD geometry built and traversed as in `vk_lod_clusters`, in raster and ray tracing, with the same lighting stack and targets (§16.3, L3);
+- multithreaded rendering: CPU frame work and command recording spread over a job system (§16.4).
+
+### 1.2 Non-goals
+
+| Out of scope | Note |
+|---|---|
+| Audio, gameplay, physics, scripting, networking | rendering only |
+| Input beyond a free-fly camera (keyboard + mouse) and ImGui | no controller or other devices |
+| Editor / asset authoring | ImGui debug UI only |
+| AMD, Intel, mobile, non-RTX NVIDIA (now) | no vendor checks or fallbacks today (PBR plan §2 #0). AMD support is planned later: where a vendor-neutral choice costs nothing, take it (SHaRC, EXT/KHR extensions, RTXDI, which is vendor-neutral HLSL). NVIDIA-only pieces are listed in §18 |
+| Raster lighting fallbacks (shadow maps, SSAO, SSR, light probes, lightmaps) | rays only |
+| MSAA, TAA, custom denoisers (SVGF and the like) | DLSS-RR owns reconstruction |
+| [streaming_server_spec.md](./streaming_server_spec.md) | separate project; must not add work to the render path |
+| Geometry and texture streaming | side project; not part of this spec. Scenes must fit in VRAM |
+
+### 1.3 Principles
+
+| # | Principle | Consequence |
+|---|---|---|
+| P1 | **One path, scaled by quality knobs, not by fallbacks** | Tiers change resolution, ray counts, cache choice and LOD error. They never swap algorithms for older ones |
+| P2 | **GPU owns the scene per frame** | Persistent GPU scene + delta uploads; the CPU never loops over instances, clusters or lights per frame |
+| P3 | **Two access mechanisms** | Buffers through BDA, images and samplers through descriptor-heap indices ([resource_architecture.md §1](../spec/resource_architecture.md#1-overview)) |
+| P4 | **One root pointer** | Every pass reaches all scene data from `GpuFrameRoot`; push data carries the root address plus pass-local values |
+| P5 | **Measure before and after** | No optimization lands without timer numbers on the reference tier |
+| P6 | **Vendor SDKs over homegrown code** | RTXDI, RTXGI (SHaRC/NRC), DLSS-RR, NVIDIA OMM SDK, meshoptimizer. The engine writes only the glue |
+
+---
+
+## 2. Hardware and performance targets
+
+### 2.1 Tiers
+
+| Tier | GPU | Output | DLSS-RR mode (render res) | Target | Role |
+|---|---|---|---|---|---|
+| **Reference** | RTX 5070 (Blackwell, 12 GB) | 2560×1440 | Quality (≈1707×960) | 60 fps, 16.6 ms GPU | development and acceptance tier |
+| **Floor** | RTX 2060 Super (Turing, 8 GB) | 1920×1080 | Quality (1280×720) | 60 fps, 16.6 ms GPU | proves the "RTX 20+" claim; the engine already runs on this card |
+| Middle | RTX 30 / 40 | between the two | Quality | 60 fps | no separate tuning; must fall between the two tiers |
+
+**Every tier targets DLSS-RR Quality.** Modes below Quality are not a target. A tier that misses 60 fps is fixed by tuning stages (§2.3); changing the mode would be an explicit decision recorded here.
+
+Feature support on the floor card is established: the engine starts on an RTX 2060 Super, and its extension set was chosen on that card. Performance is the open part: path-traced lighting at 60 fps on Turing has not been demonstrated yet. It is accepted only after measurement on the 2060 Super (§16). If it fails, the documented outcome is the per-stage overrun list, and the floor moves to RTX 30. That outcome is itself a result of the "what old hardware bottlenecks" goal.
+
+### 2.2 Feature availability per architecture
+
+Every required extension is available on Turing: the engine creates its device on an RTX 2060 Super, and `VK_EXT_ray_tracing_invocation_reorder` and `VK_EXT_opacity_micromap` are confirmed for that card in the Vulkan hardware database. The same code runs on every tier; tiers differ only in how much of a feature is hardware-accelerated.
+
+| Feature | Turing (20) | Ampere (30) | Ada (40) | Blackwell (50) | Engine use | Status |
+|---|---|---|---|---|---|---|
+| `VK_EXT_mesh_shader`, `VK_EXT_shader_object`, BDA, sync2, dynamic rendering | yes | yes | yes | yes | everywhere | known |
+| `VK_EXT_descriptor_heap` | yes | yes | yes | yes | **hard requirement** (`pickPhysicalDevice` rejects GPUs without it) | confirmed: the engine runs on an RTX 2060 Super (driver ≥ 610) |
+| `VK_EXT_device_generated_commands` | yes | yes | yes | yes | raster buckets, material binning | in the required set the engine runs with on the 2060 Super |
+| RT pipeline, ray query, AS | yes | yes | yes | yes | all rays | known |
+| SER (`VK_EXT_ray_tracing_invocation_reorder`) | yes | yes | yes | yes | all passes that shade hits (§11.1) | confirmed on the 2060 Super. Whether the driver actually reorders is reported by `rayTracingInvocationReorderReorderingHint` (`REORDER` or `NONE`); log it at startup. Per Khronos, reordering may be a no-op on hardware without support for it; NVIDIA introduced hardware SER with Ada |
+| OMM (`VK_EXT_opacity_micromap`) | yes | yes | yes | yes | alpha-tested rays | confirmed on the 2060 Super. NVIDIA OMM SDK FAQ: supported on any RTX GPU, with a dedicated OMM unit from Ada on. Subdivision limits from `maxOpacity2StateSubdivisionLevel` / `maxOpacity4StateSubdivisionLevel` |
+| Mega Geometry (`VK_NV_cluster_acceleration_structure`, `VK_NV_partitioned_acceleration_structure`) | yes | yes | yes | yes, plus faster cluster intersection | RT geometry | in the extension set chosen on the 2060 Super; optional in `vk_device.cpp` (`hasClusterAccelerationStructure`) until §10 makes it required |
+| `VK_EXT_memory_decompression` (GDeflate 1.0) | yes | yes | yes | yes | texture and geometry uploads ([texture_pipeline_plan.md](./texture_pipeline_plan.md)) | in the required set on the 2060 Super; methods from `decompressionMethods` |
+| `VK_NV_cooperative_vector` | yes (tensor cores) | yes | yes + FP8 | yes + FP8/FP4 | NRC, optional neural materials | RTXNS lists RTX 20 as minimum; not enabled in `vk_device.cpp` yet |
+| DLSS Ray Reconstruction | yes | yes | yes | yes | reconstruction | per-tier cost differs strongly (transformer model) |
+| DLSS Frame Generation / Multi Frame Generation | no | no | FG | FG + MFG | **not used**: the 60 fps target means rendered frames | — |
+| Linear swept spheres, hardware cluster intersection | no | no | no | yes | not used | Blackwell-only features stay out of the required path |
+
+Consequences:
+
+- **Same code, measured gains.** SER and OMM are used on every tier. The floor budget (§2.3) does not count on a reordering gain until the 2060 Super's reorder hint and timings show one.
+- **VRAM:** the floor card has 8 GB. Bistro must fit resident without LOD; BC textures and quantized streams keep it there (§6.3, §6.4).
+
+### 2.3 Frame budget
+
+Allocations, not measurements. They are the acceptance criteria per stage: each row gets a `GpuTimerScope` and a Tracy GPU zone. "Render" = DLSS render resolution. The floor render resolution is 1280×720 (Quality), 1.8× the pixels the first allocation assumed; the floor column is re-balanced from the M0 measurements.
+
+| Stage (§) | Reference ms | Floor ms | Notes |
+|---|---|---|---|
+| Scene update + 2-phase cull + Hi-Z (§8) | 0.6 | 0.8 | compute |
+| Visibility-buffer raster, both phases (§8) | 1.0 | 1.2 | mesh shaders via DGC |
+| RT scene: instance write, TLAS build (cluster BLAS builds after LOD) (§10) | 1.0 | 1.5 | async compute where possible |
+| Material resolve + shading + guides (§9) | 1.2 | 1.2 | compute, DGC execution sets |
+| ReSTIR DI: initial + spatiotemporal + 1 visibility ray (§11.2) | 2.0 | 2.2 | ray query |
+| Indirect: 1 ray/pixel + SER + hit shading + cache query (§11.3) | 3.0 | 3.5 | RT pipeline, half-res on the floor tier |
+| Radiance cache update / train (§11.4) | 0.8 | 0.6 | SHaRC or NRC |
+| ReSTIR GI resampling (§11.5) | 1.2 | 1.0 | |
+| DLSS-RR (§12) | 2.5 | 3.0 | NGX; measure early, it is the floor-tier risk |
+| Post + UI (§12.3) | 0.4 | 0.4 | |
+| **Headroom** | 2.9 | 1.2 | variance, driver, OS |
+| **Total** | 16.6 | 16.6 | |
+
+CPU budget: ≤ 2 ms per frame on the render thread at any scene size, excluding asset loading. Asset loading runs on worker threads and must not stall a frame (§13.1).
+
+---
+
+## 3. Platform and API layer
+
+| Area | Rule |
+|---|---|
+| API | Vulkan 1.4.356+ (`vk::raii`, C++23), SDK pinned in CMake |
+| Pipelines | `VK_EXT_shader_object` for raster and compute, all state dynamic. **Exception:** ray tracing uses `VkPipeline` + SBT, because shader objects have no ray-tracing stages and SER requires `traceRays` |
+| Binding | `VK_EXT_descriptor_heap`: one resource heap, one sampler heap, bound once per command buffer. No descriptor sets except ImGui's pool |
+| Buffers | BDA everywhere; `VK_KHR_device_address_commands` where commands take addresses |
+| Sync | sync2, timeline semaphores for cross-queue work, `MAX_FRAMES_IN_FLIGHT = 2` |
+| Queues | graphics (main), async compute (RT scene build, GPU decompression of uploads), transfer (plain buffer copies). `vkCmdDecompressMemoryEXT` needs a graphics or compute pool, so decompression never goes to a transfer-only queue |
+| Memory | VMA; ReBAR assumed: host-visible VRAM for per-frame CPU-written buffers ([resource_architecture.md §3](../spec/resource_architecture.md#3-memory-and-allocation)); `VK_EXT_memory_budget` reported in ImGui and Tracy |
+| Uploads | cache hits: GDeflate pages written to ReBAR staging, decompressed on the GPU, copied into images and asset buffers. Host image copy only for first-load source images ([texture_pipeline_plan.md](./texture_pipeline_plan.md)) |
+| Presentation | `FIFO_LATEST_READY` when available, `VK_EXT_present_timing` for pacing once enabled |
+| Validation | layers via vkconfig, not in code (`Device(window, false)` is intentional); validation-clean is a merge requirement |
+| Limits and drivers | every size, count and capacity comes from queried device properties (`HardwareCapabilities`), never from hardcoded numbers. Other GPUs are checked with the Vulkan Hardware Capability Viewer and vulkan.gpuinfo.org. The target is the latest NVIDIA driver; driver-specific notes in this spec are rechecked on each update |
+| Device creation | required extensions throw at startup when missing; optional NV extensions (cluster/partitioned AS) are cached in `HardwareCapabilities` and become **required** once §10 lands |
+
+The device extension inventory is [vulkan_extensions_reference.md](./vulkan_extensions_reference.md). To add: `VK_NV_cooperative_vector` (§11.4, §9.4), `VK_KHR_ray_tracing_position_fetch` (§10.2), and NGX/NRC-required extensions merged at device creation (PBR plan H1, G4).
+
+---
+
+## 4. Shader architecture
+
+Normative detail: PBR plan §4 and [shader_architecture_plan.md](../spec/shader_architecture_plan.md). End-state rules:
+
+| # | Rule |
+|---|---|
+| S1 | **All shaders are Slang**, SPIR-V 1.6, compiled at build time with `-depfile`, `-warnings-as-errors all` once clean |
+| S2 | **Library code is Slang modules** (`module x;`, `import a.b;`). Entry points live in `passes/`. Vendor HLSL (RTXDI, SHaRC, NRC) is `#include`d only from bridge and pass files |
+| S3 | **Buffers through typed BDA pointers** (`GpuFrameRoot*`, `bdaPtr<T>`), read once into locals. No `StructuredBuffer` bindings for engine data |
+| S4 | **Images and samplers through heap handles** (`DescriptorHandle<T>`); `kNoneIndex` never becomes a handle |
+| S5 | **Scalar layout** (`-fvk-use-scalar-layout`), column-major; every mirrored struct has C++ `static_assert`s on size and offsets |
+| S6 | **Non-uniform heap indices** go through one helper (`sampleOr`), because Slang 2026.14.1 drops `NonUniform` on heap access; re-probe on every Slang upgrade (PBR plan §4.4) |
+| S7 | **Push data within the device limit** (`maxPushDataSize`, `VK_EXT_descriptor_heap` properties): root address + pass-local values by convention, no fixed byte cap. Render-target heap indices are in a per-frame `GpuTargets` block reached from the root |
+| S8 | **Intrinsics used:** `RayQuery`, `HitObject` + `ReorderThread` (SER), `CoopVec` (NRC, neural materials), wave ops (culling, binning), `SV_Barycentrics` (debug only) |
+| S9 | **Specialization by Slang generics and link-time constants**, not by preprocessor variants, except vendor-mandated defines (`NRC_UPDATE`, `NRC_QUERY`) |
+| S10 | **No implicit-LOD `Sample` outside fragment shaders.** Compute shading uses analytic gradients (`SampleGrad`, §9.2); ray hits use ray-cone LOD (§11.3) |
+| S11 | **Limits come from the device** (§3): shader constants such as cluster sizes and list capacities are derived from queried properties at init and passed as link-time constants; each GPU list has an overflow counter in ImGui |
+
+---
+
+## 5. Frame overview
+
+```
+CPU (per frame, O(1) + deltas)
+  camera, GpuFrameRoot, changed transforms/lights → host-visible ring (ReBAR)
+
+GRAPHICS QUEUE                                          ASYNC COMPUTE QUEUE
+ 1 scene update   transforms → GpuNodeInstance, prev    │
+ 2 phase 1 cull   instances → clusters                  │ 6' RT instance write → TLAS build
+                  (frustum, cone, prev Hi-Z)            │    (after §16.3: RT LOD traversal + cluster BLAS builds first)
+ 3 phase 1 raster DGC: vis buffer + depth (reverse-Z)   │
+ 4 Hi-Z build                                           │
+ 5 phase 2 cull   candidates vs fresh Hi-Z              │
+ 6 phase 2 raster DGC: newly visible clusters           │
+ 7 Hi-Z build     (next frame's phase 1)                │
+ 8 classify       vis buffer → material tiles/bins      │
+ 9 resolve+shade  DGC compute exec set → G-surface + DLSS guides
+   ─────── wait: TLAS ready (timeline semaphore) ───────┘
+10 ReSTIR DI      initial → spatiotemporal → visibility ray      → direct
+11 GI cache + indirect, by cache (§11.4), all on the graphics queue:
+   SHaRC: update (sparse paths) → resolve → indirect 1 ray/px, SER, query at X₂ → GI samples
+   NRC:   update paths + indirect 1 ray/px as query → QueryAndTrain → custom resolve
+          (writes X₂ radiance into the GI samples)
+12 ReSTIR GI      temporal + spatial on indirect samples         → indirect
+13 combine        direct + indirect + emissive                   → noisy HDR
+14 DLSS-RR        noisy HDR + guides                             → display-res HDR
+15 post           auto exposure → tonemap → swapchain, ImGui
+```
+
+Stages 1–13 run at render resolution (indirect rays at half resolution on the floor tier); 14–15 at display resolution. Stage 8 exists from M7; until then stage 9 is one tiled dispatch (§16.2 M1). No stage reads CPU-recorded per-object data.
+
+---
+
+## 6. Scene and resource model
+
+Base: [resource_architecture.md](../spec/resource_architecture.md) (model slices, refcounted shared models and materials, `GpuFrameRoot`, `GpuNodeInstance`, `GpuDrawRecord`). It stays valid; the end state extends it.
+
+### 6.1 Persistent GPU scene
+
+| Table | Owner | Update |
+|---|---|---|
+| Model slices (vertices, cluster data, indices) | `AssetBuffers` | on load / unload |
+| `GpuModel`, `GpuPrimitive`, `GpuNode`, materials, `GpuMaterialExtension` | same | on load / unload |
+| `GpuNodeInstance[entity × node]` | GPU scene-update pass | each frame from a delta list of changed entity transforms; `prevWorldMatrix` kept on the GPU |
+| Lights: punctual rows + emissive-triangle light list | GPU light-build pass | on load (emissive triangles), per frame (punctual transforms) |
+| Per-cluster boxes (`GpuMeshletBounds`, parallel to `GpuMeshletDesc`), spheres + cones (`GpuMeshletDesc`), cluster → primitive row (`MeshletPrimitives`) (+ DAG error after §16.3) | asset buffers, model-sliced | on load |
+| Cluster groups (`GpuMeshletGroup`: union box, first cluster, count ≤ 32), per primitive (`GpuPrimitive::firstGroup/groupCount`) | asset buffers, model-sliced | on load |
+| Draw records `GpuDrawRecord` per (node instance, group): cull-internal work items, not read by mesh shaders | `MeshletCulling` | on layout change |
+| CLAS | §10.2 | on load, persistent |
+| Cluster BLAS, TLAS, `GpuRayInstance` | §10.3 | GPU, per frame |
+| OMM arrays | §10.4 | on load |
+
+Rules carried over: model-relative values inside slices, absolute rows in CPU-rewritten tables, addresses re-read after every flush and never cached across an unload.
+
+### 6.2 Per-frame data
+
+`GpuFrameRoot` (host-visible, one per frame slot) grows to hold `tlas`, `rayInstances`, `targets` (heap indices of all render targets, S7), `frameIndex`, `exposure`, jitter, the per-SDK constants blocks (RTXDI, SHaRC/NRC) and the GPU list addresses (visible clusters, material bins, light lists). Every field is asserted on both sides.
+
+### 6.3 Data layout targets
+
+From [data_layout_optimization_spec.md](./data_layout_optimization_spec.md) and the [meshoptimizer.md](./meshoptimizer.md) backlog:
+
+| Stream | End state |
+|---|---|
+| Position | float3: the CLAS build input; quantized copies only where a consumer accepts them |
+| Normal / tangent | octahedral snorm16 normal + packed tangent; generated with `meshopt_generateTangents` where missing (PBR plan A4) |
+| UV | half2 (`meshopt_quantizeHalf`) unless a texture needs float precision |
+| Vertex order | meshlet order (`meshopt_optimizeVertexFetchRemap`) |
+| Meshlet desc | sphere + normal cone, `cone_weight = 0` as in `clusterlod.h` (clusters do not trade size for tighter cones); the cone test still consumes it |
+| Meshlet bounds | object-space box + shortest/longest edge (32 B, unquantized); quantize only if bandwidth shows in the timings |
+
+### 6.4 Textures
+
+- KTX2 BC7 (color, linear data) and BC5 (normal maps), produced **automatically** by the engine in the background and cached; uploaded through GPU decompression ([texture_pipeline_plan.md](./texture_pipeline_plan.md)). The offline `tools/gltf_ktx2` shares the same encoder. BC6H (HDR) is out of scope: libktx has no BC6H target.
+- All mips resident; texture streaming is the side project of §1.2.
+- Neural texture compression (RTXNTC, cooperative vectors) is optional (§15), not part of the baseline.
+
+---
+
+## 7. Geometry pipeline (load and offline)
+
+All geometry processing uses **meshoptimizer** (rule: no homegrown geometry code where meshopt has the function). The exception is OMM baking, which uses the **NVIDIA OMM SDK**.
+
+### 7.1 Per primitive at load
+
+1. Clean-up: `meshopt_filterIndexBuffer`, welding, missing normals/tangents (PBR plan A4).
+2. **After the final goal (§16.3): cluster LOD DAG** following meshopt `demo/clusterlod.h` (`vk_lod_clusters` ships a lightly modified copy, used from `Scene::buildGeometryLod` in `scene_cluster_lod.cpp`): `meshopt_buildMeshletsSpatial` (clusters suited to ray tracing) → group with `meshopt_partitionClusters` → `meshopt_simplify*` with locked group borders → re-cluster, until one root group. Each cluster stores bounds, normal cone, its own error and its parent group's error (monotonic), as in `vk_lod_clusters`.
+3. Until then clusters are today's meshlets, built as **level 0 of `clodDefaultConfig`** so LOD later adds levels above them without changing them ([culling_comparison.md](../reference/culling_comparison.md) A3): `meshopt_buildMeshletsFlex` (min triangles = max / 3, cone weight 0, split factor 2), then per primitive `meshopt_partitionClusters` (spatial, target 24 so the +1/3 worst case fits 32) into groups with a union box; clusters are reordered so each group is contiguous. Groups never span primitives (materials and state are per primitive), unlike `vk_lod_clusters`, which partitions a whole mesh. Cluster size comes from the device: mesh-shader output limits and preferred sizes (`maxMeshOutputVertices`, `maxMeshOutputPrimitives`, `maxPreferredMeshWorkGroupInvocations`) and the CLAS limits (`VkPhysicalDeviceClusterAccelerationStructurePropertiesNV`). 64 vertices / 126 triangles is today's choice on NVIDIA, not a fixed constant; `vk_lod_clusters`' presets (default 128T / 128V) are the candidates to measure. The same clusters feed raster and CLAS builds.
+4. `meshopt_optimizeMeshletLevel` level 1, as in `clusterlod.h`. Levels ≥ 1 may rotate triangle corners, which changes OMM data, so the OMM bake (step 5) reads the final, optimized cluster triangles and never an earlier order.
+5. OMM bake for alpha-tested primitives: NVIDIA OMM SDK CPU baker, one bake per primitive over its final cluster triangles in cluster order, 4-state bake, forced 2-state at trace time (PBR plan D1).
+
+### 7.2 Disk cache
+
+Processing results (clusters, OMM, quantized streams; the DAG after §16.3) are cached per asset file + processing version, stored as GDeflate pages and decompressed on the GPU on load ([texture_pipeline_plan.md §3.4](./texture_pipeline_plan.md#34-geometry)).
+
+### 7.3 Static geometry only
+
+No animation is planned: no skinning, morph targets or keyframe animation. Rigid entity transforms change only through the debug UI, through `GpuNodeInstance` and the per-frame TLAS build.
+
+**Removal task (M0):** delete the animation code that exists today: the `Joints`, `Weights`, `MorphPos`, `MorphNrm`, `MorphTan`, `MorphTargets` and `MorphWeights` asset buffers and their `GpuModel` slices, `GpuPrimitive` morph ranges, `GpuMorphTarget`, `applyMorphPosition` in the mesh shader, morph and skin parsing in the loader (glTF files load in their base pose), and the "morphed primitives skip culling" rule. About 200 lines across `assets_loader.cpp`, `geometry_store.*`, `types.hpp`, `vk_resource_manager.*`, `vk_meshlet_culling.cpp`, `vk_engine.cpp`, `types.slang` and `geometry/mesh.slang`.
+
+---
+
+## 8. Primary visibility (raster)
+
+### 8.1 Culling and LOD
+
+Base culling is shaped like the **leaf level of `vk_lod_clusters`** with LOD switched off: same data shapes, same test functions, same two-pass bookkeeping. LOD then adds the node tree, the metric and the persistent traversal above it instead of replacing it. Detail and measurements: [culling_comparison.md](../reference/culling_comparison.md) (§4, steps A1–A10); history: [meshlet_culling_options.md](./meshlet_culling_options.md), `MeshletCulling`.
+
+As built (A1–A5, A7, C1–C3):
+
+| Step | Rule |
+|---|---|
+| Test library | [culling.slang](../shaders/core/culling.slang), a modified port of `culling.glsl` (Apache-2.0 header kept): `intersectFrustum` on 8 box corners with clip bits into `ClipBounds`, `isHiZOccluded` (one max-sampler fetch at the rect center, 1-texel mip with the niagara refinement, 2-ulp nudge), `isSubPixel`, `isFrontFacingHW`, `testTrianglePixel`. Engine extras: explicit near-plane rule (`kClipNear`), `CULLING_REVERSED_Z` switch (on since M1; to be removed, §20.2 AU5) |
+| Bounds | object-space boxes at every level: node mesh box, group box, cluster box. The cluster sphere stays only for the cone test |
+| Hierarchy | node instance → draw record = cluster group (≤ 32) → cluster → triangle. One 32-lane workgroup per record tests the group box once (frustum, sub-pixel, occlusion); the group verdict holds for all its clusters, the cone stays per cluster |
+| Tests | instance: frustum + sub-pixel + Hi-Z; group: same; cluster: frustum + cone + sub-pixel + Hi-Z; triangle (mesh shader, `SV_CullPrimitive`): homogeneous backface (`determinant(a.xyw, b.xyw, c.xyw)` before the `w ≤ 0` guard) + small-primitive test |
+| Sub-pixel | lossless: culls only boxes whose conservative rect holds no pixel center, widened by the subpixel snap (`subPixelPrecisionBits`); independent of occlusion; final, never a phase 2 candidate |
+| Matrices | frustum and sub-pixel with the current (or frozen) `cullViewProj`; early Hi-Z with `prevViewProj` + `prevWorldMatrix`, late with current. Stricter than the sample's static-instance assumption, kept |
+| Two-phase handover | instances: candidate list (the sample's `rejectInstances`). Clusters: one reject bitmask `uint` per early draw record (`rejectMasks`), written every frame (no clear); the late `cullRejectedMeshlets` re-tests the group box, then each set bit, against the fresh pyramid (the sample's `traversal_reject_clusters`). No union-box filter: the early frustum already uses the current matrix |
+| Freeze culling | matrices and pyramid frozen together; occlusion keeps working against the frozen view (no `CameraFrozen` fallback) |
+| Lists | visible entries `GpuVisibleMeshlet {nodeInstanceIndex, meshletRow}` (8 B, the sample's `ClusterInfo`) per state group, wave-ballot appends |
+
+Remaining before 1.0, each in the milestone that owns its dependency (§16.2):
+
+| Step | Rule | Milestone |
+|---|---|---|
+| A10 capacities | every list append through a capacity check with an overflow counter in `GpuCullCounters` and the culling panel (S11); exact sizing stays until LOD | M0, built |
+| A9 Hi-Z + reverse Z | port `nvhiz-update` (3 levels per dispatch, groupshared reductions in place of `subgroupShuffle`); reverse Z together with `CULLING_REVERSED_Z`, min reduction and the nudge sign | M1, built |
+| A6 bins by pipeline | two-sided by winding flip in the mesh shader (`isFrontFacingHW`) with a back-face bit for shading; cluster and group state bits `TWOSIDED`, `ALPHAMASKED`, `*_MIXED`; bins opaque / alpha-tested (later SW raster) | opaque bin built in M1; alpha bin in M6 (the bin exists and is empty) |
+| A8 jitter | §12.2 | M3 |
+| Verification | image and timings for A1–A7 on both GPUs (static, fast turn, fly out while frozen, double-sided foliage); cone-cull loss from `cone_weight = 0` | M0, open |
+
+After the final goal (§16.3):
+
+| Step | Rule |
+|---|---|
+| LOD cut | per cluster group: render when `ownError ≤ τ` and `parentError > τ`, error projected against **display** resolution (DLSS), not render resolution |
+| Traversal | GPU DAG traversal with a work queue (`vk_lod_clusters` `traversal_init` / `traversal_run`); the same code produces the RT cut (§10.3) |
+
+### 8.2 Raster
+
+| Item | Rule |
+|---|---|
+| Depth | **reverse-Z** `D32_SFLOAT`, finite far plane, clear 0, `GREATER` (built in M1, §8.1 A9) |
+| Hi-Z | `nvhiz-update` port, 3 levels per dispatch, min reduction (built in M1) |
+| Target | visibility buffer (§8.3) + depth, render resolution, 1 sample, jittered projection |
+| Buckets | opaque and alpha-tested (own fragment shader with `discard`); two-sided by winding flip, no cull-mode bucket (§8.1 A6). One DGC execute per bucket per phase. Today: the opaque bin only; the alpha-tested bin is allocated and stays empty until M6 |
+| DGC | the raster path ([dgc_comparison.md §7–9](../reference/dgc_comparison.md)): GPU-written sequences + count; an execution set once buckets need different shaders. The sample's one indirect mesh draw per list is intentionally not followed |
+| Mesh shader | visible entry → node instance → model → `MeshletPrimitives[meshletRow]` → primitive (material `DoubleSided` flag; no draw record read) → vertex transform → triangle culling → ids only; no material fetch except in the alpha-tested bucket |
+
+### 8.3 Visibility buffer
+
+Detail: [visibility_buffer.md](../spec/features/visibility_buffer.md).
+
+| Option | Bits | Choice |
+|---|---|---|
+| `R32_UINT`: `visibleRow << kVisTriangleBits \| triangle`, `kVisTriangleBits = ceil(log2(maxTrianglesPerCluster))` (7 today, 25 row bits) | 32 | **default**: half the bandwidth; fits next to 32-bit depth in the 64-bit `imageAtomicMax` that software raster (§15, L1) uses, so L1 changes the image format, not the encoding. No flags: facing is recomputed in the resolve; empty pixels are decided by depth |
+| `R32G32_UINT`: x = visible-cluster row, y = triangle + flags | 64 | alternative, only if M1 runtime measurements favor it (Q3) |
+
+Each visible-cluster row is the cull pass's `GpuVisibleMeshlet {nodeInstanceIndex, meshletRow}`; the primitive comes from `MeshletPrimitives[meshletRow]`, so the resolve needs no traversal. `meshletRow` is the cluster's row in its model's slice: stable across draw records and phases, and the row space LOD levels extend.
+
+---
+
+## 9. Material resolve and shading
+
+### 9.1 Classification
+
+One compute pass reads the visibility buffer in 8×8 tiles and appends each tile to the bin of every material **shader** it contains (rows sharing a shader share a bin). It also writes a per-pixel bin id (R8 or R16 image). Output: per-bin tile lists and counts, and the bin-id image.
+
+### 9.2 Resolve and shade
+
+Dispatched with **DGC compute**: one sequence per non-empty bin, an `EXECUTION_SET` of compute shader objects, `DISPATCH` tokens, sequence count from the GPU. This is the engine's main DGC use ([dgc_comparison.md §9](../reference/dgc_comparison.md#9-dgc-for-the-planned-gpu-work)).
+
+**Overlap guard:** a tile with several materials is in several bins, so several bin shaders run over the same pixels. Each bin shader is `[numthreads(8, 8, 1)]`, launched with `groupCount = (tileCount[bin], 1, 1)`, and returns early when the pixel's bin id (one load from the bin-id image) is not its own. Every pixel is written by exactly one bin, so the §9.3 images see no races or overwrites.
+
+Per pixel:
+1. Fetch the triangle's three vertices through BDA; transform with current and previous world matrices.
+2. **Analytic barycentrics and screen derivatives**, UV gradients for `SampleGrad`; no quad overdraw.
+3. Motion vector from unjittered current and previous clip positions.
+4. `sampleMaterial` (PBR plan B1): one function for vis-buffer resolve and ray hits.
+5. Write the shading surface and DLSS-RR guides.
+
+### 9.3 Outputs (render resolution)
+
+| Image | Format | Consumers |
+|---|---|---|
+| depth | D32F reverse-Z (hardware) | RTXDI, ReSTIR GI, DLSS (`InUseHWDepth`) |
+| `normalRoughness` | RGBA16F: world N, perceptual roughness | RTXDI, PT, DLSS |
+| `geoNormal` | RG16 snorm, octahedral | ray origin offset |
+| `diffuseAlbedo`, `specularF0` | RGBA8 | RTXDI, PT, DLSS diffuse albedo |
+| `specAlbedo` | RGBA8, env-BRDF approximation | DLSS specular albedo |
+| `emissive` | R11G11B10F | combine |
+| `motion` | RG16F, render-res pixels, no jitter | DLSS, ReSTIR temporal |
+| `specHitDistance` | R16F | optional DLSS input (see below) |
+
+`specHitDistance` is in the `OPTIONAL - only for research purposes` block of `NVSDK_NGX_VK_DLSSD_Eval_Params` in the vendored NGX 1.5 headers (`nvsdk_ngx_helpers_dlssd_vk.h`); the required inputs are color, depth, motion, diffuse/specular albedo, normals and roughness. The baseline does not pass it. If it is enabled for a measured quality gain, it must be full render resolution on both tiers: write it after ReSTIR GI (§11.5) as `length(X₂ − X₁)` of each pixel's final reservoir sample, never from the half-resolution indirect launch, whose missing checkerboard pixels would read as 0.
+
+Two sets, ping-ponged by frame parity, for temporal resampling. The resolve writes them (built in M1); PBR plan E1 tracks its open items.
+
+### 9.4 Material model
+
+glTF 2.0 metallic-roughness, `KHR_lights_punctual`, `KHR_texture_transform`, `KHR_materials_emissive_strength`; further KHR PBR extensions become separate bins when added. One BRDF: glTF Appendix B GGX with VNDF sampling (PBR plan B2). Neural materials (cooperative vectors) are optional (§15).
+
+---
+
+## 10. Ray-tracing scene (cluster LOD + RTX Mega Geometry)
+
+The RT scene is built around the cluster representation that raster uses, following `vk_lod_clusters` ([README](../reference/vk_lod_clusters/README.md), `renderer_raytrace_clusters_lod.cpp`). There are no per-primitive triangle BLASes.
+
+### 10.1 One geometry representation
+
+- **Clusters are the only geometry unit.** The engine's meshlets (64 vertices / 126 triangles) are the clusters; the DAG of §7.1 adds coarser levels later. Raster draws them, CLAS are built from them, and hits decode to them.
+- **Same ids everywhere:** a vis-buffer pixel and a ray hit both resolve to `(nodeInstance, cluster, triangle)`, so one `decodeHit` and one `sampleMaterial` serve both (PBR plan C3, extended with the cluster id). The cluster id is the model-slice `meshletRow` of §8.3.
+
+### 10.2 Load time (per model, once)
+
+| Step | Rule |
+|---|---|
+| CLAS per cluster | every cluster (one level until §16.3, then every LOD level; streaming is out of scope, so everything is resident: the sample's `scene_preloaded.cpp` mode). CLAS are object-space and shared by all instances of the model |
+| Build input | cluster-local position arrays gathered into scratch with 8-bit cluster-local indices, freed after the build; `positionTruncateBitCount` zeroes low mantissa bits to shrink CLAS (the sample's "CLAS Mantissa drop bits", default 0) |
+| Truncation consistency | fetched positions are the truncated CLAS positions, not the raster ones. At secondary hits, build the geometric normal and the next ray origin from the fetched positions only. Ray origins on the primary surface (full-precision raster positions) are offset by at least the truncation error, `≈ 2^(t − 23) · max(abs(p))` for `t` dropped bits, on top of the `geoNormal` offset (§10.4) |
+| Hit positions | `VK_KHR_ray_tracing_position_fetch` (`HitTriangleVertexPosition`, as in the sample's cluster hit shaders). Full-precision positions stay resident anyway for raster and the vis-buffer resolve, so this saves no memory here. Its value is at incoherent secondary hits: positions come from the AS, without the dependent BDA chain instance → model → cluster → vertex index → position |
+| CLAS memory | build into scratch, then move to their final place using the real build sizes: host estimates are 3–5× too large ([clas_allocation.md](../reference/vk_lod_clusters/docs/clas_allocation.md)) |
+| OMM | attached per cluster (§10.5) |
+
+### 10.3 Per frame (GPU, async compute)
+
+| Step | Sample file | Rule |
+|---|---|---|
+| RT LOD traversal (after §16.3) | `traversal_init.comp.glsl`, `traversal_run.comp.glsl` | same DAG and traversal code as raster (§8.1), separate cut: error measured by distance and solid angle, **no culling**. The sample scales the error by `culledErrorScale` (default 2.0, `traversal_init.comp.glsl`) for instances that fail its frustum **or** previous-frame Hi-Z test. The engine applies the scale **only outside the current frame's view frustum** (with a margin), never for Hi-Z occlusion (§10.4) |
+| BLAS reuse classification (after §16.3) | `geometry_blas_sharing.comp.glsl`, `traversal_init_blas_reuse.comp.glsl` | per instance: prebuilt low-detail BLAS, shared (another instance's), cached (discrete level, kept across frames), merged (highest resident detail) or own ([blas_sharing.md](../reference/vk_lod_clusters/docs/blas_sharing.md), [blas_caching.md](../reference/vk_lod_clusters/docs/blas_caching.md), [blas_merging.md](../reference/vk_lod_clusters/docs/blas_merging.md)) |
+| Per-frame cluster BLAS builds (after §16.3) | `blas_setup_insertion.comp.glsl`, `blas_clusters_insert.comp.glsl` | indirect; with merging + caching at most 2–3 builds per unique geometry per frame |
+| Instance write | `instances_assign_blas.comp.glsl` | `VkAccelerationStructureInstanceKHR` + `GpuRayInstance` written on the GPU from `GpuNodeInstance`; no CPU loop |
+| TLAS | full GPU build per frame | PTLAS (`vk_partitioned_tlas`) only if the measured TLAS build exceeds 0.3 ms; the sample lists PTLAS as future work |
+| Hit ids | — | `InstanceIndex()` → `GpuRayInstance`; `ClusterID` (needs `allowClusterAccelerationStructure` on the RT pipeline) → cluster; `PrimitiveIndex()` → triangle in the cluster |
+
+Graphics waits on a timeline semaphore before the first ray pass (§5 stage 10).
+
+**Through the final goal:** one level (today's meshlets). Each mesh primitive gets one cluster BLAS from its CLAS, built once at load and referenced by every instance; only the instances and the TLAS are rebuilt per frame. LOD (§16.3) then changes which CLAS enter a BLAS, not the data model.
+
+### 10.4 Hybrid consistency
+
+Applies once LOD exists (§16.3); until then raster and RT trace the same clusters and differ only by position truncation (§10.2). Primary surfaces come from the raster cut, secondary rays from the RT cut. Where the RT geometry is coarser than the raster surface, ray origins sit off the traced surface and produce self-shadowing or light leaks.
+
+- **Rule:** inside the view frustum the RT error threshold is never coarser than the raster one. Outside, RT detail falls off freely.
+- **No occlusion penalty in the RT cut.** The RT traversal runs on async compute in parallel with raster, so it cannot see this frame's phase 2 results. An instance occluded in last frame's Hi-Z can be disoccluded in phase 2 and rasterized at full detail while a coarser RT cut is traced. Only being outside the frustum lowers RT detail.
+- Ray origins are offset along `geoNormal` (§9.3).
+- Debug view: primary-ray self-hit distance, so a mismatch is visible.
+- `vk_lod_clusters` "Discrete LoD" ([raster_discrete_lod.md](../reference/vk_lod_clusters/docs/raster_discrete_lod.md)) is the sample's tool for making raster and RT converge on the same geometry in a hybrid renderer.
+
+### 10.5 Alpha-tested geometry (OMM)
+
+Alpha-tested instances carry baked OMMs and `FORCE_OPACITY_MICROMAP_2_STATE`; every other instance is `FORCE_OPAQUE`, so traversal never yields candidates and no any-hit shader exists (PBR plan D). The sample uses any-hit for alpha masks; the engine does not.
+
+Cluster AS supports OMM per cluster: `VkClusterAccelerationStructureBuildTriangleClusterInfoNV` has `opacityMicromapArray`, `opacityMicromapIndexBuffer` and `opacityMicromapIndexType`, and the build needs `VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_CLUSTER_OPACITY_MICROMAPS_BIT_NV` (VUID-…-opacityMicromapArray-10881). Consequences for §7.1:
+
+- Clusters reorder triangles, so each cluster gets an OMM index buffer that maps its local triangle to the bake entry (`opacityMicromapIndexBuffer`; 0 would mean "triangle index in the geometry", which no longer matches the bake order). It is the cluster's subrange of the SDK's per-triangle output, and all clusters of a primitive share its micromap array.
+- After §16.3, simplified LOD levels have new triangles: bake OMMs per LOD level from the simplified triangles and their UVs.
+
+---
+
+## 11. Lighting
+
+### 11.1 Ray model: built around SER
+
+Every pass that **shades** ray hits runs in an RT pipeline designed for Shader Execution Reordering. Rays that only test visibility use ray queries.
+
+| Pass | Rays | Mechanism |
+|---|---|---|
+| Indirect bounce (§11.3) | 1 per pixel, shaded at the hit | RT pipeline + SER |
+| Cache update / training paths (§11.4) | multi-bounce, shaded at each vertex | RT pipeline + SER; the most incoherent rays in the frame, so the largest SER gain |
+| ReSTIR DI final visibility, shadow rays at path vertices | visibility only | ray query (in compute, or inline in raygen) |
+| ReSTIR GI reconnection validation | visibility only | ray query |
+
+Shaded-ray structure, identical in every SER pass:
+
+1. `HitObject::TraceRay` (trace without shading).
+2. `ReorderThread(hitObject, hint, bits)`. The hint is the hit's **material shader bin**, the same bin ids as vis-buffer classification (§9.1); misses get their own bin.
+3. Invoke a minimal closest-hit that returns `{instance, cluster, triangle, barycentrics, hitT}` (the sample's `render_pathtrace_clusters.rchit.glsl` does this). If Slang exposes cluster id and attributes on `HitObject` directly, read them and skip the invoke.
+4. Shade in raygen: `decodeHit` → `sampleMaterial` → BRDF, the same functions as the vis-buffer resolve.
+
+SBT per pass: one raygen, one miss, one hit group (closest-hit only). No per-material hit groups, no any-hit. Texture LOD at hits comes from ray cones.
+
+The code is identical on every tier. Whether `ReorderThread` reorders is the driver's choice, reported by `rayTracingInvocationReorderReorderingHint` (§2.2); the floor budget (§2.3) assumes no reordering gain until the 2060 Super's timings show one. The RT pipeline uses the descriptor-heap pipeline flag like the shader objects do, plus `allowClusterAccelerationStructure` for cluster hits. DGC does not drive ray dispatch: driver 621.01 reports no RT stages for DGC, so dispatch is `vkCmdTraceRaysIndirect2KHR`.
+
+### 11.2 Direct light: RTXDI ReSTIR DI
+
+PBR plan F1–F3, extended:
+
+- Light sources: punctual lights + **emissive triangles** (light list built on the GPU at load, `RAB_*` bridge reads it), environment map when present.
+- Local light sampling: `Power_RIS` once emissive triangles are in (presample pass + PDF texture); `Uniform` only for punctual-only scenes.
+- Resampling: fused spatiotemporal; one final visibility ray per pixel.
+- Output: `directRadiance` (RGBA16F).
+
+### 11.3 Indirect: one bounce + cache termination
+
+- One indirect ray per pixel from the primary surface (`sampleBrdf`, VNDF). Floor tier: half resolution, checkerboard, reconstructed by ReSTIR GI + DLSS-RR.
+- At the secondary hit X₂: direct light via RTXDI sampling without reuse + one visibility ray, then terminate and **query the radiance cache** for bounces 2…∞.
+- Writes the ReSTIR GI initial sample (hit position, normal, radiance). With NRC the radiance from X₂ onward is not known in this pass: it writes the query record, and the custom resolve (§11.4) completes the sample after `QueryAndTrain`.
+
+### 11.4 Radiance cache: SHaRC and NRC
+
+| | SHaRC | NRC |
+|---|---|---|
+| Method | world-space hash grid (64-bit atomics) | tiny MLP trained online (tensor cores, cooperative vectors) |
+| Update | 2–4 % of pixels trace short training paths | sparse training paths |
+| Frame order | update → resolve → query (query reads this frame's resolved cache) | update + query paths → `QueryAndTrain` (inference, then one training step) → resolve |
+| Resolve | engine-owned compute pass (`SharcResolveEntry`) | custom resolve (NRC guide, step 7) writing `throughput × cached radiance` into the ReSTIR GI samples, instead of the SDK's combined-signal resolve |
+| Cost | low, all RTX GPUs | higher; CUDA runtime DLLs; HLSL layout matching in the bridge |
+| Quality | diffuse-leaning, grid artifacts on glossy | handles glossy, adapts without parameters |
+| Default tier | **floor** | **reference** |
+
+Both sit behind one Slang interface (`IRadianceCache`: `update`, `query`) so the path code is shared. This is a quality knob per P1 (both are the same algorithm class: world-space cache with path termination), not an old-technique fallback. Linkage tests exist (`tests/sharc_test.cpp`, `tests/nrc_library_test.cpp`). Decided: both are kept. SHaRC is integrated first (M4): it is cheaper, has no CUDA dependency and is vendor-neutral, which keeps the AMD option open. NRC follows (M5).
+
+### 11.5 Indirect resampling: ReSTIR GI
+
+RTXDI ReSTIR GI on the §11.3 samples: temporal then spatial reuse, with the boiling filter on. Output: `indirectRadiance` (RGBA16F). ReSTIR PT is a later quality option (§15).
+
+### 11.6 Combine
+
+`noisyColor = directRadiance + indirectRadiance + emissive` (RGBA16F), the only place the terms meet. AO is never applied to direct light (PBR plan §2 #10); with path-traced indirect, material AO applies only to the cache query term.
+
+---
+
+## 12. Reconstruction and output
+
+### 12.1 DLSS Ray Reconstruction
+
+NGX directly (not Streamline), `DLSSD` feature, HW depth, packed roughness, HDR input, pre-exposure. Inputs: `noisyColor`, depth, motion, diffuse/specular albedo, normal+roughness, jitter (PBR plan H1); `specHitDistance` only as the optional input of §9.3. Output: display-resolution RGBA16F. Required: missing RR throws at init.
+
+### 12.2 Jitter and resolution
+
+Halton(2,3), phase count `8 · (display / render)²`. LOD error (§8.1) and texture LOD bias (`log2(render / display)`) use display resolution.
+
+Culling and jitter (§8.1 A8, as in `vk_lod_clusters`): frustum, Hi-Z and the LOD metric use the **unjittered** matrix. The exact pixel tests use the jittered render matrix or widen their rect by the jitter amplitude: the lossless sub-pixel cull and the per-triangle small test (which already reads jittered clip positions).
+
+### 12.3 Post
+
+Auto exposure from a luminance histogram (compute) → tonemap (ACES fitted or AgX; one curve, applied once) → swapchain → ImGui. No bloom or other effects in the baseline.
+
+### 12.4 Transparency
+
+v1: `Blend` treated as mask (cutoff 0.5). Later: refractive/transmissive surfaces handled inside the path tracer (`KHR_materials_transmission`) with RR's transparency guidance. No forward raster transparency pass.
+
+---
+
+## 13. Synchronization and queues
+
+| Producer → consumer | Mechanism |
+|---|---|
+| CPU frame data → GPU | host-visible ring per frame slot, written after the slot's fence |
+| async compute RT build → graphics lighting | timeline semaphore per frame |
+| GI cache passes | **graphics queue only, in frame order.** NRC: every command buffer with NRC work must go to the queue passed to `EndFrame` (`NrcVk.h`), and inference runs inside `QueryAndTrain`, before ReSTIR GI can read X₂ radiance. SHaRC: resolve is RW on the hash and resolved buffers that the query reads, so update → resolve → query are serialized with barriers (`docs/Integration.md`). Neither cache has work that may overlap stages 12–15 |
+| DGC preprocess → execute | explicit preprocess, all preprocesses of a phase batched before its executes ([dgc_comparison.md §5](../reference/dgc_comparison.md#5-command-recording-and-state)) |
+
+Barriers: sync2 memory barriers with exact stage/access masks; one barrier per dependency edge, merged where edges share stages.
+
+### 13.1 CPU/GPU parallelism (goal 6)
+
+Each row is a pair of jobs that must overlap instead of running back to back. Rule for all of them: the only CPU wait inside a frame is the frame slot's fence; `waitIdle` exists only at startup, shutdown and swapchain recreation.
+
+| # | Overlap | Mechanism | Milestone |
+|---|---|---|---|
+| X1 | CPU prepares and records frame N+1 while the GPU executes frame N | `MAX_FRAMES_IN_FLIGHT = 2`, per-slot host buffers, slot fence; counters and stats read back one or more frames late, never waited on | in place; verified in M0 timings |
+| X2 | GPU builds RT structures (instance write, TLAS; cluster BLAS after L2) on async compute while graphics culls, rasterizes and resolves | async compute queue, timeline semaphore before the first ray pass (§5, stage 6'); buffers `CONCURRENT`, images released/acquired between families | M2 |
+| X3 | CPU loads and processes a model (parse, meshoptimizer clusters and DAG, OMM bake, KTX2 conversion, cache I/O) on worker threads while frames keep rendering | job queue on worker threads; the render thread only commits finished results at a frame boundary | M8 |
+| X4 | GPU uploads and decompresses a finished model (`vkCmdDecompressMemoryEXT`, CLAS/BLAS builds) while the CPU processes the next one | upload and build on the async compute queue with a timeline semaphore; the scene sees the model once its timeline value is reached | M8; the load-time CLAS/BLAS builds from M2 move onto this queue then |
+| X5 | Unload without stalling: resources still used by frames in flight are freed later | deferred destruction queue keyed by frame-slot fence values; buffer compaction recorded as GPU work instead of `submitAndWait` | M8 |
+| X6 | Readbacks (cull counters, GPU timers, picking) never block | host-visible VRAM read after the producing slot's fence, results shown with one to two frames of latency | in place |
+
+Done when (M9): Nsight Systems on the Bistro benchmark paths shows no CPU wait inside a frame other than the slot fence, async compute overlapping graphics work, and a model loaded and unloaded during the camera path without a frame-time spike over budget.
+
+NRC and SHaRC passes stay on the graphics queue in frame order (table above); they are not candidates for overlap.
+
+---
+
+## 14. Profiling, validation and debug
+
+| Tool | Rule |
+|---|---|
+| GPU timers | `GpuTimerScope` per §2.3 row, rolling averages in ImGui, Tracy plots |
+| Tracy | CPU + GPU zones for every pass, memory pools per resource kind |
+| Counters | every GPU list (visible clusters, candidates, bins, light samples) reports count, capacity, overflow |
+| Nsight Graphics / Systems | per-milestone capture; occupancy and RT traversal checks |
+| Validation | layers via vkconfig, best-practices NVIDIA preset; clean before merge |
+| Debug views | `DebugView` table: geometry (clusters, LOD level, triangles, instances), vis buffer ids, every §9.3 guide, RTXDI reservoirs, cache debug resolve, DLSS input vs output. Geometry views are derived from the vis buffer in compute; overdraw is not planned (it would need a raster debug variant) |
+| Ground truth | accumulation mode of the same path tracer (many frames, cache off, high bounce count) on static frames; no second renderer (PBR plan §8) |
+| Benchmarks | fixed camera paths per scene, recorded per tier, compared with §2.3 |
+
+Benchmark scenes: Sponza (+ Intel Sponza curtains/ivy for alpha), **Bistro** (the final-goal scene: many lights, emissive), Khronos validation assets (PBR plan "Validation assets"). After 1.0 (§16.3): Bistro on cluster LOD with the M9 benchmark paths (L3), and a dense scan or Zorah-class scene for cluster LOD (as used by `vk_lod_clusters`).
+
+---
+
+## 15. Optional and later techniques
+
+Each is a separate stage, added only when the baseline meets §2.3 and the technique is measured.
+
+| Technique | Benefit | Cost / prerequisite | Reference |
+|---|---|---|---|
+| ReSTIR PT | multi-bounce resampling, better glossy | heavier than ReSTIR GI | RTXDI |
+| Neural materials (cooperative vectors) | layered materials at fixed cost | training pipeline, tensor-core time | RTXNS |
+| Neural texture compression | VRAM on the floor tier | decode cost per sample | RTXNTC |
+| Tessellated / displaced clusters | micro-detail without stored triangles | cluster tessellation pipeline | `vk_tessellated_clusters`, RTXMG |
+| Software raster for tiny clusters | sub-pixel triangle efficiency | compute raster into the vis buffer with 64-bit atomics | `vk_lod_clusters` (SW raster path) |
+| Path-traced transmission | glass, water | §12.4 | RTXPT |
+
+---
+
+## 16. Roadmap
+
+### 16.1 Current state (`bfb8d1587` plus the working tree, 2026-11-10)
+
+| Area | State |
+|---|---|
+| Vulkan 1.4 base, shader objects, descriptor heaps, BDA frame root, model slices, shared models/materials | done |
+| meshoptimizer clusters as `clusterlod.h` level 0 (Flex builder, level-1 optimize), groups via `partitionClusters`, box bounds + cones, index filtering | done |
+| GPU culling aligned with `vk_lod_clusters` leaf level (§8.1): `culling.slang` port, box tests, group tier, per-group reject bitmasks, `{instance, cluster}` visible entries, frozen-pyramid freeze, 1-fetch Hi-Z, lossless sub-pixel, homogeneous per-triangle backface; history invalidation | done (A1–A5, A7, C1–C3); image and timings on both GPUs open |
+| DGC raster: GPU-written sequences, explicit preprocess, one execute per (phase, raster bin) | done |
+| Animation code (§7.3) | removed (2026-11-08) |
+| Culling list capacities and overflow counters (A10) | done |
+| Reverse-Z, 3-level Hi-Z, `R32_UINT` vis buffer, opaque bin with winding flip (M1) | built; cull counts across the reverse-Z switch not compared |
+| Resolve as one tiled compute dispatch writing the §9.3 guides and motion; `sampleMaterial` (PBR B1) | built; motion under rotation and the shading-normal view not checked by eye |
+| BRDF (PBR B2): GGX, VNDF sampling, `tests/brdf_test.cpp` | built; the test and its shader are not committed yet |
+| Debug views, GPU timers, Tracy | done |
+| Per-stage timings on both cards (M0, M1 rows of §2.3) | not recorded |
+| DLSS, NRC, SHaRC | linkage tests only (`tests/`) |
+| Light loop, lit output, tone mapping, AS, OMM, RT pipeline, cluster LOD | not started |
+| Structure and document debt | §20 |
+
+### 16.2 Milestones
+
+Each milestone renders something testable and is measured against §2.3 before the next starts.
+
+| # | Milestone | Content | Done when |
+|---|---|---|---|
+| M0 | Contracts | PBR A1, A2, A4; `GpuTargets` block; remove animation code (§7.3); log SER reorder hint and decompression methods; per-stage timers recorded on both cards; culling list capacities + overflow counters and the open culling checks (§8.1 A10, verification) | structs asserted; baseline timings on the 2060 Super and the 5070; culling image checked on both |
+| M1 | Vis buffer | reverse-Z with the `nvhiz` Hi-Z port (§8.1 A9), vis buffer raster, opaque bin with winding-flip two-sided (A6), resolve with analytic derivatives as **one tiled compute dispatch** (one PBR shader until M7: no classification, no DGC), PBR B1 `sampleMaterial` brought forward from M3, §9.3 guides, motion; plan: [visibility_buffer.md](../spec/features/visibility_buffer.md) | debug views of every guide; same geometry as today; cull counts unchanged across the reverse-Z switch |
+| M2 | Cluster RT bring-up | CLAS per meshlet, one static cluster BLAS per primitive, GPU-written instances + TLAS on the async compute queue overlapping graphics (§13.1 X2), position fetch, `decodeHit` with cluster ids, ray-query debug pass (§10.3, last paragraph) | debug CS colors by cluster; unload keeps other models traceable |
+| M3 | First lit frame | BRDF + lights (PBR B2–B3), RTXDI DI (PBR F), DLSS-RR + post (PBR H), culling jitter rule (§12.2) | stable direct light on `LightsPunctualLamp`, Sponza + sun |
+| M4 | Indirect | SER RT pipeline (§11.1), indirect pass, SHaRC, ReSTIR GI, combine | bounce light under Sponza arches, stable after RR; reorder on/off timings on the 5070 |
+| M5 | NRC | `IRadianceCache`, NRC behind it (PBR G) | reference tier uses NRC; A/B vs SHaRC captured |
+| M6 | Alpha | OMM bake per primitive, attach per cluster, build (§10.5), alpha-tested raster bucket | foliage cut-outs in raster and shadows; zero ray candidates |
+| M7 | Material binning | tile classification + bin-id image (§9.1), DGC compute execution set with the overlap guard (§9.2), emissive-triangle lights, `Power_RIS` | per-bin timings; Bistro emissives lit |
+| M8 | Asset pipeline | [texture_pipeline_plan.md](./texture_pipeline_plan.md) T1–T5: automatic KTX2 conversion, GDeflate cache, GPU decompression for textures and geometry; background loading on worker threads, async upload and build, deferred destruction on unload (§13.1 X3–X5) | plan's done criteria; Bistro load time and PCIe bytes recorded; loading a model while rendering causes no frame over budget |
+| M9 | **1.0 final goal: Bistro** | full Bistro scene, complete lighting stack; fixed benchmark paths; per-stage tuning on both tiers; PTLAS if the TLAS build is over 0.3 ms; CPU/GPU overlap verified (§13.1) | §2.3 met on the reference tier; floor result recorded (met, or overrun list → §2.1 outcome); §13.1 done criteria met |
+
+**Status (2026-11-10):** M0 and M1 are built. Their "done when" criteria are not met yet: baseline timings on both cards, the culling image check, and the M1 checks listed in §16.1 are open. M2 has not started.
+
+**Work added by the audit (§20.2):**
+
+| When | Work |
+|---|---|
+| Before M2 | close the M0/M1 checks above; delete dead files and stubs (AU7); fix the defects of §20.3; assert cluster sizes against device limits and add the Slang/C++ layout test (AU5); one swapchain recreate path (AU10); `Engine` / `EngineUi` split (AU3); document fixes of §20.4 |
+| M2 | retire queue keyed by slot fence, used by acceleration structures from the start (AU1); `ResourceManager` split (AU2); GPU scene-update pass fed by a CPU delta list (AU4) |
+| M5 | `nrc_library` becomes the `vk_nrc` module (AU9) |
+| M8 | remaining `waitIdle` and `submitAndWait` sites removed (AU1); `assets_loader.cpp` split (AU6) |
+
+### 16.3 Post-1.0 targets: Nanite-like cluster LOD
+
+Starts once rendering is complete (M9). Following `vk_lod_clusters` (local source in `reference/vk_lod_clusters`). The RT data model (§10) is already cluster-based and the culling is already its leaf level (§8.1), so this adds levels above it, not a new path.
+
+| # | Milestone | Content | Done when |
+|---|---|---|---|
+| L1 | Cluster LOD raster | DAG build + cache (§7.1); node tree above the groups, `TraversalMetric` per node and group, `generatingGroup` per cluster, `testForTraversal` in display pixels, persistent traversal kernel with warp task packing, reject nodes and groups (§8.1); fixed list capacities with clamping (A10); `classifyInstanceLod` and discrete LOD for distant instances; software raster for tiny clusters into the vis buffer (64-bit atomics) | dense scene within budget on both tiers |
+| L2 | Cluster LOD RT | RT LOD traversal, per-frame cluster BLAS with sharing / merging / caching, hybrid-consistency rule (§10.3–10.4) | RT build ≤ §2.3 row; no self-shadowing in the debug view |
+| L3 | **Post-1.0 target: Bistro on cluster LOD** | the full Bistro scene with every mesh through the cluster DAG in raster and RT (no level-0-only path left), complete lighting stack, M9 benchmark paths | §2.3 met on the reference tier with LOD on; floor result recorded; per-stage A/B against the M9 numbers; no visible LOD popping or raster/RT mismatch on the benchmark paths |
+
+### 16.4 Post-1.0 target: multithreaded rendering
+
+Starts after M9; independent of L1–L3. The GPU-driven frame keeps per-frame recording small, so threading targets the CPU work that grows with features (more passes, more SDKs, UI, simulation), not per-object work, which stays on the GPU (goal 2).
+
+| # | Milestone | Content | Done when |
+|---|---|---|---|
+| T1 | Job system | one task-graph scheduler for all CPU work (asset jobs of §13.1 X3 move onto it); worker count from the machine's core count; Tracy zones per job | asset loading and per-frame jobs share one scheduler; no ad-hoc threads left |
+| T2 | Main / render thread split | the main thread (input, camera, scene edits, UI building) produces an immutable frame snapshot; the render thread consumes it one frame later and owns all Vulkan submission | Tracy shows the two threads overlapping; input-to-photon latency recorded before and after |
+| T3 | Parallel recording | independent passes recorded on workers into their own primary command buffers (one command pool per thread per frame slot), submitted in frame order by the render thread; secondary command buffers only where one rendering scope must be split | render-thread CPU time drops versus T2 at the same GPU output; validation clean, including thread-safety checks |
+| T4 | Parallel frame prep | scene delta gathering, frame-root and cull-view writes, GPU-timer and counter readback, and shader-object creation at load spread over jobs | CPU frame time scales with worker count until the GPU is the limit |
+
+Rules: Vulkan objects that are externally synchronized (command pools, queues, the descriptor heap free list) have one owner thread or one lock; VMA stays in its default thread-safe mode. Measure the CPU frame in Tracy before T3/T4 and skip a step whose CPU cost is not on the critical path.
+
+---
+
+## 17. Superseded decisions
+
+| Source | Old decision | Now | Why |
+|---|---|---|---|
+| PBR plan §2 #2, E1 | raster G-buffer from the mesh pass | visibility buffer + compute resolve writes the same guide layout (§8.3, §9) | end_goal; per-pixel shading cost, cheap two-phase raster |
+| PBR plan §2 #3, §8 | ray queries only; no RT pipeline, SBT, SER, cluster AS | ray query for visibility; every pass that shades hits is an SER RT pipeline with a minimal SBT; Mega Geometry for all RT geometry (§10, §11.1). Any-hit stays forbidden | built around SER; end_goal |
+| PBR plan §2 #11 | NRC only, SHaRC out | both behind `IRadianceCache`, chosen per tier (§11.4) | end_goal; floor-tier cost |
+| PBR plan §2 #12, §9 | `Uniform` local lights, emissive meshes out of v1 | emissive triangles as RTXDI lights, `Power_RIS` (§11.2) | full RT lighting includes emissives |
+| PBR plan A3 | delete RT pipeline, SER, RT maintenance1, cluster/partitioned AS, SHaRC and mega-geometry stubs | keep the extensions. Deleted 2026-10-31: `geometry/mega_geometry`, `geometry/mega_tess`, `passes/mega_select`, `passes/mega_tess`, `gi/nrc`, `passes/nrc_pack`, `passes/gbuffer`. Kept, back in scope: `gi/sharc`, `gi/rtxgi`, `raytracing/*`, `passes/pathtrace*`, `passes/sharc_resolve` | needed by §10–11 |
+| PBR plan C1 | one KHR triangle BLAS per mesh primitive from the model slices | CLAS per cluster + cluster BLAS (§10.2–10.3); no triangle BLAS | RT built around cluster LOD, as in `vk_lod_clusters` |
+| PBR plan C2 | CPU-written TLAS, full rebuild | GPU-written instances + full GPU TLAS build; PTLAS only when measured (§10.3) | zero CPU per-object work (§1.1 #2); matches the sample |
+| PBR plan C3 | hit → primitive → index buffer → vertices | hit → cluster → triangle; positions by position fetch (§10.1–10.2) | one decode path for vis buffer and rays |
+| PBR plan D1–D2 | OMM per primitive in index-buffer order | OMM array per primitive with a per-cluster index buffer, baked per LOD level (§10.5) | clusters reorder triangles |
+| shader_architecture_plan §7 "closed" | G-buffer over vis buffer; mega geometry and RT pipelines dropped | reversed as above | end_goal |
+| shader_architecture_plan §1 | `MeshPushData` 24 B | 16 B (already in code) | stale doc |
+| meshlet_culling_options decisions | raster target 5A forward; LOD none | 5C vis buffer now; 7C cluster DAG after the final goal | end_goal |
+| meshlet_culling_options 3C | meshlet candidate buffer re-tested in phase 2 | instance candidates kept; meshlet candidates replaced by per-group reject bitmasks (§8.1) | `vk_lod_clusters` alignment ([culling_comparison.md](../reference/culling_comparison.md) A4) |
+| meshoptimizer.md backlog #8 | cluster LOD "only if Mega Geometry returns" | planned after the final goal (§16.3) | Mega Geometry returns; LOD follows the Bistro goal |
+| meshoptimizer.md, spec §6.3 / §7.1 (2026-11-04) | `meshopt_buildMeshlets`, `cone_weight = 0.25`, `meshopt_optimizeMeshlet` level 0 only for OMM corner order | `clusterlod.h` level 0: Flex builder, `cone_weight = 0`, `optimizeMeshletLevel` 1; OMM baked from the final cluster triangles (§7.1) | clusters must not change when LOD levels are added |
+| spec §8.2 (2026-11-04) | opaque single-sided / double-sided buckets by cull mode | opaque / alpha-tested bins, two-sided by winding flip (§8.1 A6) | matches `vk_lod_clusters` `rasterBinning`; one fewer DGC execute per phase |
+| resource_architecture.md morph and skin streams | morph deltas reachable, default-weight morphs applied in the mesh shader; joints/weights uploaded | removed (§7.3) | no animation planned |
+| end_goal §2 | `VK_EXT_descriptor_buffer` / `mutable_descriptor_type` | `VK_EXT_descriptor_heap` | engine already migrated; descriptor heap replaces descriptor buffer |
+| end_goal §3 | Hi-Z from "previous frame's" depth with previous transforms | as built: previous pyramid with previous matrices, no depth reprojection | [meshlet_culling_options.md §8](./meshlet_culling_options.md#8-review-proposed-4-tier-pipeline--visibility-buffer) |
+
+---
+
+## 18. Risks and open questions
+
+| ID | Item | Impact | Resolution |
+|---|---|---|---|
+| R3 | DLSS-RR cost on Turing | may consume most of the floor budget | measure in M3 on the floor card first |
+| R4 | NRC on Turing, CUDA runtime dependency | floor uses SHaRC (§11.4) | confirm NRC's minimum GPU in the pinned SDK |
+| R5 | 8 GB VRAM on the floor card | benchmark scene size is limited | choose scenes that fit; LOD, BC textures and quantized streams (§6.3–6.4) |
+| R6 | No hardware SER/OMM before Ada | indirect pass slower on Turing/Ampere | floor runs indirect at half resolution (§11.3) |
+| Q3 | Vis buffer 32 vs 64 bit | 32-bit chosen (§8.3); real-runtime pros and cons not measured yet | measure resolve and raster cost after M1 on both tiers; switch only if 64-bit wins and L1's atomic path stays possible |
+| Q7 | `VK_KHR_ray_tracing_position_fetch` on the 2060 Super | without it, hit decode needs a persistent position copy | check `vulkaninfo` before M2 |
+| Q8 | Slang access to `ClusterID` and attributes on `HitObject` | decides whether SER passes need the minimal closest-hit invoke | pinned Slang v2026.20 (2026-11-08): `GetClusterID` is NV-only, `GetTriangleVertexPositions` EXT-only, so the invoke stays; compile probe at M4 ([shader_execution_reordering.md](../spec/features/shader_execution_reordering.md) SER4) |
+| R7 | After §16.3: all LOD levels' CLAS resident (no streaming) on 8 GB | limits scene size on the floor card | `positionTruncateBitCount`, BLAS sharing/merging/caching, scene choice (R5) |
+| R8 | After §16.3: raster/RT LOD mismatch | self-shadowing, leaks at primary hits | §10.4 rule + debug view |
+| Q9 | GDeflate ratio on BC7/BC5 data | decides how much of the decompression gain is textures vs geometry | [texture_pipeline_plan.md](./texture_pipeline_plan.md) T3 |
+| Q4 | DGC with RT stages: driver 621.01 reports none | ray dispatch uses `vkCmdTraceRaysIndirect2KHR` | recheck per driver |
+| Q5 | Slang drops `NonUniform` on heap access | UB by spec, tolerated by NVIDIA | re-probe on every Slang upgrade (S6) |
+| Q6 | RTXDI / SHaRC / NRC HLSL headers through Slang | bridge files may need HLSL shims | verify per SDK at integration |
+| P-AMD | NVIDIA-only pieces for a future AMD port: NRC, DLSS-RR, `VK_NV_cluster_acceleration_structure` / `partitioned_acceleration_structure`, `VK_NV_cooperative_vector` | each needs a replacement on AMD | not now; keep them behind their own modules (`vk_nrc`, `vk_dlss`, `vk_mega_geometry`) so a port swaps modules, not the frame graph |
+
+---
+
+## 19. Reference map
+
+Local notes are in [reference/](../reference/); sources are under `reference/` or on GitHub.
+
+| Subsystem | Reference | Local notes |
+|---|---|---|
+| Vulkan 1.4 plumbing, descriptor heaps, push data | nvpro-samples/vk_minimal_latest | [vk_minimal_latest_comparison.md](../reference/vk_minimal_latest_comparison.md) |
+| DGC | nvpro-samples/vk_device_generated_cmds | [dgc_comparison.md](../reference/dgc_comparison.md), source in `reference/vk_device_generated_cmds-master` |
+| Meshlet culling and tuning | nvpro-samples/gl_vk_meshlet_cadscene | [gl_vk_meshlet_cadscene_reference.md](../reference/gl_vk_meshlet_cadscene_reference.md) |
+| Cluster LOD, raster + RT, BLAS sharing / merging / caching, SW raster, culling | nvpro-samples/vk_lod_clusters (Apache-2.0; license in `ThirdParty/licenses`, ported files keep the NVIDIA header and a "modified" note) | [culling_comparison.md](../reference/culling_comparison.md); source in `reference/vk_lod_clusters`; `docs/blas_*.md`, `docs/lod_generation.md`, `docs/raster_twopass_culling.md` |
+| Partitioned TLAS | nvpro-samples/vk_partitioned_tlas | — |
+| Tessellated clusters | nvpro-samples/vk_tessellated_clusters, NVIDIA-RTX/RTXMG | — |
+| RT pipeline, SER, ray query in Slang | nvpro-samples/vk_raytracing_tutorial_KHR (`v2`) | [vk_raytracing_tutorial_v2_reference.md](../reference/vk_raytracing_tutorial_v2_reference.md) |
+| glTF PBR, textures | nvpro-samples/nvpro_core2, vk_gltf_renderer | [nvpro_core2_textures_pbr.md](../reference/nvpro_core2_textures_pbr.md) |
+| Full RT lighting stack integration (ReSTIR, SHaRC/NRC, RR, SER, OMM) | NVIDIA-RTX/RTXPT | — |
+| Direct + indirect resampling | NVIDIA-RTX/RTXDI | — |
+| Radiance caches | NVIDIA-RTX/RTXGI (SHaRC, NRC) | [NrcGuide.md](../reference/NrcGuide.md) |
+| Neural shading / textures | NVIDIA-RTX/RTXNS, NVIDIA-RTX/RTXNTC | — |
+| Reconstruction | NVIDIA/DLSS (NGX) | — |
+| GPU decompression, GDeflate | `VK_EXT_memory_decompression`; GDeflate reference codec in microsoft/DirectStorage | [VK_EXT_memory_decompression.md](../spec/VkExtensionsSpecs/VK_EXT_memory_decompression.md) (its "transfer queue" advice is wrong, §3), [texture_pipeline_plan.md](./texture_pipeline_plan.md) |
+| Geometry processing, cluster DAG | zeux/meshoptimizer (`demo/clusterlod.h`) | [meshoptimizer.md](./meshoptimizer.md) |
+
+---
+
+## 20. Architecture audit (2026-11-10)
+
+**Scope:** `src/`, `shaders/`, `tests/`, the build files and every design document, at `bfb8d1587` plus the working tree. Five read-only summary passes covered the code; items marked *checked* were re-read in the source afterwards, the rest is as the passes reported it.
+**Not covered:** the per-extension files in `spec/VkExtensionsSpecs/`, the ImGui panel bodies in `vk_engine.cpp`, and `reference/`.
+**Shader code:** audited separately, line by line, for correctness and performance in [shader_audit.md](./shader_audit.md) (2026-11-11).
+
+### 20.1 What conforms
+
+| Area | State |
+|---|---|
+| Frame graph | two-phase cull → explicit DGC preprocess → vis-buffer raster → Hi-Z → resolve → debug view → present, in the order of §5 up to stage 9 |
+| Barriers | sync2 with narrow stage and access masks. `ALL_COMMANDS` appears only on GPU-timer timestamps, deliberately |
+| GPU lists | every cull list has a capacity check, an overflow counter and a UI row. DGC sequence writes stay in range because the visible count is clamped to the bin capacity (*checked*, `meshlet_cull.slang:386`) |
+| Binding | BDA and descriptor-heap indices only (P3); one frame root (P4); push data checked against `maxPushDataSize` at startup |
+| Mirrored structs | every struct in `types.slang` matches its C++ mirror in order, size and offsets (hand comparison) |
+| Device creation | one table enables each required feature and names it when a GPU lacks it; missing requirements fail at startup |
+| Shader sampling | no implicit-LOD `Sample` outside fragment shaders (S10); no barrier in non-uniform control flow; no wave-size assumption |
+| Readbacks | cull counters and GPU timers are read after the slot's fence (X6) |
+
+### 20.2 Findings and decisions
+
+| ID | Finding | Rule broken | Decision | When |
+|---|---|---|---|---|
+| AU1 | **Scene changes stall the device.** `waitIdle` on every load, unload, instance spawn and instance-field clear (`vk_engine.cpp:1306, 1316, 1348, 1407, 1438`); `submitAndWait` (queue wait) per upload, buffer growth, compaction and attachment creation. No deferred destruction. One staging buffer allocated per batch. One-time work records into frame slot 0's command buffer. The compute queue is created and never used | §13.1: `waitIdle` only at startup, shutdown and swapchain recreation | Add a retire queue keyed by the slot fence, and a command pool of its own for one-time work. Acceleration structures use the queue from their first commit; buffer growth and unload move onto it. The remaining stalls go with background loading | queue in M2; rest in M8 (X3–X5) |
+| AU2 | **`ResourceManager` does too much** (about 1,450 lines): fences, semaphores and command pools; the depth attachment; asset upload, growth and compaction; the model catalog; material and light packing; frame-root and node-instance writes; camera buffer creation. It also stores state that the cull pass and the render targets write into it, and it fills `Camera`'s buffers, so `core` and `scene` include each other | separation of concerns | Split into frame sync (fences, semaphores, pools), asset buffers (slices, growth, compaction, catalog) and frame data (root, node instances, object rows). Passes hand their addresses to the frame-root writer through the renderer. `Camera` creates its own buffers. Plan: [resource_manager_split.md](../spec/features/resource_manager_split.md) | M2, before AS state is added |
+| AU3 | **`Engine` does too much** (about 1,500 lines, roughly 900 of them UI panels): window, input, ImGui setup, asset scan, load sequencing, init and teardown order | separation of concerns | Split in two: `Engine` keeps the application and the scene actions, `EngineUi` gets everything ImGui and asks for scene actions through a request struct. Plan: [engine_ui_split.md](../spec/features/engine_ui_split.md) | before M2 |
+| AU4 | **Per-frame CPU work is O(entities).** Node instances and object rows are rewritten in full every frame, and the model matrix is computed twice per entity (`vk_frame_data.cpp:119, 180`). `ObjectStorage::erase` shifts every later entity id, so light rows are rewritten on unload | P2, goal 2, §5 stage 1 | The scene-update pass gets a milestone: a CPU list of changed entities feeds a GPU pass that writes `GpuNodeInstance` and keeps the previous matrix. The RT instance write of M2 reads the same rows | M2 |
+| AU5 | **Limits and constants.** Cluster size (64 vertices, 126 triangles) is hardcoded and never checked against the mesh-shader limits. Shader variants are preprocessor-only (`CULLING_REVERSED_Z`, `GI_CACHE_MODE`). Shared constants are copied by hand between `types.hpp` and `types.slang`. No test compares Slang layout with C++. Storage images carry no format attribute | §3 limits, S9, S11, §7.1 | Assert cluster sizes against `maxMeshOutputVertices` / `maxMeshOutputPrimitives` at init. Delete `CULLING_REVERSED_Z` and the forward-Z branch; the Hi-Z footprint test keeps the reverse-Z case. `GI_CACHE_MODE` becomes `IRadianceCache` (§11.4). Add a test that compares the reflected layout of `types.slang` with the C++ sizes and offsets. Add format attributes to the storage-image helpers | before M2; `GI_CACHE_MODE` in M5 |
+| AU6 | **`assets_loader.cpp` is 2,029 lines** holding accessor decode, JSON and base64, a thread helper, texture scheduling, material parsing, scene graph and lights, mesh preprocessing and orchestration. The image-use dry run must mirror the real material parse. The color-space rules per texture slot are duplicated in `tools/gltf_ktx2` | DRY | Share the slot color-space rules between the loader and the tool now (§6.4 needs one encoder anyway). Split the file into accessor decode, material parse, geometry build and orchestration when loading moves to workers | rules before M2; split in M8 |
+| AU7 | **Dead scaffolding.** Zero-byte sources, some still compiled: `vk_pbr.*`, `vk_postprocessing.*`, `vk_mesh.*`, `maths.cpp`, `vk_shaders.*`. Stub shaders: `base.slang`, `base/mesh.slang` (declares `module mesh`, as `geometry/mesh.slang` does), `raytracing/hit`, `raytracing/trace`, `passes/composite`, `passes/pathtrace*`, `passes/sharc_resolve`, `gi/rtxgi` (imported only by the `pathtrace` stub). Unused code: the descriptor-set members and binding mode of `DescriptorManager`, `GpuUniformBufferObject`, `EngineSettings`, `intersectSize` in `culling.slang` | YAGNI | Delete all of it. A file returns with the milestone that fills it. This reverses the §17 row that kept `gi/rtxgi`, `raytracing/*`, `passes/pathtrace*` and `passes/sharc_resolve` as empty files; `gi/sharc.slang` stays, the SHaRC test includes it | before M2 |
+| AU8 | **Build.** Five shared engine libraries each link the static third-party implementation library, so VMA, stb and tinygltf are compiled into every DLL. Coverage instrumentation defaults to on | — | Link the implementation library into `engine_util` only and export it. Coverage defaults to off | before M2 |
+| AU9 | **NVIDIA-only code placement.** `nrc_library` is compiled into `engine_render`, and only a test uses it | §18 P-AMD | Leave it until NRC is integrated, then it becomes the `vk_nrc` module | M5 |
+| AU10 | **Swapchain recreation has two paths.** Every resize event rebuilds at once (`vk_engine.cpp:416`), several times during a drag, and the renderer rebuilds again on out-of-date. No old swapchain is passed. ImGui's image count and format are updated only on the engine path (*checked*, `vk_engine.cpp:1267`) | — | A resize sets a flag; one recreate function runs once per frame, passes the old swapchain and updates ImGui | before M2 |
+| AU11 | **Test coverage.** Tests cover `core/culling` footprints, the BRDF, the SHaRC round trip and library linkage. Nothing tests the cull passes, the vis-buffer decode, the resolve output or layouts | S5 | The layout test of AU5. Pass-level tests are not planned; the debug views and counters are the check | before M2 |
+
+### 20.3 Defects
+
+| Defect | Location | Status |
+|---|---|---|
+| Embedded glTF images are cached under model directory + image index, so two `.glb` files in one folder share textures | `assets_loader.cpp:1120` | *checked*; key by model file path |
+| The window is destroyed and SDL shut down before the device that owns the surface | `vk_engine.cpp:1504–1510` | *checked*; destroy the device first |
+| The init loop over both color spaces assigns one variable, so only the linear format's host-copy layout is kept | `texture_manager.cpp:226–228` | *checked*; keep one layout per format or assert they are equal |
+| `MaterialStore::release` guards the refcount with an assert only; it underflows in release builds | `material_store.hpp` | reported |
+| An exception during an upload leaks the staging allocation and leaves the command buffer recording | `vk_asset_buffers.cpp:371–442` | reported |
+| `flushGpuAssets`, `instantiateModel` and `eraseEntity` can throw out of the main loop; only `loadModel` is caught | `vk_engine.cpp:1325, 1358` | reported |
+| `destroyTexture` dereferences a map lookup without checking it | `texture_manager.cpp` | reported |
+
+Checked and dismissed: the debug view's barrier is sufficient (resolve writes only the guides, the debug view is the only writer of the display image), and a failed load does return its material rows (`flushGpuAssets` calls `discardModel`).
+
+### 20.4 Document set
+
+Root cause of the drift: the same facts (vis-buffer format, the §9.3 guide table, the SER design, the culling rules, extension lists) are restated in three or four documents, each with its own status marker.
+
+**Ownership from now on:**
+
+| Fact | Owner | Other documents |
+|---|---|---|
+| Milestones, status, decisions | this spec, §16–§18 | link here; carry no status of their own |
+| Struct sizes and layouts | the `static_assert`s in `types.hpp` | [resource_architecture.md](../spec/resource_architecture.md) describes the model; any size it quotes must match the asserts |
+| Shader files and passes | [shader_architecture_plan.md](../spec/shader_architecture_plan.md) | — |
+| Task detail per feature | PBR plan, `spec/features/*` | — |
+
+**Fixes to make:**
+
+| Document | Fix |
+|---|---|
+| [resource_architecture.md](../spec/resource_architecture.md) | `GpuFrameRoot` is 176 B (it says 128), `GpuCullView` is 288 B (272). Remove the standard-Z, "no render-target slots", state-group and `mesh_debug` text; M1 is built |
+| [shader_architecture_plan.md](../spec/shader_architecture_plan.md) | `resolve`, `present` and `debug_view` exist; Hi-Z is 3 levels per dispatch; the open-decisions table still lists the closed Q8 |
+| `shaders/README.md` | directory names are `geometry/`, `raytracing/`, `postprocessing/`; `base.slang` goes (AU7) |
+| `README.md` | the binding mechanism is `VK_EXT_descriptor_heap`; the Linux claim has no backing |
+| [vulkan_extensions_reference.md](./vulkan_extensions_reference.md), `spec/VkExtensionsSpecs/README.md` | `VK_EXT_shader_object` is the pipeline model; OMM and SER properties are cached; cluster AS becomes required in M2 |
+| `spec/vulkan_integration_playbook.md` | a copy of the `vulkan-dev` skill, not a project document: delete |
+| `rendering_engine_idef0.md` | describes a state that no longer exists (MSAA, CPU-written sequences, `.obj` startup); it is ignored by git and stays out of the document set |
+| PBR plan, `pbr_lighting_materials.md`, `tests/brdf_test.cpp` | links to `spec/pbr_lighting_materials.html` and `spec/pbr_figures/` must point to `docs/` |
+
+**Referenced but not in the repository:** `docs/end_goal.md`, `docs/meshoptimizer.md`, `docs/texture_pipeline_plan.md`, `docs/data_layout_optimization_spec.md`, `spec/gltf_parse_resources.md`. This spec links the texture plan in nine places (goal 5, §3, §6.4, §7.2, M8, Q9). Either restore the files or fold what they decide into this spec; until then those links are dead and §6.3, §6.4 and §7.2 are the only statement of those plans.
+
+**Subsystems with no document:** the texture pipeline, DGC internals, swapchain and frame sync, the asset loader, the build and `engine_add_slang_pass`. Each gets a section here or a feature file when its milestone starts; none is written ahead of need.
+
+---
+
+## Sources for §2.2
+
+- [Khronos: VK_EXT_ray_tracing_invocation_reorder](https://www.khronos.org/blog/boosting-ray-tracing-performance-with-shader-execution-reordering-introducing-vk-ext-ray-tracing-invocation-reorder): reorder is a no-op without hardware support
+- [Tom's Hardware: hardware SER since RTX 40](https://www.tomshardware.com/pc-components/gpus/microsoft-adds-shader-execution-reordering-ser-in-latest-directx-sdk-for-more-efficient-ray-tracing-intel-arc-b-series-gpus-show-90-percent-performance-uplift)
+- [NVIDIA OMM SDK](https://developer.nvidia.com/rtx/ray-tracing/opacity-micro-map/get-started): any RTX GPU, hardware-accelerated on Ada
+- [NVIDIA blog: descriptor heaps](https://developer.nvidia.com/blog/streamlining-resource-binding-with-end-to-end-support-for-vulkan-descriptor-heaps/): driver 610+
+- [RTXNS](https://github.com/NVIDIA-RTX/RTXNS): `VK_NV_cooperative_vector` minimum RTX 20
+
+## Changelog
+
+| Date | Change |
+|---|---|
+| 2026-11-10 | Architecture audit added as §20 with decisions AU1–AU11, defects and document fixes; audit work assigned to milestones (§16.2); current state brought up to date: M0 and M1 built, their checks open (§8.1, §8.2, §16.1); stub shader files kept by §17 are now to be deleted (AU7) |
+| 2026-11-08 | OMM baking moved from meshoptimizer to the NVIDIA OMM SDK CPU baker: one bake per primitive, per-cluster index subranges (P6, §7, §7.1, §10.5, M6) |
+| 2026-11-07 | Goal 6, CPU/GPU parallelism: overlap targets X1–X6 with milestones (§13.1; M2, M8, M9 updated; §2.3 CPU budget note). Post-1.0 target multithreaded rendering T1–T4 (§1.1, §16.4) |
+| 2026-11-07 | Visibility buffer plan ([visibility_buffer.md](../spec/features/visibility_buffer.md)): 32-bit `R32_UINT` payload is the default, 64-bit only if M1 measurements favor it (§8.3, Q3); finite far plane under reverse Z (§8.2); overdraw debug view dropped (§14); PBR B1 moved into M1 (§16.2) |
+| 2026-11-07 | Culling aligned with the `vk_lod_clusters` leaf level per [culling_comparison.md](../reference/culling_comparison.md): as-built pipeline and remaining steps A6/A8/A9/A10 assigned to milestones (§8.1, §8.2, §12.2, §16.2); clusters as `clusterlod.h` level 0 with groups, `cone_weight = 0`, optimize level 1 with OMM baked after it (§6.1, §6.3, §7.1); visible entries `{nodeInstanceIndex, meshletRow}` (§8.3, §10.1); M9 named version 1.0; post-1.0 target L3: Bistro fully on cluster LOD (§1.1, §16.3) |
+| 2026-11-04 | SER and OMM confirmed on the 2060 Super; DLSS-RR Quality on every tier; limits from device properties, not fixed numbers (S7, S11, §3, §7.1, §8.3); final goal = Bistro, cluster LOD moved after it (§16.3); animation removed (§7.3, §10.6 deleted); compressed uploads with `VK_EXT_memory_decompression` and automatic KTX2 conversion (goal 5, §3, §6.4, §7.2, M8, [texture_pipeline_plan.md](./texture_pipeline_plan.md)) |
+| 2026-11-01 | Review fixes: GI cache passes on the graphics queue in SDK order, NRC custom resolve feeds ReSTIR GI (§5, §11.4, §13); `specHitDistance` optional per NGX 1.5, full resolution after ReSTIR GI if used (§9.3, §12.1); bin overlap guard (§9.1–9.2); position fetch rationale and truncation rule (§10.2); no occlusion LOD penalty in the RT cut (§10.3–10.4); M1 is one resolve dispatch |
+| 2026-10-31 | RT rebuilt around cluster LOD (§10, following `vk_lod_clusters`): CLAS per cluster, no triangle BLAS, GPU TLAS with PTLAS optional, hybrid-consistency rule; §11.1 built around SER; milestones reordered (cluster LOD last); contradicting shader stubs deleted |
+| 2026-10-31 | Q1 closed (OMM per cluster confirmed in the spec), Q2 closed (SHaRC + NRC, SHaRC first), streaming moved out of scope, AMD-later note |
+| 2026-10-31 | Floor card fixed to RTX 2060 Super (8 GB): the engine runs on it, so extension availability on Turing is confirmed; risks R1/R2 removed |
+| 2026-10-31 | Initial spec from end_goal.md, PBR plan, resource and shader architecture docs, meshoptimizer notes and the NVIDIA references |

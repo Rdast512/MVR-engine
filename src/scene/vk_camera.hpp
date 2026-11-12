@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <core/types.hpp>
+#include "core/vk_allocator.hpp"
 #include "core/vk_swapchain.hpp"
 
 class Camera
@@ -49,6 +50,8 @@ public:
         projDirty = true;
     }
 
+    // one persistently mapped GpuCameraData buffer per frame slot; freed by the destructor
+    void createBuffers(const Device& device, const VkAllocator& allocator);
     void updateCameraData(uint8_t currentImage);
 
     // after updateCameraData: first frame, focusOn, teleportTo, a projection change, or any swapchain recreation (setRenderExtent);

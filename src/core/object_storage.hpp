@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------------------
 using EntityId = uint32_t;
 inline constexpr EntityId kInvalidEntityId = ~EntityId{0};
-// index into ResourceManager::modelAllocations; several entities may draw one model
+// index into AssetBuffers::models(); several entities may draw one model
 using ModelId = uint32_t;
 inline constexpr ModelId kInvalidModelId = ~ModelId{0};
 

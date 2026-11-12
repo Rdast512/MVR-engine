@@ -20,15 +20,16 @@ namespace
     constexpr uint32_t divideRoundUp(uint32_t value, uint32_t divisor) { return (value + divisor - 1) / divisor; }
 } // namespace
 
-Renderer::Renderer(Device& device, SwapChain& swapChain, ResourceManager& resourceManager,
+Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allocator, FrameSync& frameSync,
+                   const Scene& scene, const AssetBuffers& assets, FrameData& frameData,
                    DescriptorManager& descriptorManager, ShaderObjects& shaderObjects, Camera& camera,
-                   VkTracyContext* tracyContext, bool imguiEnabled) :
-    device(device), swapChain(swapChain), resourceManager(resourceManager), descriptorManager(descriptorManager),
-    camera(camera), shaderObjects(shaderObjects), dgc(device, resourceManager, descriptorManager, shaderObjects),
-    culling(device, resourceManager, shaderObjects, dgc),
-    hiz(device, resourceManager, descriptorManager, shaderObjects), targets(device, resourceManager, descriptorManager),
-    gpuTimer(device), tracyContext(tracyContext),
-    imguiEnabled(imguiEnabled)
+                   VkTracyContext* tracyContext) :
+    device(device), swapChain(swapChain), allocator(allocator), frameSync(frameSync), frameData(frameData),
+    descriptorManager(descriptorManager), camera(camera), shaderObjects(shaderObjects),
+    dgc(device, allocator, descriptorManager, shaderObjects),
+    culling(device, allocator, scene, assets, frameData, shaderObjects, dgc),
+    hiz(device, allocator, frameSync, descriptorManager, shaderObjects),
+    targets(device, allocator, frameSync, descriptorManager), gpuTimer(device), tracyContext(tracyContext)
 {
     const vk::DeviceSize maxPushData = device.capabilities.descriptorHeap.maxPushDataSize;
     if (kMaxPushDataBytes > maxPushData) {
@@ -42,15 +43,11 @@ void Renderer::setTracyContext(VkTracyContext* tracyContextIn) { tracyContext = 
 
 void Renderer::rebuildSwapchainResources()
 {
-    resourceManager.updateSwapChainExtent(swapChain.swapChainExtent);
-    resourceManager.updateSwapChainImageFormat(swapChain.swapChainImageFormat);
-    resourceManager.setSwapChainImageCount(static_cast<uint32_t>(swapChain.swapChainImages.size()));
+    frameSync.recreate(static_cast<uint32_t>(swapChain.swapChainImages.size()));
     // render resolution equals display until upscaling (M3)
-    resourceManager.renderExtent = swapChain.swapChainExtent;
-    resourceManager.createDepthResources();
-    targets.recreate(resourceManager.renderExtent);
-    hiz.recreate();
-    camera.setRenderExtent(resourceManager.renderExtent);
+    targets.recreate(swapChain.swapChainExtent);
+    hiz.recreate(targets);
+    camera.setRenderExtent(targets.getExtent());
 }
 
 void Renderer::drawFrame()
@@ -60,18 +57,18 @@ void Renderer::drawFrame()
     auto& graphicsQueue = device.graphicsQueue;
     auto& presentQueue = device.presentQueue;
     auto& swapChainKHR = swapChain.swapChain;
-    auto& fence = *resourceManager.inFlightFences[currentFrame];
-    auto& acquireSemaphore = *resourceManager.presentCompleteSemaphore[currentFrame];
-    auto& frameCmd = resourceManager.commandBuffers[currentFrame];
-    auto& presentCmd = resourceManager.presentCommandBuffers[currentFrame];
+    auto& fence = *frameSync.inFlightFences[currentFrame];
+    auto& acquireSemaphore = *frameSync.presentCompleteSemaphore[currentFrame];
+    auto& frameCmd = frameSync.commandBuffers[currentFrame];
+    auto& presentCmd = frameSync.presentCommandBuffers[currentFrame];
 
     {
         ZoneScopedN("FenceWait");
         while (vk::Result::eTimeout == deviceRef.waitForFences(fence, vk::True, UINT64_MAX))
             ;
     }
-    vmaSetCurrentFrameIndex(resourceManager.allocator.allocator, ++frameNumber);
-    resourceManager.tracyPlotMemoryBudget();
+    vmaSetCurrentFrameIndex(allocator.allocator, ++frameNumber);
+    allocator.tracyPlotMemoryBudget();
 
     // after the fence: this slot's camera buffer and query results are no longer touched by the GPU
     camera.updateCameraData(currentFrame);
@@ -92,8 +89,19 @@ void Renderer::drawFrame()
         if (isHistoryReset) {
             TracyMessageL("History reset");
         }
-        resourceManager.updateUniformBuffers(currentFrame, debugView.packed(),
-                                             isHistoryReset ? FrameFlag::HistoryReset : 0u, frameNumber);
+        frameData.write(currentFrame, FrameRootInputs{
+                                          .camera = camera.cameraBufferAddresses[currentFrame],
+                                          .targets = targets.targetsAddress(currentFrame),
+                                          .drawRecords = culling.drawRecordsAddress(currentFrame),
+                                          .visibleMeshlets = culling.visibleMeshletsAddress(currentFrame),
+                                          .cullCounters = culling.countersAddress(currentFrame),
+                                          .lateVisibleBase = culling.lateVisibleBase(currentFrame),
+                                          .triangleCullFlags = culling.triangleCullFlags(currentFrame),
+                                          .subpixelSnap = culling.getSubpixelSnap(),
+                                          .debugView = debugView.packed(),
+                                          .frameFlags = isHistoryReset ? FrameFlag::HistoryReset : 0u,
+                                          .frameIndex = frameNumber,
+                                      });
     }
     {
         ZoneScopedN("QueueSubmitFrame");
@@ -134,7 +142,7 @@ void Renderer::drawFrame()
                                                        .stageMask =
                                                            vk::PipelineStageFlagBits2::eColorAttachmentOutput};
     const vk::CommandBufferSubmitInfo presentCmdInfo = {.commandBuffer = *presentCmd};
-    auto& renderSemaphore = *resourceManager.renderFinishedSemaphore[imageIndex];
+    auto& renderSemaphore = *frameSync.renderFinishedSemaphore[imageIndex];
     const vk::SemaphoreSubmitInfo signalSemaphoreInfo = {.semaphore = renderSemaphore,
                                                          .stageMask = vk::PipelineStageFlagBits2::eBottomOfPipe};
     const vk::SubmitInfo2 submitInfo{.waitSemaphoreInfoCount = 1,
@@ -185,7 +193,7 @@ void Renderer::recordFrameCommands(vk::raii::CommandBuffer& cmd)
         TracyVkNamedZone(gpuCtx, gpuZoneTransitionToRender, *cmd, "GPU_TransitionToRender", gpuTrace);
 #endif
         // cleared on load; waits for the previous frame's hi-z, resolve and debug-view reads
-        transitionImageLayout(&cmd, resourceManager.depthAttachment.image, vk::ImageLayout::eUndefined,
+        transitionImageLayout(&cmd, targets.getDepthImage(), vk::ImageLayout::eUndefined,
                               vk::ImageLayout::eDepthStencilAttachmentOptimal,
                               {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}, VK_QUEUE_FAMILY_IGNORED,
                               VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eComputeShader,
@@ -283,7 +291,7 @@ void Renderer::setViewport(const vk::raii::CommandBuffer& cmd, vk::Extent2D exte
 
 void Renderer::dispatchFullscreen(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader) const
 {
-    const FramePushData push{.frameRoot = resourceManager.frameRootAddress(currentFrame)};
+    const FramePushData push{.frameRoot = frameData.frameRootAddress(currentFrame)};
     ShaderObjects::bindComputeShader(cmd, shader);
     cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
     const vk::Extent2D extent = targets.getExtent();
@@ -338,7 +346,7 @@ void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase)
             .newLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = *resourceManager.depthAttachment.image,
+            .image = targets.getDepthImage(),
             .subresourceRange = {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1},
         };
         cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1,
@@ -355,7 +363,7 @@ void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase)
         .storeOp = vk::AttachmentStoreOp::eStore,
     };
     const vk::RenderingAttachmentInfo depthAttachmentInfo = {
-        .imageView = resourceManager.depthAttachment.view,
+        .imageView = targets.getDepthView(),
         .imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
         .loadOp = isEarly ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad,
         .storeOp = vk::AttachmentStoreOp::eStore,
@@ -477,7 +485,7 @@ void Renderer::recordPresent(vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
                                          .pColorAttachments = &swapchainAttachmentInfo});
     shaderObjects.bindPresentState(cmd);
     setViewport(cmd, displayExtent);
-    const PresentPushData push{.frameRoot = resourceManager.frameRootAddress(currentFrame),
+    const PresentPushData push{.frameRoot = frameData.frameRootAddress(currentFrame),
                                .displaySize = displayExtent};
     cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
     cmd.drawMeshTasksEXT(1, 1, 1);
@@ -487,7 +495,7 @@ void Renderer::recordPresent(vk::raii::CommandBuffer& cmd, uint32_t imageIndex)
     gpuTimer.end(cmd, GpuTimerScope::Present);
 
 #if ENGINE_ENABLE_IMGUI
-    if (imguiEnabled && ImGui::GetDrawData() != nullptr) {
+    if (ImGui::GetDrawData() != nullptr) {
         ZoneScopedN("RenderImGui");
         // its descriptor sets invalidate the heap bindings; nothing after it in this command buffer uses them
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), *cmd);

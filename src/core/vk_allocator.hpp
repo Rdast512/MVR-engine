@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <format>
 #include <mutex>
@@ -9,6 +10,7 @@
 #include <string_view>
 #include <unordered_set>
 #include "../util/debug.hpp"
+#include "../util/vk_tracy.hpp"
 #include "vk_device.hpp"
 
 class VkAllocator
@@ -89,6 +91,33 @@ public:
         // attachments demote last under memory pressure (NVIDIA memory priority best practice)
         allocInfo.priority = (usage & kAttachmentUsage) ? 1.0f : 0.9f;
         allocateImage(imageInfo, allocInfo, image, allocation, allocationDebugBaseName);
+    }
+
+    // per frame, after vmaSetCurrentFrameIndex refreshed the VK_EXT_memory_budget numbers
+    void tracyPlotMemoryBudget() const
+    {
+#ifdef TRACY_ENABLE
+        static const bool isConfigured = [] {
+            TracyPlotConfig("Vulkan/DeviceLocalUsageBytes", tracy::PlotFormatType::Memory, false, true, 0);
+            TracyPlotConfig("Vulkan/DeviceLocalBudgetBytes", tracy::PlotFormatType::Memory, false, false, 0);
+            return true;
+        }();
+        (void)isConfigured;
+        const VkPhysicalDeviceMemoryProperties* memoryProperties = nullptr;
+        vmaGetMemoryProperties(allocator, &memoryProperties);
+        std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
+        vmaGetHeapBudgets(allocator, budgets.data());
+        VkDeviceSize usage = 0;
+        VkDeviceSize budget = 0;
+        for (uint32_t heap = 0; heap < memoryProperties->memoryHeapCount; ++heap) {
+            if ((memoryProperties->memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
+                usage += budgets[heap].usage;
+                budget += budgets[heap].budget;
+            }
+        }
+        TracyPlot("Vulkan/DeviceLocalUsageBytes", static_cast<double>(usage));
+        TracyPlot("Vulkan/DeviceLocalBudgetBytes", static_cast<double>(budget));
+#endif
     }
 
     VkAllocator(const VkAllocator&) = delete;

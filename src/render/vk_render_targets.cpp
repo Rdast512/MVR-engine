@@ -1,5 +1,6 @@
 #include "vk_render_targets.hpp"
 
+#include "../static_headers/logger.hpp"
 #include "util/debug.hpp"
 #include "util/vk_tracy.hpp"
 #include "util/vk_utils.hpp"
@@ -38,9 +39,9 @@ namespace
     }
 } // namespace
 
-RenderTargets::RenderTargets(const Device& device, ResourceManager& resourceManager,
+RenderTargets::RenderTargets(const Device& device, const VkAllocator& allocator, FrameSync& frameSync,
                              DescriptorManager& descriptorManager) :
-    device(device), resourceManager(resourceManager), descriptorManager(descriptorManager)
+    device(device), allocator(allocator), frameSync(frameSync), descriptorManager(descriptorManager)
 {
     checkFormatSupport();
     linearSamplerIndex = descriptorManager.writeSamplerDescriptor(vk::SamplerCreateInfo{
@@ -54,26 +55,84 @@ RenderTargets::RenderTargets(const Device& device, ResourceManager& resourceMana
     });
     for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
         // fixed size: not a Tracy memory pool
-        resourceManager.createHostBuffer(frameTargets[slot], sizeof(GpuTargets), std::format("GpuTargets_{}", slot),
-                                         nullptr);
+        frameTargets[slot] = createHostBuffer(sizeof(GpuTargets), allocator.allocator, device.vkdevice,
+                                              device.queueFamilyIndices, std::format("GpuTargets_{}", slot), nullptr);
     }
 }
 
 // the descriptor manager may already be gone; only memory is released
 RenderTargets::~RenderTargets()
 {
-    const VmaAllocator allocator = resourceManager.allocator.allocator;
+    const VmaAllocator vma = allocator.allocator;
     visBufferView = nullptr;
-    destroyVmaImage(allocator, visBuffer.image, visBuffer.memory);
-    destroyVmaImage(allocator, display.image, display.memory);
+    destroyVmaImage(vma, visBuffer.image, visBuffer.memory);
+    destroyVmaImage(vma, display.image, display.memory);
     for (auto& guides : guideSets) {
         for (Target& guide : guides) {
-            destroyVmaImage(allocator, guide.image, guide.memory);
+            destroyVmaImage(vma, guide.image, guide.memory);
         }
     }
     for (HostBuffer& buffer : frameTargets) {
-        resourceManager.destroyHostBuffer(buffer, nullptr);
+        destroyHostBuffer(vma, buffer, nullptr);
     }
+    destroyAttachment(depthAttachment, nullptr);
+}
+
+vk::Format RenderTargets::findDepthFormat() const
+{
+    logInfo("findDepthFormat() started", "RenderTargets");
+    // hi-z reads depth as R32_SFLOAT; no stencil user. BestPractices-NVIDIA-CreateImage-Depth32Format (0xf00e92a8) is
+    // accepted: reverse Z needs float depth for its precision
+    constexpr std::array kCandidates{vk::Format::eD32Sfloat};
+    return findSupportedFormat(device.physicalDevice, kCandidates, vk::ImageTiling::eOptimal,
+                               vk::FormatFeatureFlagBits::eDepthStencilAttachment |
+                                   vk::FormatFeatureFlagBits::eSampledImage);
+}
+
+void RenderTargets::destroyAttachment(AttachmentImage& target, const char* tracyName)
+{
+    // view references the image, release it first
+    target.view = nullptr;
+    destroyVmaImage(allocator.allocator, target.image, target.memory, tracyName);
+}
+
+void RenderTargets::createAttachment(AttachmentImage& target, const AttachmentDesc& desc)
+{
+    destroyAttachment(target, desc.tracyName);
+    allocator.createImage2D(extent.width, extent.height, 1, vk::SampleCountFlagBits::e1, desc.format, desc.usage,
+                            target.image, target.memory, std::format("{}Memory", desc.debugName));
+    setDebugName(device.vkdevice, target.image, desc.debugName);
+    // approx footprint: 4 B/pixel
+    const vk::DeviceSize approxBytes = static_cast<vk::DeviceSize>(extent.width) * extent.height * 4u;
+    tracyResourceAlloc(static_cast<VkImage>(*target.image), static_cast<size_t>(approxBytes), desc.tracyName);
+
+    vk::raii::CommandBuffer& cmd = frameSync.commandBuffers[0];
+    cmd.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    transitionImageLayout(&cmd, target.image, vk::ImageLayout::eUndefined, desc.layout,
+                          {.aspectMask = desc.aspect,
+                           .baseMipLevel = 0,
+                           .levelCount = 1,
+                           .baseArrayLayer = 0,
+                           .layerCount = 1});
+    submitAndWait(cmd, device.graphicsQueue);
+    target.view = createImageView(device.vkdevice, *target.image, desc.format, desc.aspect, 1);
+}
+
+void RenderTargets::createDepthResources()
+{
+    logInfo("createDepthResources() started", "RenderTargets");
+    depthFormat = findDepthFormat();
+    logInfo(std::format("Depth format selected: {}", vk::to_string(depthFormat)), "RenderTargets");
+
+    // sampled by the hi-z build, the resolve and the debug views
+    createAttachment(depthAttachment,
+                     {.format = depthFormat,
+                      .usage = vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled,
+                      .aspect = vk::ImageAspectFlagBits::eDepth,
+                      .layout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+                      .debugName = "DepthImage",
+                      // recreated only on resize: not a Tracy memory pool
+                      .tracyName = nullptr});
 }
 
 void RenderTargets::checkFormatSupport() const
@@ -98,8 +157,8 @@ void RenderTargets::checkFormatSupport() const
 void RenderTargets::createTarget(Target& target, vk::Format format, vk::ImageUsageFlags usage, vk::ImageLayout layout,
                                  const char* debugName)
 {
-    resourceManager.allocator.createImage2D(extent.width, extent.height, 1, vk::SampleCountFlagBits::e1, format, usage,
-                                            target.image, target.memory, std::format("{}Memory", debugName));
+    allocator.createImage2D(extent.width, extent.height, 1, vk::SampleCountFlagBits::e1, format, usage, target.image,
+                            target.memory, std::format("{}Memory", debugName));
     // recreated only on resize: not a Tracy memory pool
     setDebugName(device.vkdevice, target.image, debugName);
     const vk::ImageViewCreateInfo view = colorViewInfo(*target.image, format);
@@ -111,7 +170,7 @@ void RenderTargets::createTarget(Target& target, vk::Format format, vk::ImageUsa
 
 void RenderTargets::destroyTargets()
 {
-    const VmaAllocator allocator = resourceManager.allocator.allocator;
+    const VmaAllocator vma = allocator.allocator;
     const auto destroy = [&](Target& target)
     {
         for (uint32_t* index : {&target.storageIndex, &target.sampledIndex}) {
@@ -120,7 +179,7 @@ void RenderTargets::destroyTargets()
                 *index = kNoneIndex;
             }
         }
-        destroyVmaImage(allocator, target.image, target.memory);
+        destroyVmaImage(vma, target.image, target.memory);
     };
     visBufferView = nullptr;
     destroy(visBuffer);
@@ -141,6 +200,7 @@ void RenderTargets::recreate(vk::Extent2D renderExtent)
     ZoneScopedN("RenderTargets::recreate");
     destroyTargets();
     extent = renderExtent;
+    createDepthResources();
 
     createTarget(visBuffer, kVisBufferFormat,
                  vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
@@ -155,13 +215,13 @@ void RenderTargets::recreate(vk::Extent2D renderExtent)
         }
     }
     depthIndex = descriptorManager.writeImageDescriptor(
-        vk::ImageViewCreateInfo{.image = *resourceManager.depthAttachment.image,
+        vk::ImageViewCreateInfo{.image = *depthAttachment.image,
                                 .viewType = vk::ImageViewType::e2D,
-                                .format = resourceManager.findDepthFormat(),
+                                .format = depthFormat,
                                 .subresourceRange = {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}},
         vk::DescriptorType::eSampledImage, vk::ImageLayout::eShaderReadOnlyOptimal);
 
-    vk::raii::CommandBuffer& cmd = resourceManager.commandBuffers[0];
+    vk::raii::CommandBuffer& cmd = frameSync.commandBuffers[0];
     cmd.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     // nothing to wait for: the device is idle and the content is undefined
     const auto initialize = [&cmd](vk::Image image, vk::ImageLayout layout, vk::AccessFlags2 access)
@@ -181,7 +241,7 @@ void RenderTargets::recreate(vk::Extent2D renderExtent)
             initialize(*guide.image, vk::ImageLayout::eGeneral, kStorageAccess);
         }
     }
-    submitAndWait(cmd, resourceManager.graphicsQueue);
+    submitAndWait(cmd, device.graphicsQueue);
 }
 
 void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber)
@@ -208,5 +268,4 @@ void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber)
         .current = guideSet(current),
         .previous = guideSet((current + 1) % kGuideSetCount),
     };
-    resourceManager.targetsAddresses[frameSlot] = frameTargets[frameSlot].address;
 }

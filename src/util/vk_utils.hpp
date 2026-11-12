@@ -3,8 +3,17 @@
 #include "vma/vk_mem_alloc.h"
 
 #include <optional>
+#include <span>
 #include <string_view>
 #include <vector>
+
+// Persistently mapped host-visible buffer (VMA_ALLOCATION_CREATE_MAPPED_BIT) with a device address
+struct HostBuffer {
+    vk::raii::Buffer buffer = nullptr;
+    VmaAllocation memory = nullptr;
+    void* mapped = nullptr;
+    vk::DeviceAddress address = 0;
+};
 
 // Inserts a pipeline barrier to transition an image between layouts.
 // Pure utility — does not depend on any manager class.
@@ -47,3 +56,17 @@ void destroyVmaBuffer(VmaAllocator allocator, vk::raii::Buffer& buffer, VmaAlloc
                       const char* tracyName = nullptr);
 void destroyVmaImage(VmaAllocator allocator, vk::raii::Image& image, VmaAllocation& allocation,
                      const char* tracyName = nullptr);
+
+// uniform + storage usage, host-visible coherent; tracyName nullptr skips Tracy tracking
+[[nodiscard]] HostBuffer createHostBuffer(vk::DeviceSize size, VmaAllocator allocator, const vk::raii::Device& device,
+                                          const std::vector<uint32_t>& queueFamilyIndices, std::string_view debugName,
+                                          const char* tracyName);
+// VMA unmaps on destroy; no-op when never created
+void destroyHostBuffer(VmaAllocator allocator, HostBuffer& target, const char* tracyName);
+
+// first candidate whose tiling features include features; throws when none does
+[[nodiscard]] vk::Format findSupportedFormat(const vk::raii::PhysicalDevice& physicalDevice,
+                                             std::span<const vk::Format> candidates, vk::ImageTiling tiling,
+                                             vk::FormatFeatureFlags features);
+[[nodiscard]] vk::raii::ImageView createImageView(const vk::raii::Device& device, vk::Image image, vk::Format format,
+                                                  vk::ImageAspectFlags aspectFlags, uint32_t mipLevels);

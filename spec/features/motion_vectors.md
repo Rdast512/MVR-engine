@@ -32,7 +32,7 @@ Every temporal consumer (DLSS-RR, RTXDI and ReSTIR GI temporal reuse) finds a pi
 - `currentClip = viewProj · surface.position`, `previousClip = prevViewProj · surface.prevPosition`; `surface.prevPosition = prevWorldMatrix · objectPos` (`buildSurface`).
 - Empty pixels use `w = 0` directions through `viewProj` and `prevViewProj`.
 - `Camera::updateCameraData` copies last frame's `viewProj` into `prevViewProj`, or this frame's on a cut; `jitterOffset` is applied in shaders through `jitterClip`, so `viewProj` stays unjittered.
-- `ObjectStorage::prevModelMatrices` is per entity and advanced in `ResourceManager::updateUniformBuffers` after `writeNodeInstances` has read it, so it follows the entity through unload compaction.
+- `ObjectStorage::prevModelMatrices` is per entity and advanced in `FrameData::write` after `writeNodeInstances` has read it, so it follows the entity through unload compaction.
 - Debug view `MotionVectors` shows `|motion| / 16` as red/green.
 - Debug views `MotionVectors` and `Reprojection` show entity transform controls (`Engine::drawEntityTransformControls`) for the §5 cases.
 

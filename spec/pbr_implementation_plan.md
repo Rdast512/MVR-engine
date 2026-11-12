@@ -120,7 +120,7 @@ Resource details: [resource_architecture.md](./resource_architecture.md). Vis-bu
 | Guides | done, two sets: `NormalRoughness` RGBA16F, `GeoNormal` RG16_SNORM (oct), `DiffuseAlbedo` RGBA8 (`cDiff`, **a = 1: AO not stored yet**), `SpecularF0` RGBA8, `SpecAlbedo` RGBA8 (`envBrdfApprox`), `Emissive` B10G11R11, `Motion` RG16F |
 | `geometry/surface.slang`, `geometry/visbuffer.slang` | done: `TriangleCorners`, `loadTriangleCorners`, `Surface`, `buildSurface` (geometric-normal fallback, tangent sign flip under `FlipWinding`), payload pack/unpack, `computeBarycentrics` |
 | `material/pbr.slang` | **B1 done**: `SampledMaterial`, `sampleMaterial(GpuMaterial, Surface, lodBias)`, `sampleSlot` with `NonUniformResourceIndex`, unlit handling, `KHR_texture_transform` per slot from the A1 `GpuMaterial` matrices (2026-11-09) |
-| `material/brdf.slang` | `envBrdfApprox`, `kDielectricF0`. No GGX, sampling or pdf |
+| `material/brdf.slang` | **B2 done**: `evalBrdf`, `sampleBrdf` (VNDF), `pdfBrdf`, `fromMaterial`, `envBrdfApprox`; checked on the GPU by `tests/brdf_test.cpp` |
 | Debug views | Guides category done (depth, shading/geometric normal, roughness, albedo, F0, spec albedo, emissive, motion). `LightingOnly` and `DlssInput` reserved, not implemented |
 | Vertex streams | `GpuVertex` 32 B (pos, color, uv0); normals, tangents, uv1 as separate float32 streams. Missing normals and needed tangents are generated at load (A4); the resolve's fallbacks to the geometric normal and no normal mapping remain only as guards |
 | Animation code | removed (2026-11-08): no morph or skin data is loaded or uploaded; glTF files load in their base pose |
@@ -323,7 +323,7 @@ SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodB
 - **Done when:** the roughness and F0 debug views on `MetalRoughSpheres` match the texture layout; `TextureTransformTest` matches the Khronos screenshot in kind.
 - **Must not:** sRGB-sample metal-rough/normal/occlusion, use Unity ORM on the metal-rough slot, flip normal Y, or sample with implicit LOD outside a fragment shader.
 
-#### B2 · BRDF (M3)
+#### B2 · BRDF (M3) — done (2026-11-09)
 
 - **Files:** `shaders/material/brdf.slang` (keeps `envBrdfApprox` and `kDielectricF0`)
 
@@ -358,7 +358,7 @@ public float3 evalBrdf(float3 n, float3 cDiff, float3 f0, float roughness, float
     float  nDotV = max(dot(n, v), 1e-4);
     float  nDotH = saturate(dot(n, h));
     float  vDotH = saturate(dot(v, h));
-    float  alpha = max(roughness * roughness, 1e-4);
+    float  alpha = max(roughness * roughness, kMinAlpha); // 1e-3: at a2 = 1e-8 float makes D(nDotH = 1) inf
     float  a2    = alpha * alpha;
 
     float3 f = fresnelSchlick(f0, vDotH);
@@ -368,7 +368,7 @@ public float3 evalBrdf(float3 n, float3 cDiff, float3 f0, float roughness, float
 
 The signature takes `cDiff`/`f0` rather than `SampledMaterial`, so RTXDI and the caches call it straight from guide data (`DiffuseAlbedo`, `SpecularF0`, `NormalRoughness`). A `BrdfInputs fromMaterial(SampledMaterial)` helper computes `cDiff = baseColor·(1−metallic)`, `f0 = lerp(kDielectricF0, baseColor, metallic)`; the resolve switches its inline computation to it, so pixels and hits share one definition.
 
-Also add `sampleBrdf(…, u) -> BrdfSample { l, weight, pdf }` (lobe pick by Fresnel-weighted luminance, cosine diffuse, GGX **VNDF** specular) and `pdfBrdf(…, l)`. RTXDI (`RAB_SurfaceImportanceSampleBrdf`, `RAB_SurfaceEvaluateBrdfPdf`), the indirect pass and ReSTIR GI use them.
+Also add `sampleBrdf(…, u) -> BrdfSample { l, weight, pdf }` (lobe pick by Fresnel-weighted luminance, clamped to [0.1, 0.9] unless `cDiff` is black, cosine diffuse, GGX **VNDF** specular; `pdf = 0` marks an invalid sample) and `pdfBrdf(…, l)`. RTXDI (`RAB_SurfaceImportanceSampleBrdf`, `RAB_SurfaceEvaluateBrdfPdf`), the indirect pass and ReSTIR GI use them.
 
 - **Done when:** [pbr_lighting_materials.html §7](./pbr_lighting_materials.html#combined) numbers reproduce (white plastic r=0.5 → 0.295 head-on).
 - **Must not:** feed perceptual roughness into `D`, drop `NdotL` after the correlated `V`, or multiply by it twice.
@@ -727,7 +727,7 @@ PR order follows the milestones. The **first lit pixel** is F3 through the H2 br
 | `vk_nrc` (`nrc_library` exists for the linkage test) | NRC context, SDK buffer bindings, `NrcConstants` per slot, update / query / custom resolve, `QueryAndTrain` |
 | `vk_dlss` | NGX init, RR feature, evaluate |
 
-Rules: `MaterialStore` / `LightStore` stay on `Scene`. `ResourceManager::flushGpuAssets` remains the only asset upload site. Every AS, micromap, RT pipeline and SDK object is owned by a move-only RAII type (destroy the object, then its buffer). Build or SDK failure throws `std::runtime_error` naming the failing call. NVIDIA-only SDKs stay inside their module (§2 #0). Every pass gets a `GpuTimerScope` and a Tracy zone with its spec §2.3 budget. All other C++ rules: §2 #14.
+Rules: `MaterialStore` / `LightStore` stay on `Scene`. `AssetBuffers::flush` remains the only asset upload site. Every AS, micromap, RT pipeline and SDK object is owned by a move-only RAII type (destroy the object, then its buffer). Build or SDK failure throws `std::runtime_error` naming the failing call. NVIDIA-only SDKs stay inside their module (§2 #0). Every pass gets a `GpuTimerScope` and a Tracy zone with its spec §2.3 budget. All other C++ rules: §2 #14.
 
 ---
 

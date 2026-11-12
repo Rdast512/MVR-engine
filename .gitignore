@@ -20,8 +20,6 @@ vcpkg_installed/
 /ThirdParty/_deps/
 /gltf/
 renderDoc.cap
-/docs/
-/docs
 /.reasonix
 /.codegraph
 reasonix.toml

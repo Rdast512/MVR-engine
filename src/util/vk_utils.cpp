@@ -147,6 +147,62 @@ void submitAndWait(vk::raii::CommandBuffer& commandBuffer, const vk::raii::Queue
     queue.waitIdle();
 }
 
+HostBuffer createHostBuffer(vk::DeviceSize size, VmaAllocator allocator, const vk::raii::Device& device,
+                            const std::vector<uint32_t>& queueFamilyIndices, std::string_view debugName,
+                            const char* tracyName)
+{
+    HostBuffer target;
+    createBuffer(size,
+                 vk::BufferUsageFlagBits2::eUniformBuffer | vk::BufferUsageFlagBits2::eStorageBuffer |
+                     vk::BufferUsageFlagBits2::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, target.buffer,
+                 target.memory, allocator, device, queueFamilyIndices, debugName, VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    VmaAllocationInfo allocationInfo{};
+    vmaGetAllocationInfo(allocator, target.memory, &allocationInfo);
+    target.mapped = allocationInfo.pMappedData;
+    target.address = device.getBufferAddress({.buffer = *target.buffer});
+    tracyResourceAlloc(static_cast<VkBuffer>(*target.buffer), static_cast<size_t>(size), tracyName);
+    return target;
+}
+
+void destroyHostBuffer(VmaAllocator allocator, HostBuffer& target, const char* tracyName)
+{
+    // persistently mapped (MAPPED_BIT): VMA unmaps on destroy
+    destroyVmaBuffer(allocator, target.buffer, target.memory, tracyName);
+    target.mapped = nullptr;
+    target.address = 0;
+}
+
+vk::Format findSupportedFormat(const vk::raii::PhysicalDevice& physicalDevice, std::span<const vk::Format> candidates,
+                               vk::ImageTiling tiling, vk::FormatFeatureFlags features)
+{
+    for (const auto format : candidates) {
+        vk::FormatProperties props = physicalDevice.getFormatProperties2(format).formatProperties;
+
+        if (tiling == vk::ImageTiling::eLinear && (props.linearTilingFeatures & features) == features) {
+            return format;
+        }
+        if (tiling == vk::ImageTiling::eOptimal && (props.optimalTilingFeatures & features) == features) {
+            return format;
+        }
+    }
+    throw std::runtime_error("failed to find supported format!");
+}
+
+vk::raii::ImageView createImageView(const vk::raii::Device& device, vk::Image image, vk::Format format,
+                                    vk::ImageAspectFlags aspectFlags, uint32_t mipLevels)
+{
+    vk::ImageViewCreateInfo viewInfo{.image = image,
+                                     .viewType = vk::ImageViewType::e2D,
+                                     .format = format,
+                                     .subresourceRange = {.aspectMask = aspectFlags,
+                                                          .baseMipLevel = 0,
+                                                          .levelCount = mipLevels,
+                                                          .baseArrayLayer = 0,
+                                                          .layerCount = 1}};
+    return vk::raii::ImageView(device, viewInfo);
+}
+
 void destroyVmaBuffer(VmaAllocator allocator, vk::raii::Buffer& buffer, VmaAllocation& allocation,
                       const char* tracyName)
 {

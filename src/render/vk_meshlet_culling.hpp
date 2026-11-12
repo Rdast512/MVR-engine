@@ -2,9 +2,12 @@
 
 #include "../Constants.h"
 #include "core/types.hpp"
+#include "core/vk_allocator.hpp"
+#include "core/vk_asset_buffers.hpp"
 #include "core/vk_device.hpp"
-#include "core/vk_resource_manager.hpp"
+#include "core/vk_frame_data.hpp"
 #include "scene/vk_camera.hpp"
+#include "scene/vk_scene.hpp"
 #include "vk_dgc.hpp"
 #include "vk_hiz.hpp"
 #include "vk_shader_objects.hpp"
@@ -107,8 +110,8 @@ struct MeshletCullStats
 class MeshletCulling
 {
 public:
-    MeshletCulling(Device& device, ResourceManager& resourceManager, ShaderObjects& shaderObjects,
-                   DeviceGeneratedCommands& dgc);
+    MeshletCulling(Device& device, const VkAllocator& vkAllocator, const Scene& scene, const AssetBuffers& assets,
+                   const FrameData& frameData, ShaderObjects& shaderObjects, DeviceGeneratedCommands& dgc);
     ~MeshletCulling();
 
     MeshletCulling(const MeshletCulling&) = delete;
@@ -133,6 +136,30 @@ public:
     // after prepareFrame: last frame's node-instance and visible rows mean something else now
     [[nodiscard]] bool isSceneLayoutChanged() const noexcept { return isLayoutChangedThisFrame; }
 
+    // the slot's values for the frame root, valid after its prepareFrame
+    [[nodiscard]] vk::DeviceAddress drawRecordsAddress(uint32_t frameSlot) const noexcept
+    {
+        return frames[frameSlot].drawRecords.address;
+    }
+    [[nodiscard]] vk::DeviceAddress visibleMeshletsAddress(uint32_t frameSlot) const noexcept
+    {
+        return frames[frameSlot].visibleMeshlets.address;
+    }
+    [[nodiscard]] vk::DeviceAddress countersAddress(uint32_t frameSlot) const noexcept
+    {
+        return frames[frameSlot].counters.address;
+    }
+    [[nodiscard]] uint32_t lateVisibleBase(uint32_t frameSlot) const noexcept
+    {
+        return frames[frameSlot].lateVisibleBase;
+    }
+    [[nodiscard]] uint32_t triangleCullFlags(uint32_t frameSlot) const noexcept
+    {
+        return frames[frameSlot].triangleCullFlags;
+    }
+    // half a step of the device's sub-pixel grid
+    [[nodiscard]] float getSubpixelSnap() const noexcept { return subpixelSnap; }
+
     MeshletCullSettings settings;
 
 private:
@@ -145,7 +172,7 @@ private:
         std::vector<GpuInstanceCullItem> instances;
         std::vector<GpuDrawRecord> drawRecords;
         std::array<uint32_t, kRasterBinCount> binMeshlets{};
-        // ResourceManager::nodeInstanceLayoutGeneration it was built from
+        // FrameData::layoutGeneration it was built from
         uint32_t generation = kNoGeneration;
     };
     // per frame slot; replaced only while the slot is not in flight
@@ -172,6 +199,10 @@ private:
         DeviceBuffer rejectMasks;
         // SceneTemplates::generation of the uploaded templates
         uint32_t generation = kNoGeneration;
+        // first late-phase row of visibleMeshlets
+        uint32_t lateVisibleBase = 0;
+        // TriangleCullFlag bits from the settings of the frame recorded into the slot
+        uint32_t triangleCullFlags = 0;
     };
     // what prepareFrame recorded into a slot, paired with its counters on readback
     struct RecordedFrame
@@ -193,10 +224,14 @@ private:
     void destroyFrameBuffers();
 
     Device& device;
-    ResourceManager& resourceManager;
+    const VkAllocator& vkAllocator;
+    const Scene& scene;
+    const AssetBuffers& assets;
+    const FrameData& frameData;
     ShaderObjects& shaderObjects;
     DeviceGeneratedCommands& dgc;
 
+    float subpixelSnap = 0.0f;
     SceneTemplates templates;
     std::array<FrameBuffers, MAX_FRAMES_IN_FLIGHT> frames;
     std::array<RecordedFrame, MAX_FRAMES_IN_FLIGHT> recorded{};

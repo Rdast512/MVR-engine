@@ -29,9 +29,9 @@ namespace
                                                                                    RasterBin::AlphaTested};
 } // namespace
 
-DeviceGeneratedCommands::DeviceGeneratedCommands(Device& device, ResourceManager& resourceManager,
+DeviceGeneratedCommands::DeviceGeneratedCommands(Device& device, const VkAllocator& allocator,
                                                  DescriptorManager& descriptorManager, ShaderObjects& shaderObjects) :
-    device(device), resourceManager(resourceManager), descriptorManager(descriptorManager),
+    device(device), allocator(allocator), descriptorManager(descriptorManager),
     shaderObjects(shaderObjects)
 {
 }
@@ -194,7 +194,7 @@ void DeviceGeneratedCommands::allocateSequenceBuffer(uint32_t frameSlot, uint32_
     vk::raii::Buffer buffer({});
     VmaAllocation memory = nullptr;
     createBuffer(bufferSize, vk::BufferUsageFlagBits2::eIndirectBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                 vk::MemoryPropertyFlagBits::eDeviceLocal, buffer, memory, resourceManager.allocator.allocator,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal, buffer, memory, allocator.allocator,
                  device.vkdevice, device.queueFamilyIndices, std::format("DgcSequences_{}", frameSlot));
 
     sequenceBuffers[frameSlot] = std::move(buffer);
@@ -223,7 +223,7 @@ void DeviceGeneratedCommands::allocatePreprocessBuffer(uint32_t frameSlot, uint3
     // own block puts the buffer at offset 0, so every region is 4 KiB aligned
     createBuffer(preprocessSize,
                  vk::BufferUsageFlagBits2::ePreprocessBufferEXT | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                 vk::MemoryPropertyFlagBits::eDeviceLocal, buffer, memory, resourceManager.allocator.allocator,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal, buffer, memory, allocator.allocator,
                  device.vkdevice, device.queueFamilyIndices, std::format("DgcPreprocess_{}", frameSlot),
                  VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
 
@@ -238,12 +238,12 @@ void DeviceGeneratedCommands::allocatePreprocessBuffer(uint32_t frameSlot, uint3
 void DeviceGeneratedCommands::destroyFrameResources(uint32_t frameSlot)
 {
     ZoneScopedN("DeviceGeneratedCommands::destroyFrameResources");
-    destroyVmaBuffer(resourceManager.allocator.allocator, sequenceBuffers[frameSlot], sequenceMemory[frameSlot],
+    destroyVmaBuffer(allocator.allocator, sequenceBuffers[frameSlot], sequenceMemory[frameSlot],
                      "GPU/DgcSequences");
     sequenceAddresses[frameSlot] = 0;
     sequenceCapacity[frameSlot] = 0;
 
-    destroyVmaBuffer(resourceManager.allocator.allocator, preprocessBuffers[frameSlot], preprocessMemory[frameSlot],
+    destroyVmaBuffer(allocator.allocator, preprocessBuffers[frameSlot], preprocessMemory[frameSlot],
                      "GPU/DgcPreprocess");
     preprocessAddresses[frameSlot] = 0;
     preprocessGroupStrides[frameSlot] = 0;
