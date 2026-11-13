@@ -32,14 +32,22 @@ public:
     std::vector<vk::raii::Semaphore> presentCompleteSemaphore;
     std::vector<vk::raii::Semaphore> renderFinishedSemaphore;
     std::vector<vk::raii::Fence> inFlightFences;
+    // async compute work of the frame slots signals frame numbers; not recreated with the swapchain
+    vk::raii::Semaphore computeTimeline = nullptr;
     // declared before the buffers: destroyed after them
     vk::raii::CommandPool commandPool = nullptr;
     vk::raii::CommandPool transferCommandPool = nullptr;
+    vk::raii::CommandPool computeCommandPool = nullptr;
     // per frame slot: the frame's work, submitted before the swapchain image is acquired
     std::vector<vk::raii::CommandBuffer> commandBuffers;
+    // per frame slot: the passes that trace rays, submitted after commandBuffers with a wait on this frame's
+    // computeTimeline value (the TLAS build)
+    std::vector<vk::raii::CommandBuffer> rayCommandBuffers;
     // per frame slot: present pass + UI, the only work that waits for the acquired image
     std::vector<vk::raii::CommandBuffer> presentCommandBuffers;
     std::vector<vk::raii::CommandBuffer> transferCommandBuffer;
+    // per frame slot: async compute work (RT instances + TLAS), submitted to Device::computeQueue
+    std::vector<vk::raii::CommandBuffer> computeCommandBuffers;
 
 private:
     void createCommandPool();

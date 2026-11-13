@@ -40,7 +40,8 @@ std::optional<EngineBench::Config> EngineBench::readConfig()
     };
 }
 
-bool EngineBench::onFrame(const GpuTimer& timer, const MeshletCullStats& cullStats)
+bool EngineBench::onFrame(const GpuTimer& timer, const MeshletCullStats& cullStats,
+                          const RayTracingScene::Stats& rtStats)
 {
     ++frame;
     if (frame <= kWarmupFrames || (frame - kWarmupFrames) % GpuTimer::kHistorySize != 0) {
@@ -56,11 +57,11 @@ bool EngineBench::onFrame(const GpuTimer& timer, const MeshletCullStats& cullSta
     if (windowCount * GpuTimer::kHistorySize < config.measuredFrames) {
         return false;
     }
-    logResults(cullStats);
+    logResults(cullStats, rtStats);
     return true;
 }
 
-void EngineBench::logResults(const MeshletCullStats& cullStats) const
+void EngineBench::logResults(const MeshletCullStats& cullStats, const RayTracingScene::Stats& rtStats) const
 {
     logInfo(std::format("Bench: field side {}, {} windows of {} frames after {} warm-up frames", config.fieldSide,
                         windowCount, GpuTimer::kHistorySize, kWarmupFrames),
@@ -78,6 +79,10 @@ void EngineBench::logResults(const MeshletCullStats& cullStats) const
                 "Bench");
     }
     logInfo(std::format("  {:<22} mean {:8.4f} ms", "GPU total", total), "Bench");
+    // async compute overlaps the frame: last rolling window, not in the total
+    logInfo(std::format("  async compute: RT instances {:.4f} ms, TLAS build {:.4f} ms, {} instances",
+                        rtStats.instanceWriteMs, rtStats.tlasBuildMs, rtStats.instances),
+            "Bench");
     // a static view gives the same counts every frame
     const GpuCullCounters& early = cullStats.phase(CullPhase::Early);
     const GpuCullCounters& late = cullStats.phase(CullPhase::Late);

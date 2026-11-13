@@ -5,6 +5,7 @@ set(RENDER_SOURCES
     vk_meshlet_culling.cpp
     vk_render_targets.cpp
     vk_renderer.cpp
+    vk_rt_scene.cpp
     vk_shader_objects.cpp
 )
 

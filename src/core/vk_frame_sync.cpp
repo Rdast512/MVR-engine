@@ -9,6 +9,9 @@ FrameSync::FrameSync(const Device& device) : device(device)
 {
     createCommandPool();
     createCommandBuffers();
+    const vk::SemaphoreTypeCreateInfo timelineInfo{.semaphoreType = vk::SemaphoreType::eTimeline, .initialValue = 0};
+    computeTimeline = vk::raii::Semaphore(device.vkdevice, vk::SemaphoreCreateInfo{.pNext = &timelineInfo});
+    setDebugName(device.vkdevice, computeTimeline, "ComputeTimeline");
 }
 
 void FrameSync::recreate(uint32_t swapChainImageCount)
@@ -57,6 +60,11 @@ void FrameSync::createCommandPool()
         transferCommandPool = vk::raii::CommandPool(vkDevice, transferPoolInfo);
         setDebugName(vkDevice, transferCommandPool, "TransferCommandPool");
     }
+    // the compute index falls back to the graphics family when no other family computes
+    computeCommandPool = vk::raii::CommandPool(
+        vkDevice, vk::CommandPoolCreateInfo{.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+                                            .queueFamilyIndex = device.computeIndex});
+    setDebugName(vkDevice, computeCommandPool, "ComputeCommandPool");
 }
 
 void FrameSync::createCommandBuffers()
@@ -71,6 +79,11 @@ void FrameSync::createCommandBuffers()
     for (size_t i = 0; i < commandBuffers.size(); ++i) {
         setDebugName(vkDevice, commandBuffers[i], std::format("GraphicsCommandBuffer_{}", i));
     }
+    rayCommandBuffers.clear();
+    rayCommandBuffers = vk::raii::CommandBuffers(vkDevice, allocInfo);
+    for (size_t i = 0; i < rayCommandBuffers.size(); ++i) {
+        setDebugName(vkDevice, rayCommandBuffers[i], std::format("RayCommandBuffer_{}", i));
+    }
     presentCommandBuffers.clear();
     presentCommandBuffers = vk::raii::CommandBuffers(vkDevice, allocInfo);
     for (size_t i = 0; i < presentCommandBuffers.size(); ++i) {
@@ -84,6 +97,13 @@ void FrameSync::createCommandBuffers()
         for (size_t i = 0; i < transferCommandBuffer.size(); ++i) {
             setDebugName(vkDevice, transferCommandBuffer[i], std::format("TransferCommandBuffer_{}", i));
         }
+    }
+    computeCommandBuffers = vk::raii::CommandBuffers(
+        vkDevice, vk::CommandBufferAllocateInfo{.commandPool = computeCommandPool,
+                                                .level = vk::CommandBufferLevel::ePrimary,
+                                                .commandBufferCount = MAX_FRAMES_IN_FLIGHT});
+    for (size_t i = 0; i < computeCommandBuffers.size(); ++i) {
+        setDebugName(vkDevice, computeCommandBuffers[i], std::format("ComputeCommandBuffer_{}", i));
     }
     logInfo(std::format("Command buffers allocated: {}", commandBuffers.size()), "FrameSync");
     logInfo(std::format("Transfer command buffers allocated: {}", transferCommandBuffer.size()), "FrameSync");

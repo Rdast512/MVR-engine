@@ -337,6 +337,13 @@ namespace
             // C++ pads through alignas(16)
             FieldLayout{"pad0", offsetof(MeshDgcSequence, draw) + sizeof(vk::DrawMeshTasksIndirectCommandEXT)},
         }},
+        {"RtInstancesPushData", sizeof(RtInstancesPushData), {
+            LAYOUT_FIELD(RtInstancesPushData, frameRoot),
+            LAYOUT_FIELD(RtInstancesPushData, blasAddresses),
+            LAYOUT_FIELD(RtInstancesPushData, tlasInstances),
+            LAYOUT_FIELD(RtInstancesPushData, count),
+            LAYOUT_FIELD(RtInstancesPushData, pad0),
+        }},
         {"CullPushData", sizeof(CullPushData), {
             LAYOUT_FIELD(CullPushData, frameRoot),
             LAYOUT_FIELD(CullPushData, cullView),
@@ -376,6 +383,29 @@ namespace
             LAYOUT_FIELD(GpuMotionCheckStats, frameFlags),
             LAYOUT_FIELD(GpuMotionCheckStats, maxMotionBits),
             LAYOUT_FIELD(GpuMotionCheckStats, maxCameraErrorBits),
+        }},
+        {"RayCheckPushData", sizeof(RayCheckPushData), {
+            LAYOUT_FIELD(RayCheckPushData, frameRoot),
+            LAYOUT_FIELD(RayCheckPushData, stats),
+        }},
+        {"GpuRayCheckStats", sizeof(GpuRayCheckStats), {
+            LAYOUT_FIELD(GpuRayCheckStats, coveredPixels),
+            LAYOUT_FIELD(GpuRayCheckStats, interiorPixels),
+            LAYOUT_FIELD(GpuRayCheckStats, misses),
+            LAYOUT_FIELD(GpuRayCheckStats, idMismatches),
+            LAYOUT_FIELD(GpuRayCheckStats, backFaceHits),
+            LAYOUT_FIELD(GpuRayCheckStats, edgeMismatches),
+            LAYOUT_FIELD(GpuRayCheckStats, emptyHits),
+            LAYOUT_FIELD(GpuRayCheckStats, selfHits),
+            LAYOUT_FIELD(GpuRayCheckStats, mipOutliers),
+            LAYOUT_FIELD(GpuRayCheckStats, depthTies),
+            LAYOUT_FIELD(GpuRayCheckStats, maxNormalErrorBits),
+            LAYOUT_FIELD(GpuRayCheckStats, maxGeoNormalErrorBits),
+            LAYOUT_FIELD(GpuRayCheckStats, maxPositionErrorBits),
+            LAYOUT_FIELD(GpuRayCheckStats, maxMipErrorBits),
+            LAYOUT_FIELD(GpuRayCheckStats, maxMaterialNormalErrorBits),
+            LAYOUT_FIELD(GpuRayCheckStats, maxHitNormalErrorBits),
+            LAYOUT_FIELD(GpuRayCheckStats, maxHitMaterialNormalErrorBits),
         }},
         {"PresentPushData", sizeof(PresentPushData), {
             LAYOUT_FIELD(PresentPushData, frameRoot),

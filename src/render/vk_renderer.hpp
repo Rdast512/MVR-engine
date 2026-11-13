@@ -14,6 +14,7 @@
 #include "debug_view.hpp"
 #include "vk_meshlet_culling.hpp"
 #include "vk_render_targets.hpp"
+#include "vk_rt_scene.hpp"
 #include "vk_shader_objects.hpp"
 #include "util/vk_utils.hpp"
 
@@ -50,11 +51,17 @@ public:
     [[nodiscard]] MeshletCulling& getCulling() noexcept { return culling; }
     [[nodiscard]] const GpuTimer& getGpuTimer() const noexcept { return gpuTimer; }
     [[nodiscard]] uint32_t getHiZMipCount() const noexcept { return hiz.mipCount(); }
+    [[nodiscard]] RayTracingScene::Stats getRayTracingStats() const noexcept { return rtScene.getStats(); }
 
     // ENGINE_MOTION_TEST: passes/motion_check.slang runs after the debug view of every later frame
     void enableMotionCheck();
     // the frame recorded last; complete only after its fence, e.g. a waitIdle
     [[nodiscard]] const GpuMotionCheckStats& getLastMotionCheck() const;
+
+    // ENGINE_RT_CHECK: passes/rt_check.slang runs after the debug view of every later frame
+    void enableRayCheck();
+    // the frame recorded last; complete only after its fence, e.g. a waitIdle
+    [[nodiscard]] const GpuRayCheckStats& getLastRayCheck() const;
 
     // ENGINE_GUIDE_CAPTURE: the next recorded frame copies the display image to host memory after the debug view
     void requestDisplayCapture() noexcept { isDisplayCapturePending = true; }
@@ -68,14 +75,20 @@ public:
     [[nodiscard]] std::optional<DisplayCapture> getLastDisplayCapture() const;
 
 private:
-    // submitted before the image is acquired: cull, raster, Hi-Z, resolve, debug view
+    // submitted before the image is acquired: cull, raster, Hi-Z, resolve
     void recordFrameCommands(vk::raii::CommandBuffer& cmd);
+    // submitted with the frame commands, waiting for this frame's TLAS build: the passes that may trace rays (debug
+    // view, self-tests, display capture)
+    void recordRayCommands(vk::raii::CommandBuffer& cmd);
     // submitted after the acquire, waiting on its semaphore: present pass and UI
     void recordPresentCommands(vk::raii::CommandBuffer& cmd, uint32_t imageIndex);
+    // async compute: RT instances + TLAS of this slot; signals frameNumber on FrameSync::computeTimeline
+    void submitComputeCommands();
     void recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase);
     void recordResolve(const vk::raii::CommandBuffer& cmd);
     void recordDebugView(const vk::raii::CommandBuffer& cmd);
     void recordMotionCheck(const vk::raii::CommandBuffer& cmd);
+    void recordRayCheck(const vk::raii::CommandBuffer& cmd);
     // grows this slot's readback buffer; the slot's fence has been waited
     void recordDisplayCapture(const vk::raii::CommandBuffer& cmd);
     void recordPresent(vk::raii::CommandBuffer& cmd, uint32_t imageIndex);
@@ -99,10 +112,15 @@ private:
     HiZPyramid hiz;
     // owns the depth attachment hiz is built from; recreated before it
     RenderTargets targets;
+    RayTracingScene rtScene;
+    // per frame slot: the timeline value its last async compute submit signals
+    std::array<uint64_t, MAX_FRAMES_IN_FLIGHT> computeTimelineValues{};
     GpuTimer gpuTimer;
     VkTracyContext* tracyContext = nullptr;
     // per frame slot; empty unless enableMotionCheck
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> motionCheckStats;
+    // per frame slot; empty unless enableRayCheck
+    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> rayCheckStats;
     uint32_t lastRecordedFrame = 0;
     // per frame slot; grown on the first capture at a larger extent
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> displayCaptures;

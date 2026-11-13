@@ -29,7 +29,8 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
     dgc(device, allocator, descriptorManager, shaderObjects),
     culling(device, allocator, scene, assets, frameData, shaderObjects, dgc),
     hiz(device, allocator, frameSync, descriptorManager, shaderObjects),
-    targets(device, allocator, frameSync, descriptorManager), gpuTimer(device), tracyContext(tracyContext)
+    targets(device, allocator, frameSync, descriptorManager),
+    rtScene(device, allocator, scene, assets, frameData, shaderObjects), gpuTimer(device), tracyContext(tracyContext)
 {
     const vk::DeviceSize maxPushData = device.capabilities.descriptorHeap.maxPushDataSize;
     if (kMaxPushDataBytes > maxPushData) {
@@ -42,6 +43,9 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
 Renderer::~Renderer()
 {
     for (HostBuffer& stats : motionCheckStats) {
+        destroyHostBuffer(allocator.allocator, stats, nullptr);
+    }
+    for (HostBuffer& stats : rayCheckStats) {
         destroyHostBuffer(allocator.allocator, stats, nullptr);
     }
     for (HostBuffer& capture : displayCaptures) {
@@ -58,6 +62,25 @@ void Renderer::enableMotionCheck()
                                                       std::format("MotionCheckStats_{}", slot), nullptr);
         }
     }
+}
+
+void Renderer::enableRayCheck()
+{
+    for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
+        if (rayCheckStats[slot].mapped == nullptr) {
+            rayCheckStats[slot] = createHostBuffer(sizeof(GpuRayCheckStats), allocator.allocator, device.vkdevice,
+                                                   device.queueFamilyIndices, std::format("RayCheckStats_{}", slot),
+                                                   nullptr);
+        }
+    }
+}
+
+const GpuRayCheckStats& Renderer::getLastRayCheck() const
+{
+    if (rayCheckStats[lastRecordedFrame].mapped == nullptr) {
+        throw std::logic_error("ray check read without enableRayCheck");
+    }
+    return *static_cast<const GpuRayCheckStats*>(rayCheckStats[lastRecordedFrame].mapped);
 }
 
 const GpuMotionCheckStats& Renderer::getLastMotionCheck() const
@@ -100,11 +123,24 @@ void Renderer::drawFrame()
     auto& fence = *frameSync.inFlightFences[currentFrame];
     auto& acquireSemaphore = *frameSync.presentCompleteSemaphore[currentFrame];
     auto& frameCmd = frameSync.commandBuffers[currentFrame];
+    auto& rayCmd = frameSync.rayCommandBuffers[currentFrame];
     auto& presentCmd = frameSync.presentCommandBuffers[currentFrame];
 
     {
         ZoneScopedN("FenceWait");
         while (vk::Result::eTimeout == deviceRef.waitForFences(fence, vk::True, UINT64_MAX))
+            ;
+    }
+    {
+        ZoneScopedN("ComputeWait");
+        // the slot's async compute work reads its node instances and owns its TLAS buffers. The ray submit waits for
+        // it before the fence signals, so this returns at once; it keeps slot reuse independent of what that submit
+        // records
+        const uint64_t value = computeTimelineValues[currentFrame];
+        const vk::SemaphoreWaitInfo waitInfo{.semaphoreCount = 1,
+                                             .pSemaphores = &*frameSync.computeTimeline,
+                                             .pValues = &value};
+        while (vk::Result::eTimeout == deviceRef.waitSemaphores(waitInfo, UINT64_MAX))
             ;
     }
     vmaSetCurrentFrameIndex(allocator.allocator, ++frameNumber);
@@ -113,18 +149,24 @@ void Renderer::drawFrame()
     // after the fence: this slot's camera buffer and query results are no longer touched by the GPU
     camera.updateCameraData(currentFrame);
     targets.prepareFrame(currentFrame, frameNumber);
+    rtScene.prepareFrame(currentFrame);
     gpuTimer.collect(currentFrame);
     if (void* stats = motionCheckStats[currentFrame].mapped) {
         // host writes before the submit are visible to it
         *static_cast<GpuMotionCheckStats*>(stats) = {};
     }
+    if (void* stats = rayCheckStats[currentFrame].mapped) {
+        *static_cast<GpuRayCheckStats*>(stats) = {};
+    }
 
     // the fence covers both submits of this slot; every path below ends in a submit that signals it
     deviceRef.resetFences(fence);
     frameCmd.reset();
+    rayCmd.reset();
     {
         ZoneScopedN("RecordFrameCommands");
         recordFrameCommands(frameCmd);
+        recordRayCommands(rayCmd);
     }
     {
         ZoneScopedN("UpdateUBO");
@@ -139,6 +181,8 @@ void Renderer::drawFrame()
                                           .drawRecords = culling.drawRecordsAddress(currentFrame),
                                           .visibleMeshlets = culling.visibleMeshletsAddress(currentFrame),
                                           .cullCounters = culling.countersAddress(currentFrame),
+                                          .tlas = rtScene.tlasAddress(currentFrame),
+                                          .rayInstances = rtScene.rayInstancesAddress(currentFrame),
                                           .lateVisibleBase = culling.lateVisibleBase(currentFrame),
                                           .triangleCullFlags = culling.triangleCullFlags(currentFrame),
                                           .subpixelSnap = culling.getSubpixelSnap(),
@@ -147,11 +191,26 @@ void Renderer::drawFrame()
                                           .frameIndex = frameNumber,
                                       });
     }
+    // after the frame root and node instances of the slot are written
+    submitComputeCommands();
     {
         ZoneScopedN("QueueSubmitFrame");
-        // no wait: cull, raster and compute run while the CPU acquires the image
+        // no wait: cull, raster and compute run while the CPU acquires the image, and overlap the TLAS build
         const vk::CommandBufferSubmitInfo frameCmdInfo{.commandBuffer = *frameCmd};
-        graphicsQueue.submit2(vk::SubmitInfo2{.commandBufferInfoCount = 1, .pCommandBufferInfos = &frameCmdInfo});
+        // the first stage that traces waits for this frame's TLAS (spec/features/ray_tracing_mega_geometry.md §3.5);
+        // the compute submit is already queued, so the wait never precedes its signal
+        const vk::CommandBufferSubmitInfo rayCmdInfo{.commandBuffer = *rayCmd};
+        const vk::SemaphoreSubmitInfo tlasWait{.semaphore = *frameSync.computeTimeline,
+                                               .value = computeTimelineValues[currentFrame],
+                                               .stageMask = vk::PipelineStageFlagBits2::eComputeShader};
+        const std::array submits{
+            vk::SubmitInfo2{.commandBufferInfoCount = 1, .pCommandBufferInfos = &frameCmdInfo},
+            vk::SubmitInfo2{.waitSemaphoreInfoCount = 1,
+                            .pWaitSemaphoreInfos = &tlasWait,
+                            .commandBufferInfoCount = 1,
+                            .pCommandBufferInfos = &rayCmdInfo},
+        };
+        graphicsQueue.submit2(submits);
     }
 
     vk::Result result{};
@@ -283,6 +342,21 @@ void Renderer::recordFrameCommands(vk::raii::CommandBuffer& cmd)
 #endif
         recordResolve(cmd);
     }
+    cmd.end();
+}
+
+void Renderer::recordRayCommands(vk::raii::CommandBuffer& cmd)
+{
+    ZoneScoped;
+#ifdef TRACY_ENABLE
+    const bool gpuTrace = tracyContext != nullptr && tracyContext->isActive();
+    TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
+#endif
+
+    cmd.begin({});
+    // heap bindings do not carry over from the frame command buffer
+    cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
+    cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
     {
         ZoneScopedN("DebugView");
 #ifdef TRACY_ENABLE
@@ -292,6 +366,9 @@ void Renderer::recordFrameCommands(vk::raii::CommandBuffer& cmd)
     }
     if (motionCheckStats[currentFrame].mapped != nullptr) {
         recordMotionCheck(cmd);
+    }
+    if (rayCheckStats[currentFrame].mapped != nullptr) {
+        recordRayCheck(cmd);
     }
     displayCaptureExtents[currentFrame].reset();
     if (isDisplayCapturePending) {
@@ -330,6 +407,30 @@ void Renderer::recordPresentCommands(vk::raii::CommandBuffer& cmd, uint32_t imag
     }
 
     cmd.end();
+}
+
+void Renderer::submitComputeCommands()
+{
+    ZoneScopedN("QueueSubmitCompute");
+    vk::raii::CommandBuffer& cmd = frameSync.computeCommandBuffers[currentFrame];
+    cmd.reset();
+    cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    // the shader objects are created for descriptor heaps
+    cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
+    cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
+    rtScene.recordBuild(cmd, currentFrame);
+    cmd.end();
+
+    // frame numbers only grow, so every signal is larger than the last
+    computeTimelineValues[currentFrame] = frameNumber;
+    const vk::CommandBufferSubmitInfo cmdInfo{.commandBuffer = *cmd};
+    const vk::SemaphoreSubmitInfo signalInfo{.semaphore = *frameSync.computeTimeline,
+                                             .value = frameNumber,
+                                             .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
+    device.computeQueue.submit2(vk::SubmitInfo2{.commandBufferInfoCount = 1,
+                                                .pCommandBufferInfos = &cmdInfo,
+                                                .signalSemaphoreInfoCount = 1,
+                                                .pSignalSemaphoreInfos = &signalInfo});
 }
 
 void Renderer::waitIdle() const { device.vkdevice.waitIdle(); }
@@ -500,6 +601,25 @@ void Renderer::recordMotionCheck(const vk::raii::CommandBuffer& cmd)
     const MotionCheckPushData push{.frameRoot = frameData.frameRootAddress(currentFrame),
                                    .stats = motionCheckStats[currentFrame].address};
     ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.motionCheck);
+    cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
+    const vk::Extent2D extent = targets.getExtent();
+    cmd.dispatch(divideRoundUp(extent.width, kFullscreenTile), divideRoundUp(extent.height, kFullscreenTile), 1);
+    // a fence wait alone does not make device writes visible to the host
+    const vk::MemoryBarrier2 readbackBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &readbackBarrier});
+}
+
+// reads what the resolve reads, after the debug view's barrier; only the stats buffer is written
+void Renderer::recordRayCheck(const vk::raii::CommandBuffer& cmd)
+{
+    const RayCheckPushData push{.frameRoot = frameData.frameRootAddress(currentFrame),
+                                .stats = rayCheckStats[currentFrame].address};
+    ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.rayCheck);
     cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
     const vk::Extent2D extent = targets.getExtent();
     cmd.dispatch(divideRoundUp(extent.width, kFullscreenTile), divideRoundUp(extent.height, kFullscreenTile), 1);

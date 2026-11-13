@@ -19,16 +19,16 @@ public struct TriangleCorners
     // kept from the position load, so buildSurface does not fetch the vertices again
     public float3 color[3];
     public float2 texCoord[3];
-    public float4 clip[3];      // jittered
-    // front face of the winding the rasterizer received (FlipWinding applied)
+    public float4 clip[3];      // jittered; zero for ray hits
+    // front face of the winding the rasterizer received (FlipWinding applied), or the face a ray hit
     public bool isFrontFacing;
 };
 
-public TriangleCorners loadTriangleCorners(DrawContext draw, GpuCameraData camera, uint triangle)
+// ids, positions and the attributes loaded with them; projection and facing are the caller's
+public TriangleCorners loadCornerVertices(DrawContext draw, uint triangle)
 {
     const GpuMeshletDesc meshlet = loadMeshlet(draw);
     const uint3 local = loadMeshletTriangle(draw, meshlet, triangle);
-    const float4x4 worldViewProj = objectToClip(camera, draw.nodeInstance.worldMatrix);
     TriangleCorners corners;
     [unroll]
     for (uint i = 0; i < 3; ++i)
@@ -39,6 +39,19 @@ public TriangleCorners loadTriangleCorners(DrawContext draw, GpuCameraData camer
         corners.objectPos[i] = vertex.pos;
         corners.color[i] = vertex.color;
         corners.texCoord[i] = vertex.texCoord;
+        corners.clip[i] = float4(0.0, 0.0, 0.0, 0.0);
+    }
+    corners.isFrontFacing = true;
+    return corners;
+}
+
+public TriangleCorners loadTriangleCorners(DrawContext draw, GpuCameraData camera, uint triangle)
+{
+    TriangleCorners corners = loadCornerVertices(draw, triangle);
+    const float4x4 worldViewProj = objectToClip(camera, draw.nodeInstance.worldMatrix);
+    [unroll]
+    for (uint i = 0; i < 3; ++i)
+    {
         corners.clip[i] = jitterClip(camera, mul(worldViewProj, float4(corners.objectPos[i], 1.0)));
     }
     const bool isFlipped = (draw.nodeInstance.flags & kNodeFlagFlipWinding) != 0;
@@ -87,8 +100,12 @@ float2 loadVertexUv1(DrawContext draw, uint vertexIndex)
 static const float kMinGeoNormalLengthSq = 1e-30;
 // degenerate triangle without vertex normals: any unit vector keeps the guides finite
 static const float3 kFallbackNormal = float3(0.0, 0.0, 1.0);
+// grazing hits: bounds the 1/sqrt(cos) growth of the ray-cone footprint
+static const float kMinConeCosine = 1e-4;
 
-public Surface buildSurface(DrawContext draw, TriangleCorners corners, Barycentrics bary)
+// everything but the uv gradients, which raster and rays derive differently; bary.ddx/ddy are not read.
+// uv1 holds the corners' second uv set for those gradients
+Surface buildSurfaceAt(DrawContext draw, TriangleCorners corners, Barycentrics bary, out float2 uv1[3])
 {
     const float4x4 world = draw.nodeInstance.worldMatrix;
     const float3 objectPos = interpolate(bary, corners.objectPos[0], corners.objectPos[1], corners.objectPos[2]);
@@ -100,7 +117,6 @@ public Surface buildSurface(DrawContext draw, TriangleCorners corners, Barycentr
 
     float3 normals[3];
     float4 tangents[3];
-    float2 uv1[3];
     [unroll]
     for (uint i = 0; i < 3; ++i)
     {
@@ -135,10 +151,53 @@ public Surface buildSurface(DrawContext draw, TriangleCorners corners, Barycentr
 
     surface.color = interpolate(bary, corners.color[0], corners.color[1], corners.color[2]);
     surface.uv[0] = interpolate(bary, corners.texCoord[0], corners.texCoord[1], corners.texCoord[2]);
+    surface.uv[1] = interpolate(bary, uv1[0], uv1[1], uv1[2]);
+    return surface;
+}
+
+// vis-buffer pixel: exact screen gradients from the barycentric derivatives
+public Surface buildSurface(DrawContext draw, TriangleCorners corners, Barycentrics bary)
+{
+    float2 uv1[3];
+    Surface surface = buildSurfaceAt(draw, corners, bary, uv1);
     surface.uvDdx[0] = interpolateDdx(bary, corners.texCoord[0], corners.texCoord[1], corners.texCoord[2]);
     surface.uvDdy[0] = interpolateDdy(bary, corners.texCoord[0], corners.texCoord[1], corners.texCoord[2]);
-    surface.uv[1] = interpolate(bary, uv1[0], uv1[1], uv1[2]);
     surface.uvDdx[1] = interpolateDdx(bary, uv1[0], uv1[1], uv1[2]);
     surface.uvDdy[1] = interpolateDdy(bary, uv1[0], uv1[1], uv1[2]);
+    return surface;
+}
+
+// uv units per world unit of one uv set over the triangle: sqrt(uv area / world area)
+float uvDensity(float2 uv[3], float worldArea)
+{
+    const float2 e1 = uv[1] - uv[0];
+    const float2 e2 = uv[2] - uv[0];
+    return worldArea > 0.0 ? sqrt(abs(e1.x * e2.y - e1.y * e2.x) / worldArea) : 0.0;
+}
+
+// ray hit (spec/features/ray_tracing_mega_geometry.md §7): isotropic gradients from the ray-cone width at the hit.
+// The footprint's uv area equals the area a pixel covers through |ddx x ddy|, so SampleGrad picks the resolve's mip
+public Surface buildRaySurface(DrawContext draw, TriangleCorners corners, float2 hitBarycentrics, float coneWidth,
+                               float3 rayDirection)
+{
+    Barycentrics bary;
+    bary.lambda = float3(1.0 - hitBarycentrics.x - hitBarycentrics.y, hitBarycentrics.x, hitBarycentrics.y);
+    bary.ddx = float3(0.0, 0.0, 0.0);
+    bary.ddy = float3(0.0, 0.0, 0.0);
+    float2 uv1[3];
+    Surface surface = buildSurfaceAt(draw, corners, bary, uv1);
+
+    const float3x3 toWorld = (float3x3)draw.nodeInstance.worldMatrix;
+    const float worldArea = length(cross(mul(toWorld, corners.objectPos[1] - corners.objectPos[0]),
+                                         mul(toWorld, corners.objectPos[2] - corners.objectPos[0])));
+    // a tilted surface stretches the footprint along one axis by 1/cos: sqrt keeps the area
+    const float cosine = max(abs(dot(rayDirection, surface.geoNormal)), kMinConeCosine);
+    const float footprint = coneWidth / sqrt(cosine);
+    const float foot0 = footprint * uvDensity(corners.texCoord, worldArea);
+    const float foot1 = footprint * uvDensity(uv1, worldArea);
+    surface.uvDdx[0] = float2(foot0, 0.0);
+    surface.uvDdy[0] = float2(0.0, foot0);
+    surface.uvDdx[1] = float2(foot1, 0.0);
+    surface.uvDdy[1] = float2(0.0, foot1);
     return surface;
 }

@@ -489,6 +489,44 @@ struct GpuMotionCheckStats {
 static_assert(sizeof(GpuMotionCheckStats) == 40);
 static_assert(offsetof(GpuMotionCheckStats, maxMotionBits) == 32);
 
+// rt_check pass, ENGINE_RT_CHECK only (plan C3): primary rays against the vis buffer; zeroed by the CPU per frame
+struct GpuRayCheckStats {
+    uint32_t coveredPixels = 0;
+    // covered, and the 4 neighbours hold the same payload: no triangle edge through the pixel
+    uint32_t interiorPixels = 0;
+    // interior, the primary ray hits nothing
+    uint32_t misses = 0;
+    // interior, the ray hits another (node instance, meshlet, triangle)
+    uint32_t idMismatches = 0;
+    // the ray hits a back face of a one-sided primitive, which raster culls: expected, counted apart
+    uint32_t backFaceHits = 0;
+    // covered but not interior: tie-breaking along triangle edges differs between raster and rays
+    uint32_t edgeMismatches = 0;
+    // empty pixel with empty neighbours, the ray hits something
+    uint32_t emptyHits = 0;
+    // a ray spawned from a matched hit with safeSpawnPoint hits its own triangle
+    uint32_t selfHits = 0;
+    // matched, ray-cone and raster uv footprints more than half a mip apart
+    uint32_t mipOutliers = 0;
+    // interior, the ray hits another triangle within intersection noise of the raster one: overlapping coplanar
+    // triangles, where the depth test and the ray each pick one
+    uint32_t depthTies = 0;
+    // float bits: non-negative floats order like their uint bits. The decode at the resolve's barycentrics and
+    // gradients, in degrees: any difference is the decode chain's
+    uint32_t maxNormalErrorBits = 0;
+    uint32_t maxGeoNormalErrorBits = 0;
+    // distance between the ray and raster intersections over the hit distance
+    uint32_t maxPositionErrorBits = 0;
+    // |log2| of the ray-cone over the raster uv footprint, uv set 0
+    uint32_t maxMipErrorBits = 0;
+    uint32_t maxMaterialNormalErrorBits = 0;
+    // the same at the ray's own barycentrics: intersection noise through steep normal maps, reported only
+    uint32_t maxHitNormalErrorBits = 0;
+    uint32_t maxHitMaterialNormalErrorBits = 0;
+};
+static_assert(sizeof(GpuRayCheckStats) == 68);
+static_assert(offsetof(GpuRayCheckStats, maxNormalErrorBits) == 40);
+
 static_assert(sizeof(GpuCullCounters) == 112);
 static_assert(offsetof(GpuCullCounters, candidatesOverflowed) == 100);
 static_assert(offsetof(GpuCullCounters, meshletsRetested) == 40);
@@ -896,7 +934,7 @@ namespace FrameFlag
     inline constexpr uint32_t HistoryReset = 1u << 0;
 } // namespace FrameFlag
 
-// [InstanceIndex()] of a TLAS instance; rewritten on the gpu with the tlas
+// [InstanceIndex()] of a TLAS instance; written by the CPU per scene layout (RayTracingScene)
 struct GpuRayInstance
 {
     // row in GpuFrameRoot::nodeInstances

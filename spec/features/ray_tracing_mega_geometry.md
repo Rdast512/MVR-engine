@@ -1,10 +1,10 @@
 # Feature: ray tracing with RTX Mega Geometry (patterns from `vk_lod_clusters`)
 
-**Date:** 2026-11-13 · **Status:** C1 built (CLAS + cluster BLAS per primitive), RT1 done; C2, C3 and the RT pipeline not started · **Milestone:** M2 (C2, C3), M4 (RT pipeline, SER), M6 (OMM), post-1.0 (LOD, §16.3)
+**Date:** 2026-11-13 · **Status:** C1 built (CLAS + cluster BLAS per primitive), RT1–RT3 done (C2 built), RT4–RT5 done (C3 built); the RT pipeline not started · **Milestone:** M2 (C2, C3), M4 (RT pipeline, SER), M6 (OMM), post-1.0 (LOD, §16.3)
 **Implements:** engine spec §10 (RT scene), §11.1 (ray model); plan C2, C3, D4, G1 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
-**Related:** [shader_execution_reordering.md](./shader_execution_reordering.md), [visibility_buffer.md](./visibility_buffer.md), sample [README](../../reference/vk_lod_clusters/README.md) and [docs/](../../reference/vk_lod_clusters/docs/)
+**Related:** [shader_execution_reordering.md](./shader_execution_reordering.md), [visibility_buffer.md](./visibility_buffer.md), sample [README](../../reference/vk_lod_clusters/README.md) and [docs/](../../reference/vk_lod_clusters/docs/); secondary references in §1.1
 
-This document maps the NVIDIA sample `reference/vk_lod_clusters` onto the engine: what it does for ray tracing, which parts the engine takes as they are, which parts it changes, and in what order to build them. Sample paths are relative to `reference/vk_lod_clusters/`. Line numbers are from the vendored copy and are given for orientation only.
+This document maps the NVIDIA sample `reference/vk_lod_clusters` onto the engine: what it does for ray tracing, which parts the engine takes as they are, which parts it changes, and in what order to build them. Sample paths are relative to `reference/vk_lod_clusters/` unless a section names another reference. Line numbers are from the vendored copy and are given for orientation only.
 
 ---
 
@@ -26,6 +26,14 @@ This document maps the NVIDIA sample `reference/vk_lod_clusters` onto the engine
 | CLAS streaming + GPU allocator | `scene_streaming*.cpp`, `stream_*.comp.glsl`, `docs/clas_allocation.md` | out of scope (spec §10.2: everything resident) |
 
 The sample's two ray-tracing renderers differ in where shading happens. `render_raytrace_clusters.rchit.glsl` shades inside the closest-hit (recursion depth 2 for shadow rays). The path tracer (`usePathtrace`) has a closest-hit that only reports ids and shades in raygen (recursion depth 1). **The engine follows the path tracer**: it is the shape SER needs (spec §11.1).
+
+### 1.1 Secondary references (reviewed 2026-11-13)
+
+| Reference | What it is | What the engine takes |
+|---|---|---|
+| `reference/RTXMG-main` (RTX Mega Geometry) | D3D12 + Vulkan sample (NVRHI): a port of `vk_lod_clusters` for ray tracing only (`docs/ClusterLOD.md`), plus GPU tessellation of subdivision surfaces into clusters (`docs/ClusterTess.md`). It does not use PTLAS | `SafeSpawnPoint` origin offsets (§6.1); bake and selection defaults for §16.3 (§9.5); position truncation data point (§9.4); per-hit tangent frames as a memory fallback (§5.2) |
+| `reference/vk_tessellated_clusters-main` | Vulkan sample: per-frame tessellation and displacement into clusters, CLAS built from **cluster templates** | nothing now; templates are the path for deformed geometry (§9.6) |
+| `reference/vk_partitioned_tlas-main` | Vulkan sample for `VK_NV_partitioned_acceleration_structure`: 1.2 M static + 170 k dynamic instances, partial TLAS updates | the PTLAS design kept ready for the §3.4 threshold (§3.6) |
 
 ---
 
@@ -93,17 +101,18 @@ One thread per ray instance. The sample patches only `blasReference` into instan
 | `flags` | `FORCE_OPAQUE`, or `FORCE_OPACITY_MICROMAP_2_STATE_EXT` for alpha-tested primitives | spec §10.5. **No** facing flags: RT handles negative determinants itself (`renderer_raytrace_clusters_lod.cpp:1391`), and two-sided needs no flag when rays do not cull back faces |
 | `accelerationStructureReference` | the primitive's BLAS address from the per-model table; **0** for a primitive without meshlets | an instance with reference 0 is inactive (Vulkan spec), so it costs nothing at trace time |
 
-The same thread writes `GpuRayInstance[row] = {nodeInstanceIndex, primitiveRow}`. Rows map 1:1 to TLAS instances, so `InstanceIndex()` indexes `GpuRayInstance` directly.
+Rows map 1:1 to TLAS instances, so `InstanceIndex()` indexes `GpuRayInstance` directly.
 
-**Row assignment.** The thread needs (node instance, primitive) from its row. Keep a per-node-instance prefix (`firstRayInstance`) maintained by the CPU on scene deltas (O(changed)), and give each thread its row by a binary search over the prefixes, or dispatch one workgroup per node instance with threads over its primitives. The second needs no search and suits the sample's per-instance threading; pick it unless primitive counts per node vary so much that occupancy suffers.
+**Row assignment (as built).** `GpuRayInstance[row] = {nodeInstanceIndex, primitiveRow}` and the row's BLAS address only change with the scene layout, not per frame. `RayTracingScene` writes both tables per frame slot when `FrameData::layoutGeneration` moves, with the cull templates' entity filter; each thread reads its row and needs no search. Per frame the CPU writes nothing per instance, and the GPU reads one `GpuRayInstance`, one world matrix and one address per thread.
 
 ### 3.3 Instance count without a GPU readback
 
 The TLAS build range (`primitiveCount`) is a host value. A GPU-written count needs `vkCmdBuildAccelerationStructuresIndirectKHR`, which requires `accelerationStructureIndirectBuild`, a feature the RTX 5070 on driver 621.1 does not expose (logged at startup: `AS: indirectBuild=false`).
 
-- The CPU knows the exact ray-instance count: Σ primitives over live node instances, updated on scene deltas. Pass it as `primitiveCount`.
+- The CPU knows the exact ray-instance count: the template row count, rebuilt with the layout. Pass it as `primitiveCount`.
 - Size the instance buffer, TLAS and scratch for a capacity (`vkGetAccelerationStructureBuildSizesKHR` with the capacity count, bounded by `maxInstanceCount`), with a counter and an overflow counter in the debug UI (spec S11). Grow when the count exceeds it, outside frames in flight.
 - Slots that should not be traced (hidden entity, no meshlets) get reference 0 instead of compaction. The sample does the same for culled instances after frame 0.
+- The PTLAS build is indirect without any feature bit: `VkBuildPartitionedAccelerationStructureInfoNV::srcInfos` and `srcInfosCount` are device addresses. Once a count has to come from the GPU (§9.2), PTLAS removes this limit (§3.6).
 
 ### 3.4 Build or update
 
@@ -113,14 +122,54 @@ The TLAS build range (`primitiveCount`) is a host value. A GPU-written count nee
 | Mode | full build in frame 0, then `MODE_UPDATE` with the previous TLAS as source (`:1448`) | full build every frame (spec §10.3) |
 | Why | static instances; only BLAS references change | entities move; a refit tree degrades with motion and every count change needs a rebuild anyway |
 
-Measure on the 5070 and the 2060 Super: full build vs update, Sponza ×N. Switch to update only if the build exceeds 0.3 ms and the trace cost of a refit tree stays within noise; above that, the spec's next step is PTLAS (`VK_NV_partitioned_acceleration_structure`, already detected as optional).
+**Measured full build (2026-11-13, RTX 5070, async compute, bench without layers):** 0.101 ms for 103 instances, 0.104 ms for 167, 0.119 ms for 359, 0.150 ms for 4199; the instance write takes 0.0008 ms. Still to measure: update mode, and the 2060 Super. Switch to update only if the build exceeds 0.3 ms and the trace cost of a refit tree stays within noise; above that, the spec's next step is PTLAS (`VK_NV_partitioned_acceleration_structure`, already detected as optional).
+
+**Revisited against the secondary references (2026-11-13):** no C2 change.
+- RTXMG builds its TLAS per frame, as the engine does, and does not use PTLAS.
+- `vk_tessellated_clusters` builds with `ALLOW_UPDATE` only, because its instances are static.
+- The per-slot full build is also the layout that needs no change-tracking. Skipping the build for a still scene would need per-frame transform-change detection, which the CPU does not have, and it would save at most 0.15 ms of overlapped async compute.
+- PTLAS stays on the M9 trigger (§3.6).
 
 ### 3.5 Resources and sync
 
 - Per frame slot: instance buffer (`AS_BUILD_INPUT_READ_ONLY | SHADER_DEVICE_ADDRESS | STORAGE`), `GpuRayInstance[]`, TLAS storage, scratch aligned to `minAccelerationStructureScratchOffsetAlignment`. `GpuFrameRoot.tlas` and `.rayInstances` point at the slot's copies.
 - Queue: `Device::computeQueue` with its own command pool (a command buffer goes only to its pool's family). Graphics waits on the compute timeline value before the first stage that traces, with `dstStageMask` = that stage (compute for ray queries, `RAY_TRACING_SHADER` for the SER pipeline).
-- Queue-family ownership: instance and TLAS buffers written on compute and read on graphics are either `EXCLUSIVE` with release/acquire barriers, or `CONCURRENT` when the two families differ (`VUID-VkBufferCreateInfo-sharingMode-00914` when they do not).
+- Queue-family ownership: instance and TLAS buffers written on compute and read on graphics are either `EXCLUSIVE` with release/acquire barriers, or `CONCURRENT` when the two families differ (`VUID-VkBufferCreateInfo-sharingMode-00914` when they do not). **As built:** `createBuffer` makes every buffer `CONCURRENT` over the device's distinct families, so no transfers are recorded.
+- **As built:** each compute submit signals the frame number on `FrameSync::computeTimeline`. Before rewriting a slot (node instances, ray-instance tables, TLAS buffers) the CPU waits for that slot's last value, which the frame fence alone does not cover while no graphics work waits on compute. Each build starts with an execution + AS-write barrier against the slot's previous build on the same queue.
+- **As built (C3):** each frame slot records two graphics command buffers: the frame (cull, raster, Hi-Z, resolve) and a ray buffer (debug view, motion check, ray check, display capture). One `vkQueueSubmit2` carries both, and only the second waits for the slot's `computeTimeline` value at `COMPUTE_SHADER`, so raster and resolve never wait for the TLAS build. The compute submit is queued first, so the wait never comes before its signal. The CPU wait before a slot is rewritten stays, and now returns at once, since the fenced work already waited.
 - BLAS are read-only after load and outlive every frame that references them: model unload waits for the frames in flight that traced it (the same rule as the other model slices).
+
+### 3.6 PTLAS (`vk_partitioned_tlas`), when the build passes 0.3 ms
+
+Not built. The design is recorded so the switch replaces only the build step of §3.1. The sample's helper is `src/partitioned_acceleration_structures.hpp`; the GPU writes happen in `shaders/animation_update_instances.comp.glsl`.
+
+**API in short:**
+
+- **Sizes.** `vkGetPartitionedAccelerationStructuresBuildSizesNV` takes `instanceCount`, `partitionCount`, `maxInstancePerPartitionCount` and `maxInstanceInGlobalPartitionCount`, bounded by `VkPhysicalDevicePartitionedAccelerationStructurePropertiesNV::maxPartitionCount`. The engine already queries these properties (`HardwareCapabilities::partitionedAccelerationStructure`).
+- **Build.** `vkCmdBuildPartitionedAccelerationStructuresNV` runs a GPU list of `VkBuildPartitionedAccelerationStructureIndirectCommandNV {opType, argCount, argData}`. The op list and its count are device addresses, so nothing is read back.
+- **Ops:**
+  - `WRITE_INSTANCE`: a `VkPartitionedAccelerationStructureWriteInstanceDataNV`, i.e. the KHR instance fields plus `instanceIndex` (a stable slot, which must be unique within one op list), `partitionIndex` and `explicitAABB`.
+  - `UPDATE_INSTANCE`: `{instanceIndex, instanceContributionToHitGroupIndex, accelerationStructure}`, a BLAS swap without rewriting the transform. It needs `allowInstanceUpdate`.
+  - `WRITE_PARTITION_TRANSLATION`: an offset per partition (`enablePartitionTranslation`).
+- **Global partition.** `VK_PARTITIONED_ACCELERATION_STRUCTURE_PARTITION_INDEX_GLOBAL_NV` (`~0u`) is cheap to update but costs trace time. The sample has three modes:
+  - always rewrite the instance in its own partition;
+  - move moving instances to the global partition and back once they stop;
+  - decide per partition by its distance to the camera (near partitions stay, far ones go global).
+- **Cost.** An update scales with the instances and partitions that changed; a full TLAS build scales with all instances.
+- **Binding.** The sample traces with `accelerationStructureEXT(pc.tlas)` and passes the PTLAS address in push constants (`partitioned_tlas.cpp:497`). So `GpuFrameRoot.tlas` keeps working unchanged. `VK_DESCRIPTOR_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_NV` is only needed for descriptor sets, which the engine does not use for AS.
+- **Instance flags.** `VkPartitionedAccelerationStructureInstanceFlagBitsNV` has facing-cull disable, flip facing, `FORCE_OPAQUE`, `FORCE_NO_OPAQUE` and `ENABLE_EXPLICIT_BOUNDING_BOX`. It has **no OMM 2-state flag** (§8).
+
+**Engine mapping:**
+
+| Item | Rule |
+|---|---|
+| `instanceIndex` | the ray-instance row (§3.2). Rows are stable within a layout; a layout change rewrites every instance, which is today's full build |
+| Partitions | a uniform grid over static entities' world bounds, as in the sample. Entities that move go to the global partition and return after N still frames |
+| Changed set | the instance pass compares the node instance's current and previous world matrices (both already kept for motion vectors), appends a `WRITE_INSTANCE` with one atomic per wave, and writes the op count for the indirect build. Static frames write zero ops |
+| OMM | alpha-tested instances drop `FORCE_OPAQUE`, and the ray flag forces 2-state (§8) |
+| Frames in flight | the per-slot TLAS of §3.5 does not fit: an update applies to its source, and slot N last saw frame N − `MAX_FRAMES_IN_FLIGHT`. Either keep one PTLAS and order each update after the previous frame's last ray pass (a graphics → compute timeline wait), or keep one per slot and replay the changes of all frames since that slot's last update. Pick after reading the extension's src/dst rules (R5) |
+
+**Switch rule.** Measure the full build at Bistro scale (M9). Prototype PTLAS only if the build exceeds 0.3 ms, or if a GPU-chosen instance count is needed and `accelerationStructureIndirectBuild` is still false. Record update cost and trace cost (global-partition penalty) against the full build.
 
 ---
 
@@ -165,6 +214,8 @@ normals / tangents / uvs by idx from the cluster's attribute arrays
 
 The engine's `decodeHit` (plan C3) is the same chain over the model slices: `GpuRayInstance` → `GpuNodeInstance` + `GpuPrimitive` → `GpuModel` → meshlet `meshletRow` → `meshletTriangles` → `meshletVertices` → attribute streams. It must share the attribute fetch and `buildSurface` with the vis-buffer resolve, so the C3 "same shading normal" check compares one code path with itself.
 
+**As built (RT4, `shaders/geometry/hit.slang`):** `traceClosest` returns a `RayHit` (instance index, `CommittedClusterID()`, primitive index, barycentrics, `t`, the 3 fetched positions, both instance matrices). `decodeHit` turns `GpuRayInstance.nodeInstanceIndex` and the cluster id into a `GpuVisibleMeshlet` and runs the resolve's own functions on it: `loadDrawContext`, then `loadCornerVertices`, then `buildRaySurface`. The resolve's functions are split along the same seam: `loadTriangleCorners` is `loadCornerVertices` plus jittered clip positions and facing, and `buildSurface` is `buildSurfaceAt` plus analytic gradients.
+
 ### 5.2 Geometry at the hit
 
 Taken from `getHitAttributes` as is:
@@ -173,8 +224,14 @@ Taken from `getHitAttributes` as is:
 2. **Geometric normal** from the fetched positions: `oGeo = cross(p1 − p0, p2 − p0)`, world `normalize(oGeo · worldMatrixI)` (inverse transpose). The fetched positions are the CLAS ones (truncated when `positionTruncateBitCount > 0`), so the normal matches the surface the ray hit.
 3. **Facing**: `backFacing = dot(oGeo, objectRayDir) > 0`. On a back-face hit, negate the shading normal **and** the geometric normal together.
 4. **Mirrored instances**: the inverse-transpose normal and the cross-product normal disagree in sign under a negative determinant. Snap the interpolated shading normal into the geometric hemisphere (`dot(wNormal, wGeo) < 0 → −wNormal`) before the facing flip.
-5. **Tangent**: interpolate, transform by `worldMatrixI`, normalize; the sign comes from vertex 0. The engine's A4 tangents slot in here.
+5. **Tangent**: interpolate, transform by `worldMatrixI`, normalize; the sign comes from vertex 0. The engine's A4 tangents slot in here. RTXMG stores no tangents at all (simplifier tangent weight 0) and builds the frame per hit from the triangle's position and UV deltas (`ClusterLodPerturbNormal`, `demo/shaders/rtxmg_demo_path_tracer.hlsl`). It is the fallback if tangent memory matters after §16.3, but raster and rays must then use the same derivation.
 6. **Shading-normal sanity** (sample's closest-hit variant): when `reflect(dir, N)` points below the geometric surface, bend `N` toward the geometric normal. Apply it in `buildSurface` only for rays, not the resolve, or the C3 resolve comparison fails by construction.
+
+**As built (RT4):**
+
+- **Position:** interpolated from the fetched positions at the hit barycentrics, then transformed by the world matrix, as the resolve does, instead of `origin + dir · hitT` (item 1). One surface builder serves both, and with untruncated CLAS (§9.4) the two points differ by at most 9.3e-5 of the hit distance. `safeSpawnPoint` rebuilds its own `precise` point (§6.1).
+- **Geometric normal and facing:** from the fetched positions; front-facing when `dot(normalMatrix(world) · cross(p1 − p0, p2 − p0), dir) < 0`. `normalMatrix` keeps normals outward under a negative determinant, which gives the facing the rasterizer derives with `FlipWinding`, so the mirror snap (item 4) is not needed: the mirrored motion-test scenarios and `TwoSidedPlane` match.
+- Item 6 is not built; it comes with secondary shading (G1).
 
 ### 5.3 Texture LOD
 
@@ -188,11 +245,14 @@ The hit computes `texelDensity = sqrt(uvArea / worldArea)` per triangle (`comput
 
 | Function | Rule | Engine use |
 |---|---|---|
-| `offsetRay(p, dir, geoN)` (`render_shading.glsl:490`) | `n = sign(dot(dir, geoN)) · geoN`; `p + n · (1/65536) · length(p)` | every secondary origin. Add the truncation bound of spec §10.2 (`2^(t−23) · max(abs(p))`) on top when CLAS positions are truncated and the origin is a raster surface |
+| `offsetRay(p, dir, geoN)` (`render_shading.glsl:490`) | `n = sign(dot(dir, geoN)) · geoN`; `p + n · (1/65536) · length(p)` | superseded by `SafeSpawnPoint` below; kept as the reference behavior |
+| `SafeSpawnPoint` (RTXMG `demo/shaders/self_intersection_avoidance.hlsli`, BSD-3) | rebuilds the hit point as `v0 + b1·e1 + b2·e2` with `precise` math, then offsets along the world geometric normal by a float error bound. The bound covers object-space reconstruction (`c0·abs(v0) + c1·extent`), object → world (`c1·abs(M3×3)·abs(pObj) + c2·abs(t)`) and world → object, with `c0 = 2^−24`, `c1 ≈ 3·2^−24`, `c2 ≈ 2^−23` | **every secondary origin.** Unlike `offsetRay`, the offset follows the actual float error of the triangle and transform: it is small near the origin and does not over-offset small, thin geometry. Inputs: the 3 fetched object positions, barycentrics, and the instance's object → world and world → object matrices. Port it to Slang with `precise`. On a raster surface, add the truncation bound of spec §10.2 (`2^(t−23) · max(abs(p))`) when CLAS positions are truncated |
 | `pointOffset` (Hanika 2021, `:510`) | pushes `p` onto the smooth hull of the 3 vertex normals, in object space, then to world | shadow / visibility origins on smooth low-poly geometry (terminator artifacts). Needs the 3 object-space positions (fetched) and the vertex normals (already fetched for shading). Normals flipped with the facing |
 | `minT` (`:570`) | `shadowRayMinT · (1 + dist(p, camera) · bias)` | visibility rays from raster surfaces; tune the two constants on Sponza in the C3 self-hit debug view (spec §10.4) |
 
 The origin offset uses the **geometric** normal, never the shading normal.
+
+**As built (RT4):** `safeSpawnPoint(hit, direction)` in `geometry/hit.slang`, offsetting to `direction`'s side of the triangle. `ENGINE_RT_CHECK` spawns one cosine-weighted ray from every matched interior primary hit: 0 self-hits over about 385 million rays (cull check, motion test, guide capture). The truncation bound is not added, since positions are untruncated (§9.4). `pointOffset` and `minT` stay with D4.
 
 ### 6.2 Visibility rays
 
@@ -223,6 +283,12 @@ Engine mapping:
 - Secondary rays start at a raster surface, not the camera: `w0 = pixelAngle · viewDistance`, `spread = pixelAngle` (plus the bounce term from the sampled lobe's pdf). `pixelAngle` is measured at **display** resolution when upscaling, matching the resolve's LOD bias `log2(render / display)`.
 - Pass `w`, `spread` through the SER live state (two floats), not the payload.
 
+**As built (RT5):**
+
+- `sampleMaterial` takes no `RayCone`. `buildRaySurface` writes isotropic gradients `(foot, 0)` and `(0, foot)` per UV set into `Surface.uvDdx` / `uvDdy`, with `foot = w / sqrt(max(|dot(dir, geoN)|, 1e-4)) · sqrt(uvArea / worldArea)`, and `SampleGrad` runs the resolve's path unchanged.
+- Camera rays start on the near plane: `w0 = spread · |origin − cameraPos|`, with `spread = pixelAngle · cos^1.5 θ`, where `pixelAngle = 2 / (|proj[1][1]| · height)` and `cos θ = near / |origin − cameraPos|`. A pixel at θ off the view axis subtends `pixelAngle² · cos³ θ`. With the sample's constant spread, the corner mips came out 0.58 levels too coarse; with the correction the largest gap from the raster footprint is 0.22 levels (Sponza, all `ENGINE_RT_CHECK` runs).
+- The comparison skips triangles whose UV area is degenerate (both footprints below one texel of a 65536² texture). Both areas there are float noise, and both pick mip 0.
+
 ---
 
 ## 8. Alpha (D1–D4)
@@ -231,6 +297,8 @@ The sample's any-hit (`render_pathtrace_clusters.rahit.glsl`) samples the alpha 
 
 - Baked per primitive with the OMM SDK CPU baker over the final cluster triangles; each CLAS gets its subrange as `opacityMicromapIndexBuffer`; the build sets `ALLOW_CLUSTER_OPACITY_MICROMAPS_BIT_NV`. C1 already writes `opacityMicromapIndexType = 0` (no OMM), so D2 only fills those fields.
 - Instances: `FORCE_OPACITY_MICROMAP_2_STATE_EXT` on alpha-tested primitives, `FORCE_OPAQUE` elsewhere. No any-hit, no candidate loops, no `RAY_FLAG_FORCE_OPAQUE` (§6.2).
+- **Opacity per geometry instead of per instance.** RTXMG sets `VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV` (plus `CULL_DISABLE` for two-sided) in each CLAS's `baseGeometryIndexAndGeometryFlags`, from the cluster's or triangle's material (`rtxmg/include/rtxmg/cluster_lod/baked_geometry.h`), because its per-geometry BLAS mixes materials. The engine's BLAS is per primitive, so one material per instance row: the instance flag carries the same information, and the CPU templates can set it per row. Not taken. `CULL_DISABLE` is not needed either, since engine rays never cull facing (§6.2).
+- **Under PTLAS (§3.6)** there is no 2-state instance flag. Alpha-tested instances carry no flag. Every ray then sets the 2-state ray flag (SPIR-V `RayFlagsForceOpacityMicromap2StateEXT`, `0x400`; the Slang spelling is checked with the SER4 probe). Opaque instances keep `FORCE_OPAQUE`, so the ray flag only affects OMM geometry. Write it into `traceVisibility` and the SER trace from the start, so the switch changes only instance flags.
 - What is lost: the sample's any-hit filters alpha at the ray-cone footprint, so distant foliage thins out smoothly. OMM 2-state is a fixed, footprint-independent cut. Accept it; revisit only if distant foliage aliases visibly in shadows.
 
 ---
@@ -265,6 +333,42 @@ Per-primitive BLAS (§2.1) multiplies build counts by primitives per mesh. Reche
 
 Host size estimates are 3–5× the real size (`docs/clas_allocation.md`). The C1 path (compute sizes, exact placement) already handles the resident case. The sample's GPU bit allocator over a sparse buffer is only needed for streaming, which is out of scope.
 
+**Position truncation.** RTXMG bakes with "Pos Drop Bits" 7 and passes it as `positionTruncateBitCount`; `vk_lod_clusters` defaults to 0, and so does the engine (C1). With position fetch, RTXMG keeps no positions outside the CLAS, so for it truncation shrinks the only copy. The engine keeps full positions for raster, so the gain is CLAS size only. At `t = 7` the §10.2 origin bound is `2^−16 · max(abs(p))`, about 0.5 mm at 30 m from the model origin. This is the first lever for spec R7.
+
+**Measured (2026-11-13, RTX 5070, driver 621.1, exact sizes from C1's compute-sizes pass, `ENGINE_GUIDE_CAPTURE` models):**
+
+| Model | CLAS | t = 0 | t = 4 | t = 7 | t = 10 |
+|---|---|---|---|---|---|
+| Sponza | 3500 | 4.72 MiB | 4.10 MiB | 3.66 MiB (−22%) | 3.26 MiB (−31%) |
+| guide model | 5205 | 8.16 MiB | 7.03 MiB | 6.22 MiB (−24%) | 5.56 MiB (−32%) |
+| largest guide model | 23 896 | 22.84 MiB | 20.13 MiB | 17.76 MiB (−22%) | 15.36 MiB (−33%) |
+
+BLAS sizes do not change. **Decision: stay at 0.** At 7 bits Sponza saves about 1 MiB. Against that, every primary-surface origin would carry the §10.2 bound, and raster and RT positions would stop matching bit for bit, which RT4's pixel-for-pixel check relies on. Revisit at Bistro scale under R7, after RT4 exists to check self-hits.
+
+**Attribute compression (data point).** RTXMG stores UVs on a per-cluster power-of-two grid: 4 B per vertex plus 16 B per cluster, with a float fallback when the grid cannot hold them. Its normals are 4 B. With positions dropped, UVs dominate its geometry pool. This concerns the asset streams rather than RT, so it is recorded here only as an option for R7.
+
+### 9.5 Bake and selection defaults (RTXMG `docs/ClusterLOD.md`)
+
+| Parameter | RTXMG default | Engine note |
+|---|---|---|
+| Cluster size | 128 triangles / 128 vertices (RT only) | the engine's clusters also feed mesh shaders, so their size comes from the mesh-shader limits; keep one cluster set for both |
+| Group size / node width | 32 clusters / 8 | as the engine spec's group size (≤ 32, `meshopt_partitionClusters`) |
+| Simplification attribute weights | normal 0.5, texcoord 0.5, tangent 0, material 32 | start here. A texcoord weight of 0 lets UV-shredded coarse levels pass the error test. Material 32 keeps material borders, which per-primitive BLAS (§2.1) gets for free |
+| LOD threshold | `2 · tan(fovY / 2) · lodPixelError / viewportHeight`, `lodPixelError = 1.0` | the same form; `viewportHeight` is the **display** height when upscaling |
+| Adaptive error | +2% per frame above 85% pool occupancy, recovers below 70% | streaming only; the engine is resident (spec §10.2) |
+| Culling | soft by default: off-screen **and** occluded geometry stays in the TLAS, coarsened by "culled error scale" | the engine keeps frustum only (§10); RTXMG's "hard (invisible)" mode, which drops off-screen instances, confirms that removing them breaks secondary rays |
+| Low-detail BLAS | one cluster (`lowDetailClusterID`), prebuilt | as §9.1 |
+| BLAS reuse | sharing, caching and merging all on; shared / cached tail levels 8 | as §9.3; the profiler block (builds per frame, instances per strategy) is the UI to copy |
+
+### 9.6 Cluster templates and tessellation (`vk_tessellated_clusters`, RTXMG `docs/ClusterTess.md`)
+
+Not planned: the engine has no subdivision surfaces or displacement. What carries over if they arrive, or for deformed meshes:
+
+- **Templates.** A template is a CLAS treelet built once per topology (index buffer only, no positions). Each frame, `VK_NV_cluster_acceleration_structure` instantiates it with new positions. RTXMG reports a build cost close to a refit, with lower memory and steadier trace performance than refitting. It needs triangles within a cluster to be spatially close, which meshlets are. For skinned or vertex-animated meshes, build one template per meshlet at load and instantiate it with the deformed positions each frame, instead of rebuilding CLAS. Keep ≤ 128 triangles / vertices per template (sample recommendation).
+- **BLAS addresses.** Per-frame BLAS builds with implicit destinations write `dstAddresses` straight into the instances' `accelerationStructureReference`. The temporary build inputs overlap the BLAS data memory, since they are dead once the build is done. Use the same trick for §9.2 scratch.
+- **Mixed cluster sources.** Generated clusters tag the top 2 bits of `clusterID` to find their source triangles. If the engine ever mixes generated and baked clusters, reserve high bits of `meshletRow` the same way.
+- **Shadow pops.** The sample skips tessellation for instances that are not primary-visible, and shadows from them pop. Its listed fix is to fade the rate by distance to the frustum planes, which is the engine's frustum-with-margin rule (§9.1, spec §10.4).
+
 ---
 
 ## 10. Where the engine deviates from the sample
@@ -279,6 +383,10 @@ Host size estimates are 3–5× the real size (`docs/clas_allocation.md`). The C
 | Visibility | trace with `SkipClosestHit`, miss shader | `RayQuery` | no SBT entry, no payload |
 | Alpha | any-hit with cone-filtered alpha | OMM 2-state, no any-hit | spec §10.5 |
 | RT LOD coarsening | frustum **or** Hi-Z failure | frustum only, with a margin | hybrid consistency (spec §10.4) |
+| Ray origin offset | `offsetRay` (`length(p) / 65536`) | `SafeSpawnPoint` error bound (RTXMG) | offset follows the real float error (§6.1) |
+| Hit position | `origin + dir · hitT` | fetched positions interpolated at the hit barycentrics | one surface builder with the resolve (§5.2) |
+| Mirrored instances | shading normal snapped into the geometric hemisphere | no snap: `normalMatrix` keeps normals outward | same facing as raster `FlipWinding` (§5.2) |
+| Camera-ray cone | `spread = pixelAngle` | `pixelAngle · cos^1.5 θ` | constant spread over-blurs off-axis pixels by about half a mip (§7) |
 | CLAS memory | streaming + GPU allocator, or preloaded | preloaded only | spec §10.2 |
 
 ---
@@ -288,13 +396,14 @@ Host size estimates are 3–5× the real size (`docs/clas_allocation.md`). The C
 | Step | Plan | Do | Done when |
 |---|---|---|---|
 | RT1 | C1 follow-up | `ALLOW_DATA_ACCESS` on CLAS/BLAS builds (§2.3); log `accelerationStructureIndirectBuild` and `maxInstanceCount` at startup | **done 2026-11-13:** validation clean; sizes unchanged (§2.3); startup log `AS: indirectBuild=false maxInstanceCount=16777215` on the 5070 |
-| RT2 | C2 | `rt_instances.slang` + per-slot instance/TLAS/scratch buffers; CPU-maintained ray-instance count and per-node prefix; capacity and overflow counters in the UI | instances match a CPU reference dump for Sponza ×2 with one entity yawing; no BLAS rebuilds |
-| RT3 | C2 | TLAS full build on the compute queue, timeline wait before the first ray stage; ownership barriers | sync validation clean; Nsight shows the build overlapping raster; build time logged on both GPUs |
-| RT4 | C3 | `raytracing.hit` `decodeHit` sharing the resolve's attribute fetch; geometric normal, facing, mirror snap (§5.2); `offsetRay` + truncation bound | a ray-query debug CS colors by `meshletRow` / `nodeInstanceIndex` and matches the vis-buffer views pixel for pixel away from silhouettes; closes C1's "traceable after unload" check (guide capture with model 0 erased) |
-| RT5 | C3 | ray cones in `sampleMaterial` (§7) | a decoded primary hit gives the resolve's shading normal; mip level within ±0.5 of the resolve's on Sponza floor |
+| RT2 | C2 | `rt_instances.slang` + per-slot instance/TLAS/scratch buffers; CPU-maintained ray-instance count and per-node prefix; capacity and overflow counters in the UI | **done 2026-11-13:** a temporary readback matched a CPU reference with 0 mismatches and transform error 0 (103 to 4199 instances); rows are per layout instead of a per-node prefix (§3.2); count and capacity in the UI, no overflow possible (§3.3) |
+| RT3 | C2 | TLAS full build on the compute queue, timeline wait before the first ray stage; ownership barriers | **done 2026-11-13** on the 5070: sync validation clean, GPU-AV without errors; TLAS build 0.10–0.15 ms (§3.4); the graphics wait landed with RT4 (§3.5). Open: the Nsight overlap capture and the 2060 Super numbers |
+| RT4 | C3 | `raytracing.hit` `decodeHit` sharing the resolve's attribute fetch; geometric normal, facing, mirror snap (§5.2); `SafeSpawnPoint` + truncation bound (§6.1) | a ray-query debug CS colors by `meshletRow` / `nodeInstanceIndex` and matches the vis-buffer views pixel for pixel away from silhouettes; closes C1's "traceable after unload" check (guide capture with model 0 erased). **Done 2026-11-13** on the 5070: `ENGINE_RT_CHECK` matched every interior pixel in 214 of 214 cull-check frames, 318 of 318 motion-test frames and 70 of 70 guide-capture frames. That excludes coverage within the rasterizer's vertex snap of an edge, and one coplanar depth tie. The decode at the resolve's barycentrics reproduces its normal, geometric normal and material normal exactly, and there are 0 self-hits. Validation clean (core, sync, best practices + NVIDIA) on the guide capture. Plan C3 has the details |
+| RT5 | C3 | ray cones in `sampleMaterial` (§7) | a decoded primary hit gives the resolve's shading normal; mip level within ±0.5 of the resolve's on Sponza floor. **Done 2026-11-13:** shading normal exact (0.0000°) at the resolve's barycentrics; mip within 0.22 levels everywhere on Sponza, 0 pixels over 0.5 (§7) |
 | RT6 | D4 | `traceVisibility` ray query (§6.2), `pointOffset` for shadow origins, `minT` bias | no terminator banding on a low-poly smooth-shaded mesh; self-hit debug view clean on Sponza |
 | RT7 | G1 | RT pipeline (§4.1), SBT, `ClusterID` access (§4.2), indirect dispatch | a debug raygen reproduces RT4's view; SER on/off timings on the 5070 |
 | RT8 | — | measure TLAS build vs update, `instanceCustomIndex = primitiveRow` vs extra load | numbers recorded here; decisions in §3.4 and §4.3 closed |
+| RT9 | M9, only if triggered (§3.6) | PTLAS: grid partitions, changed-instance ops from the instance pass, global partition for moving entities, OMM ray flag | update + trace time below the full build at Bistro scale; RT4's debug view unchanged |
 
 ---
 
@@ -304,5 +413,7 @@ Host size estimates are 3–5× the real size (`docs/clas_allocation.md`). The C
 |---|---|---|
 | R1 | Does `VK_NV_cluster_acceleration_structure` exempt CLAS from `ALLOW_DATA_ACCESS` for position fetch? | reference page has no exemption (2026-11-13); RT1 sets the flag at no measured cost |
 | R2 | Cluster AS and position fetch on the 2060 Super (spec Q7) | `vulkaninfo` on that machine |
-| R3 | Slang closest-hit intrinsic for `ClusterID` | SER4 compile probe |
+| R3 | Slang closest-hit intrinsic for `ClusterID` | ray queries resolved (RT4): `CommittedClusterID()` emits `OpRayQueryGetIntersectionClusterIdNV`. Closest-hit: SER4 compile probe |
 | R4 | Per-primitive vs per-mesh BLAS once LOD exists | build counts with sharing/merging on Sponza (§9.3) |
+| R5 | PTLAS with frames in flight: is an in-place update (src = dst) allowed, or does it need one PTLAS per slot (§3.6)? | the `VK_NV_partitioned_acceleration_structure` spec text, when RT9 is triggered |
+| R6 | `positionTruncateBitCount` 7 (RTXMG default): CLAS bytes saved, and does the §10.2 origin bound hold in the RT4 self-hit view? | **memory measured 2026-11-13:** −22% CLAS at 7 bits (§9.4); kept at 0. At 0 bits, RT4 sees 0 self-hits (§6.1). The self-hit test at 7 bits is not run; it only matters if R7 asks for the saving |

@@ -2,6 +2,7 @@
 
 #include "../render/vk_gpu_timer.hpp"
 #include "../render/vk_meshlet_culling.hpp"
+#include "../render/vk_rt_scene.hpp"
 
 #include <array>
 #include <cstdint>
@@ -25,13 +26,14 @@ public:
 
     [[nodiscard]] const Config& getConfig() const noexcept { return config; }
     // once per frame; true once the results are logged. The cull counters logged are the last frame's
-    [[nodiscard]] bool onFrame(const GpuTimer& timer, const MeshletCullStats& cullStats);
+    [[nodiscard]] bool onFrame(const GpuTimer& timer, const MeshletCullStats& cullStats,
+                               const RayTracingScene::Stats& rtStats);
 
 private:
     // shader object warm-up and GPU clock ramp
     static constexpr uint32_t kWarmupFrames = 2 * GpuTimer::kHistorySize;
 
-    void logResults(const MeshletCullStats& cullStats) const;
+    void logResults(const MeshletCullStats& cullStats, const RayTracingScene::Stats& rtStats) const;
 
     Config config;
     uint32_t frame = 0;

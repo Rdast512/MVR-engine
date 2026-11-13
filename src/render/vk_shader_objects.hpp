@@ -18,6 +18,7 @@ public:
     void createCullShaders();
     void createHiZShaders();
     void createFrameShaders();
+    void createRtShaders();
 
     // vis-buffer raster and every state a monolithic pipeline would bake; viewport/scissor stay with the caller.
     // One state serves every RasterBin until M6 gives AlphaTested its own fragment shader
@@ -68,8 +69,18 @@ public:
         vk::raii::ShaderEXT debugView = nullptr;
         // passes/motion_check.slang, MotionCheckPushData; ENGINE_MOTION_TEST only
         vk::raii::ShaderEXT motionCheck = nullptr;
+        // passes/rt_check.slang, RayCheckPushData; ENGINE_RT_CHECK only
+        vk::raii::ShaderEXT rayCheck = nullptr;
     };
     FrameShaders frameShaders;
+
+    // async compute RT scene passes
+    struct RtShaders
+    {
+        // passes/rt_instances.slang, RtInstancesPushData
+        vk::raii::ShaderEXT writeInstances = nullptr;
+    };
+    RtShaders rtShaders;
 
 private:
     struct MeshShaderSource

@@ -552,6 +552,9 @@ void EngineUi::drawDebugViewPanel()
             drawEntityTransformControls();
         }
         break;
+    case DebugViewCategory::RayTracing:
+        ImGui::TextDisabled("primary rays through the TLAS: match the raster view away from edges");
+        break;
     case DebugViewCategory::Lighting:
     case DebugViewCategory::Upscaling:
         break;
@@ -777,6 +780,12 @@ void EngineUi::drawCullingPanel()
     ImGui::Text("GPU total %.3f ms (rolling %zu frames)", gpuTotalMs, GpuTimer::kHistorySize);
     ImGui::SetItemTooltip("sum of the scopes below except Acquire wait, which is idle time until the swapchain "
                           "image is available");
+    const RayTracingScene::Stats rt = context.renderer.getRayTracingStats();
+    ImGui::Text("Async compute: RT instances %.3f ms, TLAS build %.3f ms", rt.instanceWriteMs, rt.tlasBuildMs);
+    ImGui::SetItemTooltip("compute queue, overlapping the frame above; not in the total");
+    ImGui::Text("TLAS instances %u / capacity %u", rt.instances, rt.capacity);
+    ImGui::SetItemTooltip("one per node instance x primitive with meshlets; the count is exact, so it cannot "
+                          "overflow, and the capacity grows with the scene layout");
     constexpr float kPlotHeight = 32.0f;
     for (size_t i = 0; i < kGpuTimerScopeCount; ++i) {
         const auto scope = static_cast<GpuTimerScope>(i);

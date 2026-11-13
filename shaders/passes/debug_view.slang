@@ -2,8 +2,10 @@ import types;
 import core.binding;
 import core.frame;
 import core.math;
+import geometry.hit;
 import geometry.surface;
 import geometry.visbuffer;
+import material.pbr;
 
 // the display image until lighting (M3): the albedo guide, or the selected debug view (src/render/debug_view.hpp)
 
@@ -33,6 +35,17 @@ bool isIdView(uint mode)
     return mode >= kDebugViewMeshlets && mode <= kDebugViewCullPhase;
 }
 
+bool isRayView(uint mode)
+{
+    return mode >= kDebugViewRayMeshlets && mode <= kDebugViewRayShadingNormal;
+}
+
+// flat headlight from the geometric normal keeps the shape readable under flat colors
+float headlight(float3 geoNormal, float3 view)
+{
+    return 0.35 + 0.65 * abs(dot(geoNormal, view));
+}
+
 // the id the geometry views color by, from the decoded payload
 float3 idViewColor(uint mode, DrawContext draw, uint triangle)
 {
@@ -56,6 +69,27 @@ float3 idViewColor(uint mode, DrawContext draw, uint triangle)
     default:
         return idColor((meshletId << kVisTriangleBits) | triangle);
     }
+}
+
+// a primary ray through the TLAS, colored like the raster view it must match (plan C3); black on a miss
+float3 rayViewColor(uint mode, GpuFrameRoot root, GpuCameraData camera, uint2 pixel, float2 targetSize)
+{
+    const PrimaryRay primary = primaryRay(camera, pixel, targetSize);
+    RayHit hit;
+    if (!traceClosest(root, primary.ray, hit))
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    const DecodedHit decoded = decodeHit(root, hit, primary.ray.Direction, primary.cone);
+    if (mode == kDebugViewRayShadingNormal)
+    {
+        // ray-cone gradients: the normal map's mip comes from the cone, not from screen derivatives
+        const GpuMaterial material = loadMaterial(root, materialRow(decoded.draw.primitive));
+        return sampleMaterial(material, decoded.surface, 0.0).n * 0.5 + 0.5;
+    }
+    const uint rasterMode = mode == kDebugViewRayMeshlets ? kDebugViewMeshlets : kDebugViewNodeInstances;
+    return idViewColor(rasterMode, decoded.draw, hit.triangle) *
+        headlight(decoded.surface.geoNormal, -primary.ray.Direction);
 }
 
 float4 loadGuide(GpuGuideSet set, uint guide, uint2 pixel)
@@ -132,7 +166,11 @@ void debugViewMain(uint3 id : SV_DispatchThreadID)
     const bool isEdges = (root.debugView & kDebugViewFlagEdges) != 0;
 
     float3 color = float3(0.0, 0.0, 0.0);
-    if (!isIdView(mode))
+    if (isRayView(mode))
+    {
+        color = rayViewColor(mode, root, camera, id.xy, float2(targets.renderSize));
+    }
+    else if (!isIdView(mode))
     {
         color = guideViewColor(mode, root, targets, camera, id.xy, depth);
     }
@@ -143,12 +181,11 @@ void debugViewMain(uint3 id : SV_DispatchThreadID)
         const uint triangle = visPayloadTriangle(payload);
         if (isIdView(mode))
         {
-            // flat headlight from the geometric normal keeps the shape readable under flat colors
             const float3 geoNormal = octDecode(loadGuide(targets.current, kGuideGeoNormal, id.xy).xy);
             const float2 ndc = pixelToNdc(float2(id.xy) + 0.5, float2(targets.renderSize));
             const float4 farPoint = mul(camera.invViewProj, float4(ndc, 0.0, 1.0));
             const float3 view = normalize(camera.cameraPos - farPoint.xyz / farPoint.w);
-            color = idViewColor(mode, draw, triangle) * (0.35 + 0.65 * abs(dot(geoNormal, view)));
+            color = idViewColor(mode, draw, triangle) * headlight(geoNormal, view);
         }
         if (isEdges)
         {

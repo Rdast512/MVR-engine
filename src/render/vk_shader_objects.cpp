@@ -36,6 +36,7 @@ void ShaderObjects::init()
     createCullShaders();
     createHiZShaders();
     createFrameShaders();
+    createRtShaders();
 }
 
 void ShaderObjects::createMeshShaders()
@@ -82,6 +83,12 @@ void ShaderObjects::createFrameShaders()
     frameShaders.resolve = createComputeShader("resolve.spv", "resolveMain", "Resolve");
     frameShaders.debugView = createComputeShader("debug_view.spv", "debugViewMain", "DebugView");
     frameShaders.motionCheck = createComputeShader("motion_check.spv", "motionCheckMain", "MotionCheck");
+    frameShaders.rayCheck = createComputeShader("rt_check.spv", "rayCheckMain", "RayCheck");
+}
+
+void ShaderObjects::createRtShaders()
+{
+    rtShaders.writeInstances = createComputeShader("rt_instances.spv", "rtInstancesMain", "RtInstances");
 }
 
 vk::raii::ShaderEXT ShaderObjects::createComputeShader(std::string_view file, const char* entry,

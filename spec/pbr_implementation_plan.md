@@ -7,7 +7,7 @@ description: Task plan for glTF metallic-roughness PBR on the engine_spec archit
 
 **Date:** 2026-11-07 · **Verified against:** `feature-pbr` working tree on `a50ebcb46` plus the uncommitted visibility buffer (V1–V7), Slang `v2026.20`, meshoptimizer `v1.3`
 **Precedence:** [docs/engine_spec.md](../docs/engine_spec.md) is the architecture. This plan holds the shading tasks and follows it; where they disagree, the spec wins. Milestones are the spec's M0–M9 (§16.2).
-**Status (2026-11-13):** M1 is done: the guide check (E1, Khronos screenshots), the motion check and the culling image check pass. The visibility buffer, the compute resolve, all DLSS guides, `sampleMaterial` (B1), the BRDF (B2) and `evalLight` (B3) exist. No light pass, AS or OMM code exists yet. Per-milestone status: engine spec §16.2. See §3.
+**Status (2026-11-13):** M1 is done: the guide check (E1, Khronos screenshots), the motion check and the culling image check pass. The visibility buffer, the compute resolve, all DLSS guides, `sampleMaterial` (B1), the BRDF (B2) and `evalLight` (B3) exist. C1–C3 built the cluster AS, the GPU-written TLAS and the hit decode (M2). No light pass or OMM code exists yet. Per-milestone status: engine spec §16.2. See §3.
 
 | Doc | Role |
 |---|---|
@@ -159,8 +159,8 @@ Library files become Slang modules (`module brdf;`, exports `public`). Passes `i
 | `core.frame` | `loadDrawContext`, `loadCamera`, `loadMaterial`, `loadTargets` | exists |
 | `core.math` | `kPi`, ONB, `octEncode`/`octDecode`, `jitterClip`, `pixelToNdc`, `normalMatrix`, PCG RNG | edit |
 | `geometry.visbuffer` | payload pack/unpack, `computeBarycentrics`, interpolation | exists |
-| `geometry.surface` | `TriangleCorners`, `Surface`, `buildSurface`; shared by the resolve and hits | exists |
-| `geometry.hit` | hit ids + barycentrics → `TriangleCorners` (position fetch) → `Surface` with ray-cone gradients | **new** (C3) |
+| `geometry.surface` | `TriangleCorners`, `Surface`, `buildSurface`, `loadCornerVertices`, `buildRaySurface`; shared by the resolve and hits | exists |
+| `geometry.hit` | `primaryRay`, `traceClosest`, `decodeHit`: hit ids + barycentrics → `TriangleCorners` (position fetch) → `Surface` with ray-cone gradients; `safeSpawnPoint` | exists (C3) |
 | `material.pbr` | `SampledMaterial`, `sampleMaterial`, `sampleSlot` | exists |
 | `material.brdf` | `evalBrdf`, `sampleBrdf`, `pdfBrdf`, `fromMaterial`, `envBrdfApprox` | edit |
 | `lighting.lights` | `LightSample`, `evalLight`, `rangeWindow`, `spotCone` | exists (B3) |
@@ -453,31 +453,70 @@ Spec §10. Reference: `vk_lod_clusters` (`renderer_raytrace_clusters_lod.cpp`, `
   - `ENGINE_GUIDE_CAPTURE` loads each shot's model before unloading the previous one, so model 0 is erased 8 times while model 1 stays; validation stays clean, and the normal checks still pass 2 of 2. The motion test passes 13 of 13 and ctest 7 of 7.
   - A second Sponza: `loadModel` takes the `instantiateModel` path, which `MegaGeometry` never sees (no diff there).
   - **Revisited (2026-11-13, [ray_tracing_mega_geometry.md](./features/ray_tracing_mega_geometry.md) RT1):** CLAS and BLAS are built with `PREFER_FAST_TRACE | ALLOW_DATA_ACCESS`, which position fetch requires (VUID-HitTriangleVertexPositionsKHR-None-08751, VUID-RuntimeSpirv-flags-08761). Sizes are unchanged at log precision, and validation stays clean on the motion test and the guide capture. Startup logs `accelerationStructureIndirectBuild` (false on the 5070) and `maxInstanceCount` for C2.
-  - **Open:** that the remaining model is still *traceable* needs a TLAS (C2) and a trace (C3's debug pass). Until then, it holds by construction: CLAS and BLAS live in the model's own allocations, which nothing moves or frees.
+  - **Closed by C3 (2026-11-13):** the remaining model stays *traceable*. Under `ENGINE_GUIDE_CAPTURE` with `ENGINE_RT_CHECK`, every frame's primary rays match the vis buffer across the 8 erasures of model 0 (70 of 70 frames, 0 misses, 0 hits on empty pixels).
 - **Must not:** build KHR triangle BLASes, build from a CPU-side ray mesh, or reorder cluster triangles between raster and CLAS.
 
-#### C2 · GPU instances + TLAS (async compute)
+#### C2 · GPU instances + TLAS (async compute) — built (M2)
 
-- **Files:** `src/render/vk_mega_geometry.cpp`, `shaders/passes/rt_instances.slang` (new)
+- **Files:** `src/render/vk_rt_scene.{hpp,cpp}` (new, `RayTracingScene`), `shaders/passes/rt_instances.slang` (new), `src/core/vk_frame_sync.cpp` (compute pool, per-slot compute command buffers, `computeTimeline`), `src/render/vk_renderer.cpp` (`submitComputeCommands`), `src/core/vk_frame_data.cpp` (root `tlas` / `rayInstances`). The per-model CLAS/BLAS stay in `src/core/vk_mega_geometry.cpp` (C1).
 - **Do:**
   - A compute pass writes one `VkAccelerationStructureInstanceKHR` and the matching `GpuRayInstance` per (node instance, mesh primitive) from `GpuNodeInstance` and the per-model BLAS address table. `transform` = 3×4 of the node instance's world matrix; `mask = 0xff`; flags `FORCE_OPAQUE`, or `FORCE_OPACITY_MICROMAP_2_STATE_EXT` for alpha-tested primitives (from the material's alpha mode). No facing flags. Instance capacity, counter and overflow counter in the debug UI (spec S11).
   - Full TLAS build every frame (`PREFER_FAST_TRACE`) on the async compute queue; graphics waits on a timeline semaphore before the first ray pass. Per-slot TLAS storage, scratch, instance and `GpuRayInstance` buffers. `GpuFrameRoot.tlas` and `GpuFrameRoot.rayInstances` point at them.
   - PTLAS only if the measured TLAS build exceeds 0.3 ms (spec §10.3).
 - **Done when:** a yawing entity moves without BLAS rebuilds; Tracy/Nsight show the TLAS build overlapping the raster; no CPU loop over instances.
+- **As built** ([ray_tracing_mega_geometry.md](./features/ray_tracing_mega_geometry.md) §3, RT2–RT3):
+  - `GpuRayInstance` rows and a parallel BLAS-address table only change with the scene layout, so the CPU writes them per slot when `FrameData::layoutGeneration` moves (the same filter as the cull templates: active entities, primitives with a BLAS). Per frame the GPU writes each instance's transform from the slot's `GpuNodeInstance`; the CPU writes nothing per instance.
+  - `instanceCustomIndex` = absolute primitive row (checked < 2^24), mask `0xFF`, `FORCE_OPAQUE` until D.
+  - The count is exact on the CPU, so the build range is a host value (`accelerationStructureIndirectBuild` is false on the 5070) and nothing can overflow; the capacity doubles with the layout and is shown in the UI.
+  - Queue: `Device::computeQueue` (family 2 on the 5070, its own family). Buffers are `CONCURRENT` over all families, so no ownership transfers. Each submit signals the frame number on `FrameSync::computeTimeline`; the CPU waits for the slot's last value before rewriting its node instances or buffers. Nothing on the graphics queue waited yet; since C3, the ray command buffer does ([ray_tracing_mega_geometry.md](./features/ray_tracing_mega_geometry.md) §3.5).
+  - Requires the Vulkan 1.2 feature `timelineSemaphore`, now in the required set.
+- **Checked (2026-11-13, RTX 5070, driver 621.1):**
+  - A temporary readback compared every written instance against a CPU reference (transform from the entity and node matrices, custom index, mask, flags, BLAS address): 0 mismatches and transform error 0 for Sponza (103 instances) and instance fields of side 8, 16 and 64 (167, 359 and 4199 instances).
+  - Async compute, release build without layers (bench): instance write 0.0008 ms; TLAS build 0.101 ms (103), 0.104 ms (167), 0.119 ms (359), 0.150 ms (4199). Below the 0.3 ms PTLAS threshold. The graphics total stays 0.29–0.33 ms.
+  - Validation clean (core, sync, best practices + NVIDIA) on the motion test (13 of 13) and the guide capture (7 layout rebuilds with model swaps, normal checks 2 of 2); GPU-AV reports no errors. ctest 7 of 7.
+  - A yawing entity moves without BLAS rebuilds by construction: BLAS are only built in `MegaGeometry::buildModel`.
+  - **Open:** the Tracy/Nsight capture of the overlap (the work runs on the compute family; no timeline view was taken), and the 2060 Super numbers.
 - **Must not:** write instances on the CPU, or cull TLAS instances by the camera.
 
-#### C3 · `geometry.hit`
+#### C3 · `geometry.hit` — built (M2)
 
 ```slang
-// committed hit → the same Surface the resolve builds
-public Surface decodeHit(GpuFrameRoot f, uint rayInstance, uint meshletRow, uint triangle,
-                         float2 bary, float3 hitPositions[3], RayCone cone);
+// committed hit → the same DrawContext and Surface the resolve builds (as built)
+public bool traceClosest(GpuFrameRoot root, RayDesc ray, out RayHit hit);
+public DecodedHit decodeHit(GpuFrameRoot root, RayHit hit, float3 rayDirection, RayCone cone);
 ```
 
 `rayInstances[rayInstance]` → node-instance row → `GpuModel` → cluster `meshletRow` → 3 cluster-local vertex ids → uv0/uv1/normal/tangent/color from the model slices (absent stream: mask bit clear → default; after A4 tangents exist wherever a normal texture does) → `buildSurface`. Positions come from `HitTriangleVertexPosition` (position fetch), the truncated CLAS positions: build the geometric normal and the next ray origin from them only (spec §10.2). UV gradients come from the ray cone at `hitT`. The material is `loadMaterial(primitiveRow)`.
 
 - **Debug pass:** a ray-query CS traces primary rays and colors by `meshletRow` and by `rayInstances[…].nodeInstanceIndex`, using the same palette as the vis-buffer `Meshlets` / `NodeInstances` debug views.
 - **Done when:** the ray-traced debug view matches the vis-buffer debug view pixel for pixel away from silhouettes; a decoded primary hit gives the same shading normal as the resolve.
+- **As built** ([ray_tracing_mega_geometry.md](./features/ray_tracing_mega_geometry.md) §3.5, §5–7, RT4–RT5):
+  - `shaders/geometry/hit.slang` holds the following. `primaryRay`: through the pixel center minus the jitter, from the near to the far plane, with a ray cone. `traceClosest`: a ray query returning the committed hit with its cluster id, fetched positions and instance matrices. `decodeHit`, which returns `{DrawContext, Surface}`. `safeSpawnPoint`, a port of RTXMG's. The decode runs the resolve's functions (`loadDrawContext`, `loadCornerVertices`, and `buildRaySurface` beside `buildSurface`); only the positions (fetched), the facing and the gradients (cone) come from the ray.
+  - The debug views `Ray meshlets`, `Ray node instances` and `Ray shading normal` (category "Ray tracing") trace from `debug_view` with the vis-buffer palettes. There is no separate `rt_debug` pass.
+  - The ray passes run in a second graphics command buffer per slot. It is submitted with the frame and waits for the slot's compute timeline value, so raster and resolve do not wait for the TLAS.
+  - `ENGINE_RT_CHECK=1` (`src/core/engine_ray_check.*`, `passes/rt_check.slang`) is passive. It checks every frame of whichever runner scripts the scene (cull check, motion test, guide capture), or 32 frames of the startup view when run alone. It traces each pixel's primary ray, and on interior pixels (the 4 neighbours hold the same payload) requires:
+    - the same (node instance, meshlet, triangle);
+    - the decode of the ray's ids and fetched positions, at the resolve's barycentrics, reproduces the resolve's normal, geometric normal and material normal (≤ 1e-4°);
+    - positions within 1e-4 of the hit distance;
+    - the ray-cone mip within 0.5 of the raster footprint;
+    - no self-hit for a ray spawned with `safeSpawnPoint`.
+
+    Two kinds of disagreement do not count as failures. When the pixel center lies within √2 · `subpixelSnap` of either triangle's edge, it is an edge mismatch: the rasterizer snaps vertices and rays do not. When another triangle lies within 1e-4 of the hit distance, it is a depth tie: coplanar overlap.
+- **Checked (2026-11-13, RTX 5070):**
+  - Frames matched: cull check 214 of 214, motion test 318 of 318, guide capture 70 of 70. The guide capture ran with validation clean (core, sync, best practices + NVIDIA). Misses, id mismatches, empty-pixel hits, self-hits and mip outliers are all 0, and 0.05–0.17% of edge pixels disagree.
+  - The decode at the resolve's barycentrics reproduces the normal, geometric normal and material normal at 0.0000°.
+    - At the ray's own barycentrics they differ by up to 0.066° (normal) and 1.87° (material normal).
+    - The cause is float noise between the two intersections, crossing the sub-texel filter steps of steep normal maps.
+    - This is reported, not gated.
+  - Position within 9.3e-5 of the hit distance; mip within 0.22 levels.
+  - Excluded from the id check:
+    - 7 pixel-frames (3 distinct pixels) in the cull check, 0.0001–0.0006 px from a triangle edge (the snap is 0.0028 px);
+    - 1 pixel in the motion test, two coplanar double-sided triangles 1.4e-6 apart at 3.1 m.
+
+    Both are deterministic, not culling losses.
+  - Release bench without layers: frame 0.31 ms, in line with the ≈0.3 ms before C3; `Debug view` 0.040 ms (lit view, now in the ray command buffer).
+  - Regressions: motion test 13 of 13, cull check 16 of 16, normal checks 2 of 2, ctest 7 of 7.
+  - **Open:** the ray views were not compared by eye; the check above compares the same ids numerically.
 
 ### Phase D — Alpha: raster bin + opacity micromaps (M6)
 
@@ -715,7 +754,7 @@ A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
 |---|---|
 | M0 Contracts | A1, A2, A3, A4 (**done**; A4 checked by `ENGINE_GUIDE_CAPTURE`), animation removal (**done**) |
 | M1 Vis buffer | B1, E1 (**done**; E1 guides vs Khronos screenshots and motion checked 2026-11-13); 32-bit payload kept, V8 deferred; culling lossless under reverse Z (`ENGINE_CULL_CHECK`, 2026-11-13); **M1 done** (spec §16.2) |
-| M2 Cluster RT bring-up | C1 (**built**; the trace check waits for C2–C3), C2, C3 |
+| M2 Cluster RT bring-up | C1, C2, C3 (**built**; C3's `ENGINE_RT_CHECK` closes C1's trace check). Open: the async overlap capture and the 2060 Super |
 | M3 First lit frame | B1 extensions, B2 (**done**), B3 (**done**), E1 open items (AO, jitter, `lodBias`, unlit specular), E2 (punctual), F1–F3, H1, H2 |
 | M4 Indirect | G1, G2, G3 (SHaRC), G5, G6 |
 | M5 NRC | G4 |
@@ -768,7 +807,7 @@ Rules: `MaterialStore` / `LightStore` stay on `Scene`. `AssetBuffers::flush` rem
 | RTXDI local light sampling | `Uniform` for punctual-only scenes; `Power_RIS` once emissive triangles are lights (M7) |
 | Radiance cache per tier | SHaRC on the floor tier, NRC on the reference tier (spec §11.4) |
 | Indirect resolution | full on the reference tier, half + checkerboard on the floor tier |
-| CLAS `positionTruncateBitCount` | 0; raise only with measured memory gain and the §10.2 origin rule |
+| CLAS `positionTruncateBitCount` | 0; raise only with measured memory gain and the §10.2 origin rule. RTXMG ships 7, which measured −22% CLAS on Sponza (4.72 → 3.66 MiB); not worth the origin bound at this scale (feature spec §9.4, R6) |
 | `Blend` | treated as mask (cutoff 0.5) |
 | OMM subdivision level | max 5, clamped to device max; adaptive via `dynamicSubdivisionScale` (start at 2 texels, the SDK default) |
 | OMM baker | NVIDIA OMM SDK CPU baker (D1), at load and cached: the SDK's choice for pre-baked content, with reuse and spatial-sort steps the GPU baker lacks. Its GPU baker only if load-time baking is too slow on Bistro; it needs the SDK's shaders and a binding adapter for descriptor heaps |

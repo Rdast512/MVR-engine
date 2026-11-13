@@ -125,6 +125,8 @@ constexpr std::array kRequiredFeatures = {
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, vulkanMemoryModelDeviceScope),
     // hi-z max-reduction sampler
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, samplerFilterMinmax),
+    // async compute (RT instances + TLAS) signals frame numbers
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, timelineSemaphore),
     // textureCompressionASTC_HDR stays off: rtx 2060 super not supported
     ENGINE_FEATURE(PhysicalDeviceVulkan13Features, synchronization2),
     ENGINE_FEATURE(PhysicalDeviceVulkan13Features, dynamicRendering),

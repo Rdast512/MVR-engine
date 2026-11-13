@@ -46,6 +46,21 @@ struct CullPushData {
 static_assert(std::is_trivially_copyable_v<CullPushData>);
 static_assert(sizeof(CullPushData) == 16);
 
+// rt_instances pass; must match shaders/types.slang RtInstancesPushData
+struct RtInstancesPushData {
+    vk::DeviceAddress frameRoot;
+    // uint64 BLAS address per ray instance, parallel to GpuFrameRoot::rayInstances
+    vk::DeviceAddress blasAddresses;
+    // VkAccelerationStructureInstanceKHR[count], the TLAS build input
+    vk::DeviceAddress tlasInstances;
+    uint32_t count;
+    uint32_t pad0;
+};
+
+static_assert(std::is_trivially_copyable_v<RtInstancesPushData>);
+static_assert(offsetof(RtInstancesPushData, count) == 24);
+static_assert(sizeof(RtInstancesPushData) == 32);
+
 // matches shaders/passes/hiz_build.slang
 inline constexpr uint32_t kHiZLevelsPerDispatch = 3;
 
@@ -64,6 +79,15 @@ struct MotionCheckPushData {
 };
 
 static_assert(sizeof(MotionCheckPushData) == 16);
+
+// rt_check pass; must match shaders/types.slang RayCheckPushData
+struct RayCheckPushData {
+    vk::DeviceAddress frameRoot;
+    // GpuRayCheckStats
+    vk::DeviceAddress stats;
+};
+
+static_assert(sizeof(RayCheckPushData) == 16);
 
 // present pass; must match shaders/types.slang PresentPushData
 struct PresentPushData {
@@ -110,4 +134,4 @@ static_assert(sizeof(HiZViewPushData) == 24);
 // largest push block of any pass; checked against maxPushDataSize at startup
 inline constexpr size_t kMaxPushDataBytes =
     std::max({sizeof(MeshPushData), sizeof(CullPushData), sizeof(HiZPushData), sizeof(HiZViewPushData),
-              sizeof(FramePushData), sizeof(PresentPushData)});
+              sizeof(FramePushData), sizeof(PresentPushData), sizeof(RtInstancesPushData)});

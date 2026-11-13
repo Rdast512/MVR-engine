@@ -80,7 +80,7 @@ The spec's §5 frame, stage by stage, with the shader that runs it.
 | 5 | Phase 2 cull: candidates and reject masks vs fresh Hi-Z | `cullInstances` (late), `cullRejectedMeshlets`, `buildMeshSequences` | graphics | [exists] | — |
 | 6 | Phase 2 raster | as 3 | graphics | [exists] | M1 |
 | 7 | Hi-Z build for the next frame | as 4 | graphics | [exists] | — |
-| 6' | RT instance write → TLAS build | `rt_instances` | async compute | [new] | M2 |
+| 6' | RT instance write → TLAS build | `rt_instances` | async compute | [exists] | M2 |
 | 8 | Classify: vis buffer → material tiles, bin-id image | `classify` | graphics | [new] | M7 |
 | 9 | Resolve + shade → shading surface + DLSS guides | `resolve` (one tiled dispatch until M7, then one shader per bin through a DGC execution set) | graphics | [exists], one tiled dispatch | M1, M7 |
 | 10 | ReSTIR DI: initial → spatiotemporal → visibility | `rtxdi_presample` (M7), `rtxdi_initial`, `rtxdi_resample`, `rtxdi_shade` | graphics | [new] | M3 |
@@ -90,7 +90,7 @@ The spec's §5 frame, stage by stage, with the shader that runs it.
 | 14 | DLSS-RR | host NGX | graphics | — | M3 |
 | 15 | Post: auto exposure → tonemap → swapchain, ImGui | `exposure`, `composite` | graphics | [new] | M3 |
 
-Debug passes: `debug_view` [exists] (geometry and culling views from the vis buffer, every guide; later reservoirs, cache debug resolve, DLSS input vs output), `hiz_view` [exists], `rt_debug` [new, M2] (ray-query cluster colors, primary self-hit distance after L2). `mesh_debug` was deleted in M1. `motion_check` [exists] counts motion-vector errors after the debug view, only under `ENGINE_MOTION_TEST` ([motion_vectors.md](./features/motion_vectors.md) §5.1). Output: `present` [exists] samples the display image into the swapchain, then ImGui.
+Debug passes: `debug_view` [exists] (geometry and culling views from the vis buffer, every guide; later reservoirs, cache debug resolve, DLSS input vs output), `hiz_view` [exists], ray views in `debug_view` [exists, M2] (`Ray meshlets`, `Ray node instances`, `Ray shading normal`; they replace the planned `rt_debug`; primary self-hit distance after L2). `rt_check` [exists] compares primary rays with the vis buffer after the debug view, only under `ENGINE_RT_CHECK`. The ray passes run in a second graphics command buffer that waits for the compute timeline. `mesh_debug` was deleted in M1. `motion_check` [exists] counts motion-vector errors after the debug view, only under `ENGINE_MOTION_TEST` ([motion_vectors.md](./features/motion_vectors.md) §5.1). Output: `present` [exists] samples the display image into the swapchain, then ImGui.
 
 ---
 
@@ -106,12 +106,13 @@ Library files become Slang modules in M0 (PBR A2). Vendor headers are textual in
 | `core/frame.slang` | [exists] | `loadDrawContext`, `loadCamera`, `loadMaterial`, `loadMaterialExtension`, `loadWorldLight` |
 | `core/culling.slang` | [exists] | modified port of `vk_lod_clusters` `culling.glsl` (Apache-2.0 header kept): `intersectFrustum`, `isHiZOccluded`, `isSubPixel`, `isFrontFacingHW`, `testTrianglePixel`; reverse Z only |
 | `core/math.slang` | [exists] | `objectToClip`, `jitterClip`, `pixelToNdc`, `normalMatrix`, ONB, octahedral encode / decode, `luminance`. To do: PCG RNG, Halton |
+| `core/counters.slang` | [exists] | `waveCount`, `waveMax`: one atomic per wave into host-read check stats (`motion_check`, `rt_check`) |
 | **geometry/** | | |
 | `geometry/mesh.slang` | [exists] | meshlet, vertex and triangle fetch through model slices; `loadFrontFacingTriangle` (winding flip) |
 | `geometry/triangle_cull.slang` | [exists] | homogeneous backface + small-primitive test (`SV_CullPrimitive`) |
 | `geometry/visbuffer.slang` | [exists] | pack/unpack the 32-bit vis-buffer payload (`visibleRow << kVisTriangleBits \| triangle`); analytic barycentrics and screen derivatives (M1, [visibility_buffer.md](./features/visibility_buffer.md)) |
 | `geometry/surface.slang` | [exists] | triangle fetch and attribute interpolation from `(nodeInstance, meshletRow, triangle)`, shared by the resolve (M1) and `decodeHit` (M2) |
-| `geometry/hit.slang` | [new] | `decodeHit`: `(instance, cluster, triangle)` → world `SurfaceHit`; positions by position fetch at ray hits; ray-cone LOD (M2) |
+| `geometry/hit.slang` | [exists] | `primaryRay`, `traceClosest` (ray query), `decodeHit`: `(instance, cluster, triangle)` → `DrawContext` + `Surface` through `geometry/surface`; positions by position fetch; ray-cone gradients; `safeSpawnPoint` (M2) |
 | **material/** | | |
 | `material/pbr.slang` | [exists] | `SampledMaterial` + `sampleMaterial` with explicit gradients, used by the resolve and later by ray hits (B1) |
 | `material/brdf.slang` | [exists] | glTF GGX `evalBrdf`, `sampleBrdf` (VNDF), `pdfBrdf`, `envBrdfApprox` (B2; `tests/brdf_test.cpp`) |
@@ -173,8 +174,8 @@ Buffers (BDA, [resource_architecture.md](./resource_architecture.md) §12):
 | `scene_update` | [new] | compute | transform deltas | `GpuNodeInstance`, previous matrices | §8 open decision 1 |
 | `resolve` | [exists] | compute | vis buffer, model slices, materials, camera (current + previous) | §4 surface + guides | M1; per-bin variants M7 |
 | `classify` | [new] | compute | vis buffer | bin tile lists, counts, bin-id image | M7 |
-| `rt_instances` | [new] | compute, async | node instances, models | AS instances, `GpuRayInstance`, TLAS build input | M2 |
-| `rt_debug` | [new] | compute + ray query | TLAS, `decodeHit` | debug image | M2 |
+| `rt_instances` | [exists] | compute, async | node instances, models | AS instances, `GpuRayInstance`, TLAS build input | M2 |
+| `rt_check` | [exists] | compute + ray query | TLAS, vis buffer, `decodeHit` | `GpuRayCheckStats` (host-visible) | M2, `ENGINE_RT_CHECK` only |
 | `rtxdi_presample` | [new] | compute | light list | PDF texture, RIS buffers | M7 (`Power_RIS`) |
 | `rtxdi_initial`, `rtxdi_resample`, `rtxdi_shade` | [new] | compute + ray query | guides (both sets), motion, lights, TLAS | reservoirs, `directRadiance` | M3 |
 | `pathtrace_update` | [new] | RT pipeline + SER | guides, TLAS, slices, materials, lights, cache | cache training (SHaRC `SHARC_UPDATE`, NRC `NRC_UPDATE`) | M4, M5 |
@@ -188,7 +189,7 @@ Buffers (BDA, [resource_architecture.md](./resource_architecture.md) §12):
 | DLSS-RR | host NGX | — | `noisyColor` + guides | output color | M3 |
 | `exposure` | [new] | compute | output color | luminance histogram, exposure | M3 |
 | `composite` | [new] | compute | output color, exposure | swapchain (tonemap once) | M3 |
-| `debug_view` | [exists] | compute | vis buffer, any §4 target | `displayColor` | M1 onward |
+| `debug_view` | [exists] | compute (+ ray query for the ray views) | vis buffer, any §4 target, TLAS | `displayColor` | M1 onward |
 
 There is one path loop (`pathtrace`). Direct light at secondary hits calls RTXDI sampling without reuse plus one visibility ray; there is no second light loop. Path code is shared between SHaRC and NRC through `IRadianceCache`.
 
@@ -202,7 +203,7 @@ The spec's §16. Each step renders something testable and is measured against sp
 |---|---|---|
 | M0 | **Built.** PBR A1, A2 (modules), A4; `GpuTargets`; morph code removed; `base*`, `dlss` deleted (AU7); capacity checks in `meshlet_cull` | same image; structs asserted |
 | M1 | **Built.** Per [visibility_buffer.md](./features/visibility_buffer.md): reverse Z + `nvhiz`; `visbuffer`, `surface`, vis-buffer `mesh_fragment`, opaque bin with winding flip; `resolve` as one tiled dispatch with `sampleMaterial` (B1); `gbuffer` layout; `debug_view`, `present`; `mesh_debug` removed | guide debug views; same geometry as today; culling lossless under reverse Z (`ENGINE_CULL_CHECK`, done 2026-11-13) |
-| M2 | `geometry/hit`, `rt_instances`, `rt_debug` | debug colors by cluster; unload keeps other models traceable |
+| M2 | **Built.** `geometry/hit`, `rt_instances`, ray views in `debug_view`, `rt_check` | debug colors by cluster; unload keeps other models traceable (`ENGINE_RT_CHECK`, 2026-11-13) |
 | M3 | `sampleMaterial`, BRDF, `evalLight` (PBR B); RTXDI passes; `exposure`, `composite`; culling jitter rule | stable direct light |
 | M4 | `raytracing/*`, `pathtrace_*` with SER, `radiance_cache`, `sharc`, `sharc_resolve`, `restir_gi`, `combine` | bounce light, reorder on/off timings |
 | M5 | `nrc_bridge`, NRC path defines, `nrc_resolve` | NRC vs SHaRC A/B |
@@ -243,6 +244,7 @@ Closed by the spec (2026-10-31 to 2026-11-08): `ClusterID` and attributes on `Hi
 
 | Date | Change |
 |---|---|
+| 2026-11-13 | M2 as built (PBR C2, C3): `rt_instances`, `geometry/hit`, `core/counters` and `rt_check` exist. The planned `rt_debug` pass became ray views in `debug_view` |
 | 2026-11-13 | `lighting/lights.slang` exists (PBR B3); emissive triangles removed from its row, they are RTXDI triangle lights |
 | 2026-11-13 | M1 as built (engine spec §20.4): `resolve`, `present`, `debug_view`, `visbuffer`, `surface`, `brdf` exist; `hiz_build` is 3 levels per dispatch; `mesh_debug` gone; frame root fields of M0; typed `storageTex2D`; Q8 moved to closed |
 | 2026-11-12 | Stub files deleted (engine spec AU7, [dead_code_removal.md](./features/dead_code_removal.md)): `base*`, `raytracing/*`, `postprocessing/dlss`, `gi/rtxgi`, `pathtrace*`, `sharc_resolve`, `composite`; their rows are [new] at their milestone |

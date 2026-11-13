@@ -141,6 +141,8 @@ public:
     [[nodiscard]] std::pair<vk::DeviceSize, vk::DeviceSize> assetTotals() const noexcept;
     // bumped by every flush, instantiateModel and eraseEntity that changes entities or models
     [[nodiscard]] uint32_t sceneGeneration() const noexcept { return generation; }
+    // CLAS + cluster BLAS per model, indexed like models()
+    [[nodiscard]] const MegaGeometry& rayGeometry() const noexcept { return megaGeometry; }
 
 private:
     // bytes written at dstOffset of an asset buffer; the buffer grows (x2) when the write passes its capacity

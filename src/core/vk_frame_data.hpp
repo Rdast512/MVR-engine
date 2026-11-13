@@ -20,6 +20,9 @@ struct FrameRootInputs {
     vk::DeviceAddress drawRecords;
     vk::DeviceAddress visibleMeshlets;
     vk::DeviceAddress cullCounters;
+    // RayTracingScene of this slot, built on the async compute queue
+    vk::DeviceAddress tlas;
+    vk::DeviceAddress rayInstances;
     uint32_t lateVisibleBase;
     uint32_t triangleCullFlags;
     float subpixelSnap;

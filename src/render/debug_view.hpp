@@ -31,11 +31,19 @@ enum class DebugView : uint32_t
     MotionVectors,
     // albedo against last frame's at the reprojected position: only disocclusions light up
     Reprojection,
+    // primary rays through the TLAS, decoded like a vis-buffer pixel: must match Meshlets / NodeInstances
+    RayMeshlets,
+    RayNodeInstances,
+    // material normal of the decoded hit, textures sampled at ray-cone gradients
+    RayShadingNormal,
     // reserved, not implemented yet
     LightingOnly,
     DlssInput,
     Count,
 };
+
+// shaders/types.slang kDebugViewRayMeshlets
+static_assert(std::to_underlying(DebugView::RayMeshlets) == 18);
 
 enum class DebugViewCategory : uint8_t
 {
@@ -43,6 +51,7 @@ enum class DebugViewCategory : uint8_t
     Geometry,
     Culling,
     Guides,
+    RayTracing,
     Lighting,
     Upscaling,
 };
@@ -58,6 +67,8 @@ enum class DebugViewCategory : uint8_t
         return "Culling";
     case DebugViewCategory::Guides:
         return "Guides";
+    case DebugViewCategory::RayTracing:
+        return "Ray tracing";
     case DebugViewCategory::Lighting:
         return "Lighting";
     case DebugViewCategory::Upscaling:
@@ -93,6 +104,9 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"Emissive", DebugViewCategory::Guides, true},
     {"Motion vectors", DebugViewCategory::Guides, true},
     {"Reprojection", DebugViewCategory::Guides, true},
+    {"Ray meshlets", DebugViewCategory::RayTracing, true},
+    {"Ray node instances", DebugViewCategory::RayTracing, true},
+    {"Ray shading normal", DebugViewCategory::RayTracing, true},
     {"Lighting only", DebugViewCategory::Lighting, false},
     {"DLSS input", DebugViewCategory::Upscaling, false},
 }};

@@ -2,6 +2,7 @@ import types;
 import core.binding;
 import core.frame;
 import core.math;
+import core.counters;
 
 // motion vector self-test, ENGINE_MOTION_TEST only (spec/features/motion_vectors.md §5): checks every pixel's motion
 // against the camera-only motion rebuilt from depth, and counts albedo reprojection errors. Reads the guides of this
@@ -15,25 +16,6 @@ static const float kCameraErrorAbsolute = 0.05;
 static const float kCameraErrorRelative = 1e-3;
 
 [[vk::push_constant]] ConstantBuffer<MotionCheckPushData> push;
-
-void waveCount(inout uint counter, bool predicate)
-{
-    const uint count = WaveActiveCountBits(predicate);
-    if (WaveIsFirstLane() && count > 0)
-    {
-        InterlockedAdd(counter, count);
-    }
-}
-
-// non-negative floats order like their bits
-void waveMax(inout uint counterBits, float value)
-{
-    const float wave = WaveActiveMax(value);
-    if (WaveIsFirstLane() && wave > 0.0)
-    {
-        InterlockedMax(counterBits, asuint(wave));
-    }
-}
 
 // the motion the resolve must write if no entity moved: last frame's projection of this pixel's world point
 float2 cameraOnlyMotion(GpuCameraData camera, float2 ndc, float depth, float2 targetSize)

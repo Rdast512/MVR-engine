@@ -55,6 +55,9 @@ void Engine::initialize()
     if (EngineCullCheck::isRequested()) {
         cullCheck.emplace();
     }
+    if (EngineRayCheck::isRequested()) {
+        rayCheck.emplace();
+    }
 
     swapChain = std::make_unique<SwapChain>(window, *device);
     swapChain->isUncapped = bench.has_value();
@@ -105,6 +108,10 @@ void Engine::initialize()
         renderer->enableMotionCheck();
         logInfo("Motion test: scripted motion-vector checks, results follow", "MotionTest");
     }
+    if (rayCheck) {
+        renderer->enableRayCheck();
+        logInfo("Ray check: primary rays against the vis buffer every frame, results follow", "RayCheck");
+    }
 
 #if ENGINE_ENABLE_IMGUI
     ui = std::make_unique<EngineUi>(UiContext{
@@ -149,7 +156,9 @@ void Engine::run()
     constexpr float kCameraSpeed = 5.0f;
     auto& deviceRef = device->vkdevice;
     // the bench, motion-test, guide-capture and cull-check views move only as they script it
-    const bool isCameraInputEnabled = !bench && !motionTest && !guideCapture && !cullCheck;
+    const bool isCameraInputEnabled = !bench && !motionTest && !guideCapture && !cullCheck && !rayCheck;
+    // no other runner drives the camera or the scene: the ray check holds the startup view and ends the run
+    const bool isRayCheckStandalone = !bench && !motionTest && !guideCapture && !cullCheck;
 
     // game focus captures the mouse and hides the cursor; UI focus (I key) frees both
     const auto setGameFocus = [this](bool gameFocused)
@@ -296,6 +305,10 @@ void Engine::run()
                 deviceRef.waitIdle();
                 quit = cullCheck->endFrame(renderer->getLastDisplayCapture()) || quit;
             }
+            if (rayCheck) {
+                deviceRef.waitIdle();
+                quit = rayCheck->endFrame(renderer->getLastRayCheck(), isRayCheckStandalone) || quit;
+            }
         } else {
             ZoneScopedN("MinimizedWait");
             SDL_Delay(100);
@@ -313,11 +326,15 @@ void Engine::run()
 
         lastTime = currentTime;
         FrameMark;
-        if (bench && !minimized && bench->onFrame(renderer->getGpuTimer(), renderer->getCulling().getStats())) {
+        if (bench && !minimized && bench->onFrame(renderer->getGpuTimer(), renderer->getCulling().getStats(),
+                                                renderer->getRayTracingStats())) {
             quit = true;
         }
     }
     deviceRef.waitIdle();
+    if (rayCheck) {
+        rayCheck->logSummary();
+    }
 }
 
 #if ENGINE_ENABLE_IMGUI

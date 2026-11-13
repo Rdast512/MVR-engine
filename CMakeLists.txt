@@ -202,6 +202,11 @@ set(ENGINE_SLANG_CAPABILITIES
     # vk::NVClusterAccelerationStructureExtensionName
     SPV_NV_cluster_acceleration_structure
     spvRayTracingClusterAccelerationStructureNV
+
+    # vk::KHRRayTracingPositionFetchExtensionName
+    SPV_KHR_ray_tracing_position_fetch
+    spvRayQueryPositionFetchKHR
+    spvRayTracingPositionFetchKHR
 )
 # Join with '+' for a single slangc -capability argument.
 list(JOIN ENGINE_SLANG_CAPABILITIES "+" ENGINE_SLANG_CAPABILITY_STRING)
@@ -273,6 +278,8 @@ engine_add_slang_pass(passes/meshlet_cull.slang
     ENTRIES cullInstances cullMeshlets cullRejectedMeshlets buildMeshSequences)
 engine_add_slang_pass(passes/hiz_view.slang ENTRIES hizViewMesh hizViewFrag)
 engine_add_slang_pass(passes/hiz_build.slang ENTRIES hizBuild)
+engine_add_slang_pass(passes/rt_instances.slang ENTRIES rtInstancesMain)
+engine_add_slang_pass(passes/rt_check.slang ENTRIES rayCheckMain)
 
 add_custom_target(Shaders ALL DEPENDS ${COMPILED_SHADERS})
 
