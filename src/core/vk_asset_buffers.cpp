@@ -2,10 +2,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <format>
 #include <span>
 #include <stdexcept>
+#include <utility>
 #include "Constants.h"
 #include "static_headers/logger.hpp"
 #include "util/debug.hpp"
@@ -14,6 +16,23 @@
 
 namespace
 {
+    // runs on every exit from its scope, also during unwinding
+    template <std::invocable F>
+    class ScopeExit
+    {
+    public:
+        explicit ScopeExit(F onExit) : onExit(std::move(onExit)) {}
+        ~ScopeExit() { onExit(); }
+
+        ScopeExit(const ScopeExit&) = delete;
+        ScopeExit& operator=(const ScopeExit&) = delete;
+        ScopeExit(ScopeExit&&) = delete;
+        ScopeExit& operator=(ScopeExit&&) = delete;
+
+    private:
+        F onExit;
+    };
+
     struct AssetBufferInfo {
         const char* debugName;
         const char* tracyName;
@@ -366,8 +385,34 @@ void AssetBuffers::uploadAssetBuffers(std::span<const AssetUpload> uploads)
     }
     ZoneValue(static_cast<uint64_t>(stagingBytes));
 
+    struct Grown {
+        AssetBuffer id;
+        vk::raii::Buffer buffer;
+        VmaAllocation memory; // null once installed
+        vk::DeviceSize usedBytes;
+        vk::DeviceSize capacityBytes;
+    };
+    std::vector<Grown> grown;
     vk::raii::Buffer staging({});
     VmaAllocation stagingMemory = nullptr;
+    const FrameSync::OneTimeCommands oneTime = frameSync.oneTimeCommands();
+    vk::raii::CommandBuffer& cmd = oneTime.cmd;
+    bool isRecording = false;
+    // success frees only the staging; a throw also frees the grown buffers and drops the recorded commands
+    const ScopeExit cleanup([&] {
+        if (isRecording) {
+            try {
+                cmd.reset();
+            } catch (const vk::SystemError& error) {
+                logError(std::format("upload command buffer reset failed: {}", error.what()), "AssetBuffers");
+            }
+        }
+        for (Grown& next : grown) {
+            destroyVmaBuffer(allocator.allocator, next.buffer, next.memory);
+        }
+        destroyVmaBuffer(allocator.allocator, staging, stagingMemory);
+    });
+
     createBuffer(stagingBytes, vk::BufferUsageFlagBits2::eTransferSrc,
                  vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, staging,
                  stagingMemory, allocator.allocator, device, queueFamilyIndices, "AssetStaging");
@@ -378,17 +423,8 @@ void AssetBuffers::uploadAssetBuffers(std::span<const AssetUpload> uploads)
         }
     }
 
-    struct Grown {
-        AssetBuffer id;
-        vk::raii::Buffer buffer;
-        VmaAllocation memory;
-        vk::DeviceSize usedBytes;
-        vk::DeviceSize capacityBytes;
-    };
-    std::vector<Grown> grown;
-    const FrameSync::OneTimeCommands oneTime = frameSync.oneTimeCommands();
-    vk::raii::CommandBuffer& cmd = oneTime.cmd;
     cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    isRecording = true;
 
     for (size_t i = 0; i < uploads.size(); ++i) {
         const AssetUpload& upload = uploads[i];
@@ -436,10 +472,11 @@ void AssetBuffers::uploadAssetBuffers(std::span<const AssetUpload> uploads)
     }
 
     submitAndWait(cmd, oneTime.queue);
+    isRecording = false;
     for (Grown& next : grown) {
-        installAssetBuffer(next.id, std::move(next.buffer), next.memory, next.usedBytes, next.capacityBytes);
+        installAssetBuffer(next.id, std::move(next.buffer), std::exchange(next.memory, nullptr), next.usedBytes,
+                           next.capacityBytes);
     }
-    destroyVmaBuffer(allocator.allocator, staging, stagingMemory);
 
     for (const AssetUpload& upload : uploads) {
         if (upload.bytes.empty()) {

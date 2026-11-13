@@ -223,8 +223,15 @@ void TextureManager::init()
                                      TG3_TEXTURE_WRAP_REPEAT, TG3_TEXTURE_WRAP_REPEAT)] =
         descriptorManager.getSamplerDescriptorIndex();
 
+    // checks both formats; one layout member serves both color spaces, so they must agree
     for (const TextureColorSpace colorSpace : {TextureColorSpace::Srgb, TextureColorSpace::Linear}) {
-        hostCopyDstLayout = stbHostCopyDstLayout(physicalDevice, deviceWrapper.capabilities, rgbaFormat(colorSpace));
+        const vk::ImageLayout layout =
+            stbHostCopyDstLayout(physicalDevice, deviceWrapper.capabilities, rgbaFormat(colorSpace));
+        if (hostCopyDstLayout != vk::ImageLayout::eUndefined && layout != hostCopyDstLayout) {
+            throw std::runtime_error(std::format("host image copy layouts differ between color spaces: {} vs {}",
+                                                 vk::to_string(hostCopyDstLayout), vk::to_string(layout)));
+        }
+        hostCopyDstLayout = layout;
     }
 
     if (!containsImageLayout(deviceWrapper.capabilities.hostImageCopyDstLayouts, kKtxSampledLayout)) {
@@ -598,11 +605,16 @@ void TextureManager::destroyTexture(uint32_t heapIndex)
     if (entry == heapEntries.end()) {
         return;
     }
-    const auto asset = loadedTextures.find(entry->second.cacheKey);
-    destroyImage(asset->second);
+    // a heap entry without its image is a bookkeeping bug; the slot is still freed
+    if (const auto asset = loadedTextures.find(entry->second.cacheKey); asset != loadedTextures.end()) {
+        destroyImage(asset->second);
+        loadedTextures.erase(asset);
+    } else {
+        logError(std::format("Texture heap={} has no image for key {}", heapIndex, entry->second.cacheKey),
+                 "TextureManager");
+    }
     descriptorManager.freeImageDescriptor(heapIndex);
     logDebug(std::format("Texture freed: heap={} key={}", heapIndex, entry->second.cacheKey), "TextureManager");
-    loadedTextures.erase(asset);
     heapEntries.erase(entry);
 }
 

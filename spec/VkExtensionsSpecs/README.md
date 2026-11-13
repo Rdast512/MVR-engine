@@ -69,7 +69,8 @@ The overview integration map remains [docs/vulkan_extensions_reference.md](../..
 | Item | Why |
 | --- | --- |
 | `VK_EXT_tooling_info` | Diagnostic-only core query; no engine integration surface beyond optional tooling |
-| `VK_EXT_multi_draw` / `VK_EXT_shader_object` | Mesh + DGC + `VkPipeline` path; not enabled |
+| `VK_EXT_multi_draw` | Mesh + DGC only; not enabled |
+| `VK_EXT_shader_object` | Enabled and consumed: the pipeline model for raster and compute (`ShaderObjects`, all state dynamic, DGC via `VkGeneratedCommandsShaderInfoEXT`). `VkPipeline` + SBT only for ray tracing (M2). Covered by the [extensions reference](../../docs/vulkan_extensions_reference.md) |
 | `VK_KHR_shader_draw_parameters` / `VK_KHR_draw_indirect_count` | Classic vertex/index draws; core bits left false |
 | Superseded exclusive 1.0-only paths | Prefer core `*2` / sync2 / dynamic rendering docs instead of teaching obsolete primary paths |
 | Re-enable as device extension | Forbidden when the feature is already core for the requested API version |
@@ -101,14 +102,14 @@ The overview integration map remains [docs/vulkan_extensions_reference.md](../..
 | `VK_EXT_memory_priority` | [VK_EXT_memory_priority.md](./VK_EXT_memory_priority.md) | Partially consumed (VMA priority) |
 | `VK_EXT_memory_decompression` | [VK_EXT_memory_decompression.md](./VK_EXT_memory_decompression.md) | Enabled, not consumed |
 | `VK_EXT_pageable_device_local_memory` | [VK_EXT_pageable_device_local_memory.md](./VK_EXT_pageable_device_local_memory.md) | Enabled, not consumed |
-| `VK_EXT_opacity_micromap` | [VK_EXT_opacity_micromap.md](./VK_EXT_opacity_micromap.md) | Enabled, not consumed |
+| `VK_EXT_opacity_micromap` | [VK_EXT_opacity_micromap.md](./VK_EXT_opacity_micromap.md) | Enabled, not consumed (props cached: `HardwareCapabilities::opacityMicromap`) |
 | `VK_EXT_mesh_shader` | [VK_EXT_mesh_shader.md](./VK_EXT_mesh_shader.md) | Consumed (mesh pipeline + DGC DRAW_MESH_TASKS; no host drawMeshTasksEXT) |
 | `VK_EXT_device_generated_commands` | [VK_EXT_device_generated_commands.md](./VK_EXT_device_generated_commands.md) | Consumed (mesh DGC only) |
 | `VK_EXT_blend_operation_advanced` | [VK_EXT_blend_operation_advanced.md](./VK_EXT_blend_operation_advanced.md) | Listed; coherent ops off |
 | `VK_EXT_present_timing` | [VK_EXT_present_timing.md](./VK_EXT_present_timing.md) | Extension listed; features not enabled |
-| `VK_EXT_ray_tracing_invocation_reorder` | [VK_EXT_ray_tracing_invocation_reorder.md](./VK_EXT_ray_tracing_invocation_reorder.md) | Enabled, not consumed |
+| `VK_EXT_ray_tracing_invocation_reorder` | [VK_EXT_ray_tracing_invocation_reorder.md](./VK_EXT_ray_tracing_invocation_reorder.md) | Enabled, not consumed (props cached: `HardwareCapabilities::rayTracingInvocationReorder`, hint logged at startup) |
 | `VK_EXT_extended_dynamic_state3` | [VK_EXT_extended_dynamic_state3.md](./VK_EXT_extended_dynamic_state3.md) | Extension listed; features/cmds unused |
-| `VK_NV_cluster_acceleration_structure` | [VK_NV_cluster_acceleration_structure.md](./VK_NV_cluster_acceleration_structure.md) | Enabled, not consumed (vendor) |
+| `VK_NV_cluster_acceleration_structure` | [VK_NV_cluster_acceleration_structure.md](./VK_NV_cluster_acceleration_structure.md) | Optional until M2, then required (engine spec §10); not consumed yet (vendor) |
 | `VK_NV_partitioned_acceleration_structure` | [VK_NV_partitioned_acceleration_structure.md](./VK_NV_partitioned_acceleration_structure.md) | Enabled, not consumed (vendor) |
 
 ## How to add a new extension

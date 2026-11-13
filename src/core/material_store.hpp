@@ -4,9 +4,10 @@
 
 #include <algorithm>
 #include <bit>
-#include <cassert>
 #include <cstddef>
+#include <format>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -123,13 +124,18 @@ public:
     }
 
     // rows reaching 0 are freed; their textures stay valid while the releasing model still holds them
+    // throws on a row that is not held, before any refcount changes
     void release(std::span<const uint32_t> rows)
     {
+        for (const uint32_t id : rows) {
+            if (id != kDefaultId && (id >= infos.size() || infos[id].refCount == 0)) {
+                throw std::logic_error(std::format("MaterialStore::release: row {} is not held", id));
+            }
+        }
         for (const uint32_t id : rows) {
             if (id == kDefaultId) {
                 continue;
             }
-            assert(infos[id].refCount > 0);
             if (--infos[id].refCount == 0) {
                 freeRow(id);
             }

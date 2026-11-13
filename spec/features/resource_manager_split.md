@@ -4,7 +4,7 @@
 **Implements:** engine spec §20.2 AU2
 **Related:** [engine_ui_split.md](./engine_ui_split.md) (AU3), [resource_architecture.md](../resource_architecture.md), engine spec §20.2 AU1 (retire queue) and AU4 (GPU scene update)
 
-`ResourceManager` ([vk_resource_manager.hpp](../../src/core/vk_resource_manager.hpp), 316 lines; [.cpp](../../src/core/vk_resource_manager.cpp), 1,446 lines) holds three unrelated jobs plus a few strays, and nearly every member is public. M2 would add acceleration-structure state to it. This spec splits it into three classes with one job each and removes the class.
+`ResourceManager` (`vk_resource_manager.hpp`, 316 lines; `.cpp`, 1,446 lines; both deleted by RS5, replaced by [vk_frame_sync](../../src/core/vk_frame_sync.hpp), [vk_asset_buffers](../../src/core/vk_asset_buffers.hpp) and [vk_frame_data](../../src/core/vk_frame_data.hpp)) held three unrelated jobs plus a few strays, and nearly every member was public. M2 would add acceleration-structure state to it. This spec splits it into three classes with one job each and removes the class.
 
 This is a move of code, not a change of behaviour: same GPU data, same frame, same stalls. The stalls are AU1's work and the per-frame entity loop is AU4's.
 

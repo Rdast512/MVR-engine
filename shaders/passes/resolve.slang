@@ -27,13 +27,14 @@ float2 motionPixels(GpuFrameRoot root, float4 currentClip, float4 previousClip, 
 void writeGuides(GpuGuideSet set, uint2 pixel, float4 normalRoughness, float2 geoNormal, float3 diffuseAlbedo,
                  float3 specularF0, float3 specAlbedo, float3 emissive, float2 motion)
 {
-    storageTex2D4(set.storage[kGuideNormalRoughness])[pixel] = normalRoughness;
-    storageTex2D4(set.storage[kGuideGeoNormal])[pixel] = float4(geoNormal, 0.0, 0.0);
-    storageTex2D4(set.storage[kGuideDiffuseAlbedo])[pixel] = float4(diffuseAlbedo, 1.0);
-    storageTex2D4(set.storage[kGuideSpecularF0])[pixel] = float4(specularF0, 1.0);
-    storageTex2D4(set.storage[kGuideSpecAlbedo])[pixel] = float4(specAlbedo, 1.0);
-    storageTex2D4(set.storage[kGuideEmissive])[pixel] = float4(emissive, 0.0);
-    storageTex2D4(set.storage[kGuideMotion])[pixel] = float4(motion, 0.0, 0.0);
+    // formats: RenderTargets kGuideFormats
+    storageTex2D<float4, kImageFormatRgba16f>(set.storage[kGuideNormalRoughness])[pixel] = normalRoughness;
+    storageTex2D<float2, kImageFormatRg16Snorm>(set.storage[kGuideGeoNormal])[pixel] = geoNormal;
+    storageTex2D<float4, kImageFormatRgba8>(set.storage[kGuideDiffuseAlbedo])[pixel] = float4(diffuseAlbedo, 1.0);
+    storageTex2D<float4, kImageFormatRgba8>(set.storage[kGuideSpecularF0])[pixel] = float4(specularF0, 1.0);
+    storageTex2D<float4, kImageFormatRgba8>(set.storage[kGuideSpecAlbedo])[pixel] = float4(specAlbedo, 1.0);
+    storageTex2D<float3, kImageFormatR11g11b10f>(set.storage[kGuideEmissive])[pixel] = emissive;
+    storageTex2D<float2, kImageFormatRg16f>(set.storage[kGuideMotion])[pixel] = motion;
 }
 
 [shader("compute")]

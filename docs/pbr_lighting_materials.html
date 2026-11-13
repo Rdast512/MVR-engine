@@ -13,7 +13,7 @@
   <header class="topbar">
     <div class="brand"><i class="brand-mark" aria-hidden="true"></i><span>PBR on the RTX path</span></div>
     <div class="topbar-actions">
-      <a class="btn" href="pbr_implementation_plan.md">Plan</a>
+      <a class="btn" href="../spec/pbr_implementation_plan.md">Plan</a>
       <button class="btn" id="theme-toggle" type="button" aria-label="Toggle color theme">Theme</button>
     </div>
     <div class="progress" id="progress" aria-hidden="true"></div>
@@ -835,7 +835,7 @@ storeGiSample(pixel, x2, Ld + m.emissive + ao · Lcache)   <span class="cmt">// 
     return (1.0 - f) * cDiff / kPi
          + f * ggxD(saturate(dot(n, h)), a2) * smithVisibility(nDotL, max(dot(n, v), 1e-4), a2);
 }</pre>
-        <p>The signature takes <code>cDiff</code> and <code>f0</code> so the RTXDI bridge, the indirect bounce and the caches can call it straight from guide data. The full contracts, the task order and the toolchain caveats are in <a href="pbr_implementation_plan.md">pbr_implementation_plan.md</a>; the architecture is in <a href="../docs/engine_spec.md">engine_spec.md</a>.</p>
+        <p>The signature takes <code>cDiff</code> and <code>f0</code> so the RTXDI bridge, the indirect bounce and the caches can call it straight from guide data. The full contracts, the task order and the toolchain caveats are in <a href="../spec/pbr_implementation_plan.md">pbr_implementation_plan.md</a>; the architecture is in <a href="engine_spec.md">engine_spec.md</a>.</p>
       </section>
 
       <!-- ============================== REFERENCE ============================== -->
@@ -891,9 +891,9 @@ storeGiSample(pixel, x2, Ld + m.emissive + ao · Lcache)   <span class="cmt">// 
       </section>
 
       <footer>
-        Formulas follow Khronos glTF 2.0 Appendix B and <code>KHR_lights_punctual</code>, and match <a href="gltf_parse_resources.md">gltf_parse_resources.md §14</a>.
+        Formulas follow Khronos glTF 2.0 Appendix B and <code>KHR_lights_punctual</code>, as written in the <a href="https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#appendix-b-brdf-implementation">glTF 2.0 spec</a>.
         Every graph and scene evaluates the same F, D, V, attenuation, and cone math as <code>material.brdf</code> / <code>lighting.lights</code>.
-        Agents: <a href="pbr_lighting_materials.md">pbr_lighting_materials.md</a> and <a href="pbr_implementation_plan.md">pbr_implementation_plan.md</a>.
+        Agents: <a href="../spec/pbr_lighting_materials.md">pbr_lighting_materials.md</a> and <a href="../spec/pbr_implementation_plan.md">pbr_implementation_plan.md</a>.
       </footer>
     </main>
   </div>

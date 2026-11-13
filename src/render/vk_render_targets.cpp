@@ -25,9 +25,9 @@ namespace
         "NormalRoughness", "GeoNormal", "DiffuseAlbedo", "SpecularF0", "SpecAlbedo", "Emissive", "Motion",
     };
 
-    // the resolve writes through Unknown-format storage images; later passes sample
-    constexpr vk::FormatFeatureFlags2 kStorageFeatures = vk::FormatFeatureFlagBits2::eStorageImage |
-        vk::FormatFeatureFlagBits2::eStorageWriteWithoutFormat | vk::FormatFeatureFlagBits2::eSampledImage;
+    // the resolve writes through typed storage images (core/binding.slang storageTex2D); later passes sample
+    constexpr vk::FormatFeatureFlags2 kStorageFeatures =
+        vk::FormatFeatureFlagBits2::eStorageImage | vk::FormatFeatureFlagBits2::eSampledImage;
     constexpr vk::ImageUsageFlags kStorageUsage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled;
 
     vk::ImageViewCreateInfo colorViewInfo(vk::Image image, vk::Format format)
@@ -146,7 +146,7 @@ void RenderTargets::checkFormatSupport() const
                 std::format("render targets: {} lacks {}", vk::to_string(format), vk::to_string(required)));
         }
     };
-    // RG16_SNORM, RG16F and R11G11B10F storage need shaderStorageImageExtendedFormats, which every target has
+    // RG16_SNORM, RG16F and R11G11B10F: SPIR-V StorageImageExtendedFormats, core since 1.0 (no device feature)
     for (const vk::Format format : kGuideFormats) {
         check(format, kStorageFeatures);
     }

@@ -137,7 +137,7 @@ N/A beyond API version selection already done:
 
 ## 8. Shader interaction
 
-**Indirect baseline (Vulkan 1.1 maintenance).** No dedicated shader stages. Enables a modern core baseline that later shader features assume. See [VK_KHR_shader_draw_parameters](./VK_KHR_shader_draw_parameters.md) for the main 1.1 shader-facing feature.
+**Indirect baseline (Vulkan 1.1 maintenance).** No dedicated shader stages. Enables a modern core baseline that later shader features assume. `VK_KHR_shader_draw_parameters` is the main 1.1 shader-facing feature; the engine leaves it off (mesh + DGC only).
 
 ## 9. Dependencies and interactions
 

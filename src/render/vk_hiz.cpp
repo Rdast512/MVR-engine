@@ -20,10 +20,9 @@ namespace
 
     void checkFormatSupport(const Device& device)
     {
-        // storage writes go through an Unknown-format image type (allowed per format at api 1.3+)
+        // storage writes go through an r32f image type (passes/hiz_build.slang)
         constexpr vk::FormatFeatureFlags2 required = vk::FormatFeatureFlagBits2::eStorageImage |
-            vk::FormatFeatureFlagBits2::eStorageWriteWithoutFormat | vk::FormatFeatureFlagBits2::eSampledImage |
-            vk::FormatFeatureFlagBits2::eSampledImageFilterLinear |
+            vk::FormatFeatureFlagBits2::eSampledImageFilterLinear | vk::FormatFeatureFlagBits2::eSampledImage |
             vk::FormatFeatureFlagBits2::eSampledImageFilterMinmax;
         const auto properties =
             device.physicalDevice.getFormatProperties2<vk::FormatProperties2, vk::FormatProperties3>(kFormat);

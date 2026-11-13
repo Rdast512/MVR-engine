@@ -1,6 +1,6 @@
 // Checks shaders/core/culling.slang on spheres with hand-derived screen rects, depths, mips and sub-pixel results,
 // that the chosen mip lets one center fetch cover the rect, and that the box path (intersectFrustum on the sphere's
-// world AABB) agrees with the sphere path (intersectFrustumSphere). Every case runs in both depth conventions.
+// world AABB) agrees with the sphere path (intersectFrustumSphere). Reverse Z, as the engine runs it.
 // The pyramid fetch (isHiZOccluded) needs the descriptor heap and is verified in captures instead.
 #include "test_support.hpp"
 
@@ -54,39 +54,21 @@ namespace
         float lod;
     };
 
-    // the module and projection under test; reversed swaps near and far as Camera::updateProjection does
-    struct DepthConvention
-    {
-        const char* name;
-        const char* shaderFile;
-        bool isReversed;
-    };
-    constexpr std::array kConventions = {
-        DepthConvention{"standard Z", "footprintStandard.spv", false},
-        DepthConvention{"reverse Z", "footprintReversed.spv", true},
-    };
-
-    // glm::perspectiveRH_ZO(90 deg, 1, zNear, zFar) with y flipped; reverse Z passes (far, near)
-    float depthScale(bool isReversed) { return isReversed ? kNear / (kFar - kNear) : kFar / (kNear - kFar); }
-    float depthOffset(bool isReversed)
-    {
-        return isReversed ? kFar * kNear / (kFar - kNear) : -(kFar * kNear) / (kFar - kNear);
-    }
+    // glm::perspectiveRH_ZO(90 deg, 1, zFar, zNear) with y flipped, as Camera::updateProjection builds reverse Z
+    constexpr float kDepthScale = kNear / (kFar - kNear);
+    constexpr float kDepthOffset = kFar * kNear / (kFar - kNear);
 
     // engine camera at the origin looking down -z
-    void fillViewProj(float (&m)[16], bool isReversed)
+    void fillViewProj(float (&m)[16])
     {
         m[0] = 1.0f;
         m[5] = -1.0f;
-        m[10] = depthScale(isReversed);
+        m[10] = kDepthScale;
         m[11] = -1.0f;
-        m[14] = depthOffset(isReversed);
+        m[14] = kDepthOffset;
     }
 
-    float depthAt(float viewZ, bool isReversed)
-    {
-        return (depthScale(isReversed) * viewZ + depthOffset(isReversed)) / -viewZ;
-    }
+    float depthAt(float viewZ) { return (kDepthScale * viewZ + kDepthOffset) / -viewZ; }
 
     // mirrors isSubPixel with the pyramid as the viewport: no pixel center k + 0.5 inside the widened rect on one axis
     bool isSubPixelFor(const std::array<float, 4>& rect)
@@ -170,7 +152,7 @@ namespace
         check(isMatch, "  box path matches the sphere path");
     }
 
-    void verify(const Expected& expected, const float* row, bool isReversed)
+    void verify(const Expected& expected, const float* row)
     {
         const float* rect = row;
         const float* info = row + 4;
@@ -190,7 +172,7 @@ namespace
             isRectMatch = isRectMatch && isNear(rect[i], expected.uvRect[i]);
         }
         check(isRectMatch, "  screen rect");
-        check(std::fabs(info[0] - depthAt(expected.nearestViewZ, isReversed)) <= 1e-5f, "  nearest depth");
+        check(std::fabs(info[0] - depthAt(expected.nearestViewZ)) <= 1e-5f, "  nearest depth");
         check(info[1] == expected.lod, "  mip");
 
         // isHiZOccluded fetches once at the rect center: that fetch must cover the rect, one mip finer must not
@@ -224,19 +206,15 @@ int main()
     test::HostBuffer spheres = test::createHostBuffer(vulkan, kCount * sizeof(Sphere));
     test::HostBuffer results = test::createHostBuffer(vulkan, kCount * kResultRows * 4 * sizeof(float));
 
-    for (const DepthConvention& convention : kConventions) {
-        std::printf("%s\n", convention.name);
-        const VkPipeline pipeline = test::createComputePipeline(
-            vulkan, layout, std::string(HIZ_TEST_SHADER_DIR) + "/" + convention.shaderFile, "footprintMain");
-        if (!check(pipeline != VK_NULL_HANDLE, "footprint pipeline created")) {
-            continue;
-        }
+    const VkPipeline pipeline = test::createComputePipeline(
+        vulkan, layout, std::string(HIZ_TEST_SHADER_DIR) + "/footprintMain.spv", "footprintMain");
+    if (check(pipeline != VK_NULL_HANDLE, "footprint pipeline created")) {
         auto* sphereData = static_cast<Sphere*>(spheres.mapped);
         for (uint32_t i = 0; i < kCount; ++i) {
             sphereData[i] = kCases[i].sphere;
         }
         FootprintPush push{};
-        fillViewProj(push.viewProj, convention.isReversed);
+        fillViewProj(push.viewProj);
         push.spheres = spheres.address;
         push.results = results.address;
         push.pyramidSize[0] = kPyramidSize;
@@ -259,7 +237,7 @@ int main()
 
         const auto* rows = static_cast<const float*>(results.mapped);
         for (uint32_t i = 0; i < kCount; ++i) {
-            verify(kCases[i], rows + i * kResultRows * 4, convention.isReversed);
+            verify(kCases[i], rows + i * kResultRows * 4);
         }
         vkDestroyPipeline(vulkan.device, pipeline, nullptr);
     }

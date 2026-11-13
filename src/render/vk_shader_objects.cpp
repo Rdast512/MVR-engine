@@ -197,7 +197,7 @@ void ShaderObjects::setRasterState(const vk::raii::CommandBuffer& cmd, vk::CullM
     // depth / stencil
     cmd.setDepthTestEnable(isDepthEnabled ? vk::True : vk::False);
     cmd.setDepthWriteEnable(isDepthEnabled ? vk::True : vk::False);
-    // reverse Z (core/culling.slang CULLING_REVERSED_Z)
+    // reverse Z (core/culling.slang kClipNear, farthestDepth)
     cmd.setDepthCompareOp(vk::CompareOp::eGreater);
     cmd.setStencilTestEnable(vk::False);
 

@@ -1,7 +1,7 @@
 # Resource architecture
 
-**Date:** 2026-10-24, updated 2026-11-11
-**Status:** §1–§11 describe the working tree on `7dc04f965`; §12 lists the resource changes the target architecture requires. Living document: update it in the same change that alters resource code, and log the change in [Changelog](#changelog).
+**Date:** 2026-10-24, updated 2026-11-13
+**Status:** §1–§11 describe the working tree with M1 built (vis buffer, reverse Z, bins, resolve, guides); §12 lists the resource changes the target architecture requires. Living document: update it in the same change that alters resource code, and log the change in [Changelog](#changelog).
 **Target:** [engine_spec.md](../docs/engine_spec.md) is normative for the end state. Where this document describes code that the spec removes or replaces, §12 says so.
 **Related:** [shader_architecture_plan.md](./shader_architecture_plan.md), [pbr_implementation_plan.md](./pbr_implementation_plan.md), [culling_comparison.md](../reference/culling_comparison.md)
 **Code:** `src/core/vk_asset_buffers.*`, `src/core/vk_frame_data.*`, `src/core/vk_frame_sync.*`, `src/render/vk_render_targets.*`, `src/core/types.hpp`, `src/core/geometry_store.*`, `src/render/push_data.hpp`, `src/core/texture_manager.*`, `src/core/vk_descriptors.*`, `src/render/vk_dgc.*`, `src/render/vk_meshlet_culling.*`, `src/render/vk_hiz.*`, `src/util/vk_utils.*`, `shaders/types.slang`, `shaders/core/{frame,binding}.slang`
@@ -51,10 +51,10 @@ Payloads never live in descriptor heaps; heaps never hold vertex or material byt
 | Cull view, counters, instance items, draw-record templates | `MeshletCulling::FrameBuffers`, `HostBuffer` | host-visible, mapped | 1 each per frame slot | view every frame; templates on layout change |
 | Draw records, instance candidates, reject masks, visible lists | `MeshletCulling::FrameBuffers`, `DeviceBuffer` | device-local | 1 each per frame slot, one region per phase | GPU-written; resized on layout change |
 | DGC sequences | `DeviceGeneratedCommands` | device-local | 1 per frame slot | GPU-written by `buildMeshSequences` |
-| DGC preprocess | `DeviceGeneratedCommands` | device-local, dedicated | 1 per frame slot, one region per (phase, state group) | resized with the sequence capacity |
+| DGC preprocess | `DeviceGeneratedCommands` | device-local, dedicated | 1 per frame slot, one region per (phase, raster bin) | resized with the sequence capacity |
 | Descriptor heaps | `DescriptorManager` | host-visible, dedicated, `vmaMapMemory` | resource + sampler | engine lifetime |
 | Texture | `TextureManager::loadedTextures` → `TextureAsset` | device-local image | per unique image | refcounted per model |
-| Depth | `RenderTargets::depthAttachment`, `AttachmentImage` | device-local image | 1 | recreated on resize |
+| Depth, vis buffer, guides, display | `RenderTargets` (`depthAttachment`, `visBuffer`, two guide sets, `display`), plus one `GpuTargets` block per frame slot | device-local images; `GpuTargets` host-visible | 1 each, guides ×2 | recreated on resize |
 | Hi-Z pyramid | `HiZPyramid` | device-local image | 1 | recreated on resize |
 | Staging | local in `uploadAssetBuffers` | host-visible, `TransferSrc` only | 1 per batch | destroyed after the copy |
 
@@ -224,9 +224,9 @@ Per frame, in recording order:
   - `GpuObjectUB[entity]` into `instanceUbos[frameSlot]`: model matrix, previous model matrix, world-space `boundingSphere`, `modelIndex`, `instanceFlags`. Only lights still place themselves with it.
 
   Inactive entities are skipped.
-- On the GPU, per phase: `cullInstances` copies the templates of visible instances into `drawRecords`; `cullMeshlets` (early) or `cullRejectedMeshlets` (late) appends `GpuVisibleMeshlet` entries per state group; `buildMeshSequences` writes `MeshDgcSequence`s and their counts. The CPU never writes draw records or sequences.
+- On the GPU, per phase: `cullInstances` copies the templates of visible instances into `drawRecords`; `cullMeshlets` (early) or `cullRejectedMeshlets` (late) appends `GpuVisibleMeshlet` entries per raster bin; `buildMeshSequences` writes `MeshDgcSequence`s and their counts. The CPU never writes draw records or sequences.
 
-`GpuFrameRoot` (128 B):
+`GpuFrameRoot` (176 B):
 
 | Field | Points at |
 |---|---|
@@ -244,20 +244,24 @@ Per frame, in recording order:
 | `debugView` | `DebugViewSettings::packed()`: `kDebugView*` mode in the low byte, `kDebugViewFlagEdges` (bit 8) |
 | `cullCounters` | `GpuCullCounters[kCullPhaseCount]`; the mesh shaders add triangle counts |
 | `triangleCull`, `subpixelSnap` | `TriangleCullFlag` bits; snap of the small-triangle test |
+| `targets` | `GpuTargets` of this frame slot: heap indices of the vis buffer, depth, display and both guide sets, render size |
+| `frameFlags` | `FrameFlag` bits (`HistoryReset`) |
+| `rayInstances`, `rtxdiConstants`, `cacheConstants` | 0 until M2, M3 and M4 |
+| `frameIndex`, `exposure` | frame counter; pre-exposure, 1 until auto exposure |
 
 ### Culling data
 
 | Struct | Size (B) | Where | Role |
 |---|---|---|---|
-| `GpuCullView` | 272 | host, per slot and phase | flags, matrices (`cullViewProj` for frustum and sub-pixel, `occlusionViewProj` for Hi-Z), pyramid heap indices, target size, snap, and the addresses below |
-| `GpuCullCounters` | 112 | host-visible VRAM, per slot and phase | visible counts and `sequenceCount` per state group, indirect dispatch args, stats |
+| `GpuCullView` | 288 | host, per slot and phase | flags, matrices (`cullViewProj` for frustum and sub-pixel, `occlusionViewProj` for Hi-Z), pyramid heap indices, target size, snap, and the addresses below |
+| `GpuCullCounters` | 112 | host-visible VRAM, per slot and phase | visible counts and `sequenceCount` per raster bin, indirect dispatch args, stats |
 | `GpuInstanceCullItem` | 12 | host, per slot | one node instance: its draw-record template range |
 | `GpuDrawRecord` | 20 | templates host, records device | one (node instance, meshlet group) work item: `{nodeInstanceIndex, primitiveIndex, meshletOffset, flags, groupOffset}`; cull-internal, the mesh shaders do not read it |
 | instance candidates | `uint` per item | device | early-occluded instance items, re-tested late |
 | reject masks | `uint` per early draw record | device | bit i = meshlet i of the group failed only occlusion; written every frame, so never cleared |
-| `GpuVisibleMeshlet` | 8 | device, one region per phase, per state group | `{nodeInstanceIndex, meshletRow}`, the render-list entry (`vk_lod_clusters` `ClusterInfo`) |
+| `GpuVisibleMeshlet` | 8 | device, one region per phase, per raster bin | `{nodeInstanceIndex, meshletRow}`, the render-list entry (`vk_lod_clusters` `ClusterInfo`) |
 
-Capacities are exact scene totals today, so no list can overflow; capacity checks with overflow counters are spec §8.1 A10 (§12).
+Capacities are exact scene totals today. Every append still goes through a capacity check with an overflow counter in `GpuCullCounters`, shown in the culling panel (spec §8.1 A10).
 
 ### Push data and the lookup chain
 
@@ -265,8 +269,10 @@ Capacities are exact scene totals today, so no list can overflow; capacity check
 |---|---|---|
 | `MeshPushData {frameRoot, firstVisible, meshletCount}` | 16 | mesh shaders; one per DGC sequence |
 | `CullPushData {frameRoot, cullView}` | 16 | cull passes and `buildMeshSequences` |
-| `HiZPushData` | 32 | `hiz_build`: src/dst heap indices, max sampler, mip, sizes |
+| `HiZPushData` | 48 | `hiz_build`: source and up to 3 destination heap indices, source mip, level count, sizes |
 | `HiZViewPushData` | 24 | `hiz_view` debug pass |
+| `FramePushData {frameRoot}` | 8 | `resolve`, `debug_view` |
+| `PresentPushData {frameRoot, displaySize}` | 16 | `present` |
 
 `loadDrawContext` (`shaders/core/frame.slang`) and `geometry/mesh.slang`:
 
@@ -299,7 +305,7 @@ Rules:
 - Compile flags (`CMakeLists.txt`): `-capability …+spvDescriptorHeapEXT`, `-fvk-use-scalar-layout`, `-matrix-layout-column-major`. Scalar layout is what makes C++ `Gpu*` PODs match Slang.
 - **`kNoneIndex` never becomes a handle.** Material rows store `kNoneIndex` for missing textures, and `sampleBaseColor` skips the fetch. Every new material fetch guards the same way.
 - **Non-uniform indices.** Raster indices are uniform per draw today. Slang 2026.14.1 does not emit `NonUniform` on heap access even with `NonUniformResourceIndex`; read the PBR plan §4.4 before indexing per pixel or per hit (spec S6).
-- **Mirrored structs.** Every struct in `shaders/types.slang` has a C++ twin with `static_assert` on size and key offsets.
+- **Mirrored structs.** Every struct in `shaders/types.slang` has a C++ twin with `static_assert` on size and key offsets; `tests/layout_test.cpp` compares every field offset through Slang reflection.
 - Raw descriptor blobs never go in buffers; the heap index is the only stored form.
 
 ### Struct reference
@@ -309,7 +315,7 @@ Rules:
 | `MeshPushData` | 16 | all offsets asserted |
 | `MeshDgcSequence` | 32 | 16 B push data + 12 B draw command, `alignas(16)` so the BDA stays 8-byte aligned |
 | `CullPushData` | 16 | |
-| `GpuFrameRoot` | 128 | `lightCount` @ 88, `cullCounters` @ 112 |
+| `GpuFrameRoot` | 176 | `lightCount` @ 88, `cullCounters` @ 112, `targets` @ 128, `exposure` @ 172 |
 | `GpuModel` | 112 | `meshletBounds` @ 16, `primitives` @ 96, `attributeMask` @ 104 |
 | `GpuNode` | 112 | affine rows; `firstPrimitive` @ 64, `bboxMin` @ 80 |
 | `GpuNodeInstance` | 144 | `entityIndex` @ 128 |
@@ -320,7 +326,7 @@ Rules:
 | `GpuVisibleMeshlet` | 8 | |
 | `GpuDrawRecord` | 20 | |
 | `GpuInstanceCullItem` | 12 | |
-| `GpuCullView` | 272 | key offsets asserted |
+| `GpuCullView` | 288 | key offsets asserted |
 | `GpuCullCounters` | 112 | key offsets asserted |
 | `GpuObjectUB` | 160 | `modelIndex` @ 144 |
 | `GpuMaterial` | 240 | `alignas(16)` in C++; explicit pads on both sides |
@@ -328,6 +334,7 @@ Rules:
 | `GpuMaterialExtension` | 724 | `GpuTextureRef` 36 B, `GpuUvTransform` 20 B; key offsets asserted |
 | `GpuVertex` | 32 | |
 | `GpuCameraData` | 512 | size and key offsets asserted |
+| `GpuTargets` | 144 | two `GpuGuideSet` (56 B each); `current` @ 32 |
 
 ---
 
@@ -361,17 +368,20 @@ Rules:
 
 | Image | Format | Notes |
 |---|---|---|
-| Swapchain | `B8G8R8A8_SRGB` when available, `FIFO_LATEST_READY` when available | color attachment of both raster phases: early clears, late loads |
-| Depth | `D32_SFLOAT`, 1 sample, standard Z (clear 1, `LESS`) | `DepthStencilAttachment \| Sampled`: the Hi-Z build reads it; stored |
-| Hi-Z pyramid | `R32_SFLOAT`, previous power of two of the depth size, full mip chain, always `eGeneral` | storage view per mip + one full-chain sampled view; one mip per dispatch; skipped while culling is frozen |
+| Swapchain | `B8G8R8A8_SRGB` when available, `FIFO_LATEST_READY` when available | written only by the present pass |
+| Depth | `D32_SFLOAT`, 1 sample, reverse Z (clear 0, `GREATER`) | `DepthStencilAttachment \| Sampled`: the Hi-Z build, resolve and debug view read it; stored |
+| Vis buffer | `R32_UINT`: visible-list row + triangle ([visibility_buffer.md](./features/visibility_buffer.md)) | color attachment of both raster phases, never cleared (empty pixels are decided by depth); `eShaderReadOnlyOptimal` after the late raster |
+| Guides | two sets by frame parity: `normalRoughness`, `geoNormal`, `diffuseAlbedo`, `specularF0`, `specAlbedo`, `emissive`, `motion` (formats: `RenderTargets` `kGuideFormats`) | written by the resolve through typed storage images; always `eGeneral` |
+| Display | `RGBA16F` | written by the debug view, sampled by the present pass; always `eGeneral` |
+| Hi-Z pyramid | `R32_SFLOAT`, previous power of two of the depth size, full mip chain, always `eGeneral` | storage view per mip + one full-chain sampled view with a min-reduction sampler (reverse Z); 3 levels per dispatch; skipped while culling is frozen |
 
-- No MSAA, no G-buffer and no render-target heap slots for lighting exist yet.
-- `createAttachment(target, AttachmentDesc)` destroys the old image, allocates at swapchain extent, names it, transitions it and creates the view.
-- Resize: `recreateSwapChain` (`waitIdle`) → `Renderer::rebuildSwapchainResources` recreates the depth, the pyramid and sync objects; occlusion history drops for one frame (`NoPyramid`).
-- **Frame order** (`Renderer::recordPhase`, once per `CullPhase`): cull → DGC preprocess → raster → Hi-Z build. The late phase draws over the early one and adds ImGui.
-- **DGC:** `PUSH_DATA + DRAW_MESH_TASKS` sequences written by `buildMeshSequences`, one execute per (phase, `MeshStateGroup`) with `sequenceCountAddress` from `GpuCullCounters::sequenceCount`. Explicit preprocess outside the render pass, each (phase, group) region 4 KiB-aligned (NVIDIA 616.92 faulted with the reported 256 B alignment, `vk_dgc.cpp`).
-- **State groups:** `SingleSided` and `DoubleSided` (cull mode none, no cone test), chosen per primitive from the material's `DoubleSided` flag (`MeshletCulling::stateGroupOf`).
-- **Raster variants and debug views:** `ShaderObjects` holds one linked mesh + fragment pair per `RasterVariant` (`Lit`: `mesh_raster` + `mesh_fragment`; `GeometryDebug`: `mesh_debug`), plus the compute shaders (`cullInstances`, `cullMeshlets`, `cullRejectedMeshlets`, `buildMeshSequences`, Hi-Z build) and the `hiz_view` pair. DGC keeps one `GeneratedCommandsShaderInfoEXT` per variant and one state command buffer per (variant, state group), because explicit preprocess must see the shaders and state that execute binds. `Renderer::debugView` picks the variant once per recorded frame and goes into `GpuFrameRoot::debugView`. Views: meshlets, triangles, primitives, node instances, state groups, cull phase, Hi-Z pyramid, with an optional `SV_Barycentrics` edge overlay; lighting and upscaling entries are reserved and disabled.
+- No MSAA and no G-buffer. Every target is at the render extent, equal to the swapchain extent until upscaling (M3). Shaders reach the targets through `GpuFrameRoot::targets`.
+- `createAttachment(target, AttachmentDesc)` destroys the old image, allocates at the render extent, names it, transitions it and creates the view.
+- Resize: `recreateSwapChain` (`waitIdle`) → `Renderer::rebuildSwapchainResources` recreates the sync objects, `RenderTargets` and the pyramid; occlusion history drops for one frame (`NoPyramid`).
+- **Frame order:** per `CullPhase` (`Renderer::recordPhase`): cull → DGC preprocess → raster → Hi-Z build; then resolve → debug view in the frame command buffer; the present pass and ImGui go in the present command buffer, the only work that waits for the acquired image.
+- **DGC:** `PUSH_DATA + DRAW_MESH_TASKS` sequences written by `buildMeshSequences`, one execute per (phase, `RasterBin`) with `sequenceCountAddress` from `GpuCullCounters::sequenceCount`. Explicit preprocess outside the render pass, each (phase, bin) region 4 KiB-aligned (NVIDIA 616.92 faulted with the reported 256 B alignment, `vk_dgc.cpp`).
+- **Raster bins:** by pipeline, not by state (spec §8.1 A6): `Opaque`, and `AlphaTested`, which stays empty until M6. Two-sided triangles are drawn by flipping the winding of back-facing triangles in the mesh shader, so one cull mode serves both.
+- **Shaders and debug views:** `ShaderObjects` holds one linked vis-buffer raster pair (`mesh_raster` + `mesh_fragment`), the compute shaders (`cullInstances`, `cullMeshlets`, `cullRejectedMeshlets`, `buildMeshSequences`, Hi-Z build, `resolve`, `debug_view`) and the `hiz_view` and `present` pairs. DGC keeps one `GeneratedCommandsShaderInfoEXT` and one state command buffer, shared by every bin until M6, because explicit preprocess must see the shaders and state that execute binds. Debug views are drawn by `debug_view` from the vis buffer and the guides, never by a raster variant; `GpuFrameRoot::debugView` selects the view: lit, meshlets, triangles, primitives, node instances, bins, cull phase, Hi-Z pyramid, depth, every guide, motion vectors and reprojection, with an optional edge overlay.
 - **Sync per frame slot:** image-acquired semaphore + fence; one render-finished semaphore per swapchain image.
 
 ---
@@ -418,7 +428,7 @@ Follow `MeshletCulling::FrameBuffers`: a `DeviceBuffer` per frame slot, one regi
 
 Add an `AttachmentImage` member and a create function that calls `createAttachment` with an `AttachmentDesc`. Call it from `RenderTargets::recreate`, and destroy it with `destroyAttachment` in `~RenderTargets` with the same Tracy name.
 - `transitionImageLayout` infers stages only for `Undefined → ColorAttachmentOptimal / DepthStencilAttachmentOptimal / TransferDstOptimal` and `TransferDstOptimal → ShaderReadOnlyOptimal`.
-- Shader-visible targets need a resource-heap slot from `DescriptorManager`; once `GpuTargets` exists (§12), the slot goes there.
+- Shader-visible targets need a resource-heap slot from `DescriptorManager`; the slot goes into `GpuTargets`, which `RenderTargets::prepareFrame` writes per frame slot.
 
 ### Other images
 
@@ -443,12 +453,12 @@ What the target architecture adds to or removes from the resources above, by spe
 | Milestone | Change | Spec |
 |---|---|---|
 | M0 | **Done (2026-11-08).** Remove the animation resources: `Joints`, `Weights`, `MorphPos`, `MorphNrm`, `MorphTan`, `MorphTargets`, `MorphWeights` buffers and their `GpuModel` slices and attribute bits, `GpuPrimitive` morph ranges, `GpuMorphTarget`, `DrawRecordFlag::SkipCulling` and the "morphed primitives skip culling" rule | §7.3 |
-| M0 | `GpuTargets` block (heap indices of all render targets) reached from `GpuFrameRoot`; frame root gains `frameIndex`, `exposure`, jitter | §6.2, S7 |
-| M0 | Every GPU list append through a capacity check with an overflow counter in `GpuCullCounters` and the culling panel | §8.1 A10, S11 |
-| M1 | Depth becomes reverse Z (clear 0, `GREATER`); Hi-Z min reduction, `nvhiz` 3 levels per dispatch; `CULLING_REVERSED_Z` on | §8.1 A9, §8.2 |
-| M1 | Visibility buffer (`R32_UINT`: visible-list row + triangle) at render resolution, `renderExtent` separate from the swapchain extent, `displayColor` until M3; `GpuVisibleMeshlet` rows are what it indexes ([visibility_buffer.md](./features/visibility_buffer.md)) | §8.3 |
-| M1 | State groups replaced by bins by pipeline (opaque, later alpha-tested); two-sided by winding flip, cluster and group state bits | §8.1 A6, §8.2 |
-| M1 | Render-resolution shading surface and DLSS guides (`normalRoughness`, `geoNormal`, `diffuseAlbedo`, `specularF0`, `specAlbedo`, `emissive`, `motion`), two sets ping-ponged by frame parity, written by the compute resolve | §9.3 |
+| M0 | **Done.** `GpuTargets` block (heap indices of all render targets) reached from `GpuFrameRoot`; frame root gains `frameIndex`, `exposure` (jitter follows in M3) | §6.2, S7 |
+| M0 | **Done.** Every GPU list append through a capacity check with an overflow counter in `GpuCullCounters` and the culling panel | §8.1 A10, S11 |
+| M1 | **Done.** Depth becomes reverse Z (clear 0, `GREATER`); Hi-Z min reduction, `nvhiz` 3 levels per dispatch; the culling library is reverse Z only | §8.1 A9, §8.2 |
+| M1 | **Done.** Visibility buffer (`R32_UINT`: visible-list row + triangle) at render resolution, `renderExtent` separate from the swapchain extent, `displayColor` until M3; `GpuVisibleMeshlet` rows are what it indexes ([visibility_buffer.md](./features/visibility_buffer.md)) | §8.3 |
+| M1 | **Done.** State groups replaced by bins by pipeline (opaque, later alpha-tested); two-sided by winding flip, cluster and group state bits | §8.1 A6, §8.2 |
+| M1 | **Done.** Render-resolution shading surface and DLSS guides (`normalRoughness`, `geoNormal`, `diffuseAlbedo`, `specularF0`, `specAlbedo`, `emissive`, `motion`), two sets ping-ponged by frame parity, written by the compute resolve | §9.3 |
 | M2 | Per-cluster CLAS (object space, shared by instances), one cluster BLAS per primitive, GPU-written `VkAccelerationStructureInstanceKHR[]` + `GpuRayInstance[]`, TLAS; build scratch freed after load, CLAS moved to final size; `tlas` and `rayInstances` in the frame root | §10.2–10.3 |
 | M2 | Async compute queue for the RT scene build, timeline semaphore before the first ray pass | §5, §13 |
 | M3–M5 | RTXDI reservoirs, light buffer and constants; SHaRC hash/resolved buffers; NRC SDK buffers; `directRadiance`, `indirectRadiance`, `noisyColor`, DLSS output (display resolution); per-SDK constants in the frame root | §11, §12 |
@@ -485,6 +495,7 @@ The binding model (§1, model slices, frame root, handle-or-address) carries ove
 
 | Date | Change |
 |---|---|
+| 2026-11-13 | Brought up to the M1 working tree (engine spec §20.4): `GpuFrameRoot` 176 B with `targets`, `frameFlags`, RT and SDK addresses, `frameIndex`, `exposure`; `GpuCullView` 288 B; `HiZPushData` 48 B; reverse-Z depth, vis buffer, guides and display image; raster bins replace state groups; `debug_view` replaces the `mesh_debug` raster variant; §12 M0/M1 rows marked done |
 | 2026-11-11 | `ResourceManager` split ([resource_manager_split.md](./features/resource_manager_split.md)): `FrameSync` (fences, semaphores, command pools and buffers), `AssetBuffers` (asset buffers, model catalog, model table, lights), `FrameData` (frame roots, instance and node-instance rows); depth moved to `RenderTargets`, camera buffers to `Camera::createBuffers`. The frame root takes pass addresses through `FrameRootInputs`. No layout, address or upload-order change |
 | 2026-11-08 | Animation removed (engine spec §7.3): `Joints`, `Weights`, `MorphPos`, `MorphNrm`, `MorphTan`, `MorphTargets`, `MorphWeights` buffers, their `GpuModel` slices and attribute bits (`Indices` is now bit 3), `GpuPrimitive` morph ranges, `GpuMorphTarget`, `MorphTarget`, `DrawRecordFlag::SkipCulling` (`TwoSided` is now bit 2), `GpuInstanceCullItem::flags`, the `unculledMeshlets` counter. Sizes: `GpuModel` 112, `GpuPrimitive` 36, `GpuInstanceCullItem` 12, `GpuCullCounters` 112. glTF morph targets and skins are ignored; files load in their base pose |
 | 2026-11-07 | Moved to `spec/`. Re-verified against `7dc04f965`: GPU culling buffers and structs, GPU-written draw records and DGC sequences, `MeshletBounds` / `MeshletGroups` / `MeshletPrimitives` asset buffers, `GpuVisibleMeshlet` lookup chain (push data `{frameRoot, firstVisible, meshletCount}`), sizes (`GpuFrameRoot` 128, `GpuModel` 168, `GpuNode` 112, `GpuNodeInstance` 144, `GpuPrimitive` 48, `GpuDrawRecord` 20), meshlet build as `clusterlod.h` level 0, render targets (no MSAA, D32 depth, Hi-Z pyramid), debug views. New §12: resource changes per [engine_spec.md](../docs/engine_spec.md) milestone |

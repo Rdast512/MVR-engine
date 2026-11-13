@@ -3,8 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Ported from nvpro-samples/vk_lod_clusters shaders/culling.glsl to Slang and modified for this engine:
- * - CULLING_REVERSED_Z switch (the original is reverse Z only); the engine runs reverse Z, tests run both
- * - the near-plane rule names the near-side clip bit for either depth convention
+ * - explicit near-plane rule: a corner past the near plane (z > w under reverse Z) makes the bounds untestable
  * - clip bounds are accumulated per corner, so a world-space sphere can feed them without a world matrix
  * - mip choice and center fetch split out of intersectHiz (hizMip) so they can be unit-tested
  * - pixel epsilon from the device's subPixelPrecisionBits instead of a fixed 1/256; the pixel bbox holds pixel-center
@@ -19,24 +18,13 @@ import core.binding;
 // frustum, Hi-Z, size and triangle tests shared by the cull passes and the mesh shaders. Bounds are boxes given as
 // clip-space corners; the pyramid keeps the farthest depth of its footprint
 
-#ifndef CULLING_REVERSED_Z
-#define CULLING_REVERSED_Z 1 // must match the depth test (ShaderObjects::setRasterState) and the camera projection
-#endif
-
-#if CULLING_REVERSED_Z
+// reverse Z only: must match the depth test (ShaderObjects::setRasterState) and the camera projection
 public static const float kNearestDepth = 1.0;
-#else
-public static const float kNearestDepth = 0.0;
-#endif
 
 // the pyramid reduction (passes/hiz_build.slang) and the sampler reduction mode (HiZPyramid) follow it
 public float farthestDepth(float a, float b)
 {
-#if CULLING_REVERSED_Z
     return min(a, b);
-#else
-    return max(a, b);
-#endif
 }
 
 static const float kCullingEpsilon = 1.2e-07;
@@ -52,11 +40,7 @@ static const uint kClipTop = 8u;
 static const uint kClipZBelow = 16u; // z < 0
 static const uint kClipZAbove = 32u; // z > w
 static const uint kClipBehindEye = 64u; // w <= 0
-#if CULLING_REVERSED_Z
 static const uint kClipNear = kClipZAbove;
-#else
-static const uint kClipNear = kClipZBelow;
-#endif
 
 uint getCullBits(float4 hPos)
 {
@@ -173,11 +157,7 @@ public float4 clipUvRect(ClipBounds bounds)
 
 public float clipNearestDepth(ClipBounds bounds)
 {
-#if CULLING_REVERSED_Z
     return bounds.clipMax.z;
-#else
-    return bounds.clipMin.z;
-#endif
 }
 
 // mip where the rect spans at most 1 texel, so the 2x2 footprint of one fetch at its center covers it; one finer when
@@ -208,11 +188,7 @@ public bool isHiZOccluded(ClipBounds bounds, uint2 hizSize, uint pyramidIndex, u
     const float2 center = (uvRect.xy + uvRect.zw) * 0.5;
     const float farthest =
         tex2D(pyramidIndex).SampleLevel(samplerOf(farSamplerIndex), center, hizMip(uvRect, hizSize)).r;
-#if CULLING_REVERSED_Z
     return clipNearestDepth(bounds) < farthest - kHiZDepthNudge;
-#else
-    return clipNearestDepth(bounds) > farthest + kHiZDepthNudge;
-#endif
 }
 
 ////////////////////////////////////////////////////////////////////////////

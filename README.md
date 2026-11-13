@@ -4,11 +4,9 @@ A rendering engine what targets modern hardware and latest **vulkan** (gpu drive
 
 - mesh shaders
 - raytracing/pathtracing with latest EXT from nvidia
-- all bindles via extensions
-  - `VK_EXT_descriptor_heap`
-  - `VK_KHR_shader_untyped_pointers`
-  - `VK_KHR_buffer_device_address`
-  - `VK_EXT_descriptor_indexing`
+- all bindless, no descriptor sets
+  - images and samplers: `VK_EXT_descriptor_heap` (one resource heap + one sampler heap, shaders access them through `VK_KHR_shader_untyped_pointers`)
+  - buffers: `VK_KHR_buffer_device_address` only
 - slang for shaders
 - and of course dlss
 
@@ -16,8 +14,8 @@ A rendering engine what targets modern hardware and latest **vulkan** (gpu drive
 
 - Nvidia only + needs beta drivers
 - 2000 series or later
-- Also is fully compilible on linux
-- amd could theoretically work under linux but when raytracing will be done it will not work, also dlss
+- Windows only for now: the Linux build has not been tested
+- amd could theoretically work but when raytracing will be done it will not work, also dlss
 
 A proof of idea project bassically and my graduation project at the same time
 

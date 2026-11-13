@@ -58,7 +58,7 @@ Replace the forward raster pass with a visibility buffer: raster writes only dep
 | Projection | `glm::perspective(fov, aspect, far, near)` (zero-to-one is already forced in `pch.h`), as the reference's `perspectiveRH_ZO(fov, aspect, far, near)`. `nearZ` / `farZ` in `GpuCameraData` keep their meaning; finite far plane |
 | Depth | clear 0, compare `GREATER` (both phases) |
 | Hi-Z | the pyramid keeps the farthest depth, which is now the minimum: min reduction, `SamplerReductionMode::eMin` |
-| Culling | `CULLING_REVERSED_Z 1` in [culling.slang](../../shaders/core/culling.slang): nearest depth, occlusion compare and nudge sign, near-plane clip bit. Already written, untested |
+| Culling | reverse Z in [culling.slang](../../shaders/core/culling.slang): nearest depth, occlusion compare and nudge sign, near-plane clip bit. Already written, untested |
 | `hiz_view` | linearization formula for reverse Z |
 | Tests | `hiz_footprint_test` runs every case in both depth conventions |
 
@@ -109,7 +109,7 @@ The jitter hook: raster and step 4 use `viewProj` plus the jitter as a clip-spac
 | `motion` | `RG16F` | render-resolution pixels, no jitter |
 
 - Two sets (all rows from `normalRoughness` down), ping-ponged by frame parity; allocated now so RTXDI and ReSTIR GI temporal passes (M3, M4) change no layout.
-- Storage writes of `RG16_SNORM`, `RG16F` and `R11G11B10F` need `shaderStorageImageExtendedFormats`; check the format features at startup. Shader declarations carry explicit `[format(...)]` so no write-without-format is needed.
+- Storage writes of `RG16_SNORM`, `RG16F` and `R11G11B10F` use the SPIR-V `StorageImageExtendedFormats` capability (core since 1.0, no device feature); the format features are checked at startup. Storage images are typed through `storageTex2D<T, format>` (`core/binding.slang`), so no write-without-format is needed.
 - Heap indices go into `GpuTargets` (M0), reached from `GpuFrameRoot::targets`.
 - Memory at the reference tier's render size (1707×960): about 105 MB for both sets plus vis buffer and depth; about 66 MB at 1280×720 on the floor tier.
 
@@ -235,7 +235,7 @@ All decided 2026-11-07.
 | V3 | done: 3 levels per dispatch ([hiz_build.slang](../../shaders/passes/hiz_build.slang)) | groupshared reductions instead of `subgroupShuffle` (no wave-size assumption); pyramid layout unchanged (previous power of two, level 0 reduces the 1–3 texel footprint), so `hizMip` and its test are untouched. Hi-Z time not recorded |
 | V4 | done: `RasterBin`, `DrawRecordFlag::TwoSided`, winding flip in `mesh_raster` | one DGC state command buffer for both bins until M6 gives `AlphaTested` its own fragment shader |
 | V5 | done: vis-buffer raster, `debug_view`, `present`; `mesh_debug`, `RasterVariant` and `fragmentShaderBarycentric` removed | barycentrics from Olano–Greer homogeneous edge functions, valid for triangles crossing the eye plane. The Hi-Z view now draws in the present pass, so it shows the final pyramid (the next frame's early test) |
-| V6 | done: resolve, `sampleMaterial`, all §3.6 guides, motion | guide storage writes use write-without-format with a startup format-feature check (Slang takes `[format]` only on globals, not heap handles); sampled views serve the reads. Checked on Sponza: unit normals, shading and geometric normals in one hemisphere, geometric normal facing the viewer, zero motion for a static camera. Motion under rotation not yet checked |
+| V6 | done: resolve, `sampleMaterial`, all §3.6 guides, motion | guide storage writes go through typed images (`RWTexture2D<T, 0, format>`, AU5) with a startup format-feature check; sampled views serve the reads. Checked on Sponza: unit normals, shading and geometric normals in one hemisphere, geometric normal facing the viewer, zero motion for a static camera. Motion under rotation not yet checked |
 | V7 | cleanup done | spec §2.3 timings not recorded on either tier |
 | V8 | deferred (2026-11-08): 32-bit payload kept | |
 
@@ -247,4 +247,4 @@ Present on its own submit (done 2026-11-08): the frame work (cull, raster, Hi-Z,
 
 - Engine: [engine_spec.md](../../docs/engine_spec.md) §8–§9, §12.2, §16; [culling_comparison.md](../../reference/culling_comparison.md) A6, A8, A9
 - vk_lod_clusters: [render_raster.frag.glsl](../../reference/vk_lod_clusters/shaders/render_raster.frag.glsl) (`clusterID << 8 | primitive` id for picking, 64-bit `{color, depth}` atomic path), [render_raster_clusters_sw.comp.glsl](../../reference/vk_lod_clusters/shaders/render_raster_clusters_sw.comp.glsl), [render_raster_clusters.mesh.glsl](../../reference/vk_lod_clusters/shaders/render_raster_clusters.mesh.glsl) (two-sided winding flip), [nvhiz-update.comp.glsl](../../reference/vk_lod_clusters/shaders/nvhiz-update.comp.glsl)
-- Current code: [mesh_raster.slang](../../shaders/passes/mesh_raster.slang), [mesh_fragment.slang](../../shaders/passes/mesh_fragment.slang), [mesh_debug.slang](../../shaders/passes/mesh_debug.slang), [hiz_build.slang](../../shaders/passes/hiz_build.slang), [vk_renderer.cpp](../../src/render/vk_renderer.cpp), [vk_hiz.cpp](../../src/render/vk_hiz.cpp), [debug_view.hpp](../../src/render/debug_view.hpp)
+- Current code: [mesh_raster.slang](../../shaders/passes/mesh_raster.slang), [mesh_fragment.slang](../../shaders/passes/mesh_fragment.slang), [resolve.slang](../../shaders/passes/resolve.slang), [debug_view.slang](../../shaders/passes/debug_view.slang), [present.slang](../../shaders/passes/present.slang), [hiz_build.slang](../../shaders/passes/hiz_build.slang), [vk_renderer.cpp](../../src/render/vk_renderer.cpp), [vk_hiz.cpp](../../src/render/vk_hiz.cpp), [debug_view.hpp](../../src/render/debug_view.hpp)

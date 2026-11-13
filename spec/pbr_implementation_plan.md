@@ -14,8 +14,8 @@ description: Task plan for glTF metallic-roughness PBR on the engine_spec archit
 | [engine_spec.md](../docs/engine_spec.md) | Target architecture, milestones, budgets (normative) |
 | [visibility_buffer.md](./features/visibility_buffer.md) | Vis buffer and resolve design, as-built notes (§10) |
 | [pbr_lighting_materials.md](./pbr_lighting_materials.md) | Shading rules (normative for agents) |
-| [pbr_lighting_materials.html](./pbr_lighting_materials.html) | Human explainer with live graphs and scenes |
-| [gltf_parse_resources.md](./gltf_parse_resources.md) §5, §13.3, §14 | Normative glTF math |
+| [pbr_lighting_materials.html](../docs/pbr_lighting_materials.html) | Human explainer with live graphs and scenes |
+| glTF 2.0 [§3.9 Materials](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#materials), [Appendix B](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#appendix-b-brdf-implementation), [Khronos extension specs](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos) | Normative glTF math |
 | [resource_architecture.md](./resource_architecture.md) | Buffers, model slices, frame root, BDA + heap handle rules |
 | [shader_architecture_plan.md](./shader_architecture_plan.md) | Shader file map and pass order |
 | [VK_EXT_opacity_micromap.md](./VkExtensionsSpecs/VK_EXT_opacity_micromap.md) | OMM extension notes |
@@ -138,9 +138,9 @@ Toolchain facts (re-probed 2026-11-08 on Slang v2026.20, task A2):
 |---|---|
 | `RaytracingAccelerationStructure(uint64_t)` → `OpConvertUToAccelerationStructureKHR` | the TLAS address goes straight into `GpuFrameRoot.tlas` with no AS descriptor |
 | `module` / `import a.b;`, typed pointers in structs, `enum X : uint`, `RWTexture2D<float4>.Handle` in push data all validate | adopted (§4). The module name is a plain identifier (`module binding;`, no dots); the path is in the import (`import core.binding;`) |
-| command-line `-D` reaches imported modules; `#define`s in a source file do not | one module per define value works (`CULLING_REVERSED_Z` in the Hi-Z test); vendor headers that need `#define`s first stay textual |
+| command-line `-D` reaches imported modules; `#define`s in a source file do not | one module per define value works; vendor headers that need `#define`s first stay textual |
 | heap access still emits no `NonUniform`, even with `NonUniformResourceIndex` | §4.4 |
-| `[format(...)]` on a heap handle is accepted but has no effect: `OpTypeImage` stays `Unknown` | storage guides use write-without-format, checked at startup (`RenderTargets::checkFormatSupport`) |
+| `[format(...)]` on a heap handle is accepted but has no effect: `OpTypeImage` stays `Unknown` | the format goes in the type instead: `RWTexture2D<T, 0, format>` with a `SlangImageFormat` value (`core/binding.slang` `storageTex2D`) |
 | `slangc -depfile` lists imported modules and works with Ninja | hand-written `DEPENDS` lists removed (§4.5) |
 
 ---
@@ -370,7 +370,7 @@ The signature takes `cDiff`/`f0` rather than `SampledMaterial`, so RTXDI and the
 
 Also add `sampleBrdf(…, u) -> BrdfSample { l, weight, pdf }` (lobe pick by Fresnel-weighted luminance, clamped to [0.1, 0.9] unless `cDiff` is black, cosine diffuse, GGX **VNDF** specular; `pdf = 0` marks an invalid sample) and `pdfBrdf(…, l)`. RTXDI (`RAB_SurfaceImportanceSampleBrdf`, `RAB_SurfaceEvaluateBrdfPdf`), the indirect pass and ReSTIR GI use them.
 
-- **Done when:** [pbr_lighting_materials.html §7](./pbr_lighting_materials.html#combined) numbers reproduce (white plastic r=0.5 → 0.295 head-on).
+- **Done when:** [pbr_lighting_materials.html §7](../docs/pbr_lighting_materials.html#combined) numbers reproduce (white plastic r=0.5 → 0.295 head-on).
 - **Must not:** feed perceptual roughness into `D`, drop `NdotL` after the correlated `V`, or multiply by it twice.
 
 #### B3 · `evalLight` (M3)

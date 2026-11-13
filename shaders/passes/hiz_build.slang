@@ -62,7 +62,8 @@ void storeLevel(uint level, uint2 texel, float value)
     const uint2 size = max(push.dstSize >> level, uint2(1, 1));
     if (level < push.levelCount && all(texel < size))
     {
-        storageTex2D(push.dstImages[level])[texel] = value;
+        // HiZPyramid kFormat
+        storageTex2D<float, kImageFormatR32f>(push.dstImages[level])[texel] = value;
     }
 }
 

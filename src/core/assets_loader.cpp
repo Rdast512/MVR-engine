@@ -1105,8 +1105,11 @@ namespace
         }
     }
 
-    static void parseGltfImages(GltfLoadCtx& ctx, const tg3_model& model, const std::filesystem::path& modelDir)
+    // modelPath is the resolved model file: embedded images are keyed by it, so two .glb files in one folder
+    // never share textures
+    static void parseGltfImages(GltfLoadCtx& ctx, const tg3_model& model, const std::filesystem::path& modelPath)
     {
+        const std::filesystem::path modelDir = modelPath.parent_path();
         logDebug(std::format("glTF images: {}", model.images_count), "AssetLoader");
         ctx.images.resize(model.images_count);
 
@@ -1117,7 +1120,7 @@ namespace
             uint64_t embeddedBytes = 0;
             const char* source = "none";
             GltfImageSrc src{};
-            src.cacheKey = std::format("gltf-image-{}-{}", modelDir.string(), i);
+            src.cacheKey = std::format("gltf-image-{}-{}", modelPath.string(), i);
             src.mime = std::string(mime);
 
             if (image.buffer_view >= 0) {
@@ -1994,7 +1997,7 @@ std::optional<EntityId> AssetsLoader::loadGltfModel(const std::string& modelPath
     const uint32_t firstPrimitive = static_cast<uint32_t>(geometryStore.primitiveDraws.size());
     parseGltfRootExtensions(ctx, model);
     const std::vector<uint32_t> samplerHeaps = parseGltfSamplers(ctx, model);
-    parseGltfImages(ctx, model, std::filesystem::path(modelPath).parent_path());
+    parseGltfImages(ctx, model, std::filesystem::path(modelPath));
     parseGltfTextures(ctx, model, samplerHeaps);
     {
         const TextureUploadBatch uploadBatch(textureManager);

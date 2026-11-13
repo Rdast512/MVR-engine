@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-31, updated 2026-11-10 · **Status:** target architecture, normative for new work · **Working tree:** `feature-pbr` on `bfb8d1587`
 **Audit:** §20 holds the 2026-11-10 architecture audit, its decisions and the documents named below that are not in the repository (§20.4).
-**Inputs:** [end_goal.md](./end_goal.md) (target), [pbr_implementation_plan.md](../spec/pbr_implementation_plan.md), [resource_architecture.md](../spec/resource_architecture.md), [shader_architecture_plan.md](../spec/shader_architecture_plan.md), [meshoptimizer.md](./meshoptimizer.md), [meshlet_culling_options.md](./meshlet_culling_options.md), [culling_comparison.md](../reference/culling_comparison.md), [dgc_comparison.md](../reference/dgc_comparison.md)
+**Inputs:** `end_goal.md` (target) and `meshoptimizer.md`, both folded into this spec and not in the repository; [pbr_implementation_plan.md](../spec/pbr_implementation_plan.md), [resource_architecture.md](../spec/resource_architecture.md), [shader_architecture_plan.md](../spec/shader_architecture_plan.md), [meshlet_culling_options.md](./meshlet_culling_options.md), [culling_comparison.md](../reference/culling_comparison.md), [dgc_comparison.md](../reference/dgc_comparison.md)
 **Precedence:** where this spec and an input disagree, this spec wins. §17 lists every overridden decision. Detailed task plans (PBR plan tasks, culling stages) stay valid wherever they don't conflict.
 
 The engine is a **GPU-driven, bindless, hybrid visibility + real-time path tracing renderer**. Its purpose is to show how far a renderer gets when it uses only current GPU features and current algorithms, without legacy fallbacks.
@@ -17,7 +17,7 @@ The engine is a **GPU-driven, bindless, hybrid visibility + real-time path traci
 2. **Zero CPU per-object work per frame.** The CPU writes O(1) frame constants and O(changed) scene deltas. Culling, draw generation, acceleration-structure builds and material binning run on the GPU.
 3. **Every stage optimized and measured.** Each pass has a GPU budget (§2.3), a timer and a Tracy zone. A pass over budget is a bug.
 4. **Latest hardware paths only:** mesh shaders, shader objects, descriptor heaps, BDA, DGC, RTX Mega Geometry, OMM, SER, cooperative vectors, DLSS Ray Reconstruction, GPU memory decompression.
-5. **Compressed uploads.** Textures and geometry cross PCIe GDeflate-compressed and are decompressed on the GPU with `VK_EXT_memory_decompression`; textures are converted to GPU-native KTX2 automatically ([texture_pipeline_plan.md](./texture_pipeline_plan.md)).
+5. **Compressed uploads.** Textures and geometry cross PCIe GDeflate-compressed and are decompressed on the GPU with `VK_EXT_memory_decompression`; textures are converted to GPU-native KTX2 automatically (§6.4, §7.2).
 6. **CPU and GPU work in parallel.**
    - The CPU never waits for the GPU inside a frame, and the GPU never idles waiting for the CPU.
    - Independent GPU work overlaps across queues: RT structure builds on async compute while graphics rasterizes.
@@ -83,7 +83,7 @@ Every required extension is available on Turing: the engine creates its device o
 | SER (`VK_EXT_ray_tracing_invocation_reorder`) | yes | yes | yes | yes | all passes that shade hits (§11.1) | confirmed on the 2060 Super. Whether the driver actually reorders is reported by `rayTracingInvocationReorderReorderingHint` (`REORDER` or `NONE`); log it at startup. Per Khronos, reordering may be a no-op on hardware without support for it; NVIDIA introduced hardware SER with Ada |
 | OMM (`VK_EXT_opacity_micromap`) | yes | yes | yes | yes | alpha-tested rays | confirmed on the 2060 Super. NVIDIA OMM SDK FAQ: supported on any RTX GPU, with a dedicated OMM unit from Ada on. Subdivision limits from `maxOpacity2StateSubdivisionLevel` / `maxOpacity4StateSubdivisionLevel` |
 | Mega Geometry (`VK_NV_cluster_acceleration_structure`, `VK_NV_partitioned_acceleration_structure`) | yes | yes | yes | yes, plus faster cluster intersection | RT geometry | in the extension set chosen on the 2060 Super; optional in `vk_device.cpp` (`hasClusterAccelerationStructure`) until §10 makes it required |
-| `VK_EXT_memory_decompression` (GDeflate 1.0) | yes | yes | yes | yes | texture and geometry uploads ([texture_pipeline_plan.md](./texture_pipeline_plan.md)) | in the required set on the 2060 Super; methods from `decompressionMethods` |
+| `VK_EXT_memory_decompression` (GDeflate 1.0) | yes | yes | yes | yes | texture and geometry uploads (§6.4, §7.2) | in the required set on the 2060 Super; methods from `decompressionMethods` |
 | `VK_NV_cooperative_vector` | yes (tensor cores) | yes | yes + FP8 | yes + FP8/FP4 | NRC, optional neural materials | RTXNS lists RTX 20 as minimum; not enabled in `vk_device.cpp` yet |
 | DLSS Ray Reconstruction | yes | yes | yes | yes | reconstruction | per-tier cost differs strongly (transformer model) |
 | DLSS Frame Generation / Multi Frame Generation | no | no | FG | FG + MFG | **not used**: the 60 fps target means rendered frames | — |
@@ -128,7 +128,7 @@ CPU budget: ≤ 2 ms per frame on the render thread at any scene size, excluding
 | Sync | sync2, timeline semaphores for cross-queue work, `MAX_FRAMES_IN_FLIGHT = 2` |
 | Queues | graphics (main), async compute (RT scene build, GPU decompression of uploads), transfer (plain buffer copies). `vkCmdDecompressMemoryEXT` needs a graphics or compute pool, so decompression never goes to a transfer-only queue |
 | Memory | VMA; ReBAR assumed: host-visible VRAM for per-frame CPU-written buffers ([resource_architecture.md §3](../spec/resource_architecture.md#3-memory-and-allocation)); `VK_EXT_memory_budget` reported in ImGui and Tracy |
-| Uploads | cache hits: GDeflate pages written to ReBAR staging, decompressed on the GPU, copied into images and asset buffers. Host image copy only for first-load source images ([texture_pipeline_plan.md](./texture_pipeline_plan.md)) |
+| Uploads | cache hits: GDeflate pages written to ReBAR staging, decompressed on the GPU, copied into images and asset buffers. Host image copy only for first-load source images (§6.4, §7.2) |
 | Presentation | `FIFO_LATEST_READY` when available, `VK_EXT_present_timing` for pacing once enabled |
 | Validation | layers via vkconfig, not in code (`Device(window, false)` is intentional); validation-clean is a merge requirement |
 | Limits and drivers | every size, count and capacity comes from queried device properties (`HardwareCapabilities`), never from hardcoded numbers. Other GPUs are checked with the Vulkan Hardware Capability Viewer and vulkan.gpuinfo.org. The target is the latest NVIDIA driver; driver-specific notes in this spec are rechecked on each update |
@@ -218,7 +218,7 @@ Rules carried over: model-relative values inside slices, absolute rows in CPU-re
 
 ### 6.3 Data layout targets
 
-From [data_layout_optimization_spec.md](./data_layout_optimization_spec.md) and the [meshoptimizer.md](./meshoptimizer.md) backlog:
+Folded from the former data-layout spec and meshoptimizer backlog (neither is in the repository); this table is the only statement of these targets:
 
 | Stream | End state |
 |---|---|
@@ -231,7 +231,7 @@ From [data_layout_optimization_spec.md](./data_layout_optimization_spec.md) and 
 
 ### 6.4 Textures
 
-- KTX2 BC7 (color, linear data) and BC5 (normal maps), produced **automatically** by the engine in the background and cached; uploaded through GPU decompression ([texture_pipeline_plan.md](./texture_pipeline_plan.md)). The offline `tools/gltf_ktx2` shares the same encoder. BC6H (HDR) is out of scope: libktx has no BC6H target.
+- KTX2 BC7 (color, linear data) and BC5 (normal maps), produced **automatically** by the engine in the background and cached; uploaded through GPU decompression (§7.2). The offline `tools/gltf_ktx2` shares the same encoder. BC6H (HDR) is out of scope: libktx has no BC6H target.
 - All mips resident; texture streaming is the side project of §1.2.
 - Neural texture compression (RTXNTC, cooperative vectors) is optional (§15), not part of the baseline.
 
@@ -251,7 +251,7 @@ All geometry processing uses **meshoptimizer** (rule: no homegrown geometry code
 
 ### 7.2 Disk cache
 
-Processing results (clusters, OMM, quantized streams; the DAG after §16.3) are cached per asset file + processing version, stored as GDeflate pages and decompressed on the GPU on load ([texture_pipeline_plan.md §3.4](./texture_pipeline_plan.md#34-geometry)).
+Processing results (clusters, OMM, quantized streams; the DAG after §16.3) are cached per asset file + processing version, stored as GDeflate pages and decompressed on the GPU on load.
 
 ### 7.3 Static geometry only
 
@@ -271,7 +271,7 @@ As built (A1–A5, A7, C1–C3):
 
 | Step | Rule |
 |---|---|
-| Test library | [culling.slang](../shaders/core/culling.slang), a modified port of `culling.glsl` (Apache-2.0 header kept): `intersectFrustum` on 8 box corners with clip bits into `ClipBounds`, `isHiZOccluded` (one max-sampler fetch at the rect center, 1-texel mip with the niagara refinement, 2-ulp nudge), `isSubPixel`, `isFrontFacingHW`, `testTrianglePixel`. Engine extras: explicit near-plane rule (`kClipNear`), `CULLING_REVERSED_Z` switch (on since M1; to be removed, §20.2 AU5) |
+| Test library | [culling.slang](../shaders/core/culling.slang), a modified port of `culling.glsl` (Apache-2.0 header kept): `intersectFrustum` on 8 box corners with clip bits into `ClipBounds`, `isHiZOccluded` (one max-sampler fetch at the rect center, 1-texel mip with the niagara refinement, 2-ulp nudge), `isSubPixel`, `isFrontFacingHW`, `testTrianglePixel`. Engine extras: explicit near-plane rule (`kClipNear`); reverse Z only (the forward-Z branch and `CULLING_REVERSED_Z` were removed, §20.2 AU5) |
 | Bounds | object-space boxes at every level: node mesh box, group box, cluster box. The cluster sphere stays only for the cone test |
 | Hierarchy | node instance → draw record = cluster group (≤ 32) → cluster → triangle. One 32-lane workgroup per record tests the group box once (frustum, sub-pixel, occlusion); the group verdict holds for all its clusters, the cone stays per cluster |
 | Tests | instance: frustum + sub-pixel + Hi-Z; group: same; cluster: frustum + cone + sub-pixel + Hi-Z; triangle (mesh shader, `SV_CullPrimitive`): homogeneous backface (`determinant(a.xyw, b.xyw, c.xyw)` before the `w ≤ 0` guard) + small-primitive test |
@@ -286,7 +286,7 @@ Remaining before 1.0, each in the milestone that owns its dependency (§16.2):
 | Step | Rule | Milestone |
 |---|---|---|
 | A10 capacities | every list append through a capacity check with an overflow counter in `GpuCullCounters` and the culling panel (S11); exact sizing stays until LOD | M0, built |
-| A9 Hi-Z + reverse Z | port `nvhiz-update` (3 levels per dispatch, groupshared reductions in place of `subgroupShuffle`); reverse Z together with `CULLING_REVERSED_Z`, min reduction and the nudge sign | M1, built |
+| A9 Hi-Z + reverse Z | port `nvhiz-update` (3 levels per dispatch, groupshared reductions in place of `subgroupShuffle`); reverse Z in the culling library, min reduction and the nudge sign | M1, built |
 | A6 bins by pipeline | two-sided by winding flip in the mesh shader (`isFrontFacingHW`) with a back-face bit for shading; cluster and group state bits `TWOSIDED`, `ALPHAMASKED`, `*_MIXED`; bins opaque / alpha-tested (later SW raster) | opaque bin built in M1; alpha bin in M6 (the bin exists and is empty) |
 | A8 jitter | §12.2 | M3 |
 | Verification | image and timings for A1–A7 on both GPUs (static, fast turn, fly out while frozen, double-sided foliage); cone-cull loss from `cone_weight = 0` | M0, open |
@@ -602,19 +602,19 @@ Each milestone renders something testable and is measured against §2.3 before t
 | M5 | NRC | `IRadianceCache`, NRC behind it (PBR G) | reference tier uses NRC; A/B vs SHaRC captured |
 | M6 | Alpha | OMM bake per primitive, attach per cluster, build (§10.5), alpha-tested raster bucket | foliage cut-outs in raster and shadows; zero ray candidates |
 | M7 | Material binning | tile classification + bin-id image (§9.1), DGC compute execution set with the overlap guard (§9.2), emissive-triangle lights, `Power_RIS` | per-bin timings; Bistro emissives lit |
-| M8 | Asset pipeline | [texture_pipeline_plan.md](./texture_pipeline_plan.md) T1–T5: automatic KTX2 conversion, GDeflate cache, GPU decompression for textures and geometry; background loading on worker threads, async upload and build, deferred destruction on unload (§13.1 X3–X5) | plan's done criteria; Bistro load time and PCIe bytes recorded; loading a model while rendering causes no frame over budget |
+| M8 | Asset pipeline | §6.4 and §7.2: automatic KTX2 conversion, GDeflate cache, GPU decompression for textures and geometry; background loading on worker threads, async upload and build, deferred destruction on unload (§13.1 X3–X5) | §6.4 and §7.2 hold; Bistro load time and PCIe bytes recorded; loading a model while rendering causes no frame over budget |
 | M9 | **1.0 final goal: Bistro** | full Bistro scene, complete lighting stack; fixed benchmark paths; per-stage tuning on both tiers; PTLAS if the TLAS build is over 0.3 ms; CPU/GPU overlap verified (§13.1) | §2.3 met on the reference tier; floor result recorded (met, or overrun list → §2.1 outcome); §13.1 done criteria met |
 
-**Status (2026-11-10):** M0 and M1 are built. Their "done when" criteria are not met yet: baseline timings on both cards, the culling image check, and the M1 checks listed in §16.1 are open. M2 has not started.
+**Status (2026-11-13):** M0 and M1 are built. Their "done when" criteria are not met yet: baseline timings on both cards, the culling image check, and the M1 checks listed in §16.1 are open. M2 has not started. AU items not marked done are optional (§20.2).
 
 **Work added by the audit (§20.2):**
 
 | When | Work |
 |---|---|
-| Before M2 | close the M0/M1 checks above; ~~delete dead files and stubs (AU7)~~ (done 2026-11-12); fix the defects of §20.3; assert cluster sizes against device limits and add the Slang/C++ layout test (AU5); one swapchain recreate path (AU10); `Engine` / `EngineUi` split (AU3); document fixes of §20.4 |
-| M2 | retire queue keyed by slot fence, used by acceleration structures from the start (AU1); `ResourceManager` split (AU2); GPU scene-update pass fed by a CPU delta list (AU4) |
-| M5 | `nrc_library` becomes the `vk_nrc` module (AU9) |
-| M8 | remaining `waitIdle` and `submitAndWait` sites removed (AU1); `assets_loader.cpp` split (AU6) |
+| Before M2 | close the M0/M1 checks above. Done: the document fixes of §20.4 (2026-11-13); the defects of §20.3 (2026-11-13); dead files and stubs (AU7, 2026-11-12); reverse-Z-only culling, the Slang/C++ layout test and typed storage images (AU5, AU11, 2026-11-13); `Engine` / `EngineUi` split (AU3). Optional: one swapchain recreate path (AU10), build linkage (AU8), shared color-space rules (AU6) |
+| M2 | optional: retire queue keyed by slot fence, used by acceleration structures from the start (AU1); GPU scene-update pass fed by a CPU delta list (AU4). Done: `ResourceManager` split (AU2) |
+| M5 | optional: `nrc_library` becomes the `vk_nrc` module (AU9) |
+| M8 | optional: remaining `waitIdle` and `submitAndWait` sites removed (AU1); `assets_loader.cpp` split (AU6) |
 
 ### 16.3 Post-1.0 targets: Nanite-like cluster LOD
 
@@ -680,7 +680,7 @@ Rules: Vulkan objects that are externally synchronized (command pools, queues, t
 | Q8 | Slang access to `ClusterID` and attributes on `HitObject` | decides whether SER passes need the minimal closest-hit invoke | pinned Slang v2026.20 (2026-11-08): `GetClusterID` is NV-only, `GetTriangleVertexPositions` EXT-only, so the invoke stays; compile probe at M4 ([shader_execution_reordering.md](../spec/features/shader_execution_reordering.md) SER4) |
 | R7 | After §16.3: all LOD levels' CLAS resident (no streaming) on 8 GB | limits scene size on the floor card | `positionTruncateBitCount`, BLAS sharing/merging/caching, scene choice (R5) |
 | R8 | After §16.3: raster/RT LOD mismatch | self-shadowing, leaks at primary hits | §10.4 rule + debug view |
-| Q9 | GDeflate ratio on BC7/BC5 data | decides how much of the decompression gain is textures vs geometry | [texture_pipeline_plan.md](./texture_pipeline_plan.md) T3 |
+| Q9 | GDeflate ratio on BC7/BC5 data | decides how much of the decompression gain is textures vs geometry | §6.4, §7.2; measured in M8 |
 | Q4 | DGC with RT stages: driver 621.01 reports none | ray dispatch uses `vkCmdTraceRaysIndirect2KHR` | recheck per driver |
 | Q5 | Slang drops `NonUniform` on heap access | UB by spec, tolerated by NVIDIA | re-probe on every Slang upgrade (S6) |
 | Q6 | RTXDI / SHaRC / NRC HLSL headers through Slang | bridge files may need HLSL shims | verify per SDK at integration |
@@ -707,8 +707,8 @@ Local notes are in [reference/](../reference/); sources are under `reference/` o
 | Radiance caches | NVIDIA-RTX/RTXGI (SHaRC, NRC) | [NrcGuide.md](../reference/NrcGuide.md) |
 | Neural shading / textures | NVIDIA-RTX/RTXNS, NVIDIA-RTX/RTXNTC | — |
 | Reconstruction | NVIDIA/DLSS (NGX) | — |
-| GPU decompression, GDeflate | `VK_EXT_memory_decompression`; GDeflate reference codec in microsoft/DirectStorage | [VK_EXT_memory_decompression.md](../spec/VkExtensionsSpecs/VK_EXT_memory_decompression.md) (its "transfer queue" advice is wrong, §3), [texture_pipeline_plan.md](./texture_pipeline_plan.md) |
-| Geometry processing, cluster DAG | zeux/meshoptimizer (`demo/clusterlod.h`) | [meshoptimizer.md](./meshoptimizer.md) |
+| GPU decompression, GDeflate | `VK_EXT_memory_decompression`; GDeflate reference codec in microsoft/DirectStorage | [VK_EXT_memory_decompression.md](../spec/VkExtensionsSpecs/VK_EXT_memory_decompression.md) (its "transfer queue" advice is wrong, §3); §6.4, §7.2 |
+| Geometry processing, cluster DAG | zeux/meshoptimizer (`demo/clusterlod.h`) | §6.3, §7.1 |
 
 ---
 
@@ -735,29 +735,29 @@ Local notes are in [reference/](../reference/); sources are under `reference/` o
 
 | ID | Finding | Rule broken | Decision | When |
 |---|---|---|---|---|
-| AU1 | **Scene changes stall the device.** `waitIdle` on every load, unload, instance spawn and instance-field clear (`vk_engine.cpp:1306, 1316, 1348, 1407, 1438`); `submitAndWait` (queue wait) per upload, buffer growth, compaction and attachment creation. No deferred destruction. One staging buffer allocated per batch. One-time work records into frame slot 0's command buffer. The compute queue is created and never used | §13.1: `waitIdle` only at startup, shutdown and swapchain recreation | Add a retire queue keyed by the slot fence, and a command pool of its own for one-time work. Acceleration structures use the queue from their first commit; buffer growth and unload move onto it. The remaining stalls go with background loading | queue in M2; rest in M8 (X3–X5) |
-| AU2 | **`ResourceManager` does too much** (about 1,450 lines): fences, semaphores and command pools; the depth attachment; asset upload, growth and compaction; the model catalog; material and light packing; frame-root and node-instance writes; camera buffer creation. It also stores state that the cull pass and the render targets write into it, and it fills `Camera`'s buffers, so `core` and `scene` include each other | separation of concerns | Split into frame sync (fences, semaphores, pools), asset buffers (slices, growth, compaction, catalog) and frame data (root, node instances, object rows). Passes hand their addresses to the frame-root writer through the renderer. `Camera` creates its own buffers. Plan: [resource_manager_split.md](../spec/features/resource_manager_split.md) | M2, before AS state is added |
-| AU3 | **`Engine` does too much** (about 1,500 lines, roughly 900 of them UI panels): window, input, ImGui setup, asset scan, load sequencing, init and teardown order | separation of concerns | Split in two: `Engine` keeps the application and the scene actions, `EngineUi` gets everything ImGui and asks for scene actions through a request struct. Plan: [engine_ui_split.md](../spec/features/engine_ui_split.md) | before M2 |
-| AU4 | **Per-frame CPU work is O(entities).** Node instances and object rows are rewritten in full every frame, and the model matrix is computed twice per entity (`vk_frame_data.cpp:119, 180`). `ObjectStorage::erase` shifts every later entity id, so light rows are rewritten on unload | P2, goal 2, §5 stage 1 | The scene-update pass gets a milestone: a CPU list of changed entities feeds a GPU pass that writes `GpuNodeInstance` and keeps the previous matrix. The RT instance write of M2 reads the same rows | M2 |
-| AU5 | **Limits and constants.** Cluster size (64 vertices, 126 triangles) is hardcoded and never checked against the mesh-shader limits. Shader variants are preprocessor-only (`CULLING_REVERSED_Z`, `GI_CACHE_MODE`). Shared constants are copied by hand between `types.hpp` and `types.slang`. No test compares Slang layout with C++. Storage images carry no format attribute | §3 limits, S9, S11, §7.1 | Assert cluster sizes against `maxMeshOutputVertices` / `maxMeshOutputPrimitives` at init. Delete `CULLING_REVERSED_Z` and the forward-Z branch; the Hi-Z footprint test keeps the reverse-Z case. `GI_CACHE_MODE` becomes `IRadianceCache` (§11.4). Add a test that compares the reflected layout of `types.slang` with the C++ sizes and offsets. Add format attributes to the storage-image helpers | before M2; `GI_CACHE_MODE` in M5 |
-| AU6 | **`assets_loader.cpp` is 2,029 lines** holding accessor decode, JSON and base64, a thread helper, texture scheduling, material parsing, scene graph and lights, mesh preprocessing and orchestration. The image-use dry run must mirror the real material parse. The color-space rules per texture slot are duplicated in `tools/gltf_ktx2` | DRY | Share the slot color-space rules between the loader and the tool now (§6.4 needs one encoder anyway). Split the file into accessor decode, material parse, geometry build and orchestration when loading moves to workers | rules before M2; split in M8 |
+| AU1 | **Scene changes stall the device.** `waitIdle` on every load, unload, instance spawn and instance-field clear (`vk_engine.cpp:1306, 1316, 1348, 1407, 1438`); `submitAndWait` (queue wait) per upload, buffer growth, compaction and attachment creation. No deferred destruction. One staging buffer allocated per batch. One-time work records into frame slot 0's command buffer. The compute queue is created and never used | §13.1: `waitIdle` only at startup, shutdown and swapchain recreation | Add a retire queue keyed by the slot fence, and a command pool of its own for one-time work. Acceleration structures use the queue from their first commit; buffer growth and unload move onto it. The remaining stalls go with background loading | optional; was: queue in M2, rest in M8 (X3–X5) |
+| AU2 | **`ResourceManager` does too much** (about 1,450 lines): fences, semaphores and command pools; the depth attachment; asset upload, growth and compaction; the model catalog; material and light packing; frame-root and node-instance writes; camera buffer creation. It also stores state that the cull pass and the render targets write into it, and it fills `Camera`'s buffers, so `core` and `scene` include each other | separation of concerns | Split into frame sync (fences, semaphores, pools), asset buffers (slices, growth, compaction, catalog) and frame data (root, node instances, object rows). Passes hand their addresses to the frame-root writer through the renderer. `Camera` creates its own buffers. Plan: [resource_manager_split.md](../spec/features/resource_manager_split.md) | done (2026-11-12): `AssetBuffers`, `FrameData`, `FrameSync` |
+| AU3 | **`Engine` does too much** (about 1,500 lines, roughly 900 of them UI panels): window, input, ImGui setup, asset scan, load sequencing, init and teardown order | separation of concerns | Split in two: `Engine` keeps the application and the scene actions, `EngineUi` gets everything ImGui and asks for scene actions through a request struct. Plan: [engine_ui_split.md](../spec/features/engine_ui_split.md) | done (2026-11-12): `EngineUi` in `src/ui/engine_ui.cpp` |
+| AU4 | **Per-frame CPU work is O(entities).** Node instances and object rows are rewritten in full every frame, and the model matrix is computed twice per entity (`vk_frame_data.cpp:119, 180`). `ObjectStorage::erase` shifts every later entity id, so light rows are rewritten on unload | P2, goal 2, §5 stage 1 | The scene-update pass gets a milestone: a CPU list of changed entities feeds a GPU pass that writes `GpuNodeInstance` and keeps the previous matrix. The RT instance write of M2 reads the same rows | optional; was M2 |
+| AU5 | **Limits and constants.** Cluster size (64 vertices, 126 triangles) is hardcoded and never checked against the mesh-shader limits. Shader variants are preprocessor-only (`CULLING_REVERSED_Z`, `GI_CACHE_MODE`). Shared constants are copied by hand between `types.hpp` and `types.slang`. No test compares Slang layout with C++. Storage images carry no format attribute | §3 limits, S9, S11, §7.1 | Cluster sizes stay fixed at 64 / 126: they follow NVIDIA's meshlet recommendation, not a device query, and are not asserted. ~~Delete `CULLING_REVERSED_Z` and the forward-Z branch; the Hi-Z footprint test keeps the reverse-Z case~~ (done). `GI_CACHE_MODE` becomes `IRadianceCache` (§11.4). ~~Add a test that compares the reflected layout of `types.slang` with the C++ sizes and offsets~~ (done: `tests/layout_test.cpp` reflects every struct of `types.slang` through the Slang library and compares size and every field offset with its C++ mirror). ~~Add format attributes to the storage-image helpers~~ (done: `storageTex2D<T, format>` in `core/binding.slang` types each storage image as `RWTexture2D<T, 0, format>`, since `[format]` has no effect on heap handles; the layout test checks the format constants) | done (2026-11-13) except cluster sizes; `GI_CACHE_MODE` in M5 |
+| AU6 | **`assets_loader.cpp` is 2,029 lines** holding accessor decode, JSON and base64, a thread helper, texture scheduling, material parsing, scene graph and lights, mesh preprocessing and orchestration. The image-use dry run must mirror the real material parse. The color-space rules per texture slot are duplicated in `tools/gltf_ktx2` | DRY | Share the slot color-space rules between the loader and the tool now (§6.4 needs one encoder anyway). Split the file into accessor decode, material parse, geometry build and orchestration when loading moves to workers | optional; was: rules before M2, split in M8 |
 | AU7 | **Dead scaffolding.** Zero-byte sources, some still compiled: `vk_pbr.*`, `vk_postprocessing.*`, `vk_mesh.*`, `maths.cpp`, `vk_shaders.*`. Stub shaders: `base.slang`, `base/mesh.slang` (declares `module mesh`, as `geometry/mesh.slang` does), `raytracing/hit`, `raytracing/trace`, `passes/composite`, `passes/pathtrace*`, `passes/sharc_resolve`, `gi/rtxgi` (imported only by the `pathtrace` stub). Unused code: the descriptor-set members and binding mode of `DescriptorManager`, `GpuUniformBufferObject`, `EngineSettings`, `intersectSize` in `culling.slang` | YAGNI | Delete all of it. A file returns with the milestone that fills it. This reverses the §17 row that kept `gi/rtxgi`, `raytracing/*`, `passes/pathtrace*` and `passes/sharc_resolve` as empty files; `gi/sharc.slang` stays, the SHaRC test includes it. **Done 2026-11-12** ([dead_code_removal.md](../spec/features/dead_code_removal.md)); also deleted as orphans: `raytracing/payload`, `postprocessing/dlss`, `EngineContext`, the `ShaderObjects` descriptor-manager reference | before M2 |
-| AU8 | **Build.** Five shared engine libraries each link the static third-party implementation library, so VMA, stb and tinygltf are compiled into every DLL. Coverage instrumentation defaults to on | — | Link the implementation library into `engine_util` only and export it. Coverage defaults to off | before M2 |
-| AU9 | **NVIDIA-only code placement.** `nrc_library` is compiled into `engine_render`, and only a test uses it | §18 P-AMD | Leave it until NRC is integrated, then it becomes the `vk_nrc` module | M5 |
-| AU10 | **Swapchain recreation has two paths.** Every resize event rebuilds at once (`vk_engine.cpp:416`), several times during a drag, and the renderer rebuilds again on out-of-date. No old swapchain is passed. ImGui's image count and format are updated only on the engine path (*checked*, `vk_engine.cpp:1267`) | — | A resize sets a flag; one recreate function runs once per frame, passes the old swapchain and updates ImGui | before M2 |
-| AU11 | **Test coverage.** Tests cover `core/culling` footprints, the BRDF, the SHaRC round trip and library linkage. Nothing tests the cull passes, the vis-buffer decode, the resolve output or layouts | S5 | The layout test of AU5. Pass-level tests are not planned; the debug views and counters are the check | before M2 |
+| AU8 | **Build.** Five shared engine libraries each link the static third-party implementation library, so VMA, stb and tinygltf are compiled into every DLL. Coverage instrumentation defaults to on | — | Link the implementation library into `engine_util` only and export it. Coverage defaults to off | optional; was before M2 |
+| AU9 | **NVIDIA-only code placement.** `nrc_library` is compiled into `engine_render`, and only a test uses it | §18 P-AMD | Leave it until NRC is integrated, then it becomes the `vk_nrc` module | optional; was M5 |
+| AU10 | **Swapchain recreation has two paths.** Every resize event rebuilds at once (`vk_engine.cpp:416`), several times during a drag, and the renderer rebuilds again on out-of-date. No old swapchain is passed. ImGui's image count and format are updated only on the engine path (*checked*, `vk_engine.cpp:1267`) | — | A resize sets a flag; one recreate function runs once per frame, passes the old swapchain and updates ImGui | optional; was before M2 |
+| AU11 | **Test coverage.** Tests cover `core/culling` footprints, the BRDF, the SHaRC round trip and library linkage. Nothing tests the cull passes, the vis-buffer decode, the resolve output or layouts | S5 | The layout test of AU5. Pass-level tests are not planned; the debug views and counters are the check | done (2026-11-13) with AU5 |
 
 ### 20.3 Defects
 
 | Defect | Location | Status |
 |---|---|---|
-| Embedded glTF images are cached under model directory + image index, so two `.glb` files in one folder share textures | `assets_loader.cpp:1120` | *checked*; key by model file path |
-| The window is destroyed and SDL shut down before the device that owns the surface | `vk_engine.cpp:1504–1510` | *checked*; destroy the device first |
-| The init loop over both color spaces assigns one variable, so only the linear format's host-copy layout is kept | `texture_manager.cpp:226–228` | *checked*; keep one layout per format or assert they are equal |
-| `MaterialStore::release` guards the refcount with an assert only; it underflows in release builds | `material_store.hpp` | reported |
-| An exception during an upload leaks the staging allocation and leaves the command buffer recording | `vk_asset_buffers.cpp:371–442` | reported |
-| `flushGpuAssets`, `instantiateModel` and `eraseEntity` can throw out of the main loop; only `loadModel` is caught | `vk_engine.cpp:1325, 1358` | reported |
-| `destroyTexture` dereferences a map lookup without checking it | `texture_manager.cpp` | reported |
+| Embedded glTF images are cached under model directory + image index, so two `.glb` files in one folder share textures | `assets_loader.cpp:1120` | fixed 2026-11-13: keyed by the resolved model file path |
+| The window is destroyed and SDL shut down before the device that owns the surface | `vk_engine.cpp:1504–1510` | fixed 2026-11-13: the device goes first |
+| The init loop over both color spaces assigns one variable, so only the linear format's host-copy layout is kept | `texture_manager.cpp:226–228` | fixed 2026-11-13: init throws if the two formats need different layouts |
+| `MaterialStore::release` guards the refcount with an assert only; it underflows in release builds | `material_store.hpp` | fixed 2026-11-13: every row is checked before any refcount changes; a row not held throws `std::logic_error` |
+| An exception during an upload leaks the staging allocation and leaves the command buffer recording | `vk_asset_buffers.cpp:371–442` | fixed 2026-11-13: a scope guard frees the staging and any uninstalled grown buffers and resets a still-recording command buffer |
+| `flushGpuAssets`, `instantiateModel` and `eraseEntity` can throw out of the main loop; only `loadModel` is caught | `vk_engine.cpp:1325, 1358` | fixed 2026-11-13: `Engine::applyUiRequests` catches every scene action, reports it in the UI and resyncs the frame data |
+| `destroyTexture` dereferences a map lookup without checking it | `texture_manager.cpp` | fixed 2026-11-13: a missing image is logged and the heap slot is still freed |
 
 Checked and dismissed: the debug view's barrier is sufficient (resolve writes only the guides, the debug view is the only writer of the display image), and a failed load does return its material rows (`flushGpuAssets` calls `discardModel`).
 
@@ -778,16 +778,16 @@ Root cause of the drift: the same facts (vis-buffer format, the §9.3 guide tabl
 
 | Document | Fix |
 |---|---|
-| [resource_architecture.md](../spec/resource_architecture.md) | `GpuFrameRoot` is 176 B (it says 128), `GpuCullView` is 288 B (272). Remove the standard-Z, "no render-target slots", state-group and `mesh_debug` text; M1 is built |
-| [shader_architecture_plan.md](../spec/shader_architecture_plan.md) | `resolve`, `present` and `debug_view` exist; Hi-Z is 3 levels per dispatch; the open-decisions table still lists the closed Q8 |
+| [resource_architecture.md](../spec/resource_architecture.md) | ~~`GpuFrameRoot` is 176 B (it says 128), `GpuCullView` is 288 B (272). Remove the standard-Z, "no render-target slots", state-group and `mesh_debug` text; M1 is built~~ done 2026-11-13: sizes, frame-root fields, targets, raster bins, frame order and §12 match the working tree |
+| [shader_architecture_plan.md](../spec/shader_architecture_plan.md) | ~~`resolve`, `present` and `debug_view` exist; Hi-Z is 3 levels per dispatch; the open-decisions table still lists the closed Q8~~ done 2026-11-13: M1 marked built, pass and module statuses updated, Q8 moved to closed |
 | `shaders/README.md` | ~~directory names are `geometry/`, `raytracing/`, `postprocessing/`; `base.slang` goes (AU7)~~ done with AU7: the table lists the directories that exist |
-| `README.md` | the binding mechanism is `VK_EXT_descriptor_heap`; the Linux claim has no backing |
-| [vulkan_extensions_reference.md](./vulkan_extensions_reference.md), `spec/VkExtensionsSpecs/README.md` | `VK_EXT_shader_object` is the pipeline model; OMM and SER properties are cached; cluster AS becomes required in M2 |
-| `spec/vulkan_integration_playbook.md` | a copy of the `vulkan-dev` skill, not a project document: delete |
+| `README.md` | ~~the binding mechanism is `VK_EXT_descriptor_heap`; the Linux claim has no backing~~ done 2026-11-13: heap for images and samplers, BDA for buffers; Windows only, Linux untested |
+| [vulkan_extensions_reference.md](./vulkan_extensions_reference.md), `spec/VkExtensionsSpecs/README.md` | ~~`VK_EXT_shader_object` is the pipeline model; OMM and SER properties are cached; cluster AS becomes required in M2~~ done 2026-11-13; dead `vk_pipeline.cpp` link points to `vk_shader_objects.cpp` |
+| `spec/vulkan_integration_playbook.md` | ~~a copy of the `vulkan-dev` skill, not a project document: delete~~ done 2026-11-13 (`git rm`); its link in the extensions reference checklist removed |
 | `rendering_engine_idef0.md` | describes a state that no longer exists (MSAA, CPU-written sequences, `.obj` startup); it is ignored by git and stays out of the document set |
-| PBR plan, `pbr_lighting_materials.md`, `tests/brdf_test.cpp` | links to `spec/pbr_lighting_materials.html` and `spec/pbr_figures/` must point to `docs/` |
+| PBR plan, `pbr_lighting_materials.md`, `tests/brdf_test.cpp` | ~~links to `spec/pbr_lighting_materials.html` and `spec/pbr_figures/` must point to `docs/`~~ done 2026-11-13; the html's own links back to `spec/` fixed too |
 
-**Referenced but not in the repository:** `docs/end_goal.md`, `docs/meshoptimizer.md`, `docs/texture_pipeline_plan.md`, `docs/data_layout_optimization_spec.md`, `spec/gltf_parse_resources.md`. This spec links the texture plan in nine places (goal 5, §3, §6.4, §7.2, M8, Q9). Either restore the files or fold what they decide into this spec; until then those links are dead and §6.3, §6.4 and §7.2 are the only statement of those plans.
+**Referenced but not in the repository:** `docs/end_goal.md`, `docs/meshoptimizer.md`, `docs/texture_pipeline_plan.md`, `docs/data_layout_optimization_spec.md`, `spec/gltf_parse_resources.md`. ~~Restore or fold~~ done 2026-11-13: none was ever in git, so they are folded, not restored. Their links are gone; §6.3, §6.4, §7.1 and §7.2 are the only statement of those plans, and the PBR docs cite glTF 2.0 §3.9 and Appendix B plus the Khronos extension specs instead of `gltf_parse_resources.md`. Mentions in §17 and the changelog stay as history.
 
 **Subsystems with no document:** the texture pipeline, DGC internals, swapchain and frame sync, the asset loader, the build and `engine_add_slang_pass`. Each gets a section here or a feature file when its milestone starts; none is written ahead of need.
 
@@ -805,13 +805,16 @@ Root cause of the drift: the same facts (vis-buffer format, the §9.3 guide tabl
 
 | Date | Change |
 |---|---|
+| 2026-11-13 | §20.4 document fixes done: resource and shader architecture docs brought to M1 as built; README binding and platform lines; extensions reference and `VkExtensionsSpecs/README.md` (shader objects, cached OMM/SER properties, cluster AS required in M2); `vulkan_integration_playbook.md` deleted; PBR explainer links point to `docs/`; links to the five missing documents folded into §6.3, §6.4, §7.1, §7.2 and the glTF 2.0 spec; dead links in the vis-buffer and ResourceManager-split feature specs fixed. Subsystems without a document stay undocumented |
+| 2026-11-13 | §20.3 defects fixed: per-file embedded image keys, device destroyed before the window, host-copy layout check, `MaterialStore::release` validation, upload cleanup on exceptions, scene actions caught at the UI boundary, `destroyTexture` lookup |
+| 2026-11-13 | AU5 and AU11 done: forward-Z culling branch removed, Slang/C++ layout test, typed storage images; cluster sizes stay at NVIDIA's recommendation without an assert. AU2 and AU3 marked done; every other open AU item is optional (§16.2, §20.2) |
 | 2026-11-12 | AU7 done: zero-byte sources, stub shaders, the descriptor-set binding mode and unused types deleted ([dead_code_removal.md](../spec/features/dead_code_removal.md)); §17 PBR plan A3 row and §16.2 updated |
 | 2026-11-10 | Architecture audit added as §20 with decisions AU1–AU11, defects and document fixes; audit work assigned to milestones (§16.2); current state brought up to date: M0 and M1 built, their checks open (§8.1, §8.2, §16.1); stub shader files kept by §17 are now to be deleted (AU7) |
 | 2026-11-08 | OMM baking moved from meshoptimizer to the NVIDIA OMM SDK CPU baker: one bake per primitive, per-cluster index subranges (P6, §7, §7.1, §10.5, M6) |
 | 2026-11-07 | Goal 6, CPU/GPU parallelism: overlap targets X1–X6 with milestones (§13.1; M2, M8, M9 updated; §2.3 CPU budget note). Post-1.0 target multithreaded rendering T1–T4 (§1.1, §16.4) |
 | 2026-11-07 | Visibility buffer plan ([visibility_buffer.md](../spec/features/visibility_buffer.md)): 32-bit `R32_UINT` payload is the default, 64-bit only if M1 measurements favor it (§8.3, Q3); finite far plane under reverse Z (§8.2); overdraw debug view dropped (§14); PBR B1 moved into M1 (§16.2) |
 | 2026-11-07 | Culling aligned with the `vk_lod_clusters` leaf level per [culling_comparison.md](../reference/culling_comparison.md): as-built pipeline and remaining steps A6/A8/A9/A10 assigned to milestones (§8.1, §8.2, §12.2, §16.2); clusters as `clusterlod.h` level 0 with groups, `cone_weight = 0`, optimize level 1 with OMM baked after it (§6.1, §6.3, §7.1); visible entries `{nodeInstanceIndex, meshletRow}` (§8.3, §10.1); M9 named version 1.0; post-1.0 target L3: Bistro fully on cluster LOD (§1.1, §16.3) |
-| 2026-11-04 | SER and OMM confirmed on the 2060 Super; DLSS-RR Quality on every tier; limits from device properties, not fixed numbers (S7, S11, §3, §7.1, §8.3); final goal = Bistro, cluster LOD moved after it (§16.3); animation removed (§7.3, §10.6 deleted); compressed uploads with `VK_EXT_memory_decompression` and automatic KTX2 conversion (goal 5, §3, §6.4, §7.2, M8, [texture_pipeline_plan.md](./texture_pipeline_plan.md)) |
+| 2026-11-04 | SER and OMM confirmed on the 2060 Super; DLSS-RR Quality on every tier; limits from device properties, not fixed numbers (S7, S11, §3, §7.1, §8.3); final goal = Bistro, cluster LOD moved after it (§16.3); animation removed (§7.3, §10.6 deleted); compressed uploads with `VK_EXT_memory_decompression` and automatic KTX2 conversion (goal 5, §3, §6.4, §7.2, M8, `texture_pipeline_plan.md`) |
 | 2026-11-01 | Review fixes: GI cache passes on the graphics queue in SDK order, NRC custom resolve feeds ReSTIR GI (§5, §11.4, §13); `specHitDistance` optional per NGX 1.5, full resolution after ReSTIR GI if used (§9.3, §12.1); bin overlap guard (§9.1–9.2); position fetch rationale and truncation rule (§10.2); no occlusion LOD penalty in the RT cut (§10.3–10.4); M1 is one resolve dispatch |
 | 2026-10-31 | RT rebuilt around cluster LOD (§10, following `vk_lod_clusters`): CLAS per cluster, no triangle BLAS, GPU TLAS with PTLAS optional, hybrid-consistency rule; §11.1 built around SER; milestones reordered (cluster LOD last); contradicting shader stubs deleted |
 | 2026-10-31 | Q1 closed (OMM per cluster confirmed in the spec), Q2 closed (SHaRC + NRC, SHaRC first), streaming moved out of scope, AMD-later note |

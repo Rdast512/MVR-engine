@@ -162,5 +162,6 @@ void debugViewMain(uint3 id : SV_DispatchThreadID)
             color = lerp(color, float3(0.0, 0.0, 0.0), edge);
         }
     }
-    storageTex2D4(targets.displayStorage)[id.xy] = float4(color, 1.0);
+    // RenderTargets::kDisplayFormat
+    storageTex2D<float4, kImageFormatRgba16f>(targets.displayStorage)[id.xy] = float4(color, 1.0);
 }

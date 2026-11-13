@@ -1,4 +1,4 @@
-// Checks shaders/material/brdf.slang: the worked numbers of spec/pbr_lighting_materials.html section 7, that pdfBrdf and
+// Checks shaders/material/brdf.slang: the worked numbers of docs/pbr_lighting_materials.html section 7, that pdfBrdf and
 // the weight match sampleBrdf exactly, that sampleBrdf draws from the distribution pdfBrdf describes (its mean weight
 // equals an independent uniform-hemisphere integral of f * NdotL), and that degenerate inputs stay finite.
 #include "test_support.hpp"

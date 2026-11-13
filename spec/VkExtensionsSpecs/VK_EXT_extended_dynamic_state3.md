@@ -253,7 +253,7 @@ cmd.setColorBlendEnableEXT(0, 1, &blendEnable);
 
 ## 8. Shader interaction
 
-**Indirect.** Extra dynamic pipeline state. Important surface when using [VK_EXT_shader_object](./VK_EXT_shader_object.md). Does not change SPIR-V; host must set state before draws that execute the bound shaders.
+**Indirect.** Extra dynamic pipeline state. Important surface when using `VK_EXT_shader_object` (the engine's pipeline model; see the [extensions reference](../../docs/vulkan_extensions_reference.md)). Does not change SPIR-V; host must set state before draws that execute the bound shaders.
 
 ## 9. Dependencies and interactions
 

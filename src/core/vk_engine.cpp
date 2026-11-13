@@ -283,22 +283,32 @@ void Engine::run()
 #if ENGINE_ENABLE_IMGUI
 void Engine::applyUiRequests(const UiRequests& requests)
 {
-    const auto report = [this](const std::optional<SceneActionStatus>& status) {
-        if (status) {
-            ui->setLoadStatus(status->text, status->isError);
+    // UI boundary: a failed scene action is reported, never thrown out of the main loop
+    const auto run = [this](std::string_view action, const auto& sceneAction) {
+        try {
+            const std::optional<SceneActionStatus> status = sceneAction();
+            if (status) {
+                ui->setLoadStatus(status->text, status->isError);
+            }
+        } catch (const std::exception& error) {
+            logError(std::format("{} failed: {}", action, error.what()), "Engine");
+            ui->setLoadStatus(std::format("{} failed: {}", action, error.what()), true);
+            // the action may be half applied: rebuild the frame data from the scene as it now is
+            frameData->syncScene();
         }
     };
     if (requests.unload) {
-        report(unloadModel(*requests.unload));
+        run("Unload", [&] { return unloadModel(*requests.unload); });
     }
     if (const std::optional<UiRequests::Load>& load = requests.load) {
-        report(loadModel(load->asset, load->position));
+        run("Load", [&] { return std::optional(loadModel(load->asset, load->position)); });
     }
     if (requests.shouldClearInstanceField) {
-        report(clearInstanceField());
+        run("Clear instance field", [&] { return clearInstanceField(); });
     }
     if (const std::optional<UiRequests::InstanceField>& field = requests.spawnInstanceField) {
-        report(spawnInstanceField(field->center, field->side, field->spacing));
+        run("Spawn instance field",
+            [&] { return std::optional(spawnInstanceField(field->center, field->side, field->spacing)); });
     }
 }
 #endif
@@ -506,14 +516,15 @@ void Engine::cleanup()
     logInfo("Swap chain cleaned up", "Engine");
     allocator.reset();
     logInfo("Allocator cleaned up", "Engine");
+    // owns the surface, which must go before its window
+    device.reset();
+    logInfo("Device cleaned up", "Engine");
     if (window != nullptr) {
         SDL_DestroyWindow(window);
         logInfo("Window destroyed", "Engine");
         window = nullptr;
     }
     SDL_Quit();
-    device.reset();
-    logInfo("Device cleaned up", "Engine");
     initialized = false;
     logInfo("Engine cleaned up", "Engine");
 }

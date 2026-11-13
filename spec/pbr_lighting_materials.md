@@ -5,16 +5,16 @@ description: Shading rules of the PBR plan — glTF 2.0 metallic-roughness BRDF,
 
 # PBR / lighting / materials — agent instructions
 
-Human explainer (graphs, worked numbers): [pbr_lighting_materials.html](./pbr_lighting_materials.html)  
-Normative formulas: [gltf_parse_resources.md](./gltf_parse_resources.md) §5, §13.3, §14  
-Khronos: Appendix B, [KHR_lights_punctual](../docs/gltf%202.0/extensions/Khronos/KHR_lights_punctual/README.md)  
+Human explainer (graphs, worked numbers): [pbr_lighting_materials.html](../docs/pbr_lighting_materials.html)  
+Normative formulas: glTF 2.0 [§3.9 Materials](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#materials) and [Appendix B](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#appendix-b-brdf-implementation)  
+Khronos extensions: [KHR_lights_punctual](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_lights_punctual), [KHR_texture_transform](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_texture_transform), [KHR_materials_emissive_strength](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_emissive_strength)  
 Architecture: [engine_spec.md](../docs/engine_spec.md) §9, §11, §12  
 Implementation tasks: [pbr_implementation_plan.md](./pbr_implementation_plan.md)  
 Buffers, model slices, frame root: [resource_architecture.md](./resource_architecture.md)
 
 This file is the normative shading part of the PBR plan. The engine spec owns the architecture, the task plan owns passes, buffers and order, and this file owns the math. When they disagree on math, fix whichever is wrong in the same change; on architecture, the spec wins.
 
-Do not invent a second BRDF. Copy inputs from §14. Microfacet `D`/`G` may vary with GPU budget; `c_diff`, `f0`, `α` must not.
+Do not invent a second BRDF. Copy inputs from glTF Appendix B. Microfacet `D`/`G` may vary with GPU budget; `c_diff`, `f0`, `α` must not.
 
 ## Engine path
 
