@@ -220,7 +220,8 @@ AssetBuffers::AssetBuffers(const Device& deviceWrapper, const VkAllocator& alloc
       objectStorage(objectStorage),
       geometryStore(geometryStore),
       materialStore(materialStore),
-      lightStore(lightStore)
+      lightStore(lightStore),
+      megaGeometry(deviceWrapper, allocator, frameSync)
 {
     logInfo("init() started", "AssetBuffers");
     // the table exists even when the startup load failed: the frame root always holds its address
@@ -720,6 +721,12 @@ void AssetBuffers::flush()
             allocation.gpu[i] = {firsts[i], uploadedCount(static_cast<AssetBuffer>(i)) - firsts[i]};
         }
     }
+    // from the load scratch, which is the model's slice; a cache hit (instantiateModel) builds nothing
+    megaGeometry.buildModel({.vertices = geometryStore.vertices,
+                             .meshlets = geometryStore.meshlets,
+                             .meshletVertices = geometryStore.meshletVertices,
+                             .meshletTriangles = geometryStore.meshletTriangles,
+                             .primitives = packed.primitives});
     // remapped to GPU-absolute above
     allocation.meshletDraw = objectStorage.meshletDraws[entity];
     allocation.materialRefs = materialStore.commitModel();
@@ -895,6 +902,8 @@ std::vector<uint32_t> AssetBuffers::eraseModel(ModelId modelId)
     ModelAllocation removed = std::move(modelAllocations[modelId]);
     compactAssetBuffers(removed);
     rebaseCatalog(modelId, removed);
+    // the other models' CLAS and BLAS stay where they are
+    megaGeometry.eraseModel(modelId);
     materialStore.release(removed.materialRefs);
     rebuildModelTable();
     return std::move(removed.textureRefs);

@@ -51,6 +51,7 @@ constexpr std::array kRequiredDeviceExtensions = {
     vk::KHRShaderUntypedPointersExtensionName,
     vk::KHRDeviceAddressCommandsExtensionName,
     vk::KHRRobustness2ExtensionName, // shader objects take no VkPipelineRobustnessCreateInfo
+    vk::KHRRayTracingPositionFetchExtensionName, // hit positions from the CLAS (engine spec §10.2)
     // EXT
     vk::EXTOpacityMicromapExtensionName,
     vk::EXTMemoryBudgetExtensionName,
@@ -65,6 +66,8 @@ constexpr std::array kRequiredDeviceExtensions = {
     vk::EXTPresentTimingExtensionName,
     vk::EXTRayTracingInvocationReorderExtensionName,
     vk::EXTExtendedDynamicState3ExtensionName,
+    // NV
+    vk::NVClusterAccelerationStructureExtensionName, // the only RT geometry path (engine spec §10)
 };
 
 // NRC tier; without them the GI cache falls back to SHaRC
@@ -165,6 +168,8 @@ constexpr std::array kRequiredFeatures = {
     ENGINE_FEATURE(PhysicalDeviceRayQueryFeaturesKHR, rayQuery),
     ENGINE_FEATURE(PhysicalDeviceRayTracingMaintenance1FeaturesKHR, rayTracingMaintenance1),
     ENGINE_FEATURE(PhysicalDeviceRayTracingMaintenance1FeaturesKHR, rayTracingPipelineTraceRaysIndirect2),
+    ENGINE_FEATURE(PhysicalDeviceRayTracingPositionFetchFeaturesKHR, rayTracingPositionFetch),
+    ENGINE_FEATURE(PhysicalDeviceClusterAccelerationStructureFeaturesNV, clusterAccelerationStructure),
     ENGINE_FEATURE(PhysicalDeviceSwapchainMaintenance1FeaturesKHR, swapchainMaintenance1),
     ENGINE_FEATURE(PhysicalDeviceMaintenance7FeaturesKHR, maintenance7),
     ENGINE_FEATURE(PhysicalDeviceMaintenance8FeaturesKHR, maintenance8),
@@ -186,10 +191,7 @@ constexpr std::array kRequiredFeatures = {
     ENGINE_FEATURE(PhysicalDeviceRobustness2FeaturesKHR, nullDescriptor),
 };
 
-// enabled only with their NV extensions
-constexpr std::array kClusterAccelerationStructureFeatures = {
-    ENGINE_FEATURE(PhysicalDeviceClusterAccelerationStructureFeaturesNV, clusterAccelerationStructure),
-};
+// enabled only with its NV extension
 constexpr std::array kPartitionedAccelerationStructureFeatures = {
     ENGINE_FEATURE(PhysicalDevicePartitionedAccelerationStructureFeaturesNV, partitionedAccelerationStructure),
 };
@@ -223,7 +225,7 @@ using FeatureChain = vk::StructureChain<
     vk::PhysicalDeviceFragmentShadingRateFeaturesKHR, vk::PhysicalDeviceDeviceAddressCommandsFeaturesKHR,
     vk::PhysicalDeviceAccelerationStructureFeaturesKHR, vk::PhysicalDeviceRayTracingPipelineFeaturesKHR,
     vk::PhysicalDeviceRayQueryFeaturesKHR, vk::PhysicalDeviceRayTracingMaintenance1FeaturesKHR,
-    vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR, vk::PhysicalDeviceMaintenance7FeaturesKHR,
+    vk::PhysicalDeviceRayTracingPositionFetchFeaturesKHR, vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR, vk::PhysicalDeviceMaintenance7FeaturesKHR,
     vk::PhysicalDeviceMaintenance8FeaturesKHR, vk::PhysicalDeviceMaintenance9FeaturesKHR,
     vk::PhysicalDeviceMaintenance10FeaturesKHR, vk::PhysicalDeviceCopyMemoryIndirectFeaturesKHR,
     vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR, vk::PhysicalDeviceShaderUntypedPointersFeaturesKHR,
@@ -268,9 +270,6 @@ void appendMissingExtensions(const std::vector<vk::ExtensionProperties>& availab
 // structs of unsupported extensions must not be in a feature query or create chain
 void unlinkUnsupportedFeatures(FeatureChain& chain, const std::vector<vk::ExtensionProperties>& available)
 {
-    if (!isExtensionSupported(available, vk::NVClusterAccelerationStructureExtensionName)) {
-        chain.unlink<vk::PhysicalDeviceClusterAccelerationStructureFeaturesNV>();
-    }
     if (!isExtensionSupported(available, vk::NVPartitionedAccelerationStructureExtensionName)) {
         chain.unlink<vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV>();
     }
@@ -622,13 +621,9 @@ void Device::queryCapabilities()
 {
     const std::vector<vk::ExtensionProperties> availableExtensions =
         physicalDevice.enumerateDeviceExtensionProperties();
-    capabilities.hasClusterAccelerationStructure =
-        isExtensionSupported(availableExtensions, vk::NVClusterAccelerationStructureExtensionName);
     capabilities.hasPartitionedAccelerationStructure =
         isExtensionSupported(availableExtensions, vk::NVPartitionedAccelerationStructureExtensionName);
-    logInfo(std::format("Optional NV extensions: clusterAS={} partitionedAS={}",
-                         capabilities.hasClusterAccelerationStructure,
-                         capabilities.hasPartitionedAccelerationStructure),
+    logInfo(std::format("Optional NV extensions: partitionedAS={}", capabilities.hasPartitionedAccelerationStructure),
              "Device");
 
     vk::StructureChain<
@@ -658,9 +653,6 @@ void Device::queryCapabilities()
     if (!capabilities.hasPartitionedAccelerationStructure) {
         propertiesChain.unlink<vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV>();
     }
-    if (!capabilities.hasClusterAccelerationStructure) {
-        propertiesChain.unlink<vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV>();
-    }
     physicalDevice.getProperties2(&propertiesChain.get<vk::PhysicalDeviceProperties2>());
     capabilities.properties2 = propertiesChain.get<vk::PhysicalDeviceProperties2>();
     capabilities.vulkan11 = propertiesChain.get<vk::PhysicalDeviceVulkan11Properties>();
@@ -689,6 +681,14 @@ void Device::queryCapabilities()
                  "Device");
     }
     capabilities.memoryDecompression = propertiesChain.get<vk::PhysicalDeviceMemoryDecompressionPropertiesEXT>();
+    {
+        // M8 gdeflate uploads need GDEFLATE_1_0 here
+        const auto& decompression = capabilities.memoryDecompression;
+        logInfo(std::format("Memory decompression: methods={} maxIndirectCount={}",
+                             vk::to_string(decompression.decompressionMethods),
+                             decompression.maxDecompressionIndirectCount),
+                 "Device");
+    }
     capabilities.hostImageCopy = propertiesChain.get<vk::PhysicalDeviceHostImageCopyPropertiesEXT>();
     {
         auto& hic = capabilities.hostImageCopy;
@@ -730,6 +730,17 @@ void Device::queryCapabilities()
     capabilities.texelBufferAlignment = propertiesChain.get<vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT>();
     capabilities.fragmentShadingRate = propertiesChain.get<vk::PhysicalDeviceFragmentShadingRatePropertiesKHR>();
     capabilities.accelerationStructure = propertiesChain.get<vk::PhysicalDeviceAccelerationStructurePropertiesKHR>();
+    {
+        // no indirect builds: the TLAS instance count is a host value (ray_tracing_mega_geometry.md §3.3)
+        const auto features = physicalDevice.getFeatures2<vk::PhysicalDeviceFeatures2,
+                                                          vk::PhysicalDeviceAccelerationStructureFeaturesKHR>();
+        const auto& as = capabilities.accelerationStructure;
+        logInfo(std::format("AS: indirectBuild={} maxInstanceCount={} maxGeometryCount={} scratchAlignment={}",
+                             static_cast<bool>(features.get<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>()
+                                                   .accelerationStructureIndirectBuild),
+                             as.maxInstanceCount, as.maxGeometryCount, as.minAccelerationStructureScratchOffsetAlignment),
+                 "Device");
+    }
     capabilities.depthStencilResolve = propertiesChain.get<vk::PhysicalDeviceDepthStencilResolveProperties>();
     capabilities.driverProperties = propertiesChain.get<vk::PhysicalDeviceDriverProperties>();
     capabilities.maintenance3 = propertiesChain.get<vk::PhysicalDeviceMaintenance3Properties>();
@@ -768,6 +779,15 @@ void Device::queryCapabilities()
         propertiesChain.get<vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV>();
     capabilities.clusterAccelerationStructure =
         propertiesChain.get<vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV>();
+    {
+        const auto& clusters = capabilities.clusterAccelerationStructure;
+        logInfo(std::format("Cluster AS: maxVertices={} maxTriangles={} alignment cluster={} blas={} scratch={} "
+                             "maxGeometryIndex={}",
+                             clusters.maxVerticesPerCluster, clusters.maxTrianglesPerCluster,
+                             clusters.clusterByteAlignment, clusters.clusterBottomLevelByteAlignment,
+                             clusters.clusterScratchByteAlignment, clusters.maxClusterGeometryIndex),
+                 "Device");
+    }
 }
 
 void Device::createLogicalDevice()
@@ -797,10 +817,6 @@ void Device::createLogicalDevice()
     unlinkUnsupportedFeatures(featureChain, availableExtensions);
     enableFeatures(featureChain, kRequiredFeatures);
     std::vector<const char*> enabledExtensions(kRequiredDeviceExtensions.begin(), kRequiredDeviceExtensions.end());
-    if (capabilities.hasClusterAccelerationStructure) {
-        enableFeatures(featureChain, kClusterAccelerationStructureFeatures);
-        enabledExtensions.push_back(vk::NVClusterAccelerationStructureExtensionName);
-    }
     if (capabilities.hasPartitionedAccelerationStructure) {
         enableFeatures(featureChain, kPartitionedAccelerationStructureFeatures);
         enabledExtensions.push_back(vk::NVPartitionedAccelerationStructureExtensionName);

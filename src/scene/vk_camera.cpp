@@ -17,12 +17,17 @@ Camera::Camera(SwapChain& swapChain) : swapChain(swapChain)
 
 void Camera::focusOn(const glm::vec3& target, float distance)
 {
-    isCutPending = true;
     // above and behind so the model stays clear of nearPlane
     const float safeDistance = glm::max(distance, nearPlane * 4.0f);
-    cameraData.cameraPos = target + glm::vec3(safeDistance * 0.55f, safeDistance * 0.4f, safeDistance * 0.85f);
+    lookAt(target + glm::vec3(safeDistance * 0.55f, safeDistance * 0.4f, safeDistance * 0.85f), target);
+}
 
-    const glm::vec3 toTarget = target - cameraData.cameraPos;
+void Camera::lookAt(const glm::vec3& position, const glm::vec3& target)
+{
+    isCutPending = true;
+    cameraData.cameraPos = position;
+
+    const glm::vec3 toTarget = target - position;
     const float len = glm::length(toTarget);
     if (len < 1e-5f) {
         return;

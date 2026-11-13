@@ -46,6 +46,15 @@ void Engine::initialize()
     if (const std::optional<EngineBench::Config> benchConfig = EngineBench::readConfig()) {
         bench.emplace(*benchConfig);
     }
+    if (EngineMotionTest::isRequested()) {
+        motionTest.emplace();
+    }
+    if (EngineGuideCapture::isRequested()) {
+        guideCapture.emplace();
+    }
+    if (EngineCullCheck::isRequested()) {
+        cullCheck.emplace();
+    }
 
     swapChain = std::make_unique<SwapChain>(window, *device);
     swapChain->isUncapped = bench.has_value();
@@ -92,6 +101,10 @@ void Engine::initialize()
                                           *frameData, *descriptorManager, *shaderObjects,
                                           *camera, tracyContext.get());
     renderer->rebuildSwapchainResources();
+    if (motionTest) {
+        renderer->enableMotionCheck();
+        logInfo("Motion test: scripted motion-vector checks, results follow", "MotionTest");
+    }
 
 #if ENGINE_ENABLE_IMGUI
     ui = std::make_unique<EngineUi>(UiContext{
@@ -135,8 +148,8 @@ void Engine::run()
     constexpr double kUnfocusedTargetMs = 1000.0 / 30.0;
     constexpr float kCameraSpeed = 5.0f;
     auto& deviceRef = device->vkdevice;
-    // the bench view stays where initialize put it
-    const bool isCameraInputEnabled = !bench;
+    // the bench, motion-test, guide-capture and cull-check views move only as they script it
+    const bool isCameraInputEnabled = !bench && !motionTest && !guideCapture && !cullCheck;
 
     // game focus captures the mouse and hides the cursor; UI focus (I key) frees both
     const auto setGameFocus = [this](bool gameFocused)
@@ -252,9 +265,36 @@ void Engine::run()
                 }
             }
 
+            if (motionTest) {
+                applyMotionTestRequest(motionTest->beginFrame(*camera, scene->objectStorage));
+            }
+            if (guideCapture) {
+                const ObjectStorage& objects = scene->objectStorage;
+                const std::optional<glm::vec4> bounds =
+                    objects.size() > 0 ? std::optional(objects.localBounds[0]) : std::nullopt;
+                applyGuideCaptureRequest(guideCapture->beginFrame(*camera, renderer->debugView, bounds));
+            }
+            if (cullCheck &&
+                cullCheck->beginFrame(*camera, renderer->getCulling().settings, renderer->debugView).shouldCapture) {
+                renderer->requestDisplayCapture();
+            }
             {
                 ZoneScopedN("DrawFrame");
                 renderer->drawFrame();
+            }
+            if (motionTest) {
+                // the check reads this frame's stats; speed does not matter here
+                deviceRef.waitIdle();
+                quit = motionTest->endFrame(renderer->getLastMotionCheck());
+            }
+            if (guideCapture) {
+                // the capture is read on the CPU right away
+                deviceRef.waitIdle();
+                quit = guideCapture->endFrame(renderer->getLastDisplayCapture()) || quit;
+            }
+            if (cullCheck) {
+                deviceRef.waitIdle();
+                quit = cullCheck->endFrame(renderer->getLastDisplayCapture()) || quit;
             }
         } else {
             ZoneScopedN("MinimizedWait");
@@ -312,6 +352,39 @@ void Engine::applyUiRequests(const UiRequests& requests)
     }
 }
 #endif
+
+void Engine::applyMotionTestRequest(const EngineMotionTest::Request& request)
+{
+    if (request.loadModelAt) {
+        const SceneActionStatus status = loadModel(INSTANCE_FIELD_MODEL_PATH, *request.loadModelAt);
+        if (status.isError) {
+            logError(status.text, "MotionTest");
+        }
+    }
+    if (request.windowSize) {
+        // arrives as SDL_EVENT_WINDOW_RESIZED in a later poll
+        SDL_SetWindowSize(window, request.windowSize->x, request.windowSize->y);
+    }
+}
+
+void Engine::applyGuideCaptureRequest(const EngineGuideCapture::Request& request)
+{
+    if (request.model) {
+        // load before unloading the previous shot's entities: every shot drops the older models while the new one
+        // stays resident (PBR plan C1)
+        const EntityId previousCount = scene->objectStorage.size();
+        const SceneActionStatus status = loadModel(*request.model, glm::vec3(0.0f));
+        if (status.isError) {
+            logError(status.text, "GuideCapture");
+        }
+        for (EntityId erased = 0; erased < previousCount; ++erased) {
+            unloadModel(0);
+        }
+    }
+    if (request.shouldCapture) {
+        renderer->requestDisplayCapture();
+    }
+}
 
 void Engine::recreateSwapchain()
 {

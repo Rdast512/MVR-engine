@@ -18,6 +18,7 @@
 #include "vk_allocator.hpp"
 #include "vk_device.hpp"
 #include "vk_frame_sync.hpp"
+#include "vk_mega_geometry.hpp"
 
 // Device-local SSBOs appended by AssetBuffers::flush, read by shaders via BDA (loaded once / rarely).
 // Order defines upload order and the kAssetBufferInfo table rows.
@@ -208,6 +209,8 @@ private:
     std::array<DeviceBuffer, kAssetBufferCount> assetBuffers;
     // indexed by ModelId (ObjectStorage::modelIds)
     std::vector<ModelAllocation> modelAllocations;
+    // CLAS and cluster BLAS, indexed like modelAllocations
+    MegaGeometry megaGeometry;
     // GpuModel[modelTableCapacity], rows rewritten in place after every flush and erase (GPU idle)
     HostBuffer modelTable;
     uint32_t modelTableCapacity = 0;

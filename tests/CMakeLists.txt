@@ -72,6 +72,26 @@ target_link_libraries(brdf_test PRIVATE engine_test_support)
 add_test(NAME brdf COMMAND brdf_test)
 set_tests_properties(brdf PROPERTIES SKIP_RETURN_CODE 77)
 
+# --- Lights: KHR_lights_punctual attenuation, range window and spot cone (shaders/lighting/lights.slang) ---
+set(_lightsShader "${CMAKE_CURRENT_SOURCE_DIR}/shaders/lights_numbers.slang")
+set(_lightsSpirv "${_brdfShaderDir}/lightsMain.spv")
+add_custom_command(
+    OUTPUT ${_lightsSpirv}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${_brdfShaderDir}
+    COMMAND ${SLANGC_EXECUTABLE} ${_lightsShader} ${ENGINE_SLANG_FLAGS} -entry lightsMain -depfile ${_lightsSpirv}.d
+            -o ${_lightsSpirv}
+    DEPENDS ${_lightsShader}
+    DEPFILE ${_lightsSpirv}.d
+    COMMENT "Compiling lights test shader lightsMain"
+    VERBATIM
+)
+
+add_executable(lights_test lights_test.cpp ${_lightsSpirv})
+target_compile_definitions(lights_test PRIVATE LIGHTS_TEST_SHADER_DIR="${_brdfShaderDir}")
+target_link_libraries(lights_test PRIVATE engine_test_support)
+add_test(NAME lights COMMAND lights_test)
+set_tests_properties(lights PROPERTIES SKIP_RETURN_CODE 77)
+
 # --- Layout: shaders/types.slang reflected by the Slang library vs the C++ mirrors (src/core/types.hpp) ---
 if (WIN32)
     set(_slangPackageDir "${CMAKE_SOURCE_DIR}/ThirdParty/Slang-win")

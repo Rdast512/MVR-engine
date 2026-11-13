@@ -488,6 +488,28 @@ public struct FramePushData
 };
 
 // 16 B, matches src/render/push_data.hpp
+public struct MotionCheckPushData
+{
+    public uint64_t frameRoot;
+    public uint64_t stats; // GpuMotionCheckStats
+};
+
+// 40 B, matches src/core/types.hpp: motion_check pass, ENGINE_MOTION_TEST only
+public struct GpuMotionCheckStats
+{
+    public uint pixels;
+    public uint emptyPixels;
+    public uint movingPixels;
+    public uint cameraMismatches;
+    public uint reprojectedErrors;
+    public uint stillErrors;
+    public uint offscreenPixels;
+    public uint frameFlags;
+    public uint maxMotionBits;      // float bits
+    public uint maxCameraErrorBits; // float bits
+};
+
+// 16 B, matches src/render/push_data.hpp
 public struct PresentPushData
 {
     public uint64_t frameRoot;

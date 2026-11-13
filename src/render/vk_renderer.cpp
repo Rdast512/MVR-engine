@@ -39,6 +39,46 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
     dgc.init();
 }
 
+Renderer::~Renderer()
+{
+    for (HostBuffer& stats : motionCheckStats) {
+        destroyHostBuffer(allocator.allocator, stats, nullptr);
+    }
+    for (HostBuffer& capture : displayCaptures) {
+        destroyHostBuffer(allocator.allocator, capture, nullptr);
+    }
+}
+
+void Renderer::enableMotionCheck()
+{
+    for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
+        if (motionCheckStats[slot].mapped == nullptr) {
+            motionCheckStats[slot] = createHostBuffer(sizeof(GpuMotionCheckStats), allocator.allocator, device.vkdevice,
+                                                      device.queueFamilyIndices,
+                                                      std::format("MotionCheckStats_{}", slot), nullptr);
+        }
+    }
+}
+
+const GpuMotionCheckStats& Renderer::getLastMotionCheck() const
+{
+    if (motionCheckStats[lastRecordedFrame].mapped == nullptr) {
+        throw std::logic_error("motion check read without enableMotionCheck");
+    }
+    return *static_cast<const GpuMotionCheckStats*>(motionCheckStats[lastRecordedFrame].mapped);
+}
+
+std::optional<Renderer::DisplayCapture> Renderer::getLastDisplayCapture() const
+{
+    const std::optional<vk::Extent2D>& extent = displayCaptureExtents[lastRecordedFrame];
+    if (!extent) {
+        return std::nullopt;
+    }
+    const size_t halfCount = static_cast<size_t>(extent->width) * extent->height * 4;
+    return DisplayCapture{.extent = *extent,
+                          .rgba16f = {static_cast<const uint16_t*>(displayCaptures[lastRecordedFrame].mapped), halfCount}};
+}
+
 void Renderer::setTracyContext(VkTracyContext* tracyContextIn) { tracyContext = tracyContextIn; }
 
 void Renderer::rebuildSwapchainResources()
@@ -74,6 +114,10 @@ void Renderer::drawFrame()
     camera.updateCameraData(currentFrame);
     targets.prepareFrame(currentFrame, frameNumber);
     gpuTimer.collect(currentFrame);
+    if (void* stats = motionCheckStats[currentFrame].mapped) {
+        // host writes before the submit are visible to it
+        *static_cast<GpuMotionCheckStats*>(stats) = {};
+    }
 
     // the fence covers both submits of this slot; every path below ends in a submit that signals it
     deviceRef.resetFences(fence);
@@ -246,6 +290,15 @@ void Renderer::recordFrameCommands(vk::raii::CommandBuffer& cmd)
 #endif
         recordDebugView(cmd);
     }
+    if (motionCheckStats[currentFrame].mapped != nullptr) {
+        recordMotionCheck(cmd);
+    }
+    displayCaptureExtents[currentFrame].reset();
+    if (isDisplayCapturePending) {
+        recordDisplayCapture(cmd);
+        isDisplayCapturePending = false;
+    }
+    lastRecordedFrame = currentFrame;
 
     cmd.end();
 }
@@ -439,6 +492,80 @@ void Renderer::recordDebugView(const vk::raii::CommandBuffer& cmd)
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &guideBarrier});
     dispatchFullscreen(cmd, shaderObjects.frameShaders.debugView);
     gpuTimer.end(cmd, GpuTimerScope::DebugView);
+}
+
+// reads what the debug view reads, after the same barrier; only the stats buffer is written
+void Renderer::recordMotionCheck(const vk::raii::CommandBuffer& cmd)
+{
+    const MotionCheckPushData push{.frameRoot = frameData.frameRootAddress(currentFrame),
+                                   .stats = motionCheckStats[currentFrame].address};
+    ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.motionCheck);
+    cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
+    const vk::Extent2D extent = targets.getExtent();
+    cmd.dispatch(divideRoundUp(extent.width, kFullscreenTile), divideRoundUp(extent.height, kFullscreenTile), 1);
+    // a fence wait alone does not make device writes visible to the host
+    const vk::MemoryBarrier2 readbackBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &readbackBarrier});
+}
+
+void Renderer::recordDisplayCapture(const vk::raii::CommandBuffer& cmd)
+{
+    constexpr vk::DeviceSize kTexelBytes = 8;
+    const vk::Extent2D extent = targets.getExtent();
+    const vk::DeviceSize size = vk::DeviceSize{extent.width} * extent.height * kTexelBytes;
+    HostBuffer& capture = displayCaptures[currentFrame];
+    if (displayCaptureCapacities[currentFrame] < size) {
+        destroyHostBuffer(allocator.allocator, capture, nullptr);
+        // read back by the CPU: cached memory, not ReBAR
+        createBuffer(size, vk::BufferUsageFlagBits2::eTransferDst,
+                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent |
+                         vk::MemoryPropertyFlagBits::eHostCached,
+                     capture.buffer, capture.memory, allocator.allocator, device.vkdevice, device.queueFamilyIndices,
+                     std::format("DisplayCapture_{}", currentFrame), VMA_ALLOCATION_CREATE_MAPPED_BIT);
+        VmaAllocationInfo allocationInfo{};
+        vmaGetAllocationInfo(allocator.allocator, capture.memory, &allocationInfo);
+        capture.mapped = allocationInfo.pMappedData;
+        displayCaptureCapacities[currentFrame] = size;
+    }
+
+    // debug view writes -> copy; the display image stays in eGeneral
+    const vk::MemoryBarrier2 copyBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eCopy,
+        .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &copyBarrier});
+    const vk::BufferImageCopy2 region{
+        .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+        .imageExtent = {extent.width, extent.height, 1},
+    };
+    cmd.copyImageToBuffer2(vk::CopyImageToBufferInfo2{.srcImage = targets.getDisplayImage(),
+                                                      .srcImageLayout = vk::ImageLayout::eGeneral,
+                                                      .dstBuffer = *capture.buffer,
+                                                      .regionCount = 1,
+                                                      .pRegions = &region});
+    const std::array<vk::MemoryBarrier2, 2> afterCopy{{
+        {
+            .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+            .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+            .dstAccessMask = vk::AccessFlagBits2::eHostRead,
+        },
+        // the next frame's debug view overwrites the copied texels: execution dependency only
+        {
+            .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        },
+    }};
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = static_cast<uint32_t>(afterCopy.size()),
+                                            .pMemoryBarriers = afterCopy.data()});
+    displayCaptureExtents[currentFrame] = extent;
 }
 
 // display image -> swapchain, then the Hi-Z view and ImGui on top

@@ -7,6 +7,7 @@ set(CORE_SOURCES
     vk_asset_buffers.cpp
     vk_frame_data.cpp
     vk_frame_sync.cpp
+    vk_mega_geometry.cpp
     vk_swapchain.cpp
     object_storage.cpp
 )

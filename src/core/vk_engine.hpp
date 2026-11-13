@@ -2,6 +2,9 @@
 #include "../Constants.h"
 #include "assets_loader.hpp"
 #include "engine_bench.hpp"
+#include "engine_cull_check.hpp"
+#include "engine_guide_capture.hpp"
+#include "engine_motion_test.hpp"
 #include "texture_manager.hpp"
 #include "../render/vk_renderer.hpp"
 #include "../render/vk_shader_objects.hpp"
@@ -56,6 +59,12 @@ class Engine
 #endif
     // set from the environment: fixed camera, no input, uncapped present, quits after logging GPU timings
     std::optional<EngineBench> bench;
+    // set from the environment: scripted motion-vector checks, no camera input, quits after logging the results
+    std::optional<EngineMotionTest> motionTest;
+    // set from the environment: guide PNGs of glTF samples, no camera input, quits after the last one
+    std::optional<EngineGuideCapture> guideCapture;
+    // set from the environment: culling image check on the startup scene, quits after logging the results
+    std::optional<EngineCullCheck> cullCheck;
     bool initialized = false;
     std::chrono::high_resolution_clock::time_point lastTime;
     std::chrono::high_resolution_clock::time_point fpsTime;
@@ -76,6 +85,10 @@ class Engine
     SceneActionStatus spawnInstanceField(glm::vec3 center, int side, float spacing);
     // erases every entity of the field model; nullopt: the model is not loaded
     std::optional<SceneActionStatus> clearInstanceField();
+    // loads and resizes the motion test asks for before its frame
+    void applyMotionTestRequest(const EngineMotionTest::Request& request);
+    // the model swap and capture the guide capture asks for before its frame
+    void applyGuideCaptureRequest(const EngineGuideCapture::Request& request);
     // waits idle, rebuilds swapchain-sized resources and the UI image count
     void recreateSwapchain();
 

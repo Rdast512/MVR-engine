@@ -38,6 +38,11 @@ FrameSync::OneTimeCommands FrameSync::oneTimeCommands()
     return {.cmd = transferCommandBuffer[0], .queue = device.transferQueue};
 }
 
+FrameSync::OneTimeCommands FrameSync::computeCommands()
+{
+    return {.cmd = commandBuffers[0], .queue = device.graphicsQueue};
+}
+
 void FrameSync::createCommandPool()
 {
     logInfo("createCommandPool() started", "FrameSync");

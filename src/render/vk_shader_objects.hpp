@@ -66,6 +66,8 @@ public:
         vk::raii::ShaderEXT resolve = nullptr;
         // passes/debug_view.slang
         vk::raii::ShaderEXT debugView = nullptr;
+        // passes/motion_check.slang, MotionCheckPushData; ENGINE_MOTION_TEST only
+        vk::raii::ShaderEXT motionCheck = nullptr;
     };
     FrameShaders frameShaders;
 

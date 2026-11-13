@@ -8,6 +8,7 @@
 | `core/culling` | Frustum, Hi-Z and sub-pixel tests |
 | `geometry/*` | Meshlet, vertex and triangle fetch; triangle cull; vis-buffer payload; surface interpolation |
 | `material/*` | Bindless texture fetch + PBR/BRDF |
+| `lighting/lights` | `evalLight`: KHR_lights_punctual radiance, range window, spot cone |
 | `gi/sharc` | Hash / accum / resolved buffers + update/query/resolve |
 | `passes/*` | Compile units, one dispatch or RT pipeline each |
 

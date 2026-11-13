@@ -81,6 +81,7 @@ void ShaderObjects::createFrameShaders()
 {
     frameShaders.resolve = createComputeShader("resolve.spv", "resolveMain", "Resolve");
     frameShaders.debugView = createComputeShader("debug_view.spv", "debugViewMain", "DebugView");
+    frameShaders.motionCheck = createComputeShader("motion_check.spv", "motionCheckMain", "MotionCheck");
 }
 
 vk::raii::ShaderEXT ShaderObjects::createComputeShader(std::string_view file, const char* entry,

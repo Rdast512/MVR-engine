@@ -90,7 +90,7 @@ The spec's §5 frame, stage by stage, with the shader that runs it.
 | 14 | DLSS-RR | host NGX | graphics | — | M3 |
 | 15 | Post: auto exposure → tonemap → swapchain, ImGui | `exposure`, `composite` | graphics | [new] | M3 |
 
-Debug passes: `debug_view` [exists] (geometry and culling views from the vis buffer, every guide; later reservoirs, cache debug resolve, DLSS input vs output), `hiz_view` [exists], `rt_debug` [new, M2] (ray-query cluster colors, primary self-hit distance after L2). `mesh_debug` was deleted in M1. Output: `present` [exists] samples the display image into the swapchain, then ImGui.
+Debug passes: `debug_view` [exists] (geometry and culling views from the vis buffer, every guide; later reservoirs, cache debug resolve, DLSS input vs output), `hiz_view` [exists], `rt_debug` [new, M2] (ray-query cluster colors, primary self-hit distance after L2). `mesh_debug` was deleted in M1. `motion_check` [exists] counts motion-vector errors after the debug view, only under `ENGINE_MOTION_TEST` ([motion_vectors.md](./features/motion_vectors.md) §5.1). Output: `present` [exists] samples the display image into the swapchain, then ImGui.
 
 ---
 
@@ -116,7 +116,7 @@ Library files become Slang modules in M0 (PBR A2). Vendor headers are textual in
 | `material/pbr.slang` | [exists] | `SampledMaterial` + `sampleMaterial` with explicit gradients, used by the resolve and later by ray hits (B1) |
 | `material/brdf.slang` | [exists] | glTF GGX `evalBrdf`, `sampleBrdf` (VNDF), `pdfBrdf`, `envBrdfApprox` (B2; `tests/brdf_test.cpp`) |
 | **lighting/** | | |
-| `lighting/lights.slang` | [new] | `LightSample`, `evalLight` for point, spot, directional, emissive triangle (B3, M7) |
+| `lighting/lights.slang` | [exists] | `LightSample`, `evalLight` for point, spot, directional (B3; `tests/lights_test.cpp`). Emissive triangles (M7) go through RTXDI's triangle-light path, not `evalLight` |
 | `lighting/rtxdi_bridge.slang` | [new] | RTXDI resource macros + `RAB_*`, textual include (F2) |
 | **gi/** | | |
 | `gi/radiance_cache.slang` | [new] | `IRadianceCache { update, query }`; the cache is a generic parameter, chosen per tier (spec §11.4) |
@@ -201,7 +201,7 @@ The spec's §16. Each step renders something testable and is measured against sp
 | # | Shader work | Visible result |
 |---|---|---|
 | M0 | **Built.** PBR A1, A2 (modules), A4; `GpuTargets`; morph code removed; `base*`, `dlss` deleted (AU7); capacity checks in `meshlet_cull` | same image; structs asserted |
-| M1 | **Built.** Per [visibility_buffer.md](./features/visibility_buffer.md): reverse Z + `nvhiz`; `visbuffer`, `surface`, vis-buffer `mesh_fragment`, opaque bin with winding flip; `resolve` as one tiled dispatch with `sampleMaterial` (B1); `gbuffer` layout; `debug_view`, `present`; `mesh_debug` removed | guide debug views; same geometry and cull counts as today |
+| M1 | **Built.** Per [visibility_buffer.md](./features/visibility_buffer.md): reverse Z + `nvhiz`; `visbuffer`, `surface`, vis-buffer `mesh_fragment`, opaque bin with winding flip; `resolve` as one tiled dispatch with `sampleMaterial` (B1); `gbuffer` layout; `debug_view`, `present`; `mesh_debug` removed | guide debug views; same geometry as today; culling lossless under reverse Z (`ENGINE_CULL_CHECK`, done 2026-11-13) |
 | M2 | `geometry/hit`, `rt_instances`, `rt_debug` | debug colors by cluster; unload keeps other models traceable |
 | M3 | `sampleMaterial`, BRDF, `evalLight` (PBR B); RTXDI passes; `exposure`, `composite`; culling jitter rule | stable direct light |
 | M4 | `raytracing/*`, `pathtrace_*` with SER, `radiance_cache`, `sharc`, `sharc_resolve`, `restir_gi`, `combine` | bounce light, reorder on/off timings |
@@ -243,6 +243,7 @@ Closed by the spec (2026-10-31 to 2026-11-08): `ClusterID` and attributes on `Hi
 
 | Date | Change |
 |---|---|
+| 2026-11-13 | `lighting/lights.slang` exists (PBR B3); emissive triangles removed from its row, they are RTXDI triangle lights |
 | 2026-11-13 | M1 as built (engine spec §20.4): `resolve`, `present`, `debug_view`, `visbuffer`, `surface`, `brdf` exist; `hiz_build` is 3 levels per dispatch; `mesh_debug` gone; frame root fields of M0; typed `storageTex2D`; Q8 moved to closed |
 | 2026-11-12 | Stub files deleted (engine spec AU7, [dead_code_removal.md](./features/dead_code_removal.md)): `base*`, `raytracing/*`, `postprocessing/dlss`, `gi/rtxgi`, `pathtrace*`, `sharc_resolve`, `composite`; their rows are [new] at their milestone |
 | 2026-11-08 | `postprocessing/gbuffer.slang` deleted: the guide layout is `GuideImage` in `types.slang` (PBR task A3) |

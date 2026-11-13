@@ -75,6 +75,7 @@ Canonical terminology references:
 | `VK_KHR_ray_query` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_KHR_ray_query.html) | [impl](../spec/VkExtensionsSpecs/VK_KHR_ray_query.md) | `PhysicalDeviceRayQueryFeaturesKHR::rayQuery` | No dedicated property struct | Enabled; not consumed — no `rayQueryEXT` in shaders |
 | `VK_KHR_swapchain_maintenance1` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_KHR_swapchain_maintenance1.html) | [impl](../spec/VkExtensionsSpecs/VK_KHR_swapchain_maintenance1.md) | `PhysicalDeviceSwapchainMaintenance1FeaturesKHR::swapchainMaintenance1` | Surface capability queries | Extended swapchain behavior and maintenance control |
 | `VK_KHR_ray_tracing_maintenance1` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_KHR_ray_tracing_maintenance1.html) | [impl](../spec/VkExtensionsSpecs/VK_KHR_ray_tracing_maintenance1.md) | `PhysicalDeviceRayTracingMaintenance1FeaturesKHR::rayTracingMaintenance1`, `::rayTracingPipelineTraceRaysIndirect2` | No dedicated property struct | Enabled; not consumed — no RT dispatch/AS copy |
+| `VK_KHR_ray_tracing_position_fetch` | [`spec`](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_KHR_ray_tracing_position_fetch.html) | _(no dedicated impl)_ | `PhysicalDeviceRayTracingPositionFetchFeaturesKHR::rayTracingPositionFetch` | No dedicated property struct | Required since M2 (engine spec §10.2): hit positions from the CLAS; not consumed until PBR plan C3 |
 | `VK_KHR_present_id2` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_KHR_present_id2.html) | [impl](../spec/VkExtensionsSpecs/VK_KHR_present_id2.md) | No dedicated feature struct in chain | Present metadata/query behavior | Dependency for `VK_EXT_present_timing`; queue present metadata tracking |
 | `VK_KHR_calibrated_timestamps` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_KHR_calibrated_timestamps.html) | [impl](../spec/VkExtensionsSpecs/VK_KHR_calibrated_timestamps.md) | No dedicated feature struct | Time domain query behavior | Dependency for `VK_EXT_present_timing`; CPU/GPU/presentation timeline calibration |
 | `VK_KHR_present_mode_fifo_latest_ready` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_KHR_present_mode_fifo_latest_ready.html) | [impl](../spec/VkExtensionsSpecs/VK_KHR_present_mode_fifo_latest_ready.md) | `PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR::presentModeFifoLatestReady` | No dedicated property struct | Optional low-latency FIFO present mode (`eFifoLatestReady` preferred in swapchain) |
@@ -105,13 +106,18 @@ Canonical terminology references:
 
 ---
 
-## Device Extensions — Optional (NV)
-
-Enabled only when the GPU reports them until M2; cluster AS becomes **required** with M2 (engine spec §10, cluster RT bring-up). Support is cached in `HardwareCapabilities::hasClusterAccelerationStructure` / `hasPartitionedAccelerationStructure`; when unsupported, the feature and property structs are unlinked from their chains and device creation proceeds without them. Check the flag before using either extension.
+## Device Extensions — Enabled (NV)
 
 | Extension | Official | Impl | Feature struct + flags | Property struct | Usage |
 | --- | --- | --- | --- | --- | --- |
-| `VK_NV_cluster_acceleration_structure` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_cluster_acceleration_structure.html) | [impl](../spec/VkExtensionsSpecs/VK_NV_cluster_acceleration_structure.md) | `PhysicalDeviceClusterAccelerationStructureFeaturesNV::clusterAccelerationStructure` | `PhysicalDeviceClusterAccelerationStructurePropertiesNV` | Optional until M2, then required; not consumed (vendor) |
+| `VK_NV_cluster_acceleration_structure` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_cluster_acceleration_structure.html) | [impl](../spec/VkExtensionsSpecs/VK_NV_cluster_acceleration_structure.md) | `PhysicalDeviceClusterAccelerationStructureFeaturesNV::clusterAccelerationStructure` | `PhysicalDeviceClusterAccelerationStructurePropertiesNV` _(cached as `HardwareCapabilities::clusterAccelerationStructure`; limits and alignments logged at startup)_ | **Required** since M2: `MegaGeometry` (`src/core/vk_mega_geometry.cpp`) builds one CLAS per meshlet and one cluster BLAS per mesh primitive at load (PBR plan C1) |
+
+## Device Extensions — Optional (NV)
+
+Enabled only when the GPU reports it. Support is cached in `HardwareCapabilities::hasPartitionedAccelerationStructure`; when unsupported, the feature and property structs are unlinked from their chains and device creation proceeds without them. Check the flag before using the extension. `VK_NV_cluster_acceleration_structure` was optional here until M2 and is now in the required set (above).
+
+| Extension | Official | Impl | Feature struct + flags | Property struct | Usage |
+| --- | --- | --- | --- | --- | --- |
 | `VK_NV_partitioned_acceleration_structure` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_partitioned_acceleration_structure.html) | [impl](../spec/VkExtensionsSpecs/VK_NV_partitioned_acceleration_structure.md) | `PhysicalDevicePartitionedAccelerationStructureFeaturesNV::partitionedAccelerationStructure` | `PhysicalDevicePartitionedAccelerationStructurePropertiesNV` | Optional; not consumed (vendor) |
 
 ---

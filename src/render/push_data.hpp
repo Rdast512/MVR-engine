@@ -56,6 +56,15 @@ struct FramePushData {
 
 static_assert(sizeof(FramePushData) == 8);
 
+// motion_check pass; must match shaders/types.slang MotionCheckPushData
+struct MotionCheckPushData {
+    vk::DeviceAddress frameRoot;
+    // GpuMotionCheckStats
+    vk::DeviceAddress stats;
+};
+
+static_assert(sizeof(MotionCheckPushData) == 16);
+
 // present pass; must match shaders/types.slang PresentPushData
 struct PresentPushData {
     vk::DeviceAddress frameRoot;

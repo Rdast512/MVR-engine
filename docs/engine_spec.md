@@ -82,7 +82,7 @@ Every required extension is available on Turing: the engine creates its device o
 | RT pipeline, ray query, AS | yes | yes | yes | yes | all rays | known |
 | SER (`VK_EXT_ray_tracing_invocation_reorder`) | yes | yes | yes | yes | all passes that shade hits (§11.1) | confirmed on the 2060 Super. Whether the driver actually reorders is reported by `rayTracingInvocationReorderReorderingHint` (`REORDER` or `NONE`); log it at startup. Per Khronos, reordering may be a no-op on hardware without support for it; NVIDIA introduced hardware SER with Ada |
 | OMM (`VK_EXT_opacity_micromap`) | yes | yes | yes | yes | alpha-tested rays | confirmed on the 2060 Super. NVIDIA OMM SDK FAQ: supported on any RTX GPU, with a dedicated OMM unit from Ada on. Subdivision limits from `maxOpacity2StateSubdivisionLevel` / `maxOpacity4StateSubdivisionLevel` |
-| Mega Geometry (`VK_NV_cluster_acceleration_structure`, `VK_NV_partitioned_acceleration_structure`) | yes | yes | yes | yes, plus faster cluster intersection | RT geometry | in the extension set chosen on the 2060 Super; optional in `vk_device.cpp` (`hasClusterAccelerationStructure`) until §10 makes it required |
+| Mega Geometry (`VK_NV_cluster_acceleration_structure`, `VK_NV_partitioned_acceleration_structure`) | yes | yes | yes | yes, plus faster cluster intersection | RT geometry | in the extension set chosen on the 2060 Super; cluster AS **required** since M2 (PBR plan C1), partitioned AS optional (`hasPartitionedAccelerationStructure`) |
 | `VK_EXT_memory_decompression` (GDeflate 1.0) | yes | yes | yes | yes | texture and geometry uploads (§6.4, §7.2) | in the required set on the 2060 Super; methods from `decompressionMethods` |
 | `VK_NV_cooperative_vector` | yes (tensor cores) | yes | yes + FP8 | yes + FP8/FP4 | NRC, optional neural materials | RTXNS lists RTX 20 as minimum; not enabled in `vk_device.cpp` yet |
 | DLSS Ray Reconstruction | yes | yes | yes | yes | reconstruction | per-tier cost differs strongly (transformer model) |
@@ -113,6 +113,15 @@ Allocations, not measurements. They are the acceptance criteria per stage: each 
 | **Headroom** | 2.9 | 1.2 | variance, driver, OS |
 | **Total** | 16.6 | 16.6 | |
 
+**Measured, M1** (2026-11-13; RTX 5070, driver 621.01, 1280×720, release, validation off, `ENGINE_BENCH_FRAMES=3000`; mean ms). The 2060 Super is not measured yet.
+
+| Stage | Sponza, startup view | + 128×128 bunny field | Reference budget |
+|---|---|---|---|
+| Cull + DGC preprocess + Hi-Z, both phases | 0.086 | 0.182 | 0.6 |
+| Vis-buffer raster, both phases | 0.031 | 0.032 | 1.0 |
+| Resolve + guides | 0.147 | 0.139 | 1.2 |
+| GPU total (with debug view, present, ImGui) | 0.308 | 0.395 | — |
+
 CPU budget: ≤ 2 ms per frame on the render thread at any scene size, excluding asset loading. Asset loading runs on worker threads and must not stall a frame (§13.1).
 
 ---
@@ -132,9 +141,9 @@ CPU budget: ≤ 2 ms per frame on the render thread at any scene size, excluding
 | Presentation | `FIFO_LATEST_READY` when available, `VK_EXT_present_timing` for pacing once enabled |
 | Validation | layers via vkconfig, not in code (`Device(window, false)` is intentional); validation-clean is a merge requirement |
 | Limits and drivers | every size, count and capacity comes from queried device properties (`HardwareCapabilities`), never from hardcoded numbers. Other GPUs are checked with the Vulkan Hardware Capability Viewer and vulkan.gpuinfo.org. The target is the latest NVIDIA driver; driver-specific notes in this spec are rechecked on each update |
-| Device creation | required extensions throw at startup when missing; optional NV extensions (cluster/partitioned AS) are cached in `HardwareCapabilities` and become **required** once §10 lands |
+| Device creation | required extensions throw at startup when missing; cluster AS and position fetch are required since M2; partitioned AS stays optional, cached in `HardwareCapabilities` |
 
-The device extension inventory is [vulkan_extensions_reference.md](./vulkan_extensions_reference.md). To add: `VK_NV_cooperative_vector` (§11.4, §9.4), `VK_KHR_ray_tracing_position_fetch` (§10.2), and NGX/NRC-required extensions merged at device creation (PBR plan H1, G4).
+The device extension inventory is [vulkan_extensions_reference.md](./vulkan_extensions_reference.md). To add: `VK_NV_cooperative_vector` (§11.4, §9.4) and NGX/NRC-required extensions merged at device creation (PBR plan H1, G4).
 
 ---
 
@@ -289,7 +298,7 @@ Remaining before 1.0, each in the milestone that owns its dependency (§16.2):
 | A9 Hi-Z + reverse Z | port `nvhiz-update` (3 levels per dispatch, groupshared reductions in place of `subgroupShuffle`); reverse Z in the culling library, min reduction and the nudge sign | M1, built |
 | A6 bins by pipeline | two-sided by winding flip in the mesh shader (`isFrontFacingHW`) with a back-face bit for shading; cluster and group state bits `TWOSIDED`, `ALPHAMASKED`, `*_MIXED`; bins opaque / alpha-tested (later SW raster) | opaque bin built in M1; alpha bin in M6 (the bin exists and is empty) |
 | A8 jitter | §12.2 | M3 |
-| Verification | image and timings for A1–A7 on both GPUs (static, fast turn, fly out while frozen, double-sided foliage); cone-cull loss from `cone_weight = 0` | M0, open |
+| Verification | image and timings for A1–A7 on both GPUs (static, fast turn, fly out while frozen, double-sided foliage); cone-cull loss from `cone_weight = 0` | RTX 5070 done 2026-11-13: timings in §2.3; image identical with every test on and off, static and right after a turn, on 16 Sponza poses (`ENGINE_CULL_CHECK=1`). Open: the 2060 Super, the frozen fly-out, double-sided foliage (M6), cone-cull loss |
 
 After the final goal (§16.3):
 
@@ -569,21 +578,22 @@ Each is a separate stage, added only when the baseline meets §2.3 and the techn
 
 ## 16. Roadmap
 
-### 16.1 Current state (`bfb8d1587` plus the working tree, 2026-11-10)
+### 16.1 Current state (`f0fe3eb49` plus the working tree, 2026-11-13)
 
 | Area | State |
 |---|---|
 | Vulkan 1.4 base, shader objects, descriptor heaps, BDA frame root, model slices, shared models/materials | done |
 | meshoptimizer clusters as `clusterlod.h` level 0 (Flex builder, level-1 optimize), groups via `partitionClusters`, box bounds + cones, index filtering | done |
-| GPU culling aligned with `vk_lod_clusters` leaf level (§8.1): `culling.slang` port, box tests, group tier, per-group reject bitmasks, `{instance, cluster}` visible entries, frozen-pyramid freeze, 1-fetch Hi-Z, lossless sub-pixel, homogeneous per-triangle backface; history invalidation | done (A1–A5, A7, C1–C3); image and timings on both GPUs open |
+| GPU culling aligned with `vk_lod_clusters` leaf level (§8.1): `culling.slang` port, box tests, group tier, per-group reject bitmasks, `{instance, cluster}` visible entries, frozen-pyramid freeze, 1-fetch Hi-Z, lossless sub-pixel, homogeneous per-triangle backface; history invalidation | done (A1–A5, A7, C1–C3); image and timings on the RTX 5070 done (§2.3, `ENGINE_CULL_CHECK`); the 2060 Super open |
 | DGC raster: GPU-written sequences, explicit preprocess, one execute per (phase, raster bin) | done |
 | Animation code (§7.3) | removed (2026-11-08) |
 | Culling list capacities and overflow counters (A10) | done |
-| Reverse-Z, 3-level Hi-Z, `R32_UINT` vis buffer, opaque bin with winding flip (M1) | built; cull counts across the reverse-Z switch not compared |
-| Resolve as one tiled compute dispatch writing the §9.3 guides and motion; `sampleMaterial` (PBR B1) | built; motion under rotation and the shading-normal view not checked by eye |
-| BRDF (PBR B2): GGX, VNDF sampling, `tests/brdf_test.cpp` | built; the test and its shader are not committed yet |
+| Reverse-Z, 3-level Hi-Z, `R32_UINT` vis buffer, opaque bin with winding flip (M1) | done; culling is lossless under reverse Z (`ENGINE_CULL_CHECK`: 16 of 16 poses identical with culling on and off) |
+| Resolve as one tiled compute dispatch writing the §9.3 guides and motion; `sampleMaterial` (PBR B1) | built; motion checked by the scripted motion test (`ENGINE_MOTION_TEST`, [motion_vectors.md](../spec/features/motion_vectors.md) §5.1); guides match the Khronos screenshots for `MetalRoughSpheres`, `TwoSidedPlane` and `UnlitTest` (`ENGINE_GUIDE_CAPTURE`, PBR plan E1); A4 generated tangents and flat normals match their references pixel by pixel (PBR plan A4) |
+| BRDF (PBR B2): GGX, VNDF sampling, `tests/brdf_test.cpp` | built |
+| Punctual lights (PBR B3): `evalLight` in `lighting/lights.slang`, `tests/lights_test.cpp` | built; no pass calls it until RTXDI (PBR F); not committed yet |
 | Debug views, GPU timers, Tracy | done |
-| Per-stage timings on both cards (M0, M1 rows of §2.3) | not recorded |
+| Per-stage timings on both cards (M0, M1 rows of §2.3) | RTX 5070 recorded 2026-11-13 (§2.3); the 2060 Super not recorded |
 | DLSS, NRC, SHaRC | linkage tests only (`tests/`) |
 | Light loop, lit output, tone mapping, AS, OMM, RT pipeline, cluster LOD | not started |
 | Structure and document debt | §20 |
@@ -595,7 +605,7 @@ Each milestone renders something testable and is measured against §2.3 before t
 | # | Milestone | Content | Done when |
 |---|---|---|---|
 | M0 | Contracts | PBR A1, A2, A4; `GpuTargets` block; remove animation code (§7.3); log SER reorder hint and decompression methods; per-stage timers recorded on both cards; culling list capacities + overflow counters and the open culling checks (§8.1 A10, verification) | structs asserted; baseline timings on the 2060 Super and the 5070; culling image checked on both |
-| M1 | Vis buffer | reverse-Z with the `nvhiz` Hi-Z port (§8.1 A9), vis buffer raster, opaque bin with winding-flip two-sided (A6), resolve with analytic derivatives as **one tiled compute dispatch** (one PBR shader until M7: no classification, no DGC), PBR B1 `sampleMaterial` brought forward from M3, §9.3 guides, motion; plan: [visibility_buffer.md](../spec/features/visibility_buffer.md) | debug views of every guide; same geometry as today; cull counts unchanged across the reverse-Z switch |
+| M1 | Vis buffer | reverse-Z with the `nvhiz` Hi-Z port (§8.1 A9), vis buffer raster, opaque bin with winding-flip two-sided (A6), resolve with analytic derivatives as **one tiled compute dispatch** (one PBR shader until M7: no classification, no DGC), PBR B1 `sampleMaterial` brought forward from M3, §9.3 guides, motion; plan: [visibility_buffer.md](../spec/features/visibility_buffer.md) | debug views of every guide; same geometry as today; culling lossless under reverse Z: the image with every cull test on equals the image with all off (`ENGINE_CULL_CHECK`). Reverse Z is the reference; the old forward-Z build is not compared (2026-11-13) |
 | M2 | Cluster RT bring-up | CLAS per meshlet, one static cluster BLAS per primitive, GPU-written instances + TLAS on the async compute queue overlapping graphics (§13.1 X2), position fetch, `decodeHit` with cluster ids, ray-query debug pass (§10.3, last paragraph) | debug CS colors by cluster; unload keeps other models traceable |
 | M3 | First lit frame | BRDF + lights (PBR B2–B3), RTXDI DI (PBR F), DLSS-RR + post (PBR H), culling jitter rule (§12.2) | stable direct light on `LightsPunctualLamp`, Sponza + sun |
 | M4 | Indirect | SER RT pipeline (§11.1), indirect pass, SHaRC, ReSTIR GI, combine | bounce light under Sponza arches, stable after RR; reorder on/off timings on the 5070 |
@@ -605,7 +615,15 @@ Each milestone renders something testable and is measured against §2.3 before t
 | M8 | Asset pipeline | §6.4 and §7.2: automatic KTX2 conversion, GDeflate cache, GPU decompression for textures and geometry; background loading on worker threads, async upload and build, deferred destruction on unload (§13.1 X3–X5) | §6.4 and §7.2 hold; Bistro load time and PCIe bytes recorded; loading a model while rendering causes no frame over budget |
 | M9 | **1.0 final goal: Bistro** | full Bistro scene, complete lighting stack; fixed benchmark paths; per-stage tuning on both tiers; PTLAS if the TLAS build is over 0.3 ms; CPU/GPU overlap verified (§13.1) | §2.3 met on the reference tier; floor result recorded (met, or overrun list → §2.1 outcome); §13.1 done criteria met |
 
-**Status (2026-11-13):** M0 and M1 are built. Their "done when" criteria are not met yet: baseline timings on both cards, the culling image check, and the M1 checks listed in §16.1 are open. M2 has not started. AU items not marked done are optional (§20.2).
+**Status (2026-11-13):** M1 is done. M0 is built, but its checks on the 2060 Super are open. M2 has started: C1 is built. AU items not marked done are optional (§20.2).
+
+| # | Done | Open |
+|---|---|---|
+| M0 | PBR A1, A2, A4; `GpuTargets`; animation removed; SER reorder hint and decompression methods logged; culling capacities and overflow counters; shared structs asserted (layout test, AU11) | baseline timings and culling image on the 2060 Super, which is not in the dev machine (the RTX 5070 is done: §2.3, `ENGINE_CULL_CHECK`) |
+| M1 | reverse-Z + Hi-Z, vis buffer, opaque bin with winding flip, single-dispatch resolve, B1, §9.3 guides, motion; debug views of every guide; guides match the Khronos screenshots (PBR E1, `ENGINE_GUIDE_CAPTURE`); motion checked by `ENGINE_MOTION_TEST`; culling lossless under reverse Z (`ENGINE_CULL_CHECK`, 16 of 16 poses); RTX 5070 timings (§2.3) | **done** (2026-11-13). Timings on the 2060 Super stay with M0 |
+| M2 | PBR C1: cluster AS and position fetch required; one CLAS per meshlet and one cluster BLAS per mesh primitive, built at load per model (`MegaGeometry`) | C2 (GPU instances + TLAS), C3 (`decodeHit`, ray-query debug pass); the trace check of "unload keeps other models traceable" waits for the TLAS; position fetch and cluster AS on the 2060 Super (Q7) |
+| M3 | PBR B2 (BRDF), B3 (`evalLight`) | E1 open items (AO, jitter, `lodBias`, unlit specular), E2, F1–F3, H1, H2, culling jitter rule |
+| M4–M9 | — | not started |
 
 **Work added by the audit (§20.2):**
 
@@ -676,7 +694,7 @@ Rules: Vulkan objects that are externally synchronized (command pools, queues, t
 | R5 | 8 GB VRAM on the floor card | benchmark scene size is limited | choose scenes that fit; LOD, BC textures and quantized streams (§6.3–6.4) |
 | R6 | No hardware SER/OMM before Ada | indirect pass slower on Turing/Ampere | floor runs indirect at half resolution (§11.3) |
 | Q3 | Vis buffer 32 vs 64 bit | 32-bit chosen (§8.3); real-runtime pros and cons not measured yet | measure resolve and raster cost after M1 on both tiers; switch only if 64-bit wins and L1's atomic path stays possible |
-| Q7 | `VK_KHR_ray_tracing_position_fetch` on the 2060 Super | without it, hit decode needs a persistent position copy | check `vulkaninfo` before M2 |
+| Q7 | `VK_KHR_ray_tracing_position_fetch` on the 2060 Super | without it, hit decode needs a persistent position copy | required since PBR C1 (supported on the RTX 5070, driver 621.1); the 2060 Super is not in the dev machine: if it lacks it, device creation names it as missing |
 | Q8 | Slang access to `ClusterID` and attributes on `HitObject` | decides whether SER passes need the minimal closest-hit invoke | pinned Slang v2026.20 (2026-11-08): `GetClusterID` is NV-only, `GetTriangleVertexPositions` EXT-only, so the invoke stays; compile probe at M4 ([shader_execution_reordering.md](../spec/features/shader_execution_reordering.md) SER4) |
 | R7 | After §16.3: all LOD levels' CLAS resident (no streaming) on 8 GB | limits scene size on the floor card | `positionTruncateBitCount`, BLAS sharing/merging/caching, scene choice (R5) |
 | R8 | After §16.3: raster/RT LOD mismatch | self-shadowing, leaks at primary hits | §10.4 rule + debug view |
@@ -805,6 +823,13 @@ Root cause of the drift: the same facts (vis-buffer format, the §9.3 guide tabl
 
 | Date | Change |
 |---|---|
+| 2026-11-13 | PBR C1 built: `VK_NV_cluster_acceleration_structure` and `VK_KHR_ray_tracing_position_fetch` are required. `MegaGeometry` builds one CLAS per meshlet (clusterID = meshlet row, raster triangle order) and one cluster BLAS per mesh primitive at each model load, sized exactly by a compute-sizes pass (Sponza: 3500 CLAS in 4.72 MiB against a 15.81 MiB host estimate, 103 BLAS in 0.24 MiB), and drops them with the model. `ENGINE_GUIDE_CAPTURE` now loads each shot before unloading the previous model, validation clean (core, sync, best practices) |
+| 2026-11-13 | PBR A4 checked: `ENGINE_GUIDE_CAPTURE` loads `NormalTangentMirrorTest` without `TANGENT` and `MetalRoughSpheres` without `NORMAL` (copies under `logs/guides/variants`). The generated tangents match the shipped ones within 0.04°, and the flat normals match the geometric normal within 0.063° (99.9% of pixels; the check fails above 0.25°), validation clean. A4 leaves the M0 open list |
+| 2026-11-13 | M1 done: the M1 criterion "cull counts unchanged across the reverse-Z switch" is replaced by a check of reverse Z on its own. `ENGINE_CULL_CHECK=1` compares 16 Sponza poses with every cull test on and with all off; the first capture follows a camera turn, so phase 1 tests against a stale pyramid. All 16 are bit-identical in albedo and depth, with validation clean, and a deliberately over-culling Hi-Z test fails 14 of them. RTX 5070 stage timings recorded in §2.3 |
+| 2026-11-13 | PBR E1 guide check done: `ENGINE_GUIDE_CAPTURE=1` writes every guide view of `MetalRoughSpheres`, `TwoSidedPlane` (both sides) and `UnlitTest` as PNGs under `logs/guides`; all three match the Khronos screenshots in kind, with validation clean. Open for M3: unlit surfaces carry `f0` 0.04 into the guides (PBR plan E1) |
+| 2026-11-13 | Motion-vector test list (motion_vectors.md §5) run as a scripted check: `ENGINE_MOTION_TEST=1`, `passes/motion_check.slang`, 13 scenarios pass on the RTX 5070 with validation clean; each rule fails on a deliberately broken resolve |
+| 2026-11-13 | M0 startup log complete: the memory decompression methods are logged next to the SER hint (`Memory decompression: methods={ Gdeflate10 }` on the RTX 5070) |
+| 2026-11-13 | PBR B3 done: `lighting/lights.slang` (`evalLight`, KHR_lights_punctual range window and spot cone) with a GPU test (§16.1) |
 | 2026-11-13 | §20.4 document fixes done: resource and shader architecture docs brought to M1 as built; README binding and platform lines; extensions reference and `VkExtensionsSpecs/README.md` (shader objects, cached OMM/SER properties, cluster AS required in M2); `vulkan_integration_playbook.md` deleted; PBR explainer links point to `docs/`; links to the five missing documents folded into §6.3, §6.4, §7.1, §7.2 and the glTF 2.0 spec; dead links in the vis-buffer and ResourceManager-split feature specs fixed. Subsystems without a document stay undocumented |
 | 2026-11-13 | §20.3 defects fixed: per-file embedded image keys, device destroyed before the window, host-copy layout check, `MaterialStore::release` validation, upload cleanup on exceptions, scene actions caught at the UI boundary, `destroyTexture` lookup |
 | 2026-11-13 | AU5 and AU11 done: forward-Z culling branch removed, Slang/C++ layout test, typed storage images; cluster sizes stay at NVIDIA's recommendation without an assert. AU2 and AU3 marked done; every other open AU item is optional (§16.2, §20.2) |

@@ -207,7 +207,9 @@ void RenderTargets::recreate(vk::Extent2D renderExtent)
                  vk::ImageLayout::eShaderReadOnlyOptimal, "VisBuffer");
     visBufferView = vk::raii::ImageView(device.vkdevice, colorViewInfo(*visBuffer.image, kVisBufferFormat));
     setDebugName(device.vkdevice, visBufferView, "VisBufferView");
-    createTarget(display, kDisplayFormat, kStorageUsage, vk::ImageLayout::eGeneral, "DisplayColor");
+    // transfer source for the guide capture (Renderer::requestDisplayCapture)
+    createTarget(display, kDisplayFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferSrc,
+                 vk::ImageLayout::eGeneral, "DisplayColor");
     for (uint32_t set = 0; set < kGuideSetCount; ++set) {
         for (size_t guide = 0; guide < kGuideImageCount; ++guide) {
             createTarget(guideSets[set][guide], kGuideFormats[guide], kStorageUsage, vk::ImageLayout::eGeneral,

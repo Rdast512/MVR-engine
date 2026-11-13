@@ -25,6 +25,8 @@ public:
     void recreate(uint32_t swapChainImageCount);
     // load-time copies: the transfer pool when a transfer family exists, frame slot 0's buffer otherwise
     [[nodiscard]] OneTimeCommands oneTimeCommands();
+    // load-time acceleration-structure builds: frame slot 0's buffer on the graphics queue (transfer cannot build)
+    [[nodiscard]] OneTimeCommands computeCommands();
 
     // Acquire: one per frame-in-flight. Present signal: one per swapchain image.
     std::vector<vk::raii::Semaphore> presentCompleteSemaphore;

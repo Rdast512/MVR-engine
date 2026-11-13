@@ -7,7 +7,7 @@ description: Task plan for glTF metallic-roughness PBR on the engine_spec archit
 
 **Date:** 2026-11-07 · **Verified against:** `feature-pbr` working tree on `a50ebcb46` plus the uncommitted visibility buffer (V1–V7), Slang `v2026.20`, meshoptimizer `v1.3`
 **Precedence:** [docs/engine_spec.md](../docs/engine_spec.md) is the architecture. This plan holds the shading tasks and follows it; where they disagree, the spec wins. Milestones are the spec's M0–M9 (§16.2).
-**Status:** M1 is built. The visibility buffer, the compute resolve, all DLSS guides, `sampleMaterial` (B1) and `envBrdfApprox` exist. No lighting, AS or OMM code exists yet. See §3.
+**Status (2026-11-13):** M1 is done: the guide check (E1, Khronos screenshots), the motion check and the culling image check pass. The visibility buffer, the compute resolve, all DLSS guides, `sampleMaterial` (B1), the BRDF (B2) and `evalLight` (B3) exist. No light pass, AS or OMM code exists yet. Per-milestone status: engine spec §16.2. See §3.
 
 | Doc | Role |
 |---|---|
@@ -121,12 +121,13 @@ Resource details: [resource_architecture.md](./resource_architecture.md). Vis-bu
 | `geometry/surface.slang`, `geometry/visbuffer.slang` | done: `TriangleCorners`, `loadTriangleCorners`, `Surface`, `buildSurface` (geometric-normal fallback, tangent sign flip under `FlipWinding`), payload pack/unpack, `computeBarycentrics` |
 | `material/pbr.slang` | **B1 done**: `SampledMaterial`, `sampleMaterial(GpuMaterial, Surface, lodBias)`, `sampleSlot` with `NonUniformResourceIndex`, unlit handling, `KHR_texture_transform` per slot from the A1 `GpuMaterial` matrices (2026-11-09) |
 | `material/brdf.slang` | **B2 done**: `evalBrdf`, `sampleBrdf` (VNDF), `pdfBrdf`, `fromMaterial`, `envBrdfApprox`; checked on the GPU by `tests/brdf_test.cpp` |
+| `lighting/lights.slang` | **B3 done**: `evalLight`, `rangeWindow`, `spotCone`; checked on the GPU by `tests/lights_test.cpp`. No pass calls it yet (F2) |
 | Debug views | Guides category done (depth, shading/geometric normal, roughness, albedo, F0, spec albedo, emissive, motion). `LightingOnly` and `DlssInput` reserved, not implemented |
 | Vertex streams | `GpuVertex` 32 B (pos, color, uv0); normals, tangents, uv1 as separate float32 streams. Missing normals and needed tangents are generated at load (A4); the resolve's fallbacks to the geometric normal and no normal mapping remain only as guards |
 | Animation code | removed (2026-11-08): no morph or skin data is loaded or uploaded; glTF files load in their base pose |
 | Lights | `GpuLight` 64 B per entity in model space, `type` a `GpuLightType`; placed by `loadWorldLight` |
 | Clusters | `clusterlod.h` level 0 (Flex builder, cone weight 0, `optimizeMeshletLevel` 1), groups via `partitionClusters` |
-| Device | AS, ray query, RT pipeline, SER, OMM enabled. Cluster AS optional (`hasClusterAccelerationStructure`). OMM and SER properties cached in `HardwareCapabilities`, SER hint logged. Position fetch and cooperative vectors **not enabled**. Fragment barycentrics removed |
+| Device | AS, ray query, RT pipeline, SER, OMM enabled. Cluster AS and position fetch required (C1). OMM, SER and cluster AS properties cached in `HardwareCapabilities`, SER hint and cluster AS limits logged. Cooperative vectors **not enabled**. Fragment barycentrics removed |
 | `src/render/vk_pbr.{hpp,cpp}` | empty files |
 | Slang modules | done (A2): library files are `module x;`, passes `import` what they use. `gi/sharc.slang` stays a textual include until its bridge replaces it (it needs `#define`s set before the vendor header) |
 | `ThirdParty/` | meshoptimizer v1.3, `rtxdi`, `sharc`, `nrc`, `dlss` fetched; linkage tests in `tests/`. NVIDIA OMM SDK 1.9.2 fetched and built as `omm-lib` (CPU baker), no caller until D1 |
@@ -162,7 +163,7 @@ Library files become Slang modules (`module brdf;`, exports `public`). Passes `i
 | `geometry.hit` | hit ids + barycentrics → `TriangleCorners` (position fetch) → `Surface` with ray-cone gradients | **new** (C3) |
 | `material.pbr` | `SampledMaterial`, `sampleMaterial`, `sampleSlot` | exists |
 | `material.brdf` | `evalBrdf`, `sampleBrdf`, `pdfBrdf`, `fromMaterial`, `envBrdfApprox` | edit |
-| `lighting.lights` | `LightSample`, `evalLight` | **new** |
+| `lighting.lights` | `LightSample`, `evalLight`, `rangeWindow`, `spotCone` | exists (B3) |
 | `raytracing.*` | payload, minimal closest-hit, `traceVisibility` | stubs → edit |
 | `gi.radiance_cache` | `IRadianceCache` | **new** (replaces `gi/rtxgi.slang`) |
 | `lighting/rtxdi_bridge.slang`, `gi/sharc_bridge.slang`, `gi/nrc_bridge.slang` | SDK resource macros + callbacks (textual include) | **new** |
@@ -269,7 +270,7 @@ Each task lists **Do**, **Done when**, and **Must not** where relevant, plus its
 - **Do:** delete `postprocessing/gbuffer.slang` and `evalLambert`. Keep the RT pipeline, SER and cluster AS extensions and the stubs listed in §3 (spec §17 reverses the old A3).
 - **Done when:** the tree builds and renders unchanged.
 
-#### A4 · Shading vertex attributes (meshoptimizer)
+#### A4 · Shading vertex attributes (meshoptimizer) — done (M0)
 
 - **Files:** `src/core/assets_loader.cpp`, `src/core/geometry_store.{hpp,cpp}`
 - **Precondition:** animation code removed (spec §7.3, M0), so no morph deltas need remapping.
@@ -282,6 +283,11 @@ Each task lists **Do**, **Done when**, and **Must not** where relevant, plus its
   - Set `GpuModelAttribute::Normals` / `Tangents` so the streams upload.
 - **Done when:** `NormalTangentMirrorTest` with and without its `TANGENT` accessor shows the same shading-normal debug view within the generator's tolerance (`NormalTangentTest` ships no `TANGENT` and always takes the generated path); a mesh without `NORMAL` shows flat facets; the resolve's fallbacks remain only as guards; the cache-hit path (`instantiateModel`) is untouched.
 - **Must not:** generate tangents for primitives without a normal texture, overwrite file-provided tangents or normals, or write a homegrown generator.
+- **Checked (2026-11-13, RTX 5070, `ENGINE_GUIDE_CAPTURE=1`, validation clean):**
+  - `NormalTangentMirrorTest` with generated tangents against its shipped `TANGENT`: shading normal within 0.040° on 99.9% of 128 595 px (max 0.056°), same coverage.
+  - `MetalRoughSpheres` without `NORMAL`: shading normal against the geometric normal within 0.063° on 99.9% of 90 029 px. The smooth file normals sit 1.1° from their facets on average, so the check tells flat from smooth; it fails above 0.25°.
+  - `NormalTangentTest` (generated path) against the same mesh with tangents computed offline as d*P*/d*u* over (*u*, 1 − *v*): within 0.43° on 99.9% of the pixels (max 0.87°).
+  - The resolve keeps its guards: no normal map when `tangent.w` is 0 or the tangent is parallel to the normal (`material/pbr.slang`). `instantiateModel` is unchanged.
 
 ### Phase B — Shading library
 
@@ -320,7 +326,7 @@ SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodB
   - `KHR_materials_emissive_strength`: nothing in the shader; A1 folds it into `emissiveFactor`.
 - **Open (M3, with E1):**
   - `lodBias = log2(render / display)` once DLSS-RR sets the render resolution.
-- **Done when:** the roughness and F0 debug views on `MetalRoughSpheres` match the texture layout; `TextureTransformTest` matches the Khronos screenshot in kind.
+- **Done when:** ~~the roughness and F0 debug views on `MetalRoughSpheres` match the texture layout~~ (done 2026-11-13 by the E1 guide capture); `TextureTransformTest` matches the Khronos screenshot in kind.
 - **Must not:** sRGB-sample metal-rough/normal/occlusion, use Unity ORM on the metal-rough slot, flip normal Y, or sample with implicit LOD outside a fragment shader.
 
 #### B2 · BRDF (M3) — done (2026-11-09)
@@ -373,80 +379,81 @@ Also add `sampleBrdf(…, u) -> BrdfSample { l, weight, pdf }` (lobe pick by Fre
 - **Done when:** [pbr_lighting_materials.html §7](../docs/pbr_lighting_materials.html#combined) numbers reproduce (white plastic r=0.5 → 0.295 head-on).
 - **Must not:** feed perceptual roughness into `D`, drop `NdotL` after the correlated `V`, or multiply by it twice.
 
-#### B3 · `evalLight` (M3)
+#### B3 · `evalLight` (M3) — done (2026-11-13)
 
-- **Files:** `shaders/lighting/lights.slang` (new)
+- **Files:** `shaders/lighting/lights.slang`; checked on the GPU by `tests/lights_test.cpp`
+- **As built:**
 
 ```slang
+public static const float kInfiniteDistance = 3.402823466e38; // flt max: a valid ray tMax
+
 public struct LightSample
 {
-    public float3 l;          // unit, toward the light
-    public float3 radiance;   // L_i before NdotL
-    public float  distance;   // shadow ray tMax; kInfinity for directional
-}
+    public float3 l;        // unit, toward the light
+    public float3 radiance; // incident radiance before NdotL
+    public float distance;  // shadow ray tMax
+};
 
+// light in world space (loadWorldLight): unit direction, no node scale on intensity, range or cone
 public LightSample evalLight(GpuLight light, float3 p)
 {
     LightSample s;
     if (light.type == LightType.Directional)
     {
-        s.l = -light.worldDir;
-        s.radiance = light.color * light.intensity;   // lux
-        s.distance = kInfinity;
+        s.l = -light.direction;
+        s.radiance = light.color * light.intensity; // lux
+        s.distance = kInfiniteDistance;
         return s;
     }
 
-    float3 toLight = light.worldPos - p;
-    float  d2 = max(dot(toLight, toLight), 1e-8);
+    const float3 toLight = light.position - p;
+    const float d2 = max(dot(toLight, toLight), 1e-12);
     s.distance = sqrt(d2);
     s.l = toLight / s.distance;
 
-    float attenuation = rangeWindow(s.distance, light.range) / max(d2, 1e-4);
+    float attenuation = rangeWindow(s.distance, light.range) / max(d2, kMinDistanceSquared); // 1e-4
     if (light.type == LightType.Spot)
-        attenuation *= spotCone(dot(light.worldDir, -s.l), light.innerCone, light.outerCone);
+        attenuation *= spotCone(dot(light.direction, -s.l), light.innerCone, light.outerCone);
 
-    s.radiance = light.color * light.intensity * attenuation;   // candela
+    s.radiance = light.color * (light.intensity * attenuation); // candela
     return s;
 }
 
-// khronos window; 0 at d >= range; range 0 = infinite
-float rangeWindow(float d, float range)
-{
-    if (range <= 0.0)
-        return 1.0;
-    float r = d / range;
-    return saturate(1.0 - r * r * r * r);
-}
-
-float spotCone(float cosToAxis, float inner, float outer)
-{
-    float scale  = 1.0 / max(0.001, cos(inner) - cos(outer));
-    float offset = -cos(outer) * scale;
-    float t = saturate(cosToAxis * scale + offset);
-    return t * t;
-}
+// khronos window: 1 - (d/range)^4 clamped; range 0 means infinite
+public float rangeWindow(float d, float range);
+// cosToAxis = dot(spotDir, -l): +1 on axis; ((cosToAxis - cos(outer)) / max(1e-3, cos(inner) - cos(outer)))² saturated
+public float spotCone(float cosToAxis, float innerCone, float outerCone);
 ```
+
+`GpuLight` rows are stored in model space; `loadWorldLight` (`core.frame`) moves position and direction into the world and normalizes the direction, and E2 will write the same world-space values into the RTXDI light buffer. `evalLight` takes either. The directional distance is `FLT_MAX` rather than infinity, so it is a valid ray `tMax` and stays finite in arithmetic.
 
 This is the only punctual light evaluation. `RAB_SamplePolymorphicLight` wraps it; emissive triangles (M7) are sampled by RTXDI's own triangle-light path, not here.
 
-- **Done when:** an on-axis spot debug gives `cosToAxis = +1`.
+- **Checked** (`tests/lights_test.cpp`, 14 cases against a double-precision reference written from the KHR_lights_punctual text, plus hand-derived numbers): directional lux unattenuated with `l = -direction`; `4 cd / 2² = 1`; range window `1 - 0.5⁴ = 0.9375`; zero at and past the range; the 1e-4 floor on `d²` at 5 mm; on-axis spot `= 1` (`cosToAxis = +1`); 30° in a 45° cone `= 0.2944`; inner 20° / outer 40° at 30° `= 0.3315`; zero outside the cone and behind a spot facing away; `inner = outer` stays finite. Flipping the cone to `dot(spotDir, L)` fails 6 checks.
 - **Must not:** use `dot(spotDir, L)` or scale intensity, range, or cone by node scale.
 
 ### Phase C — Ray-tracing scene (M2)
 
-Spec §10. Reference: `vk_lod_clusters` (`renderer_raytrace_clusters_lod.cpp`, `instances_assign_blas.comp.glsl`).
+Spec §10. Reference: `vk_lod_clusters` (`renderer_raytrace_clusters_lod.cpp`, `instance_assign_blas.comp.glsl`). **Feature spec:** [ray_tracing_mega_geometry.md](./features/ray_tracing_mega_geometry.md) (sample patterns mapped onto C2, C3, D4, G1; steps RT1–RT8).
 
-#### C1 · CLAS per cluster + cluster BLAS per primitive
+#### C1 · CLAS per cluster + cluster BLAS per primitive — built (M2)
 
-- **Files:** `src/render/vk_mega_geometry.{hpp,cpp}` (new), `src/core/vk_device.cpp`, `src/core/vk_resource_manager.cpp`
+- **Files:** `src/core/vk_mega_geometry.{hpp,cpp}` (new; in `core`, since `AssetBuffers` owns it and `engine_core` cannot link `engine_render`), `src/core/vk_device.cpp`, `src/core/vk_asset_buffers.cpp`, `src/core/vk_frame_sync.cpp` (`computeCommands`: AS builds need a compute-capable queue)
 - **Do:**
   - `VK_NV_cluster_acceleration_structure` becomes **required**: `hasClusterAccelerationStructure == false` throws at device creation. Enable `VK_KHR_ray_tracing_position_fetch` (spec Q7: check `vulkaninfo` on the 2060 Super first).
   - One CLAS per cluster of the model just flushed: positions gathered into scratch as cluster-local arrays with 8-bit cluster-local indices, freed after the build. `clusterID = meshletRow` (model-relative), triangle order = the raster cluster's triangle order, so `PrimitiveIndex()` equals the vis-buffer triangle. `positionTruncateBitCount = 0` until measured.
-  - Build into scratch, then move to the final allocation with the real sizes (host estimates are 3–5× too large, [clas_allocation.md](../reference/vk_lod_clusters/docs/clas_allocation.md)).
+  - Build into scratch, then move to the final allocation with the real sizes (host estimates are 3–5× too large, [clas_allocation.md](../reference/vk_lod_clusters/docs/clas_allocation.md)). **As built:** the sample's preloaded path (`scene_preloaded.cpp`) instead: a `COMPUTE_SIZES` pass, exact allocation, then an `EXPLICIT_DESTINATIONS` build. Same exact sizes, no move. BLAS sizes are computed the same way after the CLAS build, because a cluster BLAS refers to its CLAS by address.
   - One cluster BLAS per **mesh** primitive from its CLAS (not per node: nodes are TLAS instances). Built right after `flushGpuAssets`, while the slice addresses are current. A cache hit (`instantiateModel`) builds nothing.
   - CLAS and BLAS are grouped per model, indexed like `modelAllocations`, destroyed when the model's `refCount` reaches 0. Other models stay valid: a built AS does not read its inputs.
   - Sizes, counts and alignments come from `VkPhysicalDeviceClusterAccelerationStructurePropertiesNV` and the AS properties, never constants.
 - **Done when:** one BLAS address per mesh primitive; validation clean; loading two models then unloading the first keeps the second traceable; a second Sponza adds no AS memory.
+- **Checked (2026-11-13, RTX 5070, validation clean with core, sync and best practices + NVIDIA):**
+  - One BLAS address per mesh primitive: Sponza 103 of 103, MetalRoughSpheres 5 of 5; a primitive without meshlets keeps address 0.
+  - Real sizes against the implicit-mode host estimate: Sponza 3500 CLAS in 4.72 MiB (estimate 15.81 MiB), BLAS 0.24 MiB; the build adds about 6 ms to the Sponza flush.
+  - `ENGINE_GUIDE_CAPTURE` loads each shot's model before unloading the previous one, so model 0 is erased 8 times while model 1 stays; validation stays clean, and the normal checks still pass 2 of 2. The motion test passes 13 of 13 and ctest 7 of 7.
+  - A second Sponza: `loadModel` takes the `instantiateModel` path, which `MegaGeometry` never sees (no diff there).
+  - **Revisited (2026-11-13, [ray_tracing_mega_geometry.md](./features/ray_tracing_mega_geometry.md) RT1):** CLAS and BLAS are built with `PREFER_FAST_TRACE | ALLOW_DATA_ACCESS`, which position fetch requires (VUID-HitTriangleVertexPositionsKHR-None-08751, VUID-RuntimeSpirv-flags-08761). Sizes are unchanged at log precision, and validation stays clean on the motion test and the guide capture. Startup logs `accelerationStructureIndirectBuild` (false on the 5070) and `maxInstanceCount` for C2.
+  - **Open:** that the remaining model is still *traceable* needs a TLAS (C2) and a trace (C3's debug pass). Until then, it holds by construction: CLAS and BLAS live in the model's own allocations, which nothing moves or frees.
 - **Must not:** build KHR triangle BLASes, build from a CPU-side ray mesh, or reorder cluster triangles between raster and CLAS.
 
 #### C2 · GPU instances + TLAS (async compute)
@@ -541,7 +548,13 @@ Spec §8.2, §10.5.
   - **Motion vectors:** [motion_vectors.md](./features/motion_vectors.md): history bugs B1–B4, the history-reset flag, and a reprojection debug view that proves the vectors (MV1–MV5).
   - Spec §2.3 timings deferred (2026-11-08); take them on a release build with validation off (vulkan-dev skill §6.1).
   - M7 splits the resolve into per-material-bin shaders (spec §9.1–9.2); the per-pixel body stays this one.
-- **Done when (remaining):** `MetalRoughSpheres`, `TwoSidedPlane` and `UnlitTest` guides match the Khronos screenshots in kind; motion is zero for a static scene and consistent under rotation.
+- **Unlit specular (open, M3, before E2/F1):** unlit surfaces reach the guides with `f0` 0.04 and roughness 1, so a light loop would add a specular term that `KHR_materials_unlit` forbids. Metallic 1 with a black base color gives `f0` 0, but Schlick's grazing term remains; the light loop needs a zero-specular case, or the guides need an unlit bit.
+- **Done when:** ~~`MetalRoughSpheres`, `TwoSidedPlane` and `UnlitTest` guides match the Khronos screenshots in kind~~: done 2026-11-13 by the scripted guide capture. `ENGINE_GUIDE_CAPTURE=1` loads each sample alone, frames it and writes every guide view as a PNG under `logs/guides` (`src/core/engine_guide_capture.*`, `Renderer::requestDisplayCapture`).
+  - `MetalRoughSpheres`: the metal row (top) has zero `cDiff` and a colored `f0`; the dielectric row has `f0` 0.04; roughness rises from Smooth (left) to Rough (right), as the labels say. Sphere normals point +X right, +Y up and +Z at the center.
+  - `TwoSidedPlane`: both sides draw the same albedo and roughness. The shading and geometric normals read +Y from above and −Y from below.
+  - `UnlitTest`: diffuse albedo 0; emissive uniform at sRGB (255, 128, 0) and (0, 128, 255). The README says `#FF7F00` / `#007FFF`, but the factor 0.2176 is 0.5 under gamma 2.2, so 128 is its exact sRGB encoding. On scattered pixels a 1.0 channel reads one storage step low (254 or 253): the interpolated `surface.color` sums to 1 − ε, and the B10G11R11 store rounds toward zero. This is storage precision, not shading.
+
+  ~~Motion is zero for a static scene and consistent under rotation~~: done 2026-11-13 by the scripted motion test ([motion_vectors.md](./features/motion_vectors.md) §5.1).
 - **Must not:** write GGX `α` as roughness, jitter without unjittered motion, or sRGB-encode guides.
 
 #### E2 · GPU light buffer
@@ -675,7 +688,7 @@ SDK: `NVIDIA/DLSS` (NGX, Vulkan), fetched and pinned. Required: unsupported RR a
 | `NormalTangentTest`, `NormalTangentMirrorTest` | OpenGL Y, TBN, A4 tangents |
 | `VertexColorTest` | `COLOR_0` |
 | `AlphaBlendModeTest` | alpha bin `discard` + OMM shadows |
-| `TwoSidedPlane` / `UnlitTest` | winding flip / unlit |
+| `TwoSidedPlane` / `UnlitTest` | winding flip / unlit (guides checked 2026-11-13, E1) |
 | `Sponza` | many materials, OMM stats, cache bounce, RR stability |
 | `Bistro` | emissive lights, `Power_RIS`, M9 budgets |
 
@@ -700,10 +713,10 @@ A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
 
 | Milestone (spec §16.2) | Tasks |
 |---|---|
-| M0 Contracts | A1, A2, A3, A4 (**done**; A4 shading-normal view not yet checked by eye), animation removal (**done**) |
-| M1 Vis buffer | B1, E1 (**done**); 32-bit payload kept, V8 deferred; culling image checked |
-| M2 Cluster RT bring-up | C1, C2, C3 |
-| M3 First lit frame | B1 extensions, B2, B3, E1 open items, E2 (punctual), F1–F3, H1, H2 |
+| M0 Contracts | A1, A2, A3, A4 (**done**; A4 checked by `ENGINE_GUIDE_CAPTURE`), animation removal (**done**) |
+| M1 Vis buffer | B1, E1 (**done**; E1 guides vs Khronos screenshots and motion checked 2026-11-13); 32-bit payload kept, V8 deferred; culling lossless under reverse Z (`ENGINE_CULL_CHECK`, 2026-11-13); **M1 done** (spec §16.2) |
+| M2 Cluster RT bring-up | C1 (**built**; the trace check waits for C2–C3), C2, C3 |
+| M3 First lit frame | B1 extensions, B2 (**done**), B3 (**done**), E1 open items (AO, jitter, `lodBias`, unlit specular), E2 (punctual), F1–F3, H1, H2 |
 | M4 Indirect | G1, G2, G3 (SHaRC), G5, G6 |
 | M5 NRC | G4 |
 | M6 Alpha | D1–D4 |

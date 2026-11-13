@@ -468,6 +468,27 @@ struct GpuCullCounters
     uint32_t drawRecordsOverflowed = 0;
     uint32_t visibleOverflowed = 0;
 };
+// motion_check pass, ENGINE_MOTION_TEST only (spec/features/motion_vectors.md §5); zeroed by the CPU per frame
+struct GpuMotionCheckStats {
+    uint32_t pixels = 0;
+    uint32_t emptyPixels = 0;
+    // motion != 0
+    uint32_t movingPixels = 0;
+    // |motion - camera-only motion from depth| over tolerance; meaningful only while every entity is still
+    uint32_t cameraMismatches = 0;
+    // albedo differs from last frame's at the reprojected position, and at the same position
+    uint32_t reprojectedErrors = 0;
+    uint32_t stillErrors = 0;
+    // reprojected outside last frame's image
+    uint32_t offscreenPixels = 0;
+    uint32_t frameFlags = 0;
+    // float bits: non-negative floats order like their uint bits
+    uint32_t maxMotionBits = 0;
+    uint32_t maxCameraErrorBits = 0;
+};
+static_assert(sizeof(GpuMotionCheckStats) == 40);
+static_assert(offsetof(GpuMotionCheckStats, maxMotionBits) == 32);
+
 static_assert(sizeof(GpuCullCounters) == 112);
 static_assert(offsetof(GpuCullCounters, candidatesOverflowed) == 100);
 static_assert(offsetof(GpuCullCounters, meshletsRetested) == 40);
@@ -1018,8 +1039,7 @@ struct HardwareCapabilities
     vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV clusterAccelerationStructure;
     vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV partitionedAccelerationStructure;
 
-    // optional NV extensions: enabled only when supported; property structs above stay zeroed otherwise
-    bool hasClusterAccelerationStructure = false;
+    // optional NV extension: enabled only when supported; its property struct above stays zeroed otherwise
     bool hasPartitionedAccelerationStructure = false;
     // NRC when its extensions and features exist, else SHaRC, else none
     GiCache giCache = GiCache::None;

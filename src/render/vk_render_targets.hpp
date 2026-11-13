@@ -48,6 +48,8 @@ public:
     [[nodiscard]] vk::Format getDepthFormat() const noexcept { return depthFormat; }
     [[nodiscard]] vk::Image getVisBufferImage() const noexcept { return *visBuffer.image; }
     [[nodiscard]] vk::ImageView getVisBufferView() const noexcept { return *visBufferView; }
+    // kDisplayFormat, eGeneral
+    [[nodiscard]] vk::Image getDisplayImage() const noexcept { return *display.image; }
 
 private:
     struct Target

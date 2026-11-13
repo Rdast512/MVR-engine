@@ -1,6 +1,6 @@
 # Feature: motion vectors
 
-**Date:** 2026-11-08 · **Status:** computed in the resolve (M1); history bugs fixed, reset flag and reprojection view in (MV1–MV3); the §5 test list still has to be run; MV4–MV5 wait for DLSS (plan H1) · **Milestone:** M3 ([engine_spec.md](../../docs/engine_spec.md) §16.2), before DLSS-RR and RTXDI temporal reuse
+**Date:** 2026-11-08, updated 2026-11-13 · **Status:** computed in the resolve (M1); history bugs fixed, reset flag and reprojection view in (MV1–MV3); the §5 test list runs as a scripted check and passes (§5.1); MV4–MV5 wait for DLSS (plan H1) · **Milestone:** M3 ([engine_spec.md](../../docs/engine_spec.md) §16.2), before DLSS-RR and RTXDI temporal reuse
 **Implements:** engine spec §9.2 step 3, §9.3 `motion`, §12.2
 **Related:** [visibility_buffer.md](./visibility_buffer.md) §3.6, §10; [pbr_implementation_plan.md](../pbr_implementation_plan.md) E1, H1
 
@@ -87,6 +87,29 @@ Both guide sets already exist, so this needs no new images. Albedo is jitter-fre
 | mirrored instance (negative scale) | black (motion does not depend on winding) |
 | jitter on (M3) | still black: jitter is excluded on both sides |
 
+### 5.1 Scripted check (2026-11-13)
+
+`ENGINE_MOTION_TEST=1 ./engine.exe` runs the table above on the startup Sponza and quits; results are `[MotionTest]` lines in `logs/engine.log`. `EngineMotionTest` (`src/core/engine_motion_test.*`) drives the camera and entity 0 for 24 frames per scenario; after every frame (`waitIdle`) it reads `GpuMotionCheckStats`, written by `passes/motion_check.slang`, which runs after the debug view only in this mode. The pass checks two things per pixel:
+
+- **camera-only motion:** the world point rebuilt from depth (a direction for empty pixels) projected with `prevViewProj`. While no entity moves, every pixel's motion must match it; this is exact, independent of textures, and covers disocclusions and the sky;
+- **albedo reprojection:** the §5 debug-view comparison, counted against the same comparison at zero motion. Used for entity motion, where the camera-only motion does not apply: correct motion must remove at least 75% of the change.
+
+| Test | Scenario | Rule | Result on the RTX 5070 |
+|---|---|---|---|
+| static camera, static scene | still | max motion ≤ 1e-3 px, albedo identical | 2.2e-5 px: float noise of two matrix chains, not exactly 0 |
+| camera yaw (incl. the sky) | yaw; yaw from the courtyard, 18% sky | camera-only motion within 0.05 px + 0.1%; at most 1e-5 of the pixels outside, none over 0.5 px | max 0.010 px; sky view: 1 outlier px at 0.2 px |
+| | pitch + yaw | same | max 0.009 px |
+| camera translation | right + forward | same | max 0.017 px |
+| entity moved or rotated | translate, rotate entity 0 | reprojection leaves ≤ 25% of the zero-motion change | 0.27% vs 4.1%; 0.22% vs 2.5% of pixels |
+| mirrored instance | entity 0 at scale x −1: camera yaw, entity rotation | as camera / entity | max 0.013 px; 0.10% vs 2.3% |
+| load a model while moving | load at frame 8 during camera translation | the load frame resets with zero motion; later frames match the camera-only motion, the new model included | pass, max 0.017 px |
+| teleport / FOV change / resize | cut at frame 8 | the reset frame has zero motion; the other frames are still | pass, one reset frame each |
+| jitter on (M3) | — | — | not built |
+
+Each rule was shown to fail on a deliberately broken resolve: the previous position from the current matrix fails every entity scenario; motion kept on reset frames fails every cut and the load; `viewProj` for empty pixels fails the sky view (169k px per frame, up to 6.4 px). B1 cannot be seen in motion vectors: a load resets history, so the frame where a new entity's previous matrix would be wrong writes zero motion anyway. B1 still matters for the early Hi-Z test.
+
+The isolated outliers are pixels where the resolve's interpolated point lands up to 0.2 px off the pixel ray (seen once per scenario at most, on 4–9 m geometry): a precision limit of the barycentrics on thin triangles, not a motion bug. Validation (core, sync, best practices) is clean over the whole run.
+
 ---
 
 ## 6. Tasks
@@ -95,7 +118,7 @@ Both guide sets already exist, so this needs no new images. Albedo is jitter-fre
 |---|---|---|
 | MV1 | fix B1–B4 (**done**) | M3, first |
 | MV2 | `kFrameFlagHistoryReset` in `GpuFrameRoot`, set per §4 (**done**) | M3 |
-| MV3 | `DebugView::Reprojection` (§5) (**done**) and the test list (open) | M3 |
+| MV3 | `DebugView::Reprojection` (§5) and the test list (**done**: scripted, §5.1) | M3 |
 | MV4 | jitter (plan E1): Halton(2,3), phase count `8 · (display / render)²`; verify §5 stays black | M3 |
 | MV5 | DLSS-RR inputs: `MVLowRes`, `DepthInverted`, `InMVScale = 1`, `InJitterOffset`, `InReset` (plan H1) | M3 |
 

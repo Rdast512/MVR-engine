@@ -267,6 +267,7 @@ engine_add_slang_pass(passes/mesh_raster.slang ENTRIES meshMain)
 engine_add_slang_pass(passes/mesh_fragment.slang ENTRIES fragMain)
 engine_add_slang_pass(passes/resolve.slang ENTRIES resolveMain)
 engine_add_slang_pass(passes/debug_view.slang ENTRIES debugViewMain)
+engine_add_slang_pass(passes/motion_check.slang ENTRIES motionCheckMain)
 engine_add_slang_pass(passes/present.slang ENTRIES presentMesh presentFrag)
 engine_add_slang_pass(passes/meshlet_cull.slang
     ENTRIES cullInstances cullMeshlets cullRejectedMeshlets buildMeshSequences)

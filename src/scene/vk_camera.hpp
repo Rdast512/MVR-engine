@@ -20,6 +20,9 @@ public:
     // look at target from a fixed offset
     void focusOn(const glm::vec3& target, float distance = 5.0f);
 
+    // a cut; pitch is clamped to kPitchLimit
+    void lookAt(const glm::vec3& position, const glm::vec3& target);
+
     // keeps the orientation; a cut, so the jump is not camera motion
     void teleportTo(const glm::vec3& position);
 

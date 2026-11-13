@@ -361,6 +361,22 @@ namespace
         {"FramePushData", sizeof(FramePushData), {
             LAYOUT_FIELD(FramePushData, frameRoot),
         }},
+        {"MotionCheckPushData", sizeof(MotionCheckPushData), {
+            LAYOUT_FIELD(MotionCheckPushData, frameRoot),
+            LAYOUT_FIELD(MotionCheckPushData, stats),
+        }},
+        {"GpuMotionCheckStats", sizeof(GpuMotionCheckStats), {
+            LAYOUT_FIELD(GpuMotionCheckStats, pixels),
+            LAYOUT_FIELD(GpuMotionCheckStats, emptyPixels),
+            LAYOUT_FIELD(GpuMotionCheckStats, movingPixels),
+            LAYOUT_FIELD(GpuMotionCheckStats, cameraMismatches),
+            LAYOUT_FIELD(GpuMotionCheckStats, reprojectedErrors),
+            LAYOUT_FIELD(GpuMotionCheckStats, stillErrors),
+            LAYOUT_FIELD(GpuMotionCheckStats, offscreenPixels),
+            LAYOUT_FIELD(GpuMotionCheckStats, frameFlags),
+            LAYOUT_FIELD(GpuMotionCheckStats, maxMotionBits),
+            LAYOUT_FIELD(GpuMotionCheckStats, maxCameraErrorBits),
+        }},
         {"PresentPushData", sizeof(PresentPushData), {
             LAYOUT_FIELD(PresentPushData, frameRoot),
             LAYOUT_FIELD(PresentPushData, displaySize),

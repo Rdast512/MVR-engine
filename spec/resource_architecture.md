@@ -272,6 +272,7 @@ Capacities are exact scene totals today. Every append still goes through a capac
 | `HiZPushData` | 48 | `hiz_build`: source and up to 3 destination heap indices, source mip, level count, sizes |
 | `HiZViewPushData` | 24 | `hiz_view` debug pass |
 | `FramePushData {frameRoot}` | 8 | `resolve`, `debug_view` |
+| `MotionCheckPushData {frameRoot, stats}` | 16 | `motion_check`, `ENGINE_MOTION_TEST` only; `stats` is a host-visible `GpuMotionCheckStats` (40 B) per frame slot |
 | `PresentPushData {frameRoot, displaySize}` | 16 | `present` |
 
 `loadDrawContext` (`shaders/core/frame.slang`) and `geometry/mesh.slang`:
