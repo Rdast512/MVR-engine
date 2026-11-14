@@ -113,6 +113,17 @@ Canonical terminology references:
 | `VK_NV_cluster_acceleration_structure` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_cluster_acceleration_structure.html) | [impl](../spec/VkExtensionsSpecs/VK_NV_cluster_acceleration_structure.md) | `PhysicalDeviceClusterAccelerationStructureFeaturesNV::clusterAccelerationStructure` | `PhysicalDeviceClusterAccelerationStructurePropertiesNV` _(cached as `HardwareCapabilities::clusterAccelerationStructure`; limits and alignments logged at startup)_ | **Required** since M2: `MegaGeometry` (`src/core/vk_mega_geometry.cpp`) builds one CLAS per meshlet and one cluster BLAS per mesh primitive at load (PBR plan C1) |
 | `VK_NV_partitioned_acceleration_structure` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_partitioned_acceleration_structure.html) | [impl](../spec/VkExtensionsSpecs/VK_NV_partitioned_acceleration_structure.md) | `PhysicalDevicePartitionedAccelerationStructureFeaturesNV::partitionedAccelerationStructure` | `PhysicalDevicePartitionedAccelerationStructurePropertiesNV` | **Required** since 2026-11-14 (spec §10.3), built in PBR plan C4: device creation throws when it is missing. `RayTracingScene` keeps one PTLAS updated in place from GPU-written `WRITE_INSTANCE` ops; `maxPartitionCount` (16,777,215 on the RTX 5070) bounds grid partitions plus global-partition instances |
 
+### SDK-requested extensions (NGX, PBR plan H1)
+
+NGX's DLSS-RR asks for these through `NVSDK_NGX_VULKAN_GetFeature*ExtensionRequirements`. `Dlss::requiredExtensions()` passes them to `Device` as `SdkExtensions`; a missing one fails device creation. On the RTX 5070 the device list beyond the required set is:
+
+| Extension | Official | Note |
+| --- | --- | --- |
+| `VK_NVX_binary_import` | [`spec`](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_NVX_binary_import.html) | NGX's precompiled kernels |
+| `VK_NVX_image_view_handle` | [`spec`](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_NVX_image_view_handle.html) | the kernels address images by these handles, which index the driver-managed descriptor heap: `Dlss::evaluate` binds an empty legacy descriptor set first (considerations C-H1-1) |
+| `VK_KHR_buffer_device_address` | [`spec`](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_KHR_buffer_device_address.html) | core since 1.2 and enabled anyway; the EXT variant NGX may also list is skipped |
+| `VK_KHR_push_descriptor` | [`spec`](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_KHR_push_descriptor.html) | promoted to 1.4: `Vulkan14Features::pushDescriptor` is set with it (VUID-VkDeviceCreateInfo-ppEnabledExtensionNames-10858) |
+
 ---
 
 ## Promoted-to-Core Features (Enabled via Core Feature Structs)

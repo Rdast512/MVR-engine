@@ -105,6 +105,7 @@ private:
     void drawCameraPanel();
     void drawCullingPanel();
     void drawRayTracingPanel();
+    void drawPostPanel();
     void drawInstanceFieldPanel();
 
     UiContext context;

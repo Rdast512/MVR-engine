@@ -815,7 +815,8 @@ struct alignas(16) GpuCameraData {
     float frameDeltaTime;      // Delta time in seconds
     // cameraPos of the previous frame; equal to cameraPos on a cut, like prevViewProj
     glm::vec3 prevCameraPos;
-    float pad0;
+    // texture LOD bias log2(render / display) under DLSS (engine spec §12.2); applied by scaling the gradients
+    float lodBias;
 };
 static_assert(sizeof(GpuCameraData) == 512);
 static_assert(offsetof(GpuCameraData, prevViewProj) == 384);
@@ -912,6 +913,25 @@ struct GpuGuideSet
 static_assert(sizeof(GpuGuideSet) == 64);
 
 // render-resolution targets of one frame, reached from GpuFrameRoot::targets
+// passes/exposure.slang's log2-luminance histogram; bin 0 holds black pixels, which do not count
+inline constexpr uint32_t kExposureHistogramBins = 256;
+inline constexpr float kExposureMinLog2 = -16.0f;
+inline constexpr float kExposureLog2Range = 32.0f;
+
+// written by passes/exposure.slang each frame it runs; read by the CPU after the slot's fence
+struct GpuExposureReadback
+{
+    // scale applied before the tonemap
+    float exposure = 0.0f;
+    // where the adaptation is heading
+    float targetExposure = 0.0f;
+    // the histogram's trimmed mean; 0 when every pixel is black
+    float averageLuminance = 0.0f;
+    // non-black pixels in the histogram
+    uint32_t pixels = 0;
+};
+static_assert(sizeof(GpuExposureReadback) == 16);
+
 struct GpuTargets
 {
     // sampled R32_UINT, eShaderReadOnlyOptimal after the late raster
@@ -931,8 +951,21 @@ struct GpuTargets
     // RGBA16F linear HDR written by passes/rtxdi_shade.slang; no emissive
     uint32_t directRadianceStorage = 0;
     uint32_t directRadianceSampled = 0;
+    // RGBA16F linear HDR written by passes/combine.slang: direct + emissive, the DLSS-RR color input
+    uint32_t noisyColorStorage = 0;
+    uint32_t noisyColorSampled = 0;
+    // sampled by passes/present.slang: the post target (display resolution) for the Lit view, else the display image
+    // (render resolution)
+    uint32_t presentSampled = 0;
+    // RGBA16F linear HDR DLSS-RR output, read by passes/exposure.slang and passes/post.slang
+    uint32_t upscaledSampled = 0;
+    // RGBA16F display resolution, written by passes/post.slang: tonemapped, linear [0, 1]
+    uint32_t postStorage = 0;
+    // R32F 1x1: the exposure scale, written by passes/exposure.slang, read by passes/post.slang and DLSS-RR
+    uint32_t exposureStorage = 0;
+    glm::uvec2 displaySize{0};
 };
-static_assert(sizeof(GpuTargets) == 168);
+static_assert(sizeof(GpuTargets) == 200);
 static_assert(offsetof(GpuTargets, current) == 32);
 
 // GpuFrameRoot::frameFlags, matches shaders/types.slang kFrameFlag*

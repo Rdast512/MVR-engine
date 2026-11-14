@@ -44,7 +44,7 @@ enum class DebugView : uint32_t
     ShadowedLights,
     // ReSTIR DI directRadiance + the emissive guide: the lighting output until the combine pass (M4)
     LightingOnly,
-    // reserved, not implemented yet
+    // passes/combine.slang's noisyColor: what DLSS-RR receives as color, at render resolution
     DlssInput,
     Count,
 };
@@ -56,6 +56,7 @@ static_assert(std::to_underlying(DebugView::AmbientOcclusion) == 21);
 static_assert(std::to_underlying(DebugView::UnshadowedLights) == 22);
 static_assert(std::to_underlying(DebugView::ShadowedLights) == 23);
 static_assert(std::to_underlying(DebugView::LightingOnly) == 24);
+static_assert(std::to_underlying(DebugView::DlssInput) == 25);
 
 enum class DebugViewCategory : uint8_t
 {
@@ -123,7 +124,7 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"Unshadowed lights", DebugViewCategory::Lighting, true},
     {"Shadowed lights", DebugViewCategory::Lighting, true},
     {"Lighting only", DebugViewCategory::Lighting, true},
-    {"DLSS input", DebugViewCategory::Upscaling, false},
+    {"DLSS input", DebugViewCategory::Upscaling, true},
 }};
 
 [[nodiscard]] constexpr const DebugViewInfo& debugViewInfo(DebugView view)

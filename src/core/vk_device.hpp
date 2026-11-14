@@ -1,6 +1,18 @@
 #pragma once
+#include <functional>
 #include <span>
+#include <string>
+#include <vector>
 #include "types.hpp"
+
+// extensions a vendor SDK needs on top of the engine's (NGX for DLSS-RR, PBR plan H1). Every name is required:
+// device creation throws when one is missing
+struct SdkExtensions
+{
+    std::vector<std::string> instance;
+    // asked after the GPU is picked; empty function: none
+    std::function<std::vector<std::string>(vk::Instance, vk::PhysicalDevice)> device;
+};
 
 /**
  * @brief Manages the Vulkan device stack: instance, physical device, logical device, and queues.
@@ -36,7 +48,7 @@ public:
      * @param window                SDL3 window used for surface creation; must outlive this object.
      * @param enableValidationLayers Enable Khronos validation layers and debug messenger output.
      */
-    Device(SDL_Window* window, bool enableValidationLayers = false);
+    Device(SDL_Window* window, bool enableValidationLayers = false, SdkExtensions sdkExtensions = {});
 
     /**
      * @brief Runs the full Vulkan device initialisation sequence.
@@ -53,6 +65,7 @@ public:
 
     SDL_Window* window = nullptr; ///< Non-owning pointer to the SDL3 window used for surface creation.
     bool enableValidationLayers = false; ///< Whether Khronos validation layers are active.
+    SdkExtensions sdkExtensions; ///< Vendor SDK extensions merged into the instance and device.
 
     vk::raii::Context context; ///< Top-level RAII context; loads the Vulkan loader at construction.
     vk::raii::Instance instance = nullptr; ///< Vulkan instance owning all per-application state.

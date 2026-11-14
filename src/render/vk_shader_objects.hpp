@@ -76,6 +76,13 @@ public:
         // passes/rtxdi_initial.slang and passes/rtxdi_shade.slang: ReSTIR DI, after the TLAS wait
         vk::raii::ShaderEXT rtxdiInitial = nullptr;
         vk::raii::ShaderEXT rtxdiShade = nullptr;
+        // passes/combine.slang: noisyColor, the DLSS-RR color input
+        vk::raii::ShaderEXT combine = nullptr;
+        // passes/exposure.slang: luminance histogram of the DLSS-RR output, then the adapted exposure
+        vk::raii::ShaderEXT exposureHistogram = nullptr;
+        vk::raii::ShaderEXT exposureAdapt = nullptr;
+        // passes/post.slang: exposure + tonemap into the post target
+        vk::raii::ShaderEXT post = nullptr;
     };
     FrameShaders frameShaders;
 

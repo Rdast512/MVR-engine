@@ -9,6 +9,8 @@
 #include "scene/vk_camera.hpp"
 #include "scene/vk_scene.hpp"
 #include "vk_dgc.hpp"
+#include "vk_dlss.hpp"
+#include "vk_post.hpp"
 #include "vk_gpu_timer.hpp"
 #include "vk_hiz.hpp"
 #include "debug_view.hpp"
@@ -21,6 +23,7 @@
 #include "util/vk_utils.hpp"
 
 #include <array>
+#include <chrono>
 #include <optional>
 #include <span>
 
@@ -53,6 +56,13 @@ public:
     [[nodiscard]] MeshletCulling& getCulling() noexcept { return culling; }
     [[nodiscard]] RtxdiContext& getRtxdi() noexcept { return rtxdi; }
     [[nodiscard]] RayTracingScene& getRayTracingScene() noexcept { return rtScene; }
+    [[nodiscard]] Dlss& getDlss() noexcept { return dlss; }
+    [[nodiscard]] PostProcess& getPost() noexcept { return post; }
+    // the next Lit frame starts DLSS-RR without history
+    void resetDlssHistory() noexcept { isDlssHistoryValid = false; }
+    // Lit with at least one light: present shows DLSS-RR. Lit without lights would be black, so it shows the unlit
+    // albedo of the debug view pass, as before H1
+    [[nodiscard]] bool isDlssPresented() const { return debugView.view == DebugView::Lit && rtxdi.hasLights(); }
     [[nodiscard]] const GpuTimer& getGpuTimer() const noexcept { return gpuTimer; }
     [[nodiscard]] uint32_t getHiZMipCount() const noexcept { return hiz.mipCount(); }
     [[nodiscard]] RayTracingScene::Stats getRayTracingStats() const noexcept { return rtScene.getStats(); }
@@ -67,7 +77,8 @@ public:
     // the frame recorded last; complete only after its fence, e.g. a waitIdle
     [[nodiscard]] const GpuRayCheckStats& getLastRayCheck() const;
 
-    // ENGINE_GUIDE_CAPTURE: the next recorded frame copies the display image to host memory after the debug view
+    // ENGINE_GUIDE_CAPTURE: the next recorded frame copies the presented image (the DLSS-RR output for Lit, else the
+    // display image) to host memory after the debug view
     void requestDisplayCapture() noexcept { isDisplayCapturePending = true; }
     struct DisplayCapture
     {
@@ -92,6 +103,8 @@ private:
     void recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase);
     void recordResolve(const vk::raii::CommandBuffer& cmd);
     void recordDirectLight(const vk::raii::CommandBuffer& cmd);
+    // combine -> noisyColor; DLSS-RR -> exposure -> tonemap into the post target when the Lit view is shown
+    void recordReconstruction(const vk::raii::CommandBuffer& cmd);
     void recordDebugView(const vk::raii::CommandBuffer& cmd);
     void recordMotionCheck(const vk::raii::CommandBuffer& cmd);
     void recordRayCheck(const vk::raii::CommandBuffer& cmd);
@@ -121,6 +134,11 @@ private:
     RayTracingScene rtScene;
     WorldLights worldLights;
     RtxdiContext rtxdi;
+    Dlss dlss;
+    PostProcess post;
+    // false after a resize or a frame without the Lit view: the next evaluation resets DLSS history
+    bool isDlssHistoryValid = false;
+    std::chrono::steady_clock::time_point lastFrameTime{};
     // per frame slot: the timeline value its last async compute submit signals
     std::array<uint64_t, MAX_FRAMES_IN_FLIGHT> computeTimelineValues{};
     GpuTimer gpuTimer;

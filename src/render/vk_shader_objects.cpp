@@ -87,6 +87,10 @@ void ShaderObjects::createFrameShaders()
     frameShaders.lightWorld = createComputeShader("light_world.spv", "lightWorldMain", "LightWorld");
     frameShaders.rtxdiInitial = createComputeShader("rtxdi_initial.spv", "rtxdiInitialMain", "RtxdiInitial");
     frameShaders.rtxdiShade = createComputeShader("rtxdi_shade.spv", "rtxdiShadeMain", "RtxdiShade");
+    frameShaders.combine = createComputeShader("combine.spv", "combineMain", "Combine");
+    frameShaders.exposureHistogram = createComputeShader("exposure.spv", "exposureHistogramMain", "ExposureHistogram");
+    frameShaders.exposureAdapt = createComputeShader("exposure.spv", "exposureAdaptMain", "ExposureAdapt");
+    frameShaders.post = createComputeShader("post.spv", "postMain", "Post");
 }
 
 void ShaderObjects::createRtShaders()

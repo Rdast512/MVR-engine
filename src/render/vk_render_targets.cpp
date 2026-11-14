@@ -66,12 +66,21 @@ RenderTargets::~RenderTargets()
 {
     const VmaAllocator vma = allocator.allocator;
     visBufferView = nullptr;
-    destroyVmaImage(vma, visBuffer.image, visBuffer.memory);
-    destroyVmaImage(vma, display.image, display.memory);
-    destroyVmaImage(vma, directRadiance.image, directRadiance.memory);
+    const auto destroy = [vma](Target& target)
+    {
+        target.view = nullptr;
+        destroyVmaImage(vma, target.image, target.memory);
+    };
+    destroy(visBuffer);
+    destroy(display);
+    destroy(directRadiance);
+    destroy(noisyColorTarget);
+    destroy(upscaledTarget);
+    destroy(postTarget);
+    destroy(exposureTarget);
     for (auto& guides : guideSets) {
         for (Target& guide : guides) {
-            destroyVmaImage(vma, guide.image, guide.memory);
+            destroy(guide);
         }
     }
     for (HostBuffer& buffer : frameTargets) {
@@ -154,17 +163,23 @@ void RenderTargets::checkFormatSupport() const
     }
     check(kDisplayFormat, kStorageFeatures | vk::FormatFeatureFlagBits2::eSampledImageFilterLinear);
     check(kDirectRadianceFormat, kStorageFeatures);
+    check(kNoisyColorFormat, kStorageFeatures);
+    check(kUpscaledFormat, kStorageFeatures | vk::FormatFeatureFlagBits2::eSampledImageFilterLinear);
+    check(kPostFormat, kStorageFeatures | vk::FormatFeatureFlagBits2::eSampledImageFilterLinear);
+    check(kExposureFormat, kStorageFeatures);
     check(kVisBufferFormat, vk::FormatFeatureFlagBits2::eColorAttachment | vk::FormatFeatureFlagBits2::eSampledImage);
 }
 
 void RenderTargets::createTarget(Target& target, vk::Format format, vk::ImageUsageFlags usage, vk::ImageLayout layout,
-                                 const char* debugName)
+                                 const char* debugName, vk::Extent2D size)
 {
-    allocator.createImage2D(extent.width, extent.height, 1, vk::SampleCountFlagBits::e1, format, usage, target.image,
+    allocator.createImage2D(size.width, size.height, 1, vk::SampleCountFlagBits::e1, format, usage, target.image,
                             target.memory, std::format("{}Memory", debugName));
     // recreated only on resize: not a Tracy memory pool
     setDebugName(device.vkdevice, target.image, debugName);
     const vk::ImageViewCreateInfo view = colorViewInfo(*target.image, format);
+    target.view = vk::raii::ImageView(device.vkdevice, view);
+    setDebugName(device.vkdevice, target.view, std::format("{}View", debugName));
     if (usage & vk::ImageUsageFlagBits::eStorage) {
         target.storageIndex = descriptorManager.writeImageDescriptor(view, vk::DescriptorType::eStorageImage, layout);
     }
@@ -182,12 +197,17 @@ void RenderTargets::destroyTargets()
                 *index = kNoneIndex;
             }
         }
+        target.view = nullptr;
         destroyVmaImage(vma, target.image, target.memory);
     };
     visBufferView = nullptr;
     destroy(visBuffer);
     destroy(display);
     destroy(directRadiance);
+    destroy(noisyColorTarget);
+    destroy(upscaledTarget);
+    destroy(postTarget);
+    destroy(exposureTarget);
     for (auto& guides : guideSets) {
         for (Target& guide : guides) {
             destroy(guide);
@@ -199,26 +219,37 @@ void RenderTargets::destroyTargets()
     }
 }
 
-void RenderTargets::recreate(vk::Extent2D renderExtent)
+void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize)
 {
     ZoneScopedN("RenderTargets::recreate");
     destroyTargets();
     extent = renderExtent;
+    displayExtent = displaySize;
     createDepthResources();
 
     createTarget(visBuffer, kVisBufferFormat,
                  vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
-                 vk::ImageLayout::eShaderReadOnlyOptimal, "VisBuffer");
+                 vk::ImageLayout::eShaderReadOnlyOptimal, "VisBuffer", extent);
     visBufferView = vk::raii::ImageView(device.vkdevice, colorViewInfo(*visBuffer.image, kVisBufferFormat));
     setDebugName(device.vkdevice, visBufferView, "VisBufferView");
-    // transfer source for the guide capture (Renderer::requestDisplayCapture)
+    // transfer sources for the guide capture (Renderer::requestDisplayCapture)
     createTarget(display, kDisplayFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferSrc,
-                 vk::ImageLayout::eGeneral, "DisplayColor");
-    createTarget(directRadiance, kDirectRadianceFormat, kStorageUsage, vk::ImageLayout::eGeneral, "DirectRadiance");
+                 vk::ImageLayout::eGeneral, "DisplayColor", extent);
+    createTarget(directRadiance, kDirectRadianceFormat, kStorageUsage, vk::ImageLayout::eGeneral, "DirectRadiance",
+                 extent);
+    createTarget(noisyColorTarget, kNoisyColorFormat, kStorageUsage, vk::ImageLayout::eGeneral, "NoisyColor", extent);
+    createTarget(upscaledTarget, kUpscaledFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferSrc,
+                 vk::ImageLayout::eGeneral, "DlssOutput", displayExtent);
+    // transfer source for the Lit display capture
+    createTarget(postTarget, kPostFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferSrc,
+                 vk::ImageLayout::eGeneral, "PostColor", displayExtent);
+    // transfer destination for its initial value
+    createTarget(exposureTarget, kExposureFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferDst,
+                 vk::ImageLayout::eGeneral, "Exposure", vk::Extent2D{1, 1});
     for (uint32_t set = 0; set < kGuideSetCount; ++set) {
         for (size_t guide = 0; guide < kGuideImageCount; ++guide) {
             createTarget(guideSets[set][guide], kGuideFormats[guide], kStorageUsage, vk::ImageLayout::eGeneral,
-                         std::format("Guide{}_{}", kGuideNames[guide], set).c_str());
+                         std::format("Guide{}_{}", kGuideNames[guide], set).c_str(), extent);
         }
     }
     depthIndex = descriptorManager.writeImageDescriptor(
@@ -244,6 +275,23 @@ void RenderTargets::recreate(vk::Extent2D renderExtent)
     // the vis buffer is transitioned from eUndefined every frame (Renderer::recordFrameCommands)
     initialize(*display.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*directRadiance.image, vk::ImageLayout::eGeneral, kStorageAccess);
+    initialize(*noisyColorTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
+    initialize(*upscaledTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
+    initialize(*postTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
+    // exposure 1 until the first exposure pass: DLSS-RR reads it before that pass writes it
+    transitionImageLayout(&cmd, *exposureTarget.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+                          {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}, VK_QUEUE_FAMILY_IGNORED,
+                          VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eNone,
+                          vk::PipelineStageFlagBits2::eClear, vk::AccessFlagBits2::eNone,
+                          vk::AccessFlagBits2::eTransferWrite);
+    cmd.clearColorImage(*exposureTarget.image, vk::ImageLayout::eTransferDstOptimal,
+                        vk::ClearColorValue{std::array{1.0f, 1.0f, 1.0f, 1.0f}},
+                        vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+    transitionImageLayout(&cmd, *exposureTarget.image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eGeneral,
+                          {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}, VK_QUEUE_FAMILY_IGNORED,
+                          VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eClear,
+                          vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eTransferWrite,
+                          kStorageAccess | vk::AccessFlagBits2::eShaderStorageRead);
     for (auto& guides : guideSets) {
         for (Target& guide : guides) {
             initialize(*guide.image, vk::ImageLayout::eGeneral, kStorageAccess);
@@ -252,7 +300,13 @@ void RenderTargets::recreate(vk::Extent2D renderExtent)
     submitAndWait(cmd, device.graphicsQueue);
 }
 
-void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber)
+RenderTargets::ImageRef RenderTargets::guide(uint32_t frameNumber, GuideImage image) const
+{
+    const size_t index = std::to_underlying(image);
+    return imageRef(guideSets[frameNumber % kGuideSetCount][index], kGuideFormats[index]);
+}
+
+void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool isPostPresented)
 {
     const auto guideSet = [this](uint32_t set)
     {
@@ -277,5 +331,12 @@ void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber)
         .previous = guideSet((current + 1) % kGuideSetCount),
         .directRadianceStorage = directRadiance.storageIndex,
         .directRadianceSampled = directRadiance.sampledIndex,
+        .noisyColorStorage = noisyColorTarget.storageIndex,
+        .noisyColorSampled = noisyColorTarget.sampledIndex,
+        .presentSampled = isPostPresented ? postTarget.sampledIndex : display.sampledIndex,
+        .upscaledSampled = upscaledTarget.sampledIndex,
+        .postStorage = postTarget.storageIndex,
+        .exposureStorage = exposureTarget.storageIndex,
+        .displaySize = {displayExtent.width, displayExtent.height},
     };
 }

@@ -37,7 +37,7 @@ public struct GpuCameraData
     public float frameDeltaTime;
 
     public float3 prevCameraPos; // equal to cameraPos on a cut
-    public float pad0;
+    public float lodBias;        // log2(render / display) under DLSS (engine spec §12.2)
 };
 
 public struct GpuObjectUB
@@ -107,6 +107,7 @@ public static const uint kDebugViewAmbientOcclusion = 21u;
 public static const uint kDebugViewUnshadowedLights = 22u;
 public static const uint kDebugViewShadowedLights = 23u;
 public static const uint kDebugViewLightingOnly = 24u;
+public static const uint kDebugViewDlssInput = 25u;
 public static const uint kDebugViewModeMask = 0xffu;
 public static const uint kDebugViewFlagEdges = 1u << 8;
 
@@ -565,6 +566,26 @@ public struct RtInstancesPushData
 public static const uint kRtInstancesFlagFullBuild = 1u << 0;
 
 // 16 B, matches src/render/push_data.hpp
+// ExposurePushData.flags, matches src/render/push_data.hpp ExposureFlag
+public static const uint kExposureFlagAuto = 1u << 0;
+public static const uint kExposureFlagSnap = 1u << 1;
+
+// 56 B, matches src/render/push_data.hpp
+public struct ExposurePushData
+{
+    public uint64_t frameRoot;
+    public uint64_t histogram; // uint[kExposureHistogramBins]
+    public uint64_t readback;  // GpuExposureReadback
+    public float deltaSeconds;
+    public float compensationEv;
+    public float manualEv;
+    public float minEv;
+    public float maxEv;
+    public float adaptationRate;
+    public uint flags; // kExposureFlag*
+    public uint pad0;
+};
+
 public struct PresentPushData
 {
     public uint64_t frameRoot;
@@ -611,6 +632,27 @@ public struct GpuTargets
     public GpuGuideSet previous;
     public uint directRadianceStorage; // RGBA16F, rtxdi_shade; no emissive
     public uint directRadianceSampled;
+    public uint noisyColorStorage; // RGBA16F, combine: direct + emissive, the DLSS-RR color input
+    public uint noisyColorSampled;
+    public uint presentSampled; // present's source: the post target for Lit, else the display image
+    public uint upscaledSampled; // RGBA16F DLSS-RR output, linear HDR
+    public uint postStorage;     // RGBA16F, display resolution: tonemapped, linear [0, 1]
+    public uint exposureStorage; // R32F 1x1: the exposure scale (exposure pass; read by post and DLSS-RR)
+    public uint2 displaySize;
+};
+
+// exposure histogram: bin 0 holds black pixels, bins 1.. cover kExposureMinLog2 + [0, kExposureLog2Range)
+public static const uint kExposureHistogramBins = 256u;
+public static const float kExposureMinLog2 = -16.0;
+public static const float kExposureLog2Range = 32.0;
+
+// 16 B, matches src/core/types.hpp
+public struct GpuExposureReadback
+{
+    public float exposure;         // scale applied before the tonemap
+    public float targetExposure;   // where the adaptation is heading
+    public float averageLuminance; // trimmed mean of the histogram; 0 when every pixel is black
+    public uint pixels;            // non-black pixels
 };
 
 // [InstanceIndex()] of a TLAS instance; written by the CPU per scene layout (RayTracingScene)

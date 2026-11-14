@@ -132,6 +132,9 @@ void Camera::updateProjection()
     cameraData.farZ = farPlane;
     cameraData.renderTargetSize = glm::vec2(renderExtent.width, renderExtent.height);
     cameraData.invRenderTargetSize = 1.0f / cameraData.renderTargetSize;
+    // texture detail of the display resolution DLSS reconstructs (engine spec §12.2)
+    cameraData.lodBias = std::log2(static_cast<float>(renderExtent.width) /
+                                   static_cast<float>(swapChain.swapChainExtent.width));
 
     projDirty = false;
 }
@@ -152,10 +155,13 @@ namespace
     }
 } // namespace
 
-bool Camera::isJitterRequested()
+std::optional<bool> Camera::jitterRequest()
 {
     const char* text = std::getenv("ENGINE_JITTER");
-    return text != nullptr && std::string_view(text) == "1";
+    if (text == nullptr) {
+        return std::nullopt;
+    }
+    return std::string_view(text) != "0";
 }
 
 uint32_t Camera::getJitterPhaseCount() const
@@ -174,7 +180,7 @@ glm::vec2 Camera::computeJitterOffset(uint64_t frameIndex) const
     return 2.0f * pixels / glm::vec2(renderExtent.width, renderExtent.height);
 }
 
-void Camera::updateCameraData(uint8_t currentImage, uint64_t frameIndex)
+void Camera::updateCameraData(uint8_t currentImage, uint64_t frameIndex, bool isJitterResolved)
 {
     ZoneScopedN("Camera::updateCameraData");
 
@@ -187,7 +193,8 @@ void Camera::updateCameraData(uint8_t currentImage, uint64_t frameIndex)
     }
 
     // raster and resolve only: viewProj and every matrix derived from it stay unjittered
-    cameraData.jitterOffset = isJitterEnabled ? computeJitterOffset(frameIndex) : glm::vec2(0.0f);
+    const bool isJittered = isJitterEnabled && (isJitterResolved || isJitterForced);
+    cameraData.jitterOffset = isJittered ? computeJitterOffset(frameIndex) : glm::vec2(0.0f);
     cameraData.view = glm::lookAt(cameraData.cameraPos, cameraData.cameraPos + forward, worldUp);
     cameraData.viewProj = cameraData.proj * cameraData.view;
     // a cut has no previous view: no camera motion instead of a one-frame jump

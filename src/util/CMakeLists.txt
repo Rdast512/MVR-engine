@@ -10,6 +10,9 @@ set_target_properties(engine_mi_new_delete PROPERTIES POSITION_INDEPENDENT_CODE 
 set_source_files_properties(mi_new_delete.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 # also linked into uninstrumented fmt/spdlog; profile hooks would need the runtime
 target_compile_options(engine_mi_new_delete PRIVATE -fno-profile-instr-generate)
+# native code: lld binds wrapped __imp_ references (dllimport callers such as NGX) to the __imp___wrap_* slots
+# before LTO runs; bitcode slots leave those calls unresolved
+target_compile_options(engine_mi_new_delete PRIVATE -fno-lto)
 target_link_libraries(engine_mi_new_delete PRIVATE ThirdParty::mimalloc)
 
 add_library(engine_util SHARED ${UTIL_SOURCES})

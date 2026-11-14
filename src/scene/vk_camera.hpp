@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <optional>
 #include <core/types.hpp>
 #include "core/vk_allocator.hpp"
 #include "core/vk_swapchain.hpp"
@@ -55,16 +56,19 @@ public:
 
     // one persistently mapped GpuCameraData buffer per frame slot; freed by the destructor
     void createBuffers(const Device& device, const VkAllocator& allocator);
-    // frameIndex picks the jitter phase
-    void updateCameraData(uint8_t currentImage, uint64_t frameIndex);
+    // frameIndex picks the jitter phase; isJitterResolved: DLSS-RR resolves this frame's jitter
+    void updateCameraData(uint8_t currentImage, uint64_t frameIndex, bool isJitterResolved);
 
     // ENGINE_JITTER=1
-    [[nodiscard]] static bool isJitterRequested();
+    // ENGINE_JITTER: 0 off, anything else on; unset: the engine's default
+    [[nodiscard]] static std::optional<bool> jitterRequest();
     // Halton(2,3) phases per cycle: 8 * (display / render)^2 (engine spec §12.2)
     [[nodiscard]] uint32_t getJitterPhaseCount() const;
-    // subpixel jitter of the raster (cameraData.jitterOffset); off until DLSS resolves it (PBR plan H1), since the
-    // display would shimmer by half a pixel
-    bool isJitterEnabled = false;
+    // subpixel jitter of the raster (cameraData.jitterOffset), resolved by DLSS-RR (PBR plan H1). Frames DLSS-RR does
+    // not resolve (debug views, Lit without lights) are not jittered: upscaled to the display, the jitter boils
+    bool isJitterEnabled = true;
+    // ENGINE_JITTER=1: jitter unresolved frames too, so the culling checks cover the jitter rule (engine spec §12.2)
+    bool isJitterForced = false;
 
     // after updateCameraData: first frame, focusOn, teleportTo, a projection change, or any swapchain recreation (setRenderExtent);
     // cameraData.prevViewProj equals viewProj then

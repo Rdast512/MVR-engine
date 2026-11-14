@@ -79,8 +79,9 @@ void resolveMain(uint3 id : SV_DispatchThreadID)
         computeBarycentrics(corners.clip[0], corners.clip[1], corners.clip[2], ndc, 2.0 / targetSize);
     const Surface surface = buildSurface(draw, corners, bary);
 
-    // render == display until upscaling (M3): no LOD bias
-    const SampledMaterial material = sampleMaterial(loadMaterial(root, materialRow(draw.primitive)), surface, 0.0);
+    // log2(render / display): DLSS-RR reconstructs display-resolution texture detail
+    const SampledMaterial material =
+        sampleMaterial(loadMaterial(root, materialRow(draw.primitive)), surface, camera.lodBias);
 
     const float3 view = normalize(camera.cameraPos - surface.position);
     const BrdfInputs brdfInputs = fromMaterial(material);

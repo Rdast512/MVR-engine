@@ -31,7 +31,8 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
     hiz(device, allocator, frameSync, descriptorManager, shaderObjects),
     targets(device, allocator, frameSync, descriptorManager),
     rtScene(device, allocator, frameSync, scene, assets, frameData, shaderObjects),
-    worldLights(device, allocator, assets, frameData, shaderObjects), rtxdi(device, allocator, assets), gpuTimer(device), tracyContext(tracyContext)
+    worldLights(device, allocator, assets, frameData, shaderObjects), rtxdi(device, allocator, assets),
+    dlss(device, frameSync), post(device, allocator, shaderObjects), gpuTimer(device), tracyContext(tracyContext)
 {
     const vk::DeviceSize maxPushData = device.capabilities.descriptorHeap.maxPushDataSize;
     if (kMaxPushDataBytes > maxPushData) {
@@ -108,11 +109,16 @@ void Renderer::setTracyContext(VkTracyContext* tracyContextIn) { tracyContext = 
 void Renderer::rebuildSwapchainResources()
 {
     frameSync.recreate(static_cast<uint32_t>(swapChain.swapChainImages.size()));
-    // render resolution equals display until upscaling (M3)
-    targets.recreate(swapChain.swapChainExtent);
+    // DLSS-RR's quality mode picks the render resolution for the swapchain's (engine spec §2.1)
+    const vk::Extent2D displayExtent = swapChain.swapChainExtent;
+    const vk::Extent2D renderExtent = dlss.recreate(displayExtent);
+    targets.recreate(renderExtent, displayExtent);
     hiz.recreate(targets);
-    rtxdi.recreate(targets.getExtent());
-    camera.setRenderExtent(targets.getExtent());
+    rtxdi.recreate(renderExtent);
+    camera.setRenderExtent(renderExtent);
+    isDlssHistoryValid = false;
+    // the exposure image starts at 1 again
+    post.requestSnap();
 }
 
 void Renderer::drawFrame()
@@ -127,6 +133,12 @@ void Renderer::drawFrame()
     auto& frameCmd = frameSync.commandBuffers[currentFrame];
     auto& rayCmd = frameSync.rayCommandBuffers[currentFrame];
     auto& presentCmd = frameSync.presentCommandBuffers[currentFrame];
+
+    if (dlss.isRecreateNeeded()) {
+        // a new DLSS mode or preset may change the render resolution: every frame in flight reads the old targets
+        deviceRef.waitIdle();
+        rebuildSwapchainResources();
+    }
 
     {
         ZoneScopedN("FenceWait");
@@ -149,12 +161,13 @@ void Renderer::drawFrame()
     allocator.tracyPlotMemoryBudget();
 
     // after the fence: this slot's camera buffer and query results are no longer touched by the GPU
-    camera.updateCameraData(currentFrame, frameNumber);
-    targets.prepareFrame(currentFrame, frameNumber);
+    camera.updateCameraData(currentFrame, frameNumber, isDlssPresented());
+    targets.prepareFrame(currentFrame, frameNumber, isDlssPresented());
     rtScene.prepareFrame(currentFrame, frameNumber - 1);
     worldLights.prepareFrame(currentFrame);
     rtxdi.prepareFrame(currentFrame, frameNumber);
     gpuTimer.collect(currentFrame);
+    post.readBack(currentFrame);
     if (void* stats = motionCheckStats[currentFrame].mapped) {
         // host writes before the submit are visible to it
         *static_cast<GpuMotionCheckStats*>(stats) = {};
@@ -375,6 +388,13 @@ void Renderer::recordRayCommands(vk::raii::CommandBuffer& cmd)
         TracyVkNamedZone(gpuCtx, gpuZoneDirectLight, *cmd, "GPU_DirectLight", gpuTrace);
 #endif
         recordDirectLight(cmd);
+    }
+    {
+        ZoneScopedN("Reconstruction");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneReconstruction, *cmd, "GPU_Reconstruction", gpuTrace);
+#endif
+        recordReconstruction(cmd);
     }
     {
         ZoneScopedN("DebugView");
@@ -634,6 +654,77 @@ void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
     gpuTimer.end(cmd, GpuTimerScope::RtxdiShade);
 }
 
+void Renderer::recordReconstruction(const vk::raii::CommandBuffer& cmd)
+{
+    // directRadiance and guide writes -> the combine's reads
+    const vk::MemoryBarrier2 combineBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &combineBarrier});
+    dispatchFullscreen(cmd, shaderObjects.frameShaders.combine);
+    gpuTimer.end(cmd, GpuTimerScope::Combine);
+
+    const auto now = std::chrono::steady_clock::now();
+    const float frameDeltaMs = lastFrameTime == std::chrono::steady_clock::time_point{}
+        ? 0.0f
+        : std::chrono::duration<float, std::milli>(now - lastFrameTime).count();
+    lastFrameTime = now;
+    if (!isDlssPresented()) {
+        // the output is not shown; its history would be stale when it is
+        isDlssHistoryValid = false;
+        gpuTimer.end(cmd, GpuTimerScope::Dlss);
+        gpuTimer.end(cmd, GpuTimerScope::Post);
+        return;
+    }
+    // noisyColor and guide writes -> NGX's reads. NGX opens each evaluation with clears and fills of its own resources
+    // without a barrier against the previous evaluation's writes (SYNC-HAZARD-WRITE-AFTER-WRITE), so this orders those too
+    const vk::MemoryBarrier2 inputBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eAllTransfer,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eAllTransfer,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageRead |
+            vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eTransferWrite,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &inputBarrier});
+    const auto toDlss = [](const RenderTargets::ImageRef& image,
+                           vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor)
+    {
+        return Dlss::Image{.image = image.image, .view = image.view, .format = image.format, .aspect = aspect};
+    };
+    const GpuCameraData& cameraData = camera.cameraData;
+    const vk::Extent2D renderExtent = targets.getExtent();
+    // history resets with the frame's (camera cut, resize, layout change) and after frames without the Lit view
+    const bool isHistoryReset = !isDlssHistoryValid || camera.isCut() || culling.isSceneLayoutChanged();
+    dlss.evaluate(cmd, Dlss::Frame{
+                           .color = toDlss(targets.noisyColor()),
+                           .depth = toDlss(targets.depth(), vk::ImageAspectFlagBits::eDepth),
+                           .motion = toDlss(targets.guide(frameNumber, GuideImage::Motion)),
+                           .diffuseAlbedo = toDlss(targets.guide(frameNumber, GuideImage::DiffuseAlbedo)),
+                           .specularAlbedo = toDlss(targets.guide(frameNumber, GuideImage::SpecAlbedo)),
+                           .normalRoughness = toDlss(targets.guide(frameNumber, GuideImage::NormalRoughness)),
+                           .output = toDlss(targets.upscaled()),
+                           .exposure = toDlss(targets.exposure()),
+                           // NDC units, y down like pixels
+                           .jitterPixels = cameraData.jitterOffset * 0.5f *
+                               glm::vec2(renderExtent.width, renderExtent.height),
+                           .view = cameraData.view,
+                           .proj = cameraData.proj,
+                           .frameDeltaMs = frameDeltaMs,
+                           .isReset = isHistoryReset,
+                       });
+    isDlssHistoryValid = true;
+    // NGX binds its own pipelines and descriptor sets, which invalidate the heap bindings
+    cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
+    cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
+    gpuTimer.end(cmd, GpuTimerScope::Dlss);
+    post.record(cmd, currentFrame, frameData.frameRootAddress(currentFrame), targets.getDisplayExtent(),
+                frameDeltaMs * 1e-3f);
+    gpuTimer.end(cmd, GpuTimerScope::Post);
+}
+
 void Renderer::recordDebugView(const vk::raii::CommandBuffer& cmd)
 {
     // guide and directRadiance writes -> reads; submission order also covers the previous frame's set (Reprojection)
@@ -644,7 +735,10 @@ void Renderer::recordDebugView(const vk::raii::CommandBuffer& cmd)
         .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &guideBarrier});
-    dispatchFullscreen(cmd, shaderObjects.frameShaders.debugView);
+    // DLSS-RR's output replaces it; the motion and ray checks still find the barrier above
+    if (!isDlssPresented()) {
+        dispatchFullscreen(cmd, shaderObjects.frameShaders.debugView);
+    }
     gpuTimer.end(cmd, GpuTimerScope::DebugView);
 }
 
@@ -689,7 +783,10 @@ void Renderer::recordRayCheck(const vk::raii::CommandBuffer& cmd)
 void Renderer::recordDisplayCapture(const vk::raii::CommandBuffer& cmd)
 {
     constexpr vk::DeviceSize kTexelBytes = 8;
-    const vk::Extent2D extent = targets.getExtent();
+    // the image present reads: both are RGBA16F
+    const bool isUpscaled = isDlssPresented();
+    const vk::Extent2D extent = isUpscaled ? targets.getDisplayExtent() : targets.getExtent();
+    const vk::Image source = isUpscaled ? targets.post().image : targets.getDisplayImage();
     const vk::DeviceSize size = vk::DeviceSize{extent.width} * extent.height * kTexelBytes;
     HostBuffer& capture = displayCaptures[currentFrame];
     if (displayCaptureCapacities[currentFrame] < size) {
@@ -718,7 +815,7 @@ void Renderer::recordDisplayCapture(const vk::raii::CommandBuffer& cmd)
         .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
         .imageExtent = {extent.width, extent.height, 1},
     };
-    cmd.copyImageToBuffer2(vk::CopyImageToBufferInfo2{.srcImage = targets.getDisplayImage(),
+    cmd.copyImageToBuffer2(vk::CopyImageToBufferInfo2{.srcImage = source,
                                                       .srcImageLayout = vk::ImageLayout::eGeneral,
                                                       .dstBuffer = *capture.buffer,
                                                       .regionCount = 1,

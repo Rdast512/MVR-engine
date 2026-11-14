@@ -33,7 +33,7 @@ public struct TextureGradients
     public float2 ddy;
 };
 
-// lodBias: log2(render / display) once upscaling lands; applied by scaling the gradients
+// lodBias: log2(render / display) under DLSS (GpuCameraData.lodBias); applied by scaling the gradients
 TextureGradients textureGradients(GpuMaterial material, uint slot, Surface surface, uint uvSet, float lodBias)
 {
     const uint set = min(uvSet, 1u);

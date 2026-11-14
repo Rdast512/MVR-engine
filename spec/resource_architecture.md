@@ -341,7 +341,7 @@ Rules:
 | `GpuMaterialExtension` | 724 | `GpuTextureRef` 36 B, `GpuUvTransform` 20 B; key offsets asserted |
 | `GpuVertex` | 32 | |
 | `GpuCameraData` | 512 | size and key offsets asserted; `prevCameraPos` @ 496 (F2, was the unused `cameraParams`) |
-| `GpuTargets` | 168 | two `GpuGuideSet` (64 B each: 8 guides since F2's `Position`); `current` @ 32; `directRadianceStorage` / `directRadianceSampled` @ 160 (F3) |
+| `GpuTargets` | 200 | two `GpuGuideSet` (64 B each: 8 guides since F2's `Position`); `current` @ 32; `directRadianceStorage` / `directRadianceSampled` @ 160 (F3); `noisyColor*` @ 168, `presentSampled` @ 176 (H1); `upscaledSampled` @ 180, `postStorage`, `exposureStorage`, `displaySize` @ 192 (H2) |
 
 ---
 
@@ -502,6 +502,7 @@ The binding model (§1, model slices, frame root, handle-or-address) carries ove
 
 | Date | Change |
 |---|---|
+| 2026-11-14 | PBR H2: `RenderTargets` gains the display-resolution post target (RGBA16F) and the 1×1 R32F exposure image; `GpuTargets` 200 B. `PostProcess` owns a host-visible 256-bin histogram buffer and one `GpuExposureReadback` (16 B) per frame slot |
 | 2026-11-14 | PBR C4 built: the M2 row lists the PTLAS, its state rows and the per-slot write lists and op entries; the per-slot TLAS is gone |
 | 2026-11-14 | PTLAS required (engine spec §10.3): the M2 row gains the PTLAS buffers of PBR C4 |
 | 2026-11-14 | NVIDIA only, NRC only (engine spec §1.2, §11.4): SHaRC and `IRadianceCache` dropped; M5 merged into M4 |

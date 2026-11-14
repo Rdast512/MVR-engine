@@ -34,7 +34,7 @@ void Engine::initialize()
     logInfo("ImGui fully disabled (ENGINE_ENABLE_IMGUI=0) — no context, backends, or GPU resources", "Engine");
 #endif
 
-    device = std::make_unique<Device>(window, false);
+    device = std::make_unique<Device>(window, false, Dlss::requiredExtensions());
     device->init();
 
     allocator = std::make_unique<VkAllocator>(*device);
@@ -64,7 +64,10 @@ void Engine::initialize()
     swapChain->init();
 
     camera = std::make_unique<Camera>(*swapChain);
-    camera->isJitterEnabled = Camera::isJitterRequested();
+    // the motion test and the guide normal checks compare frames pixel by pixel, which jitter changes by design
+    camera->isJitterEnabled = Camera::jitterRequest().value_or(!EngineMotionTest::isRequested() &&
+                                                               !EngineGuideCapture::isRequested());
+    camera->isJitterForced = Camera::jitterRequest().value_or(false);
     textureManager = std::make_unique<TextureManager>(*device, *allocator, *descriptorManager);
     textureManager->init();
 

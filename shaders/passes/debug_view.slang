@@ -201,6 +201,8 @@ float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCamer
         return unshadowedLights(root, set, camera, pixel, depth, float2(targets.renderSize));
     case kDebugViewShadowedLights:
         return shadowedLights(root, set, pixel);
+    case kDebugViewDlssInput:
+        return tex2D(targets.noisyColorSampled).Load(int3(pixel, 0)).rgb;
     case kDebugViewLightingOnly:
         // what the combine pass will add (M4); converges to Shadowed lights
         return tex2D(targets.directRadianceSampled).Load(int3(pixel, 0)).rgb + loadGuide(set, kGuideEmissive, pixel).rgb;

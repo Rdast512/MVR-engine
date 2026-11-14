@@ -7,7 +7,7 @@ description: Task plan for glTF metallic-roughness PBR on the engine_spec archit
 
 **Date:** 2026-11-07 · **Verified against:** `feature-pbr` working tree on `a50ebcb46` plus the uncommitted visibility buffer (V1–V7), Slang `v2026.20`, meshoptimizer `v1.3`
 **Precedence:** [docs/engine_spec.md](../docs/engine_spec.md) is the architecture. This plan holds the shading tasks and follows it; where they disagree, the spec wins. Milestones are the spec's M0–M9 (§16.2).
-**Status (2026-11-14):** owned by engine spec §16.2 (spec §20.4). M1 is done, M2 is built (C1–C4), and M3 is built through F3 (B1–B3, E1, E2 punctual, F1–F3); H1 and H2 are open. No OMM, SER pipeline, NRC or DLSS code exists yet. See §3.
+**Status (2026-11-14):** owned by engine spec §16.2 (spec §20.4). M1 is done, M2 is built (C1–C4), and M3 is built (B1–B3, E1, E2 punctual, F1–F3, H1, H2); its check on a lit `Sponza` is open. No OMM, SER pipeline or NRC code exists yet. See §3.
 
 | Doc | Role |
 |---|---|
@@ -113,7 +113,7 @@ Resource details: [resource_architecture.md](./resource_architecture.md). Vis-bu
 | Piece | State |
 |---|---|
 | glTF parse → `MaterialStore` / `LightStore` / `GeometryStore`, shared refcounted models and materials, mesh/node split, `GpuNodeInstance` | done |
-| Frame root | `GpuFrameRoot` 184 B: camera, instances, models, primitives, materials, pbrExtensions, lights, `tlas` (0), nodeInstances, drawRecords, visibleMeshlets, 4 counts, `lateVisibleBase`, `debugView`, `cullCounters`, `triangleCull`, `subpixelSnap`, `targets`, `frameFlags`, `localLightCount`, `rayInstances`, `rtxdiConstants` (F1), `cacheConstants` (0 until M4), `frameIndex`, `exposure` (1 until H2), `worldLights` (E2) |
+| Frame root | `GpuFrameRoot` 184 B: camera, instances, models, primitives, materials, pbrExtensions, lights, `tlas` (0), nodeInstances, drawRecords, visibleMeshlets, 4 counts, `lateVisibleBase`, `debugView`, `cullCounters`, `triangleCull`, `subpixelSnap`, `targets`, `frameFlags`, `localLightCount`, `rayInstances`, `rtxdiConstants` (F1), `cacheConstants` (0 until M4), `frameIndex`, `exposure` (1: H2 keeps the exposure in an image, C-H2-1), `worldLights` (E2) |
 | Render targets | done: `RenderTargets` ([vk_render_targets.cpp](../src/render/vk_render_targets.cpp)); `GpuTargets` 168 B per frame slot: vis buffer, depth, display (RGBA16F), linear sampler, render size, `current` / `previous` guide sets by frame parity, `directRadiance` (RGBA16F, F3) |
 | Culling + raster | done: two-phase GPU culling, reverse Z, 3-level Hi-Z, `RasterBin {Opaque, AlphaTested}` with `DrawRecordFlag::TwoSided` and winding flip. Both bins share one fragment shader and DGC state until M6 |
 | Resolve | done: one tiled compute dispatch (8×8). Olano–Greer homogeneous barycentrics evaluated at (+1, 0) and (0, +1), `SampleGrad`, motion from current and previous transforms. `debug_view` writes the display image; `present` draws it into the sRGB swapchain with ImGui in the same rendering |
@@ -614,7 +614,7 @@ Spec §8.2, §10.5.
 
 ### Phase E — Resolve and guides
 
-#### E1 · Vis-buffer resolve + guides — done (M1); AO, jitter and unlit specular done (2026-11-14), `lodBias` waits for H1
+#### E1 · Vis-buffer resolve + guides — done (M1); AO, jitter and unlit specular done (2026-11-14), `lodBias` done with H1
 
 - **Files:** `shaders/passes/resolve.slang`, `src/render/vk_render_targets.cpp`, `src/render/vk_renderer.cpp`, `src/scene/vk_camera.cpp`
 - **As built:** one 8×8-tiled compute dispatch. Payload → `DrawContext` → `loadTriangleCorners` → `computeBarycentrics` (Olano–Greer, also at (+1, 0) and (0, +1) for gradients) → `buildSurface` → `sampleMaterial` → guides. Empty pixels (depth 0) write zero guides and the motion of a direction at infinity. Two guide sets by frame parity (`GpuTargets::current` / `previous`); RTXDI and ReSTIR temporal passes read `previous`.
@@ -637,9 +637,9 @@ Spec §8.2, §10.5.
     - `Camera` writes `jitterOffset` (NDC) from Halton(2,3), starting the cycle at index 1. There are `8 · display area / render area` phases, 8 today.
     - Primary rays subtract the jitter (C3).
     - The cull views widen `subpixelSnap` by this frame's jitter in pixels, since `cullViewProj` is unjittered; the per-triangle test already reads jittered clip positions.
-    - It stays off until H1 resolves it, because the display shimmers by half a pixel. The Camera panel's `Jitter` checkbox and `ENGINE_JITTER=1` turn it on.
-  - **`lodBias`** = `log2(render / display)` (B1). Waits for H1: render equals display until DLSS sets a render resolution, so the bias is 0.
-  - ~~`DebugView::LightingOnly`~~ done with F3 (`directRadiance` + emissive). `DlssInput` becomes a view of the H1 inputs; mark it `isImplemented` when it lands.
+    - On by default since H1, which resolves it. `ENGINE_JITTER=0` or the Camera panel's `Jitter` checkbox turns it off. The motion test and the guide capture default to off, since they compare frames pixel by pixel.
+  - ~~**`lodBias`** = `log2(render / display)` (B1).~~ Done with H1: `Camera::updateProjection` writes `GpuCameraData.lodBias` (the former `pad0`) from the render and swapchain widths, −0.585 at Quality, and the resolve passes it to `sampleMaterial`.
+  - ~~`DebugView::LightingOnly`~~ done with F3 (`directRadiance` + emissive). ~~`DlssInput`~~ done with H1: it shows `noisyColor`.
   - **Motion vectors:** [motion_vectors.md](./features/motion_vectors.md): history bugs B1–B4, the history-reset flag, and a reprojection debug view that proves the vectors (MV1–MV5).
   - Spec §2.3 timings deferred (2026-11-08); take them on a release build with validation off (vulkan-dev skill §6.1).
   - M7 splits the resolve into per-material-bin shaders (spec §9.1–9.2); the per-pixel body stays this one.
@@ -879,12 +879,41 @@ SDK: `NVIDIA/DLSS` (NGX, Vulkan), fetched and pinned. Required: unsupported RR a
   Output: display-res RGBA16F HDR.
 - Verify every name against the pinned headers (`nvsdk_ngx_helpers_dlssd_vk.h`).
 - **Done when:** 1 spp + RR is stable under camera motion on `Sponza`.
+- **As built (2026-11-14):**
+  - `Dlss` (`src/render/vk_dlss.*`), owned by `Renderer`, is the only NGX user. `Dlss::requiredExtensions()` hands NGX's instance and device extension lists to `Device` through a new `SdkExtensions` constructor argument. A missing one fails device creation. `VK_KHR_push_descriptor`, promoted to 1.4, also sets `Vulkan14Features::pushDescriptor`.
+  - The constructor runs `NVSDK_NGX_VULKAN_Init_with_ProjectID` with a custom project id. It throws when RR is unavailable or the driver needs an update. NGX's log goes to the engine log under `NGX`.
+  - `recreate(display)` runs on every swapchain rebuild. It asks the RR optimal-settings callback for Quality (the D3D-only helper is not used) and creates the feature with `DLUnified`, packed roughness, HW depth and `IsHDR | MVLowRes | DepthInverted | AutoExposure` on a one-time compute submit. It returns the render extent, which `RenderTargets`, `HiZ`, `RtxdiContext` and the camera take. 1280×720 renders at 853×480.
+  - `RenderTargets` gains `noisyColor` (render resolution) and the RR output (display resolution, RGBA16F), both in `eGeneral`, with image views for NGX. The new `combine` pass writes `noisyColor = directRadiance + emissive`. `present` samples `GpuTargets::presentSampled`: the RR output for Lit, the display image for a debug view.
+  - In the ray command buffer, after ReSTIR DI: combine, then (Lit only) a barrier, the evaluation and a heap rebind. The barrier also orders NGX's fills of its own buffers against the previous evaluation. `jitterPixels = jitterOffset · render / 2`, the same sign as the raster offset. Matrices are transposed to row-major. History resets on the frame's reset, a camera cut, a layout change, a resize, or a frame without Lit. The Lit display capture copies the RR output.
+  - With no light loaded, Lit would be black, so `Renderer::isDlssPresented()` is false: the evaluation is skipped and the debug view pass shows the unlit albedo, as before H1. The default `Sponza` has no lights. The stats overlay says so.
+  - Only frames DLSS-RR evaluates are jittered, since a debug view or the unlit fallback below DLAA boiled when scaled up (considerations C-H1-7). `ENGINE_JITTER=1` jitters every frame.
+  - `Dlss::evaluate` binds an empty legacy descriptor set first, so NGX's image view handles index the driver's heap and not the engine's (considerations C-H1-1).
+  - Linking NGX into the mimalloc-wrapped module needed `__imp___wrap_*` slots (C-H1-3).
+  - The Ray tracing panel's DLSS section shows render → display resolution and the jitter phase count. It sets the mode (DLAA, Quality, Balanced, Performance, Ultra Performance; Quality by default) and the RR preset hint (Default, D, E, F), and can reset history. A changed mode or preset makes `Renderer::drawFrame` wait for the device and rebuild the swapchain-sized resources. Every mode was switched at runtime under validation; render sizes at 1280×720 are 1280×720, 853×480, 742×418, 640×360 and 427×240.
+- **Checked (RTX 5070, driver 621.01):**
+  - The motion test passes 13 of 13 and the cull check 16 of 16. The guide capture passes 2 of 2 normal checks. The ray check matches every frame under all three. ctest passes 7 of 7.
+  - Validation (sync, best practices, NVIDIA checks, GPU-AV off) is clean over the bench, and over the motion test's resizes and loads with jitter on, apart from NGX's own messages (C-H1-2).
+  - Jitter sign, measured on `Sponza` with `LightsPunctualLamp`: the chosen sign changes 0.000030 per frame on a still camera, against 0.00064 for the opposite sign and 0.000025 with jitter off. The done-when condition on a lit `Sponza` stays open (C-H1-5).
+  - Bench, 6000 frames at 1280×720 display: DLSS-RR 1.14 ms (best window 1.13 ms), combine 0.005 ms. GPU total 1.38 ms.
 
 #### H2 · Post + present
 
 - `post` CS: auto exposure from a luminance histogram → tonemap (ACES fitted or AgX; one curve, applied once) → the display image. The existing `present` pass then draws it into the sRGB swapchain with ImGui (the swapchain has no storage support). `exposure` goes to `GpuFrameRoot` and DLSS pre-exposure.
 - Until H1 lands, `post` reads `noisyColor` at render resolution. This is bring-up order, not a shipped path.
 - `debug_view` keeps writing the display image when a debug view is selected; `Lit` becomes the post output.
+- **As built (2026-11-14):**
+  - `PostProcess` (`src/render/vk_post.*`), owned by `Renderer`, records three compute passes after the DLSS-RR evaluation and its heap rebind, for the Lit view only:
+    - `exposureHistogramMain` (16×16 groups): a 256-bin log2-luminance histogram of the RR output over 2^−16 … 2^16, into a host-visible buffer. Black pixels land in bin 0 and are not metered.
+    - `exposureAdaptMain` (one group): reads and clears the bins, averages log2 luminance between the 40th and 95th percentile, and aims it at 0.18 plus the compensation, clamped to the EV range. It adapts in log space by `1 − e^(−dt·rate)` and writes the 1×1 R32F exposure image and a per-slot readback (`GpuExposureReadback`). Manual exposure, a snap request and a resize jump straight to the target; a frame with no lit pixel keeps the exposure.
+    - `postMain` (8×8): RR output × exposure → ACES (Stephen Hill's fit of the RRT + sRGB ODT) → the display-resolution RGBA16F post target. It is the only tonemap.
+  - Deviations from the plan above: the exposure lives in an image, not `GpuFrameRoot`, so the GPU computes it without a readback. DLSS-RR takes that image as `pInExposureTexture`, created without `AutoExposure`, and pre-exposure stays 1 (C-H2-1). DLSS-RR reads the exposure post wrote in the previous frame (C-H2-2). Post writes its own target, not the display image, which the debug views keep at render resolution.
+  - `GpuTargets` (200 B) gains `upscaledSampled`, `postStorage`, `exposureStorage` and `displaySize`; `presentSampled` points at the post target for Lit. The Lit display capture copies the post target.
+  - The Post panel shows exposure, EV, target and the metered luminance. It sets auto or manual exposure, compensation, adaptation rate and the EV range, and can snap. A `Post` GPU timer scope follows `DLSS-RR`.
+- **Checked (RTX 5070, driver 621.01):**
+  - The motion test passes 13 of 13 and the cull check 16 of 16. The guide capture passes 2 of 2 normal checks. The ray check matches every frame under all three. ctest passes 7 of 7.
+  - Validation (sync, best practices, NVIDIA checks, GPU-AV off) over a 600-frame bench with `LightsPunctualLamp` beside `Sponza` (post running), and over the motion test with jitter on, shows only NGX's messages (C-H1-2).
+  - On `Sponza` + `LightsPunctualLamp`, the exposure falls from 2.64 at frame 20 to 1.39 at frame 200 toward a target near 1.2, with about 70 000 lit pixels metered. The post output tops out at 0.97, so nothing clips.
+  - Bench, 6000 frames at 1280×720 display with the lamp: post 0.030 ms (best window 0.028 ms), DLSS-RR 1.18 ms. GPU total 1.69 ms.
 
 ### Validation assets
 
@@ -925,7 +954,7 @@ A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
 | M0 Contracts | A1, A2, A3, A4 (**done**; A4 checked by `ENGINE_GUIDE_CAPTURE`), animation removal (**done**) |
 | M1 Vis buffer | B1, E1 (**done**; E1 guides vs Khronos screenshots and motion checked 2026-11-13); 32-bit payload kept, V8 deferred; culling lossless under reverse Z (`ENGINE_CULL_CHECK`, 2026-11-13); **M1 done** (spec §16.2) |
 | M2 Cluster RT bring-up | C1, C2, C3 (**built**; C3's `ENGINE_RT_CHECK` closes C1's trace check), C4 PTLAS (**built** 2026-11-14 after M2 was reopened). Open: the async overlap capture and the 2060 Super |
-| M3 First lit frame | B1 (**done**; `lodBias` with H1), B2 (**done**), B3 (**done**), E1 (**done**: AO, jitter, unlit specular; `lodBias` with H1), E2 (**done**: punctual; emissive triangles M7), F1 (**done**), F2 (**done**), F3 (**done**), H1, H2 |
+| M3 First lit frame | B1 (**done**), B2 (**done**), B3 (**done**), E1 (**done**: AO, jitter, unlit specular, `lodBias`), E2 (**done**: punctual; emissive triangles M7), F1 (**done**), F2 (**done**), F3 (**done**), H1 (**done**; a lit Sponza check open), H2 (**done**) |
 | M4 Indirect | G1, G2, G3 (NRC), G5, G6 |
 | M5 | merged into M4 (2026-11-14) |
 | M6 Alpha | D1–D4 |

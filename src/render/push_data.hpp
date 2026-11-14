@@ -99,6 +99,35 @@ struct RayCheckPushData {
 
 static_assert(sizeof(RayCheckPushData) == 16);
 
+// passes/exposure.slang (both entries); must match shaders/types.slang ExposurePushData
+struct ExposurePushData {
+    vk::DeviceAddress frameRoot;
+    // uint[kExposureHistogramBins]
+    vk::DeviceAddress histogram;
+    // GpuExposureReadback of the frame slot
+    vk::DeviceAddress readback;
+    float deltaSeconds;
+    float compensationEv;
+    float manualEv;
+    float minEv;
+    float maxEv;
+    float adaptationRate;
+    uint32_t flags; // ExposureFlag
+    uint32_t pad0;
+};
+
+static_assert(std::is_trivially_copyable_v<ExposurePushData>);
+static_assert(offsetof(ExposurePushData, deltaSeconds) == 24);
+static_assert(sizeof(ExposurePushData) == 56);
+
+// ExposurePushData::flags; must match shaders/types.slang kExposureFlag*
+namespace ExposureFlag
+{
+    inline constexpr uint32_t Auto = 1u << 0;
+    // jump to the target instead of adapting
+    inline constexpr uint32_t Snap = 1u << 1;
+} // namespace ExposureFlag
+
 // present pass; must match shaders/types.slang PresentPushData
 struct PresentPushData {
     vk::DeviceAddress frameRoot;

@@ -1,6 +1,6 @@
 # Feature: motion vectors
 
-**Date:** 2026-11-08, updated 2026-11-13 · **Status:** computed in the resolve (M1); history bugs fixed, reset flag and reprojection view in (MV1–MV3); the §5 test list runs as a scripted check and passes (§5.1); MV4–MV5 wait for DLSS (plan H1) · **Milestone:** M3 ([engine_spec.md](../../docs/engine_spec.md) §16.2), before DLSS-RR and RTXDI temporal reuse
+**Date:** 2026-11-08, updated 2026-11-13 · **Status:** computed in the resolve (M1); history bugs fixed, reset flag and reprojection view in (MV1–MV3); the §5 test list runs as a scripted check and passes (§5.1); MV4–MV5 done with DLSS-RR (plan H1, 2026-11-14) · **Milestone:** M3 ([engine_spec.md](../../docs/engine_spec.md) §16.2), before DLSS-RR and RTXDI temporal reuse
 **Implements:** engine spec §9.2 step 3, §9.3 `motion`, §12.2
 **Related:** [visibility_buffer.md](./visibility_buffer.md) §3.6, §10; [pbr_implementation_plan.md](../pbr_implementation_plan.md) E1, H1
 
@@ -119,8 +119,8 @@ The isolated outliers are pixels where the resolve's interpolated point lands up
 | MV1 | fix B1–B4 (**done**) | M3, first |
 | MV2 | `kFrameFlagHistoryReset` in `GpuFrameRoot`, set per §4 (**done**) | M3 |
 | MV3 | `DebugView::Reprojection` (§5) and the test list (**done**: scripted, §5.1) | M3 |
-| MV4 | jitter (plan E1): Halton(2,3), phase count `8 · (display / render)²`; verify §5 stays black | M3 |
-| MV5 | DLSS-RR inputs: `MVLowRes`, `DepthInverted`, `InMVScale = 1`, `InJitterOffset`, `InReset` (plan H1) | M3 |
+| MV4 | jitter (plan E1): Halton(2,3), phase count `8 · (display / render)²`; verify §5 stays black. **Done:** on by default since H1; motion stays unjittered, and the motion test runs with jitter off because it compares albedo pixel by pixel | M3 |
+| MV5 | DLSS-RR inputs: `MVLowRes`, `DepthInverted`, `InMVScale = 1`, `InJitterOffset`, `InReset` (plan H1). **Done:** `InJitterOffset = jitterOffset · render / 2` (same sign as the raster offset, measured); `InReset` on the frame's reset, a camera cut, a layout change, a resize or a frame without Lit | M3 |
 
 ---
 

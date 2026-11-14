@@ -90,7 +90,7 @@ The spec's §5 frame, stage by stage, with the shader that runs it.
 | 12 | ReSTIR GI: temporal + spatial | `restir_gi` | graphics | [new] | M4 |
 | 13 | Combine: direct + indirect + emissive | `combine` | graphics | [new] | M4 |
 | 14 | DLSS-RR | host NGX | graphics | — | M3 |
-| 15 | Post: auto exposure → tonemap → swapchain, ImGui | `exposure`, `composite` | graphics | [new] | M3 |
+| 15 | Post: auto exposure → tonemap → post target; `present` → swapchain, ImGui | `exposure` (histogram, adapt), `post` | graphics | [exists] (H2) | M3 |
 
 Debug passes: `debug_view` [exists] (geometry and culling views from the vis buffer, every guide; later reservoirs, cache debug resolve, DLSS input vs output), `hiz_view` [exists], ray views in `debug_view` [exists, M2] (`Ray meshlets`, `Ray node instances`, `Ray shading normal`; they replace the planned `rt_debug`; primary self-hit distance after L2). `rt_check` [exists] compares primary rays with the vis buffer after the debug view, only under `ENGINE_RT_CHECK`. The ray passes run in a second graphics command buffer that waits for the compute timeline. `mesh_debug` was deleted in M1. `motion_check` [exists] counts motion-vector errors after the debug view, only under `ENGINE_MOTION_TEST` ([motion_vectors.md](./features/motion_vectors.md) §5.1). Output: `present` [exists] samples the display image into the swapchain, then ImGui.
 
@@ -154,7 +154,9 @@ Normative in spec §8.3 and §9.3. Two sets of the surface and guides ping-pong 
 | `directRadiance` | RGBA16F | `rtxdi_shade` (zeros with no lights) | `combine`; `debug_view` (`Lighting only`) until then |
 | `indirectRadiance` | RGBA16F | `restir_gi` | `combine` |
 | `noisyColor` | RGBA16F HDR | `combine` | DLSS-RR |
-| Output color | RGBA16F, display resolution | DLSS-RR | `exposure`, `composite` |
+| Output color | RGBA16F, display resolution | DLSS-RR | `exposure`, `post` |
+| Exposure | R32F, 1×1 | `exposureAdaptMain` | `post`; next frame's DLSS-RR |
+| Post color | RGBA16F, display resolution, tonemapped | `post` | `present` (Lit) |
 
 Buffers (BDA, [resource_architecture.md](./resource_architecture.md) §12):
 - **Scene:** asset slices through `GpuModel`; materials, lights, primitives, node instances through the frame root.
@@ -190,8 +192,8 @@ Buffers (BDA, [resource_architecture.md](./resource_architecture.md) §12):
 | `restir_gi` | [new] | compute + ray query | GI samples, guides, motion | `indirectRadiance`, optional `specHitDistance` | M4 |
 | `combine` | [new] | compute | `directRadiance`, `indirectRadiance`, `emissive` | `noisyColor` | M4 |
 | DLSS-RR | host NGX | — | `noisyColor` + guides | output color | M3 |
-| `exposure` | [new] | compute | output color | luminance histogram, exposure | M3 |
-| `composite` | [new] | compute | output color, exposure | swapchain (tonemap once) | M3 |
+| `exposure` | [exists] (H2) | compute: `exposureHistogramMain`, `exposureAdaptMain` | output color | luminance histogram, exposure image, readback | M3 |
+| `post` | [exists] (H2; planned as `composite`) | compute | output color, exposure | post target (ACES fitted, tonemap once); `present` draws it into the swapchain | M3 |
 | `debug_view` | [exists] | compute (+ ray query for the ray views) | vis buffer, any §4 target, TLAS | `displayColor` | M1 onward |
 
 There is one path loop (`pathtrace`). Direct light at secondary hits calls RTXDI sampling without reuse plus one visibility ray; there is no second light loop. The path code calls the NRC bridge directly.

@@ -27,8 +27,6 @@ Kinds:
 
 ## M3 · E1 guides
 
-- **C-E1-1 · Deferred · `lodBias` is 0.** It is `log2(render / display)`, and render equals display until H1 sets a render resolution. **Exit:** H1.
-- **C-E1-2 · Deferred · jitter is off by default.** Halton jitter is built, but the display shimmers by half a pixel until DLSS-RR resolves it. `ENGINE_JITTER=1` turns it on. **Exit:** H1.
 
 ## M3 · F1 RTXDI host context
 
@@ -48,13 +46,31 @@ Kinds:
 
   Through BDA both reads lost the device. The bridge's reservoir accessor and `RAB_LoadLightInfo` now check bounds. **Exit:** none expected. Any new RTXDI bridge (ReSTIR GI in G5, PT) must do the same.
 - **C-F3-2 · Workaround · Pairwise MIS instead of the library default `Basic`.** RTXDI 3.1's fused `Basic` path skips naive neighbors (`discountNaiveSamples`) after marking them for its normalization. It measured 35% too dark on `LightsPunctualLamp`. **Exit:** an RTXDI release that fixes the fused `Basic` path. Re-measure on every RTXDI update.
-- **C-F3-3 · Deferred · permutation sampling is off.** It raised the frame-to-frame change from 0.8% to 20.5% of the signal. Turning it back on also needs `SetSpatioTemporalResamplingParameters` every frame, because RTXDI 3.1's `SetFrameIndex` rehashes only the temporal pass's random number. **Exit:** H1 decides with DLSS-RR in the loop.
+- **C-F3-3 · Deferred · permutation sampling is off.** It raised the frame-to-frame change from 0.8% to 20.5% of the signal. Turning it back on also needs `SetSpatioTemporalResamplingParameters` every frame, because RTXDI 3.1's `SetFrameIndex` rehashes only the temporal pass's random number. H1 did not decide it: no test scene lights enough of the frame to judge it through DLSS-RR (C-H1-5). **Exit:** an A/B through DLSS-RR on a lit scene.
 - **C-F3-4 · Deferred · no BRDF candidates (`numBrdfSamples` 0).** No BRDF ray can hit a light until emissive triangles exist. **Exit:** M7, with emissive triangles and `Power_RIS`.
 - **C-F3-5 · Deferred · no presampling, no emissive triangles, no environment light.** **Exit:** M7 for presampling and emissive triangles; the environment light is unscheduled.
 - **C-F3-6 · Unverified · stability under motion.** Convergence and stability were measured on a static camera only. **Exit:** a moving-camera and moving-light check, for example within M3's "Sponza + sun" goal.
 - **C-F3-7 · Unverified · full-screen cost.** No lit full-screen scene exists yet. On Sponza without lights, before the no-light skip, the passes cost 0.05 + 0.25 ms at 1280×720 on the RTX 5070. A lit frame costs more, since it adds light evaluation and shadow rays. The RTX 2060 Super has not been measured. **Exit:** timings on Sponza + sun on both GPUs.
 - **C-F3-8 · Limitation · no permanent convergence regression check.** The F3 comparison against `Shadowed lights` used temporary instrumentation in the guide capture. **Exit:** a permanent check in the guide capture, needed again for `Power_RIS` in M7.
 - **C-F3-9 · Limitation · the `ReSTIR DI initial` GPU timer includes the TLAS wait.** It is the first span of the ray command buffer, so any wait for the async TLAS build lands in it. **Exit:** a separate wait span, if the number ever matters.
+
+## M3 · H1 DLSS Ray Reconstruction
+
+- **C-H1-1 · Workaround · NGX needs the driver's descriptor heap.** NGX's kernels address images by `VK_NVX_image_view_handle` handles, which index the driver-managed descriptor heap. While the engine's `VK_EXT_descriptor_heap` heap is bound, they index that heap instead. DLSS-RR then reads and writes whatever image sits in the engine slot with the same number: a guide image was overwritten every frame (motion test 6 of 13), and with the reserved range moved to the heap start the output stayed black. A new command buffer does not reset this. `Dlss::evaluate` binds an empty legacy descriptor set (`vkCmdBindDescriptorSets2` with a one-set pipeline layout) right before the evaluation, which returns the driver to its own heap. DXVK does the same (`DxvkContext::launchCuKernelNVX`, "no spec-legal way to bind it"). DXVK's bind without a layout crashes driver 621.01 inside `nvoglv64.dll`. The renderer rebinds both heaps afterwards. **Exit:** a spec-legal way to select the driver heap, or an NGX that does not use image view handles.
+- **C-H1-2 · Warning · NGX's own validation messages.** These come from inside `NGX_VULKAN_EVALUATE_DLSSD_EXT` and pipeline creation, with no engine command in between:
+  - `SYNC-HAZARD-WRITE-AFTER-WRITE` twice, on the first evaluation after each feature creation. NGX transitions two of its own images (`nv.ngx.dlssd.resource`) and then clears them without a barrier. NVIDIA's developer forum has a report of the same clear.
+  - `BestPractices-SpirvDeprecated_WorkgroupSize` three times, from NGX's compute pipelines.
+
+  The other per-frame hazard, NGX's fills against the previous evaluation's writes, is fixed by the engine's barrier before the evaluation. **Exit:** a DLSS SDK that fixes them.
+- **C-H1-3 · Workaround · `--wrap=malloc` and MSVC-built static libraries.** The engine's modules link with `--wrap=malloc/calloc/realloc/free/aligned_alloc` to route allocations to mimalloc. `nvsdk_ngx_d.lib` is MSVC `/MD` code and calls `malloc` and `free` through `__imp_malloc` and `__imp_free`. lld redirects those to `__imp___wrap_*`, and its fallback local import left all 9 call sites with a zero displacement (crash in `NGXGetPathUsingQAI`). `src/util/mi_new_delete.cpp` defines the `__imp___wrap_*` slots, and that object is compiled without LTO, since bitcode slots did not resolve either. Checked with clang 22.1.8's lld. **Exit:** drop `--wrap`, or an lld that resolves the fallback.
+- **C-H1-5 · Unverified · DLSS-RR is checked only on a sparsely lit frame.** `Sponza` has no lights, so Lit falls back to the unlit albedo there and DLSS-RR does not run. Even lit by the lamp below, the frame averages 1–1.6% of white after H2's exposure and tonemap, since the unlit 93% stays black. The `DirectionalLight` sample's sun points along −Z, horizontally, and lights no pixel of `Sponza`. The checks loaded `LightsPunctualLamp` beside it, which lights about 6% of the pixels. On that frame the jitter sign was measured (a still camera's frame-to-frame change is 0.000030 in tonemapped luminance, against 0.00064 with the opposite sign and 0.000025 with jitter off), and a yawing camera stays steadier with the chosen sign (0.00074 against 0.00109). The "stable under camera motion on Sponza" condition is therefore not verified on a lit Sponza, and no one has looked at it on screen yet. **Exit:** a lit Sponza (the M3 row's sun), checked on screen and by the same measurement.
+- **C-H1-6 · Limitation · the debug views are not upscaled.** A debug view writes the display image at render resolution, and the DLSS-RR evaluation is skipped, so returning to Lit resets its history. **Exit:** none planned; debug views show render-resolution data on purpose.
+
+## M3 · H2 post
+
+- **C-H2-1 · Limitation · the color is not pre-exposed.** `GpuFrameRoot.exposure` and DLSS-RR's `InPreExposure` stay 1, and the exposure reaches DLSS-RR only as the 1×1 exposure texture. NGX takes pre-exposure as a CPU float, which would need the GPU exposure read back a frame or more late. The RGBA16F `noisyColor` had enough range on the test scenes. **Exit:** a scene whose radiance nears the FP16 limits (65504 at the top), then pre-expose by a read-back value.
+- **C-H2-2 · Limitation · DLSS-RR sees last frame's exposure.** The exposure pass runs after the evaluation, so the exposure texture DLSS-RR reads was written by the previous frame's post. While adapting, it differs by `1 − e^(−dt·rate)` of the gap, under 3% per frame at 60 Hz and the default rate. **Exit:** none planned unless RR shows exposure lag.
+- **C-H2-3 · Limitation · auto exposure ignores black pixels.** Bin 0 holds pixels below 2^−16 and is not metered, so a mostly unlit frame is exposed for its lit part (on `Sponza` + `LightsPunctualLamp`, about 7% of the pixels). The EV range bounds it. **Exit:** a scene where dark areas should pull the exposure up, then meter them with a floor.
 
 ## M3 · D4 visibility rays
 
@@ -82,4 +98,8 @@ Kinds:
 |---|---|---|---|
 | C-C4-1 | M2 · C4 | the TLAS was a full per-slot build, and partitioned AS was optional at device creation | 2026-11-14: partitioned AS is required; one PTLAS is updated in place from GPU-written instance writes |
 | C-C4-2 | M2 · C4 | no ray set the OMM 2-state flag, which PTLAS instances cannot carry | 2026-11-14: `traceVisibility` and `traceClosest` set `RAY_FLAG_FORCE_OMM_2_STATE` (see C-C4-3) |
+| C-H1-7 | M3 · H1 | below DLAA, the debug views and Lit without lights (unlit `Sponza`) boiled: jittered at render resolution and scaled up with nothing resolving the jitter | 2026-11-14: `Camera::updateCameraData` jitters only frames DLSS-RR evaluates (`Renderer::isDlssPresented()`); `ENGINE_JITTER=1` forces it for the culling checks |
+| C-H1-4 | M3 · H1 | DLSS-RR used its own auto exposure | 2026-11-14: H2's exposure image is passed as `pInExposureTexture`, and the feature is created without `AutoExposure` |
+| C-E1-1 | M3 · E1 | `lodBias` was 0 while render equalled display | 2026-11-14: `Camera` sets `log2(render / display)` from DLSS-RR's render resolution (H1) |
+| C-E1-2 | M3 · E1 | jitter was off by default | 2026-11-14: on by default, resolved by DLSS-RR (H1). `ENGINE_JITTER=0` turns it off; the motion test and the guide capture default to off, since they compare frames pixel by pixel |
 | C-F3-R1 | M3 · F3 | `BestPractices-AMD-ClearAttachment-ClearImage-color`: with no lights, `directRadiance` was cleared with `vkCmdClearColorImage` | 2026-11-14: `rtxdi_shade` writes zeros itself when no light is loaded (a uniform early-out), so the image needs no transfer usage |

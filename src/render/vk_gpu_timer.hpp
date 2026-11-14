@@ -23,6 +23,11 @@ enum class GpuTimerScope : uint32_t
     // first span of the ray command buffer: includes any wait for the TLAS build
     RtxdiInitial,
     RtxdiShade,
+    Combine,
+    // zero while a debug view is shown: the DLSS-RR evaluation is skipped
+    Dlss,
+    // exposure histogram, adaptation and tonemap; zero with DLSS-RR
+    Post,
     DebugView,
     // GPU idle until the swapchain image is acquired; not GPU work, so not in the total
     AcquireWait,
@@ -58,6 +63,12 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "ReSTIR DI initial";
     case GpuTimerScope::RtxdiShade:
         return "ReSTIR DI shade";
+    case GpuTimerScope::Combine:
+        return "Combine";
+    case GpuTimerScope::Dlss:
+        return "DLSS-RR";
+    case GpuTimerScope::Post:
+        return "Post";
     case GpuTimerScope::DebugView:
         return "Debug view";
     case GpuTimerScope::AcquireWait:

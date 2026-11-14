@@ -397,8 +397,8 @@ void logQueueFamilies(std::span<const QueueFamilyChain> chains)
 } // namespace
 
 
-Device::Device(SDL_Window* window, bool enableValidationLayers) :
-    window(window), enableValidationLayers(enableValidationLayers)
+Device::Device(SDL_Window* window, bool enableValidationLayers, SdkExtensions sdkExtensions) :
+    window(window), enableValidationLayers(enableValidationLayers), sdkExtensions(std::move(sdkExtensions))
 {
 }
 
@@ -440,6 +440,11 @@ void Device::createInstance()
                           vk::KHRGetDisplayProperties2ExtensionName,
                           vk::KHRGetSurfaceCapabilities2ExtensionName,
                       });
+    for (const std::string& name : sdkExtensions.instance) {
+        if (std::ranges::none_of(extensions, [&name](const char* enabled) { return name == enabled; })) {
+            extensions.push_back(name.c_str());
+        }
+    }
     std::string enabledNames;
     for (const char* extension : extensions) {
         enabledNames += std::format("{}{}", enabledNames.empty() ? "" : ", ", extension);
@@ -805,6 +810,34 @@ void Device::createLogicalDevice()
         enableFeatures(featureChain, kNrcFeatures);
         enabledExtensions.insert(enabledExtensions.end(), kNrcDeviceExtensions.begin(), kNrcDeviceExtensions.end());
     }
+    const std::vector<std::string> sdkDeviceExtensions =
+        sdkExtensions.device ? sdkExtensions.device(*instance, *physicalDevice) : std::vector<std::string>{};
+    std::vector<std::string_view> sdkMissing;
+    for (const std::string& name : sdkDeviceExtensions) {
+        // core bufferDeviceAddress is enabled; the EXT alongside it is invalid (VUID-VkDeviceCreateInfo-pNext-04748)
+        if (name == "VK_EXT_buffer_device_address" ||
+            std::ranges::any_of(enabledExtensions, [&name](const char* enabled) { return name == enabled; })) {
+            continue;
+        }
+        if (!isExtensionSupported(availableExtensions, name)) {
+            sdkMissing.emplace_back(name);
+            continue;
+        }
+        enabledExtensions.push_back(name.c_str());
+        // promoted to 1.4: the extension also requires its core feature bit (VUID-VkDeviceCreateInfo-ppEnabledExtensionNames-10858)
+        if (name == vk::KHRPushDescriptorExtensionName) {
+            featureChain.get<vk::PhysicalDeviceVulkan14Features>().pushDescriptor = vk::True;
+        }
+    }
+    if (!sdkMissing.empty()) {
+        failStep("SDK device extensions", sdkMissing);
+    }
+    std::string sdkNames;
+    for (const char* name : std::span(enabledExtensions).subspan(kRequiredDeviceExtensions.size())) {
+        sdkNames += std::format("{}{}", sdkNames.empty() ? "" : ", ", name);
+    }
+    logInfo(std::format("Device extensions beyond the required set: {}", sdkNames.empty() ? "none" : sdkNames),
+            "Device");
 
     // one create info per distinct family; duplicates are a validation error.
     // the same set feeds concurrent sharing, where order does not matter

@@ -67,7 +67,7 @@ namespace
             LAYOUT_FIELD(GpuCameraData, farZ),
             LAYOUT_FIELD(GpuCameraData, frameDeltaTime),
             LAYOUT_FIELD(GpuCameraData, prevCameraPos),
-            LAYOUT_FIELD(GpuCameraData, pad0),
+            LAYOUT_FIELD(GpuCameraData, lodBias),
         }},
         {"GpuObjectUB", sizeof(GpuObjectUB), {
             LAYOUT_FIELD(GpuObjectUB, modelMatrix),
@@ -372,6 +372,19 @@ namespace
         {"FramePushData", sizeof(FramePushData), {
             LAYOUT_FIELD(FramePushData, frameRoot),
         }},
+        {"ExposurePushData", sizeof(ExposurePushData), {
+            LAYOUT_FIELD(ExposurePushData, frameRoot),
+            LAYOUT_FIELD(ExposurePushData, histogram),
+            LAYOUT_FIELD(ExposurePushData, readback),
+            LAYOUT_FIELD(ExposurePushData, deltaSeconds),
+            LAYOUT_FIELD(ExposurePushData, compensationEv),
+            LAYOUT_FIELD(ExposurePushData, manualEv),
+            LAYOUT_FIELD(ExposurePushData, minEv),
+            LAYOUT_FIELD(ExposurePushData, maxEv),
+            LAYOUT_FIELD(ExposurePushData, adaptationRate),
+            LAYOUT_FIELD(ExposurePushData, flags),
+            LAYOUT_FIELD(ExposurePushData, pad0),
+        }},
         {"MotionCheckPushData", sizeof(MotionCheckPushData), {
             LAYOUT_FIELD(MotionCheckPushData, frameRoot),
             LAYOUT_FIELD(MotionCheckPushData, stats),
@@ -431,6 +444,19 @@ namespace
             LAYOUT_FIELD(GpuTargets, previous),
             LAYOUT_FIELD(GpuTargets, directRadianceStorage),
             LAYOUT_FIELD(GpuTargets, directRadianceSampled),
+            LAYOUT_FIELD(GpuTargets, noisyColorStorage),
+            LAYOUT_FIELD(GpuTargets, noisyColorSampled),
+            LAYOUT_FIELD(GpuTargets, presentSampled),
+            LAYOUT_FIELD(GpuTargets, upscaledSampled),
+            LAYOUT_FIELD(GpuTargets, postStorage),
+            LAYOUT_FIELD(GpuTargets, exposureStorage),
+            LAYOUT_FIELD(GpuTargets, displaySize),
+        }},
+        {"GpuExposureReadback", sizeof(GpuExposureReadback), {
+            LAYOUT_FIELD(GpuExposureReadback, exposure),
+            LAYOUT_FIELD(GpuExposureReadback, targetExposure),
+            LAYOUT_FIELD(GpuExposureReadback, averageLuminance),
+            LAYOUT_FIELD(GpuExposureReadback, pixels),
         }},
         {"GpuRayInstance", sizeof(GpuRayInstance), {
             LAYOUT_FIELD(GpuRayInstance, nodeInstanceIndex),

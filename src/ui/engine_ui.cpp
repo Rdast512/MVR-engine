@@ -323,6 +323,7 @@ void EngineUi::buildFrame(const FrameStats& stats)
             drawDebugViewPanel();
             drawCullingPanel();
             drawRayTracingPanel();
+            drawPostPanel();
             drawInstanceFieldPanel();
         }
         ImGui::End();
@@ -347,6 +348,8 @@ void EngineUi::drawStatsOverlay(const FrameStats& stats) const
         // labels screenshots and captures taken in a debug view
         if (const DebugView view = context.renderer.debugView.view; view != DebugView::Lit) {
             ImGui::Text("View: %s", debugViewInfo(view).name);
+        } else if (!context.renderer.isDlssPresented()) {
+            ImGui::Text("No lights: unlit albedo");
         }
     }
     ImGui::End();
@@ -598,7 +601,7 @@ void EngineUi::drawCameraPanel()
         context.camera.teleportTo(glm::make_vec3(teleportPosition.data()));
     }
     ImGui::Checkbox("Jitter", &context.camera.isJitterEnabled);
-    ImGui::SetItemTooltip("Halton(2,3) subpixel jitter, %u phases. Shimmers until DLSS resolves it",
+    ImGui::SetItemTooltip("Halton(2,3) subpixel jitter, %u phases. Only on frames DLSS-RR resolves",
                           context.camera.getJitterPhaseCount());
 }
 
@@ -808,7 +811,8 @@ void EngineUi::drawCullingPanel()
     }
 }
 
-// runtime controls of what is built: RTX Mega Geometry (PTLAS) and RTXDI. RTXGI (NRC, ReSTIR GI) has no pass yet
+// runtime controls of what is built: RTX Mega Geometry (PTLAS), RTXDI and DLSS-RR. RTXGI (NRC, ReSTIR GI) has no pass
+// yet
 void EngineUi::drawRayTracingPanel()
 {
     if (!ImGui::CollapsingHeader("Ray tracing")) {
@@ -878,14 +882,89 @@ void EngineUi::drawRayTracingPanel()
     ImGui::EndDisabled();
     ImGui::EndDisabled();
 
+    ImGui::SeparatorText("DLSS Ray Reconstruction");
+    Dlss& dlss = context.renderer.getDlss();
+    const vk::Extent2D render = dlss.getRenderExtent();
+    const vk::Extent2D display = dlss.getDisplayExtent();
+    ImGui::Text("Render %ux%u -> display %ux%u (%.2fx), %u jitter phases", render.width, render.height, display.width,
+                display.height, static_cast<float>(display.width) / static_cast<float>(render.width),
+                context.camera.getJitterPhaseCount());
+    constexpr std::array kQualityModes{"DLAA", "Quality", "Balanced", "Performance", "Ultra Performance"};
+    int quality = static_cast<int>(dlss.settings.quality);
+    if (ImGui::Combo("Mode", &quality, kQualityModes.data(), static_cast<int>(kQualityModes.size()))) {
+        dlss.settings.quality = static_cast<Dlss::Quality>(quality);
+    }
+    ImGui::SetItemTooltip("render resolution: DLAA renders at display size. A change recreates the feature and the "
+                          "render targets, and resets history");
+    constexpr std::array kPresets{"Default", "D (transformer)", "E (latest transformer)", "F (RR2)"};
+    int preset = static_cast<int>(dlss.settings.preset);
+    if (ImGui::Combo("Preset", &preset, kPresets.data(), static_cast<int>(kPresets.size()))) {
+        dlss.settings.preset = static_cast<Dlss::Preset>(preset);
+    }
+    ImGui::SetItemTooltip("model hint; an NVIDIA app override takes precedence (NGX logs it as a DRS override)");
+    if (ImGui::Button("Reset history")) {
+        context.renderer.resetDlssHistory();
+    }
+    ImGui::SetItemTooltip("the next Lit frame starts without accumulated history");
+    if (!context.renderer.isDlssPresented()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled(context.renderer.debugView.view == DebugView::Lit
+                                ? "not evaluated: no lights, Lit shows unlit albedo"
+                                : "evaluated only in the Lit view");
+    }
+
     if (ImGui::Button("Defaults")) {
         ptlas = {};
         rtxdi.isReference = false;
         di = RtxdiContext::defaultSettings();
+        dlss.settings = {};
     }
 
     ImGui::SeparatorText("RTXGI");
     ImGui::TextDisabled("NRC, ReSTIR GI and the bounce count come with the M4 path tracer (PBR plan G1-G6)");
+}
+
+// exposure and tonemap after DLSS-RR (PBR plan H2)
+void EngineUi::drawPostPanel()
+{
+    if (!ImGui::CollapsingHeader("Post")) {
+        return;
+    }
+    PostProcess& post = context.renderer.getPost();
+    PostProcess::Settings& settings = post.settings;
+    if (!context.renderer.isDlssPresented()) {
+        ImGui::TextDisabled(context.renderer.debugView.view == DebugView::Lit
+                                ? "inactive: no lights, Lit shows unlit albedo"
+                                : "inactive: runs only in the Lit view");
+    }
+    const GpuExposureReadback& exposure = post.getLastExposure();
+    ImGui::Text("Exposure %.3g (%+.2f EV), target %.3g", exposure.exposure,
+                exposure.exposure > 0.0f ? std::log2(exposure.exposure) : 0.0f, exposure.targetExposure);
+    ImGui::Text("Average luminance %.3g over %u lit pixels", exposure.averageLuminance, exposure.pixels);
+    ImGui::Checkbox("Auto exposure", &settings.isAutoExposure);
+    ImGui::SetItemTooltip("middle grey over the mean log luminance between the 40th and 95th percentile of the "
+                          "non-black pixels");
+    if (settings.isAutoExposure) {
+        ImGui::SliderFloat("Compensation", &settings.compensationEv, -8.0f, 8.0f, "%+.1f EV",
+                           ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SliderFloat("Adaptation rate", &settings.adaptationRate, 0.1f, 10.0f, "%.1f /s",
+                           ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("the exposure closes 63%% of its gap to the target in 1 / rate seconds");
+    } else {
+        ImGui::SliderFloat("Exposure", &settings.manualEv, settings.minEv, settings.maxEv, "%+.1f EV",
+                           ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("log2 of the scale applied before the tonemap");
+    }
+    ImGui::DragFloatRange2("Exposure range", &settings.minEv, &settings.maxEv, 0.1f, -32.0f, 32.0f, "%+.1f EV",
+                           nullptr, ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::Button("Snap to target")) {
+        post.requestSnap();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Defaults##post")) {
+        settings = {};
+    }
+    ImGui::TextDisabled("Tonemap: ACES (Hill's fit), applied once");
 }
 
 void EngineUi::drawInstanceFieldPanel()

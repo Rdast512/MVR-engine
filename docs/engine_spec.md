@@ -499,6 +499,8 @@ RTXDI ReSTIR GI on the §11.3 samples: temporal then spatial reuse, with the boi
 
 NGX directly (not Streamline), `DLSSD` feature, HW depth, packed roughness, HDR input, pre-exposure. Inputs: `noisyColor`, depth, motion, diffuse/specular albedo, normal+roughness, jitter (PBR plan H1); `specHitDistance` only as the optional input of §9.3. Output: display-resolution RGBA16F. Required: missing RR throws at init.
 
+**As built (PBR H1, 2026-11-14):** `Dlss` creates the feature at the Quality render resolution (853×480 for a 1280×720 window) and evaluates it in the ray command buffer for the Lit view. The exposure comes from post (§12.3) as a 1×1 exposure texture; the color is not pre-exposed (considerations C-H2-1). NGX's kernels need the driver-managed descriptor heap, so an empty legacy descriptor set is bound before each evaluation (considerations C-H1-1). 1.14 ms on the RTX 5070 at that size.
+
 ### 12.2 Jitter and resolution
 
 Halton(2,3), phase count `8 · (display / render)²`. LOD error (§8.1) and texture LOD bias (`log2(render / display)`) use display resolution.
@@ -508,12 +510,15 @@ Culling and jitter (§8.1 A8, as in `vk_lod_clusters`): frustum, Hi-Z and the LO
 **As built (PBR E1, 2026-11-14):**
 - `Camera` writes the Halton(2,3) offset to `GpuCameraData.jitterOffset`. `viewProj` and every matrix derived from it stay unjittered, and `jitterClip` adds the offset in the raster, the resolve's barycentrics and the per-triangle test.
 - The cull views add this frame's jitter in pixels to `subpixelSnap`.
-- Jitter stays off until DLSS-RR (PBR H1): the Camera panel's `Jitter` checkbox and `ENGINE_JITTER=1` turn it on.
+- Jitter is on by default since DLSS-RR (PBR H1). `ENGINE_JITTER=0` or the Camera panel's `Jitter` checkbox turns it off, and the motion test and guide capture default to off. `lodBias` is `log2(render / display)`.
+- Only frames DLSS-RR evaluates are jittered (2026-11-14). A debug view, or Lit without lights, shows the render-resolution image scaled up, where the jitter boiled: on unlit `Sponza` 10% frame-to-frame change at Quality and 12% at Performance, against 0 without jitter. `ENGINE_JITTER=1` jitters every frame, so the cull check still covers the jitter rule.
 - With jitter on, `ENGINE_CULL_CHECK` stays bit-identical (16 of 16) and `ENGINE_RT_CHECK` matches every frame.
 
 ### 12.3 Post
 
 Auto exposure from a luminance histogram (compute) → tonemap (ACES fitted or AgX; one curve, applied once) → swapchain → ImGui. No bloom or other effects in the baseline.
+
+**As built (PBR H2, 2026-11-14):** `PostProcess` runs three compute passes after the DLSS-RR evaluation, for the Lit view only. A 256-bin log2-luminance histogram of the RR output (black pixels in their own bin, not metered) is followed by one group that averages the 40th–95th percentile, aims it at 0.18 and adapts in log space (`1 − e^(−dt·rate)`, 1.5/s by default). The result goes into a 1×1 R32F exposure image. `post` then applies the exposure and ACES (Hill's fit), the only tonemap in the frame, into a display-resolution RGBA16F post target, which `present` draws into the sRGB swapchain. DLSS-RR reads the same exposure image, one frame old (considerations C-H2-2). The Post panel sets compensation, adaptation rate, an EV range and a manual exposure, and can snap to the target; a resize snaps too. 0.030 ms on the 5070 at 1280×720.
 
 ### 12.4 Transparency
 
@@ -629,7 +634,7 @@ Each milestone renders something testable and is measured against §2.3 before t
 | M0 | PBR A1, A2, A4; `GpuTargets`; animation removed; SER reorder hint and decompression methods logged; culling capacities and overflow counters; shared structs asserted (layout test, AU11) | baseline timings and culling image on the 2060 Super, which is not in the dev machine (the RTX 5070 is done: §2.3, `ENGINE_CULL_CHECK`) |
 | M1 | reverse-Z + Hi-Z, vis buffer, opaque bin with winding flip, single-dispatch resolve, B1, §9.3 guides, motion; debug views of every guide; guides match the Khronos screenshots (PBR E1, `ENGINE_GUIDE_CAPTURE`); motion checked by `ENGINE_MOTION_TEST`; culling lossless under reverse Z (`ENGINE_CULL_CHECK`, 16 of 16 poses); RTX 5070 timings (§2.3) | **done** (2026-11-13). Timings on the 2060 Super stay with M0 |
 | M2 | PBR C1: cluster AS and position fetch required; one CLAS per meshlet and one cluster BLAS per mesh primitive, built at load per model (`MegaGeometry`). PBR C2: GPU-written TLAS instances and a full TLAS build per frame on the async compute queue (`RayTracingScene`, timeline semaphore). PBR C3: `decodeHit` over the resolve's own functions, ray-query debug views colored like the vis-buffer ones, `SafeSpawnPoint` origins and ray cones; `ENGINE_RT_CHECK` matches primary rays to the vis buffer on every checked frame, unload included. PBR C4: one PTLAS updated in place from GPU-written instance writes (`FrameSync::rayTimeline` orders it after the previous frame's rays), grid partitions without a global partition, and the OMM 2-state ray flag in `traceVisibility` and `traceClosest`; a still frame writes no instances | the overlap capture in Tracy/Nsight; position fetch, cluster AS and partitioned AS on the 2060 Super (Q7) |
-| M3 | PBR B2 (BRDF), B3 (`evalLight`); B1's `KHR_texture_transform` check (`TextureTransformTest`, `TextureTransformMultiTest`); E1's AO guide, unlit specular weight and Halton jitter with the culling jitter rule (§12.2; jitter off until H1); E2's GPU world light buffer for punctual lights; F1's RTXDI host context (reservoirs, neighbor offsets, constants per slot); F2's RTXDI bridge (`RAB_*` over the guides, `traceVisibility`) with the position guide and `motion.z`; F3's ReSTIR DI passes into `directRadiance` (`Lighting only` view), matching RTXDI's unbiased reference on `LightsPunctualLamp` | `lodBias` (needs H1's render resolution), H1, H2; E2's emissive triangles (M7) |
+| M3 | PBR B2 (BRDF), B3 (`evalLight`); B1's `KHR_texture_transform` check (`TextureTransformTest`, `TextureTransformMultiTest`); E1's AO guide, unlit specular weight, `lodBias` and Halton jitter with the culling jitter rule (§12.2); E2's GPU world light buffer for punctual lights; F1's RTXDI host context (reservoirs, neighbor offsets, constants per slot); F2's RTXDI bridge (`RAB_*` over the guides, `traceVisibility`) with the position guide and `motion.z`; F3's ReSTIR DI passes into `directRadiance` (`Lighting only` view), matching RTXDI's unbiased reference on `LightsPunctualLamp`; H1's DLSS-RR at the Quality render resolution (1.14 ms on the 5070); H2's histogram auto exposure and ACES tonemap (0.030 ms), with the exposure passed to DLSS-RR | H1's and H2's check on a lit Sponza (considerations C-H1-5); E2's emissive triangles (M7) |
 | M4–M9 | — | not started |
 
 **Work added by the audit (§20.2):**
@@ -831,6 +836,9 @@ Root cause of the drift: the same facts (vis-buffer format, the §9.3 guide tabl
 
 | Date | Change |
 |---|---|
+| 2026-11-14 | Jitter only on frames DLSS-RR evaluates (§12.2): below DLAA, the debug views and the unlit fallback boiled. `ENGINE_JITTER=1` still jitters every frame for the culling checks |
+| 2026-11-14 | PBR H2 built: auto exposure from a log2-luminance histogram of the DLSS-RR output into a 1×1 exposure image, then ACES (Hill's fit) once into a display-resolution post target that `present` draws for the Lit view. DLSS-RR takes the exposure image instead of its own auto exposure; `GpuFrameRoot.exposure` and pre-exposure stay 1. `GpuTargets` is 200 B. 0.030 ms on the 5070 at 1280×720. §12.1, §12.3 and §16.2 updated |
+| 2026-11-14 | PBR H1 built: DLSS-RR through NGX at the Quality render resolution, fed by a new `combine` pass (`noisyColor`) and the guides, presented for the Lit view. Jitter is on by default and `lodBias` is `log2(render / display)` (§12.2). NGX needs the driver-managed descriptor heap, so an empty legacy descriptor set is bound before each evaluation. 1.14 ms on the 5070 at 853×480 → 1280×720. §12.1, §12.2 and §16.2 updated |
 | 2026-11-14 | PBR C4 built, M2 built again: partitioned AS is required at device creation; one PTLAS is updated in place from GPU-written instance writes, with no global partition, which measured slower; every ray sets the OMM 2-state ray flag. Still frames update in 0.015–0.019 ms on the 5070. §10.3 row, X2, Q10 and §16.2 status updated |
 | 2026-11-14 | PTLAS is required (§10.3): one partitioned TLAS updated in place from GPU-written ops replaces the per-slot full TLAS build, and every ray sets the OMM 2-state ray flag (§10.5). M2 is reopened for PBR C4; M3 keeps its built work (C4 adds the ray flag to `traceVisibility`); M9 loses the 0.3 ms trigger. New Q10 |
 | 2026-11-14 | Target is NVIDIA RTX only: the AMD-later note (§1.2) and P-AMD are closed. NRC is the only radiance cache (§11.4): SHaRC and `IRadianceCache` are dropped, M5 is merged into M4, and R4 has no fallback |
