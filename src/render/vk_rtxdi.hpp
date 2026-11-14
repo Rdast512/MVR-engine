@@ -1,7 +1,7 @@
 #pragma once
 #include "../Constants.h"
 #include "core/vk_allocator.hpp"
-#include "core/vk_asset_buffers.hpp"
+#include "vk_world_lights.hpp"
 #include "core/vk_device.hpp"
 #include "util/vk_utils.hpp"
 
@@ -74,7 +74,7 @@ public:
     // RTXDI's defaults with the engine's choices (plan F3): Pairwise MIS
     [[nodiscard]] static Settings defaultSettings();
 
-    RtxdiContext(const Device& device, const VkAllocator& allocator, const AssetBuffers& assets);
+    RtxdiContext(const Device& device, const VkAllocator& allocator, const WorldLights& worldLights);
     ~RtxdiContext();
 
     RtxdiContext(const RtxdiContext&) = delete;
@@ -97,8 +97,6 @@ public:
     {
         return constants[frameSlot].address;
     }
-    // the frame root carries the same count
-    [[nodiscard]] bool hasLights() const { return assets.uploadedCount(AssetBuffer::Lights) > 0; }
 
     // plan F3 ground truth: resampling None with kReference* initial candidates instead of fused spatiotemporal
     // reuse with the library's counts; read by the next prepareFrame
@@ -115,7 +113,7 @@ private:
 
     const Device& device;
     const VkAllocator& allocator;
-    const AssetBuffers& assets;
+    const WorldLights& worldLights;
     std::unique_ptr<rtxdi::ReSTIRDIContext> context;
     bool isReferenceApplied = false;
     Settings appliedSettings;

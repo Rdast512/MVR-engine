@@ -104,6 +104,7 @@ private:
     void drawEntityTransformControls();
     void drawCameraPanel();
     void drawCullingPanel();
+    void drawSunPanel();
     void drawRayTracingPanel();
     void drawPostPanel();
     void drawInstanceFieldPanel();

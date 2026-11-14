@@ -322,6 +322,7 @@ void EngineUi::buildFrame(const FrameStats& stats)
             drawCameraPanel();
             drawDebugViewPanel();
             drawCullingPanel();
+            drawSunPanel();
             drawRayTracingPanel();
             drawPostPanel();
             drawInstanceFieldPanel();
@@ -922,6 +923,27 @@ void EngineUi::drawRayTracingPanel()
 
     ImGui::SeparatorText("RTXGI");
     ImGui::TextDisabled("NRC, ReSTIR GI and the bounce count come with the M4 path tracer (PBR plan G1-G6)");
+}
+
+// the engine's directional light after the asset lights (PBR plan E3)
+void EngineUi::drawSunPanel()
+{
+    if (!ImGui::CollapsingHeader("Sun")) {
+        return;
+    }
+    WorldLights::Sun& sun = context.renderer.getWorldLights().sun;
+    ImGui::Checkbox("Enabled##sun", &sun.isEnabled);
+    ImGui::SetItemTooltip("one directional light after the scene's own; toggling it resets lighting history");
+    ImGui::SliderFloat("Azimuth", &sun.azimuthDegrees, -180.0f, 180.0f, "%.0f deg", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("from +X toward +Z; Sponza's courtyard runs along X");
+    ImGui::SliderFloat("Elevation", &sun.elevationDegrees, 0.0f, 90.0f, "%.0f deg", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderFloat("Illuminance", &sun.illuminance, 0.01f, 10000.0f, "%.3g lux",
+                       ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("noisyColor is RGBA16F and not pre-exposed: very high values can overflow it");
+    ImGui::ColorEdit3("Color##sun", &sun.color.x, ImGuiColorEditFlags_Float);
+    if (ImGui::Button("Defaults##sun")) {
+        sun = WorldLights::defaultSun();
+    }
 }
 
 // exposure and tonemap after DLSS-RR (PBR plan H2)

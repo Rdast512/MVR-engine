@@ -35,8 +35,8 @@ namespace
     }
 } // namespace
 
-RtxdiContext::RtxdiContext(const Device& device, const VkAllocator& allocator, const AssetBuffers& assets)
-    : device(device), allocator(allocator), assets(assets)
+RtxdiContext::RtxdiContext(const Device& device, const VkAllocator& allocator, const WorldLights& worldLights)
+    : device(device), allocator(allocator), worldLights(worldLights)
 {
     const std::vector<NeighborOffset> offsets = makeNeighborOffsets();
     const vk::DeviceSize offsetBytes = offsets.size() * sizeof(NeighborOffset);
@@ -185,9 +185,10 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex)
     // rotates the reservoir buffer indices and the frame's random number
     context->SetFrameIndex(frameIndex);
 
-    // local lights lead the world light rows (AssetBuffers::uploadLights); RAB_TranslateLightIndex is the identity
-    const uint32_t lightCount = assets.uploadedCount(AssetBuffer::Lights);
-    const uint32_t localLightCount = assets.localLightCount();
+    // local lights lead the world light rows (AssetBuffers::uploadLights), the sun ends them;
+    // RAB_TranslateLightIndex is the identity
+    const uint32_t lightCount = worldLights.lightCount();
+    const uint32_t localLightCount = worldLights.localLightCount();
     const RTXDI_LightBufferParameters lightBuffer{
         .localLightBufferRegion = {.firstLightIndex = 0, .numLights = localLightCount, .pad1 = 0, .pad2 = 0},
         .infiniteLightBufferRegion = {.firstLightIndex = localLightCount,

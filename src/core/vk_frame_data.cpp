@@ -84,8 +84,7 @@ void FrameData::writeFrameRoot(uint32_t frameSlot, const FrameRootInputs& inputs
         .nodeInstances = nodeInstanceBuffers[frameSlot].address,
         .drawRecords = inputs.drawRecords,
         .visibleMeshlets = inputs.visibleMeshlets,
-        // the light buffer's used bytes track LightStore::uploaded exactly (AssetBuffers::uploadLights)
-        .lightCount = assets.uploadedCount(AssetBuffer::Lights),
+        .lightCount = inputs.lightCount,
         .instanceCount = objectStorage.size(),
         .primitiveCount = assets.uploadedCount(AssetBuffer::Primitives),
         .nodeInstanceCount = nodeInstanceCount,
@@ -96,7 +95,7 @@ void FrameData::writeFrameRoot(uint32_t frameSlot, const FrameRootInputs& inputs
         .subpixelSnap = inputs.subpixelSnap,
         .targets = inputs.targets,
         .frameFlags = inputs.frameFlags,
-        .localLightCount = assets.localLightCount(),
+        .localLightCount = inputs.localLightCount,
         .rayInstances = inputs.rayInstances,
         .rtxdiConstants = inputs.rtxdiConstants,
         .cacheConstants = 0,

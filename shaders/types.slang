@@ -497,6 +497,16 @@ public struct FramePushData
     public uint64_t frameRoot;
 };
 
+// 40 B, matches src/render/push_data.hpp
+public struct LightWorldPushData
+{
+    public uint64_t frameRoot;
+    public float3 sunDirection;   // world space, the direction the light travels
+    public float sunIlluminance;  // lux
+    public float3 sunColor;
+    public uint assetLightCount;  // asset rows first; the sun, when enabled, follows them
+};
+
 // 16 B, matches src/render/push_data.hpp
 public struct MotionCheckPushData
 {

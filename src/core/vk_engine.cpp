@@ -108,6 +108,8 @@ void Engine::initialize()
                                           *frameData, *descriptorManager, *shaderObjects,
                                           *camera, tracyContext.get());
     renderer->getRtxdi().isReference = RtxdiContext::isReferenceRequested();
+    // the guide shots show the glTF samples' own lights, as Khronos renders them
+    renderer->getWorldLights().sun.isEnabled = !EngineGuideCapture::isRequested();
     renderer->rebuildSwapchainResources();
     if (motionTest) {
         renderer->enableMotionCheck();

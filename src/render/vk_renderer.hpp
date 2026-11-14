@@ -55,6 +55,7 @@ public:
 
     [[nodiscard]] MeshletCulling& getCulling() noexcept { return culling; }
     [[nodiscard]] RtxdiContext& getRtxdi() noexcept { return rtxdi; }
+    [[nodiscard]] WorldLights& getWorldLights() noexcept { return worldLights; }
     [[nodiscard]] RayTracingScene& getRayTracingScene() noexcept { return rtScene; }
     [[nodiscard]] Dlss& getDlss() noexcept { return dlss; }
     [[nodiscard]] PostProcess& getPost() noexcept { return post; }
@@ -62,7 +63,10 @@ public:
     void resetDlssHistory() noexcept { isDlssHistoryValid = false; }
     // Lit with at least one light: present shows DLSS-RR. Lit without lights would be black, so it shows the unlit
     // albedo of the debug view pass, as before H1
-    [[nodiscard]] bool isDlssPresented() const { return debugView.view == DebugView::Lit && rtxdi.hasLights(); }
+    [[nodiscard]] bool isDlssPresented() const
+    {
+        return debugView.view == DebugView::Lit && worldLights.hasLights();
+    }
     [[nodiscard]] const GpuTimer& getGpuTimer() const noexcept { return gpuTimer; }
     [[nodiscard]] uint32_t getHiZMipCount() const noexcept { return hiz.mipCount(); }
     [[nodiscard]] RayTracingScene::Stats getRayTracingStats() const noexcept { return rtScene.getStats(); }
@@ -138,6 +142,10 @@ private:
     PostProcess post;
     // false after a resize or a frame without the Lit view: the next evaluation resets DLSS history
     bool isDlssHistoryValid = false;
+    // world light rows of the last frame; a change (load, unload, sun toggle) resets history, since reservoirs hold
+    // light indices
+    uint32_t lastLightCount = 0;
+    bool isLightSetChanged = false;
     std::chrono::steady_clock::time_point lastFrameTime{};
     // per frame slot: the timeline value its last async compute submit signals
     std::array<uint64_t, MAX_FRAMES_IN_FLIGHT> computeTimelineValues{};

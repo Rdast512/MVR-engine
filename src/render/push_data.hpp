@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
+#include <glm/vec3.hpp>
 #include <vulkan/vulkan.hpp>
 
 // one DGC sequence: everything else is reached through the frame root
@@ -80,6 +81,22 @@ struct FramePushData {
 };
 
 static_assert(sizeof(FramePushData) == 8);
+
+// light_world pass; must match shaders/types.slang LightWorldPushData
+struct LightWorldPushData {
+    vk::DeviceAddress frameRoot;
+    // world space, the direction the sun's light travels (glTF: L = -direction)
+    glm::vec3 sunDirection;
+    // lux
+    float sunIlluminance;
+    glm::vec3 sunColor;
+    // rows [0, assetLightCount) come from the light asset buffer; the sun, when enabled, follows them
+    uint32_t assetLightCount;
+};
+
+static_assert(sizeof(LightWorldPushData) == 40);
+static_assert(offsetof(LightWorldPushData, sunDirection) == 8);
+static_assert(offsetof(LightWorldPushData, assetLightCount) == 36);
 
 // motion_check pass; must match shaders/types.slang MotionCheckPushData
 struct MotionCheckPushData {
@@ -173,4 +190,5 @@ static_assert(sizeof(HiZViewPushData) == 24);
 // largest push block of any pass; checked against maxPushDataSize at startup
 inline constexpr size_t kMaxPushDataBytes =
     std::max({sizeof(MeshPushData), sizeof(CullPushData), sizeof(HiZPushData), sizeof(HiZViewPushData),
-              sizeof(FramePushData), sizeof(PresentPushData), sizeof(RtInstancesPushData)});
+              sizeof(FramePushData), sizeof(PresentPushData), sizeof(RtInstancesPushData),
+              sizeof(ExposurePushData), sizeof(LightWorldPushData)});

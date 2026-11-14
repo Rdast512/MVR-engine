@@ -31,7 +31,7 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
     hiz(device, allocator, frameSync, descriptorManager, shaderObjects),
     targets(device, allocator, frameSync, descriptorManager),
     rtScene(device, allocator, frameSync, scene, assets, frameData, shaderObjects),
-    worldLights(device, allocator, assets, frameData, shaderObjects), rtxdi(device, allocator, assets),
+    worldLights(device, allocator, assets, frameData, shaderObjects), rtxdi(device, allocator, worldLights),
     dlss(device, frameSync), post(device, allocator, shaderObjects), gpuTimer(device), tracyContext(tracyContext)
 {
     const vk::DeviceSize maxPushData = device.capabilities.descriptorHeap.maxPushDataSize;
@@ -165,6 +165,8 @@ void Renderer::drawFrame()
     targets.prepareFrame(currentFrame, frameNumber, isDlssPresented());
     rtScene.prepareFrame(currentFrame, frameNumber - 1);
     worldLights.prepareFrame(currentFrame);
+    isLightSetChanged = worldLights.lightCount() != lastLightCount;
+    lastLightCount = worldLights.lightCount();
     rtxdi.prepareFrame(currentFrame, frameNumber);
     gpuTimer.collect(currentFrame);
     post.readBack(currentFrame);
@@ -188,7 +190,7 @@ void Renderer::drawFrame()
     {
         ZoneScopedN("UpdateUBO");
         // resize and swapchain recreation arrive as camera cuts
-        const bool isHistoryReset = camera.isCut() || culling.isSceneLayoutChanged();
+        const bool isHistoryReset = camera.isCut() || culling.isSceneLayoutChanged() || isLightSetChanged;
         if (isHistoryReset) {
             TracyMessageL("History reset");
         }
@@ -208,6 +210,8 @@ void Renderer::drawFrame()
                                           .debugView = debugView.packed(),
                                           .frameFlags = isHistoryReset ? FrameFlag::HistoryReset : 0u,
                                           .frameIndex = frameNumber,
+                                          .lightCount = worldLights.lightCount(),
+                                          .localLightCount = worldLights.localLightCount(),
                                       });
     }
     // after the frame root and node instances of the slot are written
@@ -644,7 +648,7 @@ void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
     cmd.pipelineBarrier2(dependency);
     // with no lights rtxdi_shade only writes black. Lights arrive only with a load, which resets history, so the
     // reservoirs skipped meanwhile are never reused
-    if (rtxdi.hasLights()) {
+    if (worldLights.hasLights()) {
         dispatchFullscreen(cmd, shaderObjects.frameShaders.rtxdiInitial);
         // initial reservoirs -> the shade pass's loads
         cmd.pipelineBarrier2(dependency);
@@ -697,7 +701,8 @@ void Renderer::recordReconstruction(const vk::raii::CommandBuffer& cmd)
     const GpuCameraData& cameraData = camera.cameraData;
     const vk::Extent2D renderExtent = targets.getExtent();
     // history resets with the frame's (camera cut, resize, layout change) and after frames without the Lit view
-    const bool isHistoryReset = !isDlssHistoryValid || camera.isCut() || culling.isSceneLayoutChanged();
+    const bool isHistoryReset =
+        !isDlssHistoryValid || camera.isCut() || culling.isSceneLayoutChanged() || isLightSetChanged;
     dlss.evaluate(cmd, Dlss::Frame{
                            .color = toDlss(targets.noisyColor()),
                            .depth = toDlss(targets.depth(), vk::ImageAspectFlagBits::eDepth),

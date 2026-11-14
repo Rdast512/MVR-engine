@@ -339,6 +339,13 @@ namespace
             // C++ pads through alignas(16)
             FieldLayout{"pad0", offsetof(MeshDgcSequence, draw) + sizeof(vk::DrawMeshTasksIndirectCommandEXT)},
         }},
+        {"LightWorldPushData", sizeof(LightWorldPushData), {
+            LAYOUT_FIELD(LightWorldPushData, frameRoot),
+            LAYOUT_FIELD(LightWorldPushData, sunDirection),
+            LAYOUT_FIELD(LightWorldPushData, sunIlluminance),
+            LAYOUT_FIELD(LightWorldPushData, sunColor),
+            LAYOUT_FIELD(LightWorldPushData, assetLightCount),
+        }},
         {"RtInstancesPushData", sizeof(RtInstancesPushData), {
             LAYOUT_FIELD(RtInstancesPushData, frameRoot),
             LAYOUT_FIELD(RtInstancesPushData, buildRows),

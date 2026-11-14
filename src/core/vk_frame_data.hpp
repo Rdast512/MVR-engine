@@ -34,6 +34,9 @@ struct FrameRootInputs {
     uint32_t debugView;
     uint32_t frameFlags;
     uint32_t frameIndex;
+    // WorldLights rows: the asset's lights, then the engine's sun
+    uint32_t lightCount;
+    uint32_t localLightCount;
 };
 
 // Per-frame-slot host-visible data rewritten by the CPU every frame: the GpuFrameRoot, the GpuObjectUB rows and the

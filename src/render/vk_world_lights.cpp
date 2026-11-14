@@ -4,7 +4,10 @@
 #include "push_data.hpp"
 
 #include <bit>
+#include <cmath>
 #include <format>
+
+#include <glm/trigonometric.hpp>
 
 namespace
 {
@@ -13,6 +16,26 @@ namespace
 
     constexpr uint32_t divideRoundUp(uint32_t value, uint32_t divisor) { return (value + divisor - 1) / divisor; }
 } // namespace
+
+WorldLights::Sun WorldLights::defaultSun()
+{
+    return Sun{
+        .isEnabled = true,
+        // along Sponza's long courtyard: a sun across it is blocked by the opposite wing up to ~55 degrees
+        .azimuthDegrees = 20.0f,
+        .elevationDegrees = 65.0f,
+        // FP16 radiance without pre-exposure (considerations C-H2-1); auto exposure makes the scale irrelevant
+        .illuminance = 10.0f,
+        .color = glm::vec3(1.0f),
+    };
+}
+
+uint32_t WorldLights::lightCount() const
+{
+    return assets.uploadedCount(AssetBuffer::Lights) + (sun.isEnabled ? 1u : 0u);
+}
+
+uint32_t WorldLights::localLightCount() const { return assets.localLightCount(); }
 
 WorldLights::WorldLights(const Device& device, const VkAllocator& allocator, const AssetBuffers& assets,
                          const FrameData& frameData, const ShaderObjects& shaderObjects)
@@ -36,7 +59,7 @@ void WorldLights::destroySlot(SlotBuffer& slot) const
 
 void WorldLights::prepareFrame(uint32_t frameSlot)
 {
-    const uint32_t count = assets.uploadedCount(AssetBuffer::Lights);
+    const uint32_t count = lightCount();
     SlotBuffer& slot = slots[frameSlot];
     if (count <= slot.capacity) {
         return;
@@ -55,13 +78,23 @@ void WorldLights::prepareFrame(uint32_t frameSlot)
 void WorldLights::recordUpdate(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot) const
 {
     // the frame root carries the same count
-    const uint32_t count = assets.uploadedCount(AssetBuffer::Lights);
+    const uint32_t count = lightCount();
     if (count == 0) {
         return;
     }
+    const float azimuth = glm::radians(sun.azimuthDegrees);
+    const float elevation = glm::radians(sun.elevationDegrees);
+    const glm::vec3 towardSun{std::cos(elevation) * std::cos(azimuth), std::sin(elevation),
+                              std::cos(elevation) * std::sin(azimuth)};
     // readers wait for the compute timeline, which covers these writes; the slot's previous readers finished before
     // the CPU reached this slot again
-    const FramePushData push{.frameRoot = frameData.frameRootAddress(frameSlot)};
+    const LightWorldPushData push{
+        .frameRoot = frameData.frameRootAddress(frameSlot),
+        .sunDirection = -towardSun,
+        .sunIlluminance = sun.illuminance,
+        .sunColor = sun.color,
+        .assetLightCount = assets.uploadedCount(AssetBuffer::Lights),
+    };
     ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.lightWorld);
     cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
     cmd.dispatch(divideRoundUp(count, kLightWorldGroupSize), 1, 1);

@@ -7,7 +7,7 @@ description: Task plan for glTF metallic-roughness PBR on the engine_spec archit
 
 **Date:** 2026-11-07 · **Verified against:** `feature-pbr` working tree on `a50ebcb46` plus the uncommitted visibility buffer (V1–V7), Slang `v2026.20`, meshoptimizer `v1.3`
 **Precedence:** [docs/engine_spec.md](../docs/engine_spec.md) is the architecture. This plan holds the shading tasks and follows it; where they disagree, the spec wins. Milestones are the spec's M0–M9 (§16.2).
-**Status (2026-11-14):** owned by engine spec §16.2 (spec §20.4). M1 is done, M2 is built (C1–C4), and M3 is built (B1–B3, E1, E2 punctual, F1–F3, H1, H2); its check on a lit `Sponza` is open. No OMM, SER pipeline or NRC code exists yet. See §3.
+**Status (2026-11-14):** owned by engine spec §16.2 (spec §20.4). M1 is done, M2 is built (C1–C4), and M3 is done (B1–B3, E1, E2 punctual, E3, F1–F3, H1, H2; closed 2026-11-14 on `Sponza` lit by E3's sun). No OMM, SER pipeline or NRC code exists yet. See §3.
 
 | Doc | Role |
 |---|---|
@@ -683,6 +683,20 @@ Spec §8.2, §10.5.
   - Validation clean (core, sync, best practices + NVIDIA) on the guide capture with `ENGINE_RT_CHECK`. Motion test 13 of 13, cull check 16 of 16, ray check every frame, ctest 7 of 7.
   - Sponza has no lights, so the bench skips the dispatch.
 
+#### E3 · Engine sun — built (2026-11-14)
+
+- **Why:** M3's done-when names "Sponza + sun", and G3 and G6 need a sunlit interior, but the glTF samples in the repo (`models/Sponza`, `gltf/2.0/Sponza`) ship no `KHR_lights_punctual`. The §5 note allowed a debug directional light; no step owned it.
+- **As built:**
+  - `WorldLights::Sun` (enabled, azimuth from +X toward +Z, elevation, illuminance in lux, color) adds one directional row after the asset's rows, so it falls in RTXDI's infinite region with no reordering. `passes/light_world.slang` writes it from `LightWorldPushData` (40 B): thread `assetLightCount` builds the sun row, the others transform their model rows as before.
+  - `WorldLights::lightCount()` and `localLightCount()` are the one source of the world light counts: `GpuFrameRoot.lightCount` and `localLightCount` (through `FrameRootInputs`), RTXDI's light regions (`RtxdiContext` reads `WorldLights`, not `AssetBuffers`), and `Renderer::isDlssPresented()`.
+  - A change of the world light count (load, unload, sun toggle) resets history, since reservoirs hold light indices.
+  - On by default: az 20°, el 65°, 10 lux, white. The courtyard runs along X and is about 11 units tall, so a sun across it is blocked by the opposite wing below ~55°. 10 lux keeps the RGBA16F `noisyColor` far from its limit (C-H2-1); auto exposure makes the scale irrelevant.
+  - The `Sun` panel sets every field and restores the defaults. The guide capture turns the sun off, so the samples keep their own lights.
+- **Checked (RTX 5070, driver 621.01):**
+  - `Shadowed lights` on a courtyard view: the floor, the planters' and columns' shadows and the upper arches are lit, the curtains facing ±Z are not. A sun straight down lights the courtyard and none of the gallery under the arcade roof (a shadow ray tMax of 0.5 lit 32% of the gallery view, 5.0 none: the arcade ceiling is 4–5 units up).
+  - The startup camera sits in the +Z gallery behind the curtains. No sun direction lights more than 0.6% of that view directly (sweep over 18 directions); it waits for M4's indirect light (considerations C-E3-1).
+  - Motion test 13 of 13, cull check 16 of 16, guide capture 2 of 2, ray check every frame; ctest 7 of 7. Validation over the default scene (bench) and the motion test with jitter shows only NGX's messages (C-H1-2).
+
 ### Phase F — RTXDI ReSTIR DI (M3; emissive + `Power_RIS` in M7)
 
 SDK: `NVIDIA-RTX/RTXDI-Library` (host C++ + HLSL headers), pinned in `ThirdParty/CMakeLists.txt`. Required.
@@ -943,7 +957,7 @@ A1 → A2 → A3
 B1 (done), E1 (done)
 A2 → B2 → B3
 A1 + A4 → C1 → C2 → C3 ; C2 → C4
-B2 + B3 + C3 + E1(ao, jitter) → E2 → F1 → F2 → F3
+B2 + B3 + C3 + E1(ao, jitter) → E2 → F1 → F2 → F3 ; E2 → E3
 F3 → H2 (bring-up) ; E1 + F3 → H1 → H2
 F3 + C3 → G1 → G2 → G3 → G5 → G6 → H1 input switch
 A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
@@ -954,7 +968,7 @@ A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
 | M0 Contracts | A1, A2, A3, A4 (**done**; A4 checked by `ENGINE_GUIDE_CAPTURE`), animation removal (**done**) |
 | M1 Vis buffer | B1, E1 (**done**; E1 guides vs Khronos screenshots and motion checked 2026-11-13); 32-bit payload kept, V8 deferred; culling lossless under reverse Z (`ENGINE_CULL_CHECK`, 2026-11-13); **M1 done** (spec §16.2) |
 | M2 Cluster RT bring-up | C1, C2, C3 (**built**; C3's `ENGINE_RT_CHECK` closes C1's trace check), C4 PTLAS (**built** 2026-11-14 after M2 was reopened). Open: the async overlap capture and the 2060 Super |
-| M3 First lit frame | B1 (**done**), B2 (**done**), B3 (**done**), E1 (**done**: AO, jitter, unlit specular, `lodBias`), E2 (**done**: punctual; emissive triangles M7), F1 (**done**), F2 (**done**), F3 (**done**), H1 (**done**; a lit Sponza check open), H2 (**done**) |
+| M3 First lit frame | B1 (**done**), B2 (**done**), B3 (**done**), E1 (**done**: AO, jitter, unlit specular, `lodBias`), E2 (**done**: punctual; emissive triangles M7), F1 (**done**), F2 (**done**), F3 (**done**), H1 (**done**), H2 (**done**), E3 sun (**done**); **M3 done** (2026-11-14) |
 | M4 Indirect | G1, G2, G3 (NRC), G5, G6 |
 | M5 | merged into M4 (2026-11-14) |
 | M6 Alpha | D1–D4 |
