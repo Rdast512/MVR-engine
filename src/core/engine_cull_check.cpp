@@ -14,9 +14,17 @@ bool EngineCullCheck::isRequested()
 
 EngineCullCheck::Step EngineCullCheck::getStep() const
 {
-    return poseFrame < kApproachFrames ? Step::Approach
-                                       : static_cast<Step>(std::to_underlying(Step::Approach) + 1 + poseFrame -
-                                                           kApproachFrames);
+    if (poseFrame < kApproachFrames) {
+        return Step::Approach;
+    }
+    const uint32_t sinceApproach = poseFrame - kApproachFrames;
+    if (sinceApproach < 2) {
+        return sinceApproach == 0 ? Step::CulledAlbedo : Step::CulledDepth;
+    }
+    if (sinceApproach < captureDistance) {
+        return Step::UnculledSettle;
+    }
+    return sinceApproach == captureDistance ? Step::UnculledAlbedo : Step::UnculledDepth;
 }
 
 EngineCullCheck::Request EngineCullCheck::beginFrame(Camera& camera, MeshletCullSettings& culling,
@@ -30,6 +38,8 @@ EngineCullCheck::Request EngineCullCheck::beginFrame(Camera& camera, MeshletCull
         startupPosition = camera.cameraData.cameraPos;
     }
     const Pose& pose = kPoses[poseIndex];
+    const uint32_t phaseCount = camera.getJitterPhaseCount();
+    captureDistance = (kMinCaptureDistance + phaseCount - 1) / phaseCount * phaseCount;
     const auto rotateTo = [&](float targetYaw, float targetPitch) {
         camera.rotate(targetYaw - yaw, targetPitch - pitch);
         yaw = targetYaw;

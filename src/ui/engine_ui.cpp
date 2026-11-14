@@ -556,6 +556,12 @@ void EngineUi::drawDebugViewPanel()
         ImGui::TextDisabled("primary rays through the TLAS: match the raster view away from edges");
         break;
     case DebugViewCategory::Lighting:
+        if (settings.view == DebugView::LightingOnly) {
+            ImGui::Checkbox("ReSTIR DI reference", &context.renderer.getRtxdi().isReference);
+            ImGui::SetItemTooltip("no reuse, more initial candidates: the unbiased ground truth of the fused pass");
+            ImGui::TextDisabled("converges to Shadowed lights");
+        }
+        break;
     case DebugViewCategory::Upscaling:
         break;
     }
@@ -590,6 +596,9 @@ void EngineUi::drawCameraPanel()
     if (ImGui::Button("Teleport")) {
         context.camera.teleportTo(glm::make_vec3(teleportPosition.data()));
     }
+    ImGui::Checkbox("Jitter", &context.camera.isJitterEnabled);
+    ImGui::SetItemTooltip("Halton(2,3) subpixel jitter, %u phases. Shimmers until DLSS resolves it",
+                          context.camera.getJitterPhaseCount());
 }
 
 void EngineUi::drawCullingPanel()
@@ -781,11 +790,13 @@ void EngineUi::drawCullingPanel()
     ImGui::SetItemTooltip("sum of the scopes below except Acquire wait, which is idle time until the swapchain "
                           "image is available");
     const RayTracingScene::Stats rt = context.renderer.getRayTracingStats();
-    ImGui::Text("Async compute: RT instances %.3f ms, TLAS build %.3f ms", rt.instanceWriteMs, rt.tlasBuildMs);
+    ImGui::Text("Async compute: RT instances %.3f ms, PTLAS build %.3f ms", rt.instanceWriteMs, rt.tlasBuildMs);
     ImGui::SetItemTooltip("compute queue, overlapping the frame above; not in the total");
-    ImGui::Text("TLAS instances %u / capacity %u", rt.instances, rt.capacity);
+    ImGui::Text("PTLAS instances %u / capacity %u, %u partitions, %u written", rt.instances, rt.capacity,
+                rt.partitions, rt.writtenInstances);
     ImGui::SetItemTooltip("one per node instance x primitive with meshlets; the count is exact, so it cannot "
-                          "overflow, and the capacity grows with the scene layout");
+                          "overflow, and the capacity grows with the scene layout. Written: instance updates of the "
+                          "last completed frame, 0 while nothing moves");
     constexpr float kPlotHeight = 32.0f;
     for (size_t i = 0; i < kGpuTimerScopeCount; ++i) {
         const auto scope = static_cast<GpuTimerScope>(i);

@@ -62,7 +62,7 @@ Also required (already true in this project):
 
 Acceleration structures (AS) are the BVH-like objects consumed by ray tracing pipelines and ray queries. This is the **portable KHR baseline** of the Vulkan RT stack: every multi-vendor path (`VK_KHR_ray_tracing_pipeline`, `VK_KHR_ray_query`, opacity micromaps) sits on BLAS/TLAS built here. The extension is **not** promoted into core Vulkan 1.4; this repo lists it as a required device extension, enables only the master `accelerationStructure` feature, and lists `VK_KHR_deferred_host_operations` solely as this extension’s spec dependency.
 
-NVIDIA `VK_NV_cluster_acceleration_structure` / `VK_NV_partitioned_acceleration_structure` are vendor-only add-ons, not replacements. They are currently **required** device extensions here (a portability hazard). KHR AS remains the path that must work first. Enablement is complete (`HardwareCapabilities::accelerationStructure` is cached); **nothing consumes** create/build/address/descriptor APIs yet.
+The engine targets NVIDIA RTX only (engine spec §1.2). Its geometry is `VK_NV_cluster_acceleration_structure` (CLAS + cluster BLAS, required since M2) and its TLAS is `VK_NV_partitioned_acceleration_structure` (required since 2026-11-14, PBR plan C4); KHR AS supplies the AS objects, limits and instance layout they build on. Enablement is complete (`HardwareCapabilities::accelerationStructure` is cached); **nothing consumes** create/build/address/descriptor APIs yet.
 
 | Feature | New API / type | Engine relevance |
 | --- | --- | --- |
@@ -293,7 +293,7 @@ Optional hardening:
 
 ### Implementation recipe
 
-1. Keep KHR AS + deferred host ops required; keep `HardwareCapabilities::accelerationStructure` as the only portable AS cache. Do not treat NV cluster/partitioned as the baseline.
+1. Keep KHR AS + deferred host ops required; `HardwareCapabilities::accelerationStructure` caches its limits next to the cluster and partitioned AS properties.
 2. Query build sizes with `getAccelerationStructureBuildSizesKHR` (`eDevice`) from geometry + primitive counts (counts must stay within the 32-bit create-time range and ≤ cached max* limits).
 3. Allocate the AS buffer with `ACCELERATION_STRUCTURE_STORAGE` + `SHADER_DEVICE_ADDRESS` (STORAGE + BDA), size ≥ `sizes.accelerationStructureSize`.
 4. `createAccelerationStructureKHR` on that buffer (type BLAS or TLAS).
@@ -378,7 +378,7 @@ AS extension **enabled**, no builds, no shader AS declarations. First shader wor
 | `VK_KHR_ray_query` | Consumes TLAS via `rayQuery*` in any stage |
 | `VK_KHR_ray_tracing_maintenance1` | Extra copy/indirect helpers on top of AS |
 | `VK_EXT_opacity_micromap` | Micromaps attached to AS geometry |
-| `VK_NV_cluster_acceleration_structure` / `VK_NV_partitioned_acceleration_structure` | Optional NVIDIA AS alternatives/extensions |
+| `VK_NV_cluster_acceleration_structure` / `VK_NV_partitioned_acceleration_structure` | the engine's geometry and TLAS (both required) |
 | Descriptor heaps (`vk_descriptors.cpp`) | Must learn AS descriptor type |
 
 ---
@@ -389,7 +389,6 @@ AS extension **enabled**, no builds, no shader AS declarations. First shader wor
 - Do not enable host/indirect/capture-replay feature bits until a real consumer needs them.
 - Do not store AS without device-addressable buffers.
 - Do not skip build-size queries or scratch alignment.
-- Do not treat NVIDIA cluster/partitioned AS as the baseline — KHR AS is the portable path.
 
 ---
 

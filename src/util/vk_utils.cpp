@@ -149,12 +149,12 @@ void submitAndWait(vk::raii::CommandBuffer& commandBuffer, const vk::raii::Queue
 
 HostBuffer createHostBuffer(vk::DeviceSize size, VmaAllocator allocator, const vk::raii::Device& device,
                             const std::vector<uint32_t>& queueFamilyIndices, std::string_view debugName,
-                            const char* tracyName)
+                            const char* tracyName, vk::BufferUsageFlags2 extraUsage)
 {
     HostBuffer target;
     createBuffer(size,
                  vk::BufferUsageFlagBits2::eUniformBuffer | vk::BufferUsageFlagBits2::eStorageBuffer |
-                     vk::BufferUsageFlagBits2::eShaderDeviceAddress,
+                     vk::BufferUsageFlagBits2::eShaderDeviceAddress | extraUsage,
                  vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, target.buffer,
                  target.memory, allocator, device, queueFamilyIndices, debugName, VMA_ALLOCATION_CREATE_MAPPED_BIT);
     VmaAllocationInfo allocationInfo{};

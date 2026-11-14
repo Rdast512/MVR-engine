@@ -5,7 +5,11 @@ import core.math;
 import geometry.hit;
 import geometry.surface;
 import geometry.visbuffer;
+import material.brdf;
 import material.pbr;
+import lighting.lights;
+
+#include "lighting/rtxdi_bridge.slang"
 
 // the display image until lighting (M3): the albedo guide, or the selected debug view (src/render/debug_view.hpp)
 
@@ -115,6 +119,62 @@ float3 reprojectionError(GpuTargets targets, uint2 pixel)
     return saturate(abs(loadGuide(targets.current, kGuideDiffuseAlbedo, pixel).rgb - previous) * 4.0);
 }
 
+// every world light, no visibility, on the guides as the RTXDI surface bridge reads them (plan F2). Unlit surfaces
+// (specular weight 0) take no light; ao is for indirect light only
+float3 unshadowedLights(GpuFrameRoot root, GpuGuideSet set, GpuCameraData camera, uint2 pixel, float depth,
+                        float2 targetSize)
+{
+    const float3 emissive = loadGuide(set, kGuideEmissive, pixel).rgb;
+    const float4 specularF0 = loadGuide(set, kGuideSpecularF0, pixel);
+    if (depth == 0.0 || specularF0.a == 0.0)
+    {
+        return emissive;
+    }
+    const float4 normalRoughness = loadGuide(set, kGuideNormalRoughness, pixel);
+    const float3 cDiff = loadGuide(set, kGuideDiffuseAlbedo, pixel).rgb;
+    // the depth was rasterized at the jittered sample: the unjittered matrix reaches it at ndc - jitter
+    const float2 ndc = pixelToNdc(float2(pixel) + 0.5, targetSize) - camera.jitterOffset;
+    const float4 world = mul(camera.invViewProj, float4(ndc, depth, 1.0));
+    const float3 position = world.xyz / world.w;
+    const float3 view = normalize(camera.cameraPos - position);
+
+    float3 color = emissive;
+    for (uint i = 0; i < root.lightCount; ++i)
+    {
+        const LightSample sample = evalLight(loadWorldLight(root, i), position);
+        const float nDotL = dot(normalRoughness.xyz, sample.l);
+        if (nDotL > 0.0)
+        {
+            color += evalBrdf(normalRoughness.xyz, cDiff, specularF0.rgb, normalRoughness.w, view, sample.l) *
+                     sample.radiance * nDotL;
+        }
+    }
+    return color;
+}
+
+// every world light through the RTXDI bridge with one visibility ray each: the RAB_* surfaces, samples, shading and
+// rays ReSTIR DI uses, and the noise-free reference of its punctual direct light
+float3 shadowedLights(GpuFrameRoot root, GpuGuideSet set, uint2 pixel)
+{
+    rtxdiBridgeInit(root);
+    float3 color = loadGuide(set, kGuideEmissive, pixel).rgb;
+    const RAB_Surface surface = RAB_GetGBufferSurface(int2(pixel), false);
+    if (!RAB_IsSurfaceValid(surface))
+    {
+        return color;
+    }
+    for (uint i = 0; i < root.lightCount; ++i)
+    {
+        const RAB_LightSample sample = RAB_SamplePolymorphicLight(RAB_LoadLightInfo(i, false), surface, float2(0.5, 0.5));
+        const float3 shade = shadeLightSample(surface, sample);
+        if (any(shade > 0.0) && RAB_GetConservativeVisibility(surface, sample))
+        {
+            color += shade;
+        }
+    }
+    return color;
+}
+
 float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCameraData camera, uint2 pixel, float depth)
 {
     const GpuGuideSet set = targets.current;
@@ -135,6 +195,15 @@ float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCamer
         return loadGuide(set, kGuideSpecAlbedo, pixel).rgb;
     case kDebugViewEmissive:
         return loadGuide(set, kGuideEmissive, pixel).rgb;
+    case kDebugViewAmbientOcclusion:
+        return loadGuide(set, kGuideDiffuseAlbedo, pixel).aaa;
+    case kDebugViewUnshadowedLights:
+        return unshadowedLights(root, set, camera, pixel, depth, float2(targets.renderSize));
+    case kDebugViewShadowedLights:
+        return shadowedLights(root, set, pixel);
+    case kDebugViewLightingOnly:
+        // what the combine pass will add (M4); converges to Shadowed lights
+        return tex2D(targets.directRadianceSampled).Load(int3(pixel, 0)).rgb + loadGuide(set, kGuideEmissive, pixel).rgb;
     case kDebugViewMotionVectors:
     {
         // direction as hue-like red/green, 16 px of motion saturates

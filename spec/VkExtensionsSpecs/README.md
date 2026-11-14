@@ -110,7 +110,7 @@ The overview integration map remains [docs/vulkan_extensions_reference.md](../..
 | `VK_EXT_ray_tracing_invocation_reorder` | [VK_EXT_ray_tracing_invocation_reorder.md](./VK_EXT_ray_tracing_invocation_reorder.md) | Enabled, not consumed (props cached: `HardwareCapabilities::rayTracingInvocationReorder`, hint logged at startup) |
 | `VK_EXT_extended_dynamic_state3` | [VK_EXT_extended_dynamic_state3.md](./VK_EXT_extended_dynamic_state3.md) | Extension listed; features/cmds unused |
 | `VK_NV_cluster_acceleration_structure` | [VK_NV_cluster_acceleration_structure.md](./VK_NV_cluster_acceleration_structure.md) | Optional until M2, then required (engine spec §10); not consumed yet (vendor) |
-| `VK_NV_partitioned_acceleration_structure` | [VK_NV_partitioned_acceleration_structure.md](./VK_NV_partitioned_acceleration_structure.md) | Enabled, not consumed (vendor) |
+| `VK_NV_partitioned_acceleration_structure` | [VK_NV_partitioned_acceleration_structure.md](./VK_NV_partitioned_acceleration_structure.md) | Required (§10.3); the one PTLAS of PBR C4 |
 
 ## How to add a new extension
 

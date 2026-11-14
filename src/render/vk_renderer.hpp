@@ -15,6 +15,8 @@
 #include "vk_meshlet_culling.hpp"
 #include "vk_render_targets.hpp"
 #include "vk_rt_scene.hpp"
+#include "vk_rtxdi.hpp"
+#include "vk_world_lights.hpp"
 #include "vk_shader_objects.hpp"
 #include "util/vk_utils.hpp"
 
@@ -49,6 +51,7 @@ public:
     DebugViewSettings debugView;
 
     [[nodiscard]] MeshletCulling& getCulling() noexcept { return culling; }
+    [[nodiscard]] RtxdiContext& getRtxdi() noexcept { return rtxdi; }
     [[nodiscard]] const GpuTimer& getGpuTimer() const noexcept { return gpuTimer; }
     [[nodiscard]] uint32_t getHiZMipCount() const noexcept { return hiz.mipCount(); }
     [[nodiscard]] RayTracingScene::Stats getRayTracingStats() const noexcept { return rtScene.getStats(); }
@@ -77,15 +80,17 @@ public:
 private:
     // submitted before the image is acquired: cull, raster, Hi-Z, resolve
     void recordFrameCommands(vk::raii::CommandBuffer& cmd);
-    // submitted with the frame commands, waiting for this frame's TLAS build: the passes that may trace rays (debug
-    // view, self-tests, display capture)
+    // submitted with the frame commands, waiting for this frame's TLAS build: the passes that may trace rays (ReSTIR
+    // DI, debug view, self-tests, display capture)
     void recordRayCommands(vk::raii::CommandBuffer& cmd);
     // submitted after the acquire, waiting on its semaphore: present pass and UI
     void recordPresentCommands(vk::raii::CommandBuffer& cmd, uint32_t imageIndex);
-    // async compute: RT instances + TLAS of this slot; signals frameNumber on FrameSync::computeTimeline
+    // async compute: RT instances + PTLAS update; waits for the previous frame's rays on FrameSync::rayTimeline,
+    // signals frameNumber on FrameSync::computeTimeline
     void submitComputeCommands();
     void recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase);
     void recordResolve(const vk::raii::CommandBuffer& cmd);
+    void recordDirectLight(const vk::raii::CommandBuffer& cmd);
     void recordDebugView(const vk::raii::CommandBuffer& cmd);
     void recordMotionCheck(const vk::raii::CommandBuffer& cmd);
     void recordRayCheck(const vk::raii::CommandBuffer& cmd);
@@ -113,6 +118,8 @@ private:
     // owns the depth attachment hiz is built from; recreated before it
     RenderTargets targets;
     RayTracingScene rtScene;
+    WorldLights worldLights;
+    RtxdiContext rtxdi;
     // per frame slot: the timeline value its last async compute submit signals
     std::array<uint64_t, MAX_FRAMES_IN_FLIGHT> computeTimelineValues{};
     GpuTimer gpuTimer;

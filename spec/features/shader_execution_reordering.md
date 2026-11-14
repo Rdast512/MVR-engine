@@ -14,7 +14,7 @@ Secondary rays scatter: neighbouring pixels in a warp hit different objects with
 | Pass | Rays | SER |
 |---|---|---|
 | Indirect bounce (plan G2) | 1 per pixel, shaded at the hit | yes |
-| Cache training paths (SHaRC update, NRC update; G3/G4) | multi-bounce, shaded at every vertex | yes, reorder at every bounce; largest gain |
+| Cache training paths (NRC update; G3) | multi-bounce, shaded at every vertex | yes, reorder at every bounce; largest gain |
 | RTXDI final visibility, path shadow rays, ReSTIR GI reconnection | visibility only | no: ray queries, nothing to shade |
 | Primary visibility | — | no: raster + vis buffer |
 

@@ -29,7 +29,6 @@ constexpr std::array kValidationLayers = {"VK_LAYER_KHRONOS_validation"};
 
 // Promoted-to-core extensions are enabled through Vulkan1xFeatures and must not be listed here,
 // see docs/vulkan_extensions_reference.md "Promoted-to-Core Features".
-// Optional extensions (NV) are appended in createLogicalDevice when supported.
 constexpr std::array kRequiredDeviceExtensions = {
     // KHR
     vk::KHRSwapchainExtensionName,
@@ -68,6 +67,7 @@ constexpr std::array kRequiredDeviceExtensions = {
     vk::EXTExtendedDynamicState3ExtensionName,
     // NV
     vk::NVClusterAccelerationStructureExtensionName, // the only RT geometry path (engine spec §10)
+    vk::NVPartitionedAccelerationStructureExtensionName, // the TLAS (engine spec §10.3, PBR plan C4)
 };
 
 // NRC tier; without them the GI cache falls back to SHaRC
@@ -172,6 +172,7 @@ constexpr std::array kRequiredFeatures = {
     ENGINE_FEATURE(PhysicalDeviceRayTracingMaintenance1FeaturesKHR, rayTracingPipelineTraceRaysIndirect2),
     ENGINE_FEATURE(PhysicalDeviceRayTracingPositionFetchFeaturesKHR, rayTracingPositionFetch),
     ENGINE_FEATURE(PhysicalDeviceClusterAccelerationStructureFeaturesNV, clusterAccelerationStructure),
+    ENGINE_FEATURE(PhysicalDevicePartitionedAccelerationStructureFeaturesNV, partitionedAccelerationStructure),
     ENGINE_FEATURE(PhysicalDeviceSwapchainMaintenance1FeaturesKHR, swapchainMaintenance1),
     ENGINE_FEATURE(PhysicalDeviceMaintenance7FeaturesKHR, maintenance7),
     ENGINE_FEATURE(PhysicalDeviceMaintenance8FeaturesKHR, maintenance8),
@@ -191,11 +192,6 @@ constexpr std::array kRequiredFeatures = {
     ENGINE_FEATURE(PhysicalDeviceRobustness2FeaturesKHR, robustBufferAccess2),
     ENGINE_FEATURE(PhysicalDeviceRobustness2FeaturesKHR, robustImageAccess2),
     ENGINE_FEATURE(PhysicalDeviceRobustness2FeaturesKHR, nullDescriptor),
-};
-
-// enabled only with its NV extension
-constexpr std::array kPartitionedAccelerationStructureFeatures = {
-    ENGINE_FEATURE(PhysicalDevicePartitionedAccelerationStructureFeaturesNV, partitionedAccelerationStructure),
 };
 
 // NRC guide step 2.2; scalarBlockLayout, bufferDeviceAddress and memory budget are already required
@@ -267,14 +263,6 @@ void appendMissingExtensions(const std::vector<vk::ExtensionProperties>& availab
     const std::string message = std::format("{} failed, missing: {}", step, joinNames(missing));
     logError(message, "Device");
     throw std::runtime_error(message);
-}
-
-// structs of unsupported extensions must not be in a feature query or create chain
-void unlinkUnsupportedFeatures(FeatureChain& chain, const std::vector<vk::ExtensionProperties>& available)
-{
-    if (!isExtensionSupported(available, vk::NVPartitionedAccelerationStructureExtensionName)) {
-        chain.unlink<vk::PhysicalDevicePartitionedAccelerationStructureFeaturesNV>();
-    }
 }
 
 // field of bit inside its linked struct; nullptr when that struct is unlinked
@@ -362,7 +350,6 @@ struct GiCacheSupport
         return missing;
     }
     FeatureChain supported;
-    unlinkUnsupportedFeatures(supported, available);
     querySupportedFeatures(device, supported);
     appendMissingFeatures(supported, kRequiredFeatures, missing);
     return missing;
@@ -621,13 +608,6 @@ void Device::findQueueFamilies(std::span<const vk::QueueFamilyProperties> famili
 
 void Device::queryCapabilities()
 {
-    const std::vector<vk::ExtensionProperties> availableExtensions =
-        physicalDevice.enumerateDeviceExtensionProperties();
-    capabilities.hasPartitionedAccelerationStructure =
-        isExtensionSupported(availableExtensions, vk::NVPartitionedAccelerationStructureExtensionName);
-    logInfo(std::format("Optional NV extensions: partitionedAS={}", capabilities.hasPartitionedAccelerationStructure),
-             "Device");
-
     vk::StructureChain<
         vk::PhysicalDeviceProperties2, vk::PhysicalDeviceVulkan11Properties, vk::PhysicalDeviceVulkan12Properties,
         vk::PhysicalDeviceVulkan13Properties,
@@ -651,10 +631,6 @@ void Device::queryCapabilities()
         vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV,
         vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV>
         propertiesChain;
-    // structs of unsupported extensions must not be in the query chain
-    if (!capabilities.hasPartitionedAccelerationStructure) {
-        propertiesChain.unlink<vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV>();
-    }
     physicalDevice.getProperties2(&propertiesChain.get<vk::PhysicalDeviceProperties2>());
     capabilities.properties2 = propertiesChain.get<vk::PhysicalDeviceProperties2>();
     capabilities.vulkan11 = propertiesChain.get<vk::PhysicalDeviceVulkan11Properties>();
@@ -779,6 +755,10 @@ void Device::queryCapabilities()
     }
     capabilities.partitionedAccelerationStructure =
         propertiesChain.get<vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV>();
+    // bounds grid partitions plus global-partition instances (VUID-VkPartitionedAccelerationStructureInstancesInputNV-partitionCount-10535)
+    logInfo(std::format("Partitioned AS: maxPartitionCount={}",
+                         capabilities.partitionedAccelerationStructure.maxPartitionCount),
+             "Device");
     capabilities.clusterAccelerationStructure =
         propertiesChain.get<vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV>();
     {
@@ -809,20 +789,14 @@ void Device::createLogicalDevice()
     const std::vector<vk::ExtensionProperties> availableExtensions =
         physicalDevice.enumerateDeviceExtensionProperties();
     FeatureChain supportedFeatures;
-    unlinkUnsupportedFeatures(supportedFeatures, availableExtensions);
     querySupportedFeatures(physicalDevice, supportedFeatures);
     const GiCacheSupport giCacheSupport = selectGiCache(availableExtensions, supportedFeatures);
     capabilities.giCache = giCacheSupport.cache;
 
     // only listed bits are requested; everything else stays false
     FeatureChain featureChain;
-    unlinkUnsupportedFeatures(featureChain, availableExtensions);
     enableFeatures(featureChain, kRequiredFeatures);
     std::vector<const char*> enabledExtensions(kRequiredDeviceExtensions.begin(), kRequiredDeviceExtensions.end());
-    if (capabilities.hasPartitionedAccelerationStructure) {
-        enableFeatures(featureChain, kPartitionedAccelerationStructureFeatures);
-        enabledExtensions.push_back(vk::NVPartitionedAccelerationStructureExtensionName);
-    }
     // also under NRC, so both caches can run side by side
     if (giCacheSupport.hasSharc) {
         enableFeatures(featureChain, kSharcFeatures);

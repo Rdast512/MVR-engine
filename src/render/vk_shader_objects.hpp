@@ -71,6 +71,11 @@ public:
         vk::raii::ShaderEXT motionCheck = nullptr;
         // passes/rt_check.slang, RayCheckPushData; ENGINE_RT_CHECK only
         vk::raii::ShaderEXT rayCheck = nullptr;
+        // passes/light_world.slang; async compute, before the TLAS build
+        vk::raii::ShaderEXT lightWorld = nullptr;
+        // passes/rtxdi_initial.slang and passes/rtxdi_shade.slang: ReSTIR DI, after the TLAS wait
+        vk::raii::ShaderEXT rtxdiInitial = nullptr;
+        vk::raii::ShaderEXT rtxdiShade = nullptr;
     };
     FrameShaders frameShaders;
 

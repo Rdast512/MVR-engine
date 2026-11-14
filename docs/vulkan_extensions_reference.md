@@ -36,7 +36,7 @@ Canonical terminology references:
 
 ## Repository Integration Anchors
 
-- Extension list source: `kRequiredDeviceExtensions` in [src/core/vk_device.cpp](../src/core/vk_device.cpp); optional NV extensions are appended at device creation when supported
+- Extension list source: `kRequiredDeviceExtensions` in [src/core/vk_device.cpp](../src/core/vk_device.cpp); every listed extension is required, and device creation throws when one is missing (no optional list since PBR plan C4 made partitioned AS required)
 - Instance/device setup and feature chain: [src/core/vk_device.cpp](../src/core/vk_device.cpp)
 - Capability cache: [src/core/types.hpp](../src/core/types.hpp)
 - Descriptor integration: [src/core/vk_descriptors.cpp](../src/core/vk_descriptors.cpp)
@@ -111,14 +111,7 @@ Canonical terminology references:
 | Extension | Official | Impl | Feature struct + flags | Property struct | Usage |
 | --- | --- | --- | --- | --- | --- |
 | `VK_NV_cluster_acceleration_structure` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_cluster_acceleration_structure.html) | [impl](../spec/VkExtensionsSpecs/VK_NV_cluster_acceleration_structure.md) | `PhysicalDeviceClusterAccelerationStructureFeaturesNV::clusterAccelerationStructure` | `PhysicalDeviceClusterAccelerationStructurePropertiesNV` _(cached as `HardwareCapabilities::clusterAccelerationStructure`; limits and alignments logged at startup)_ | **Required** since M2: `MegaGeometry` (`src/core/vk_mega_geometry.cpp`) builds one CLAS per meshlet and one cluster BLAS per mesh primitive at load (PBR plan C1) |
-
-## Device Extensions — Optional (NV)
-
-Enabled only when the GPU reports it. Support is cached in `HardwareCapabilities::hasPartitionedAccelerationStructure`; when unsupported, the feature and property structs are unlinked from their chains and device creation proceeds without them. Check the flag before using the extension. `VK_NV_cluster_acceleration_structure` was optional here until M2 and is now in the required set (above).
-
-| Extension | Official | Impl | Feature struct + flags | Property struct | Usage |
-| --- | --- | --- | --- | --- | --- |
-| `VK_NV_partitioned_acceleration_structure` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_partitioned_acceleration_structure.html) | [impl](../spec/VkExtensionsSpecs/VK_NV_partitioned_acceleration_structure.md) | `PhysicalDevicePartitionedAccelerationStructureFeaturesNV::partitionedAccelerationStructure` | `PhysicalDevicePartitionedAccelerationStructurePropertiesNV` | Optional; not consumed (vendor) |
+| `VK_NV_partitioned_acceleration_structure` | [`spec`](https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VK_NV_partitioned_acceleration_structure.html) | [impl](../spec/VkExtensionsSpecs/VK_NV_partitioned_acceleration_structure.md) | `PhysicalDevicePartitionedAccelerationStructureFeaturesNV::partitionedAccelerationStructure` | `PhysicalDevicePartitionedAccelerationStructurePropertiesNV` | **Required** since 2026-11-14 (spec §10.3), built in PBR plan C4: device creation throws when it is missing. `RayTracingScene` keeps one PTLAS updated in place from GPU-written `WRITE_INSTANCE` ops; `maxPartitionCount` (16,777,215 on the RTX 5070) bounds grid partitions plus global-partition instances |
 
 ---
 

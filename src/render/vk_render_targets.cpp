@@ -19,10 +19,11 @@ namespace
         vk::Format::eR8G8B8A8Unorm, // SpecularF0
         vk::Format::eR8G8B8A8Unorm, // SpecAlbedo
         vk::Format::eB10G11R11UfloatPack32, // Emissive
-        vk::Format::eR16G16Sfloat, // Motion
+        vk::Format::eR16G16B16A16Sfloat, // Motion
+        vk::Format::eR32G32B32A32Sfloat, // Position
     };
     constexpr std::array<const char*, kGuideImageCount> kGuideNames = {
-        "NormalRoughness", "GeoNormal", "DiffuseAlbedo", "SpecularF0", "SpecAlbedo", "Emissive", "Motion",
+        "NormalRoughness", "GeoNormal", "DiffuseAlbedo", "SpecularF0", "SpecAlbedo", "Emissive", "Motion", "Position",
     };
 
     // the resolve writes through typed storage images (core/binding.slang storageTex2D); later passes sample
@@ -67,6 +68,7 @@ RenderTargets::~RenderTargets()
     visBufferView = nullptr;
     destroyVmaImage(vma, visBuffer.image, visBuffer.memory);
     destroyVmaImage(vma, display.image, display.memory);
+    destroyVmaImage(vma, directRadiance.image, directRadiance.memory);
     for (auto& guides : guideSets) {
         for (Target& guide : guides) {
             destroyVmaImage(vma, guide.image, guide.memory);
@@ -151,6 +153,7 @@ void RenderTargets::checkFormatSupport() const
         check(format, kStorageFeatures);
     }
     check(kDisplayFormat, kStorageFeatures | vk::FormatFeatureFlagBits2::eSampledImageFilterLinear);
+    check(kDirectRadianceFormat, kStorageFeatures);
     check(kVisBufferFormat, vk::FormatFeatureFlagBits2::eColorAttachment | vk::FormatFeatureFlagBits2::eSampledImage);
 }
 
@@ -184,6 +187,7 @@ void RenderTargets::destroyTargets()
     visBufferView = nullptr;
     destroy(visBuffer);
     destroy(display);
+    destroy(directRadiance);
     for (auto& guides : guideSets) {
         for (Target& guide : guides) {
             destroy(guide);
@@ -210,6 +214,7 @@ void RenderTargets::recreate(vk::Extent2D renderExtent)
     // transfer source for the guide capture (Renderer::requestDisplayCapture)
     createTarget(display, kDisplayFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferSrc,
                  vk::ImageLayout::eGeneral, "DisplayColor");
+    createTarget(directRadiance, kDirectRadianceFormat, kStorageUsage, vk::ImageLayout::eGeneral, "DirectRadiance");
     for (uint32_t set = 0; set < kGuideSetCount; ++set) {
         for (size_t guide = 0; guide < kGuideImageCount; ++guide) {
             createTarget(guideSets[set][guide], kGuideFormats[guide], kStorageUsage, vk::ImageLayout::eGeneral,
@@ -238,6 +243,7 @@ void RenderTargets::recreate(vk::Extent2D renderExtent)
         vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eShaderSampledRead;
     // the vis buffer is transitioned from eUndefined every frame (Renderer::recordFrameCommands)
     initialize(*display.image, vk::ImageLayout::eGeneral, kStorageAccess);
+    initialize(*directRadiance.image, vk::ImageLayout::eGeneral, kStorageAccess);
     for (auto& guides : guideSets) {
         for (Target& guide : guides) {
             initialize(*guide.image, vk::ImageLayout::eGeneral, kStorageAccess);
@@ -269,5 +275,7 @@ void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber)
         .renderSize = {extent.width, extent.height},
         .current = guideSet(current),
         .previous = guideSet((current + 1) % kGuideSetCount),
+        .directRadianceStorage = directRadiance.storageIndex,
+        .directRadianceSampled = directRadiance.sampledIndex,
     };
 }

@@ -96,12 +96,13 @@ void FrameData::writeFrameRoot(uint32_t frameSlot, const FrameRootInputs& inputs
         .subpixelSnap = inputs.subpixelSnap,
         .targets = inputs.targets,
         .frameFlags = inputs.frameFlags,
-        .pad0 = 0,
+        .localLightCount = assets.localLightCount(),
         .rayInstances = inputs.rayInstances,
-        .rtxdiConstants = 0,
+        .rtxdiConstants = inputs.rtxdiConstants,
         .cacheConstants = 0,
         .frameIndex = inputs.frameIndex,
         .exposure = 1.0f,
+        .worldLights = inputs.worldLights,
     };
 }
 

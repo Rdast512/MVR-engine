@@ -24,8 +24,9 @@ private:
     static constexpr uint32_t kMaxLoggedFailures = 16;
     // the decode at the resolve's exact barycentrics and gradients: same inputs, so the same bits (0.0000 measured)
     static constexpr float kMaxNormalErrorDegrees = 1e-4f;
-    // ray and raster intersections of the same triangle, relative to the hit distance
-    static constexpr float kMaxPositionError = 1e-4f;
+    // ray and raster intersections of the same triangle, in pixels on screen. Hardware hit barycentrics move the
+    // point up to 0.06 px on large Sponza triangles; a wrong pixel center or an unsubtracted jitter is 0.5 px off
+    static constexpr float kMaxPositionError = 0.1f;
 
     [[nodiscard]] static bool isPassing(const GpuRayCheckStats& stats);
 

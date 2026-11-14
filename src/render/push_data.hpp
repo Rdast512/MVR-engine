@@ -49,17 +49,27 @@ static_assert(sizeof(CullPushData) == 16);
 // rt_instances pass; must match shaders/types.slang RtInstancesPushData
 struct RtInstancesPushData {
     vk::DeviceAddress frameRoot;
-    // uint64 BLAS address per ray instance, parallel to GpuFrameRoot::rayInstances
-    vk::DeviceAddress blasAddresses;
-    // VkAccelerationStructureInstanceKHR[count], the TLAS build input
-    vk::DeviceAddress tlasInstances;
+    // GpuRayInstanceBuild[count], parallel to GpuFrameRoot::rayInstances
+    vk::DeviceAddress buildRows;
+    // VkPartitionedAccelerationStructureWriteInstanceDataNV[count], the PTLAS write-instance arguments
+    vk::DeviceAddress writeInfos;
+    // the slot's VkBuildPartitionedAccelerationStructureIndirectCommandNV; the pass appends to its argCount
+    vk::DeviceAddress operation;
+    // one state row per instance (the transform the PTLAS holds), kept with the PTLAS across frames
+    vk::DeviceAddress ptlasState;
     uint32_t count;
-    uint32_t pad0;
+    uint32_t flags; // RtInstancesFlag
 };
 
 static_assert(std::is_trivially_copyable_v<RtInstancesPushData>);
-static_assert(offsetof(RtInstancesPushData, count) == 24);
-static_assert(sizeof(RtInstancesPushData) == 32);
+static_assert(offsetof(RtInstancesPushData, count) == 40);
+static_assert(sizeof(RtInstancesPushData) == 48);
+
+namespace RtInstancesFlag
+{
+    // the PTLAS is built from nothing: every row writes its instance and resets its state
+    inline constexpr uint32_t FullBuild = 1u << 0;
+} // namespace RtInstancesFlag
 
 // matches shaders/passes/hiz_build.slang
 inline constexpr uint32_t kHiZLevelsPerDispatch = 3;

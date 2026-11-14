@@ -46,12 +46,15 @@ private:
         Approach,
         CulledAlbedo = Approach + 1,
         CulledDepth,
+        // until the unculled captures are a whole number of jitter cycles after the culled ones
         UnculledSettle,
         UnculledAlbedo,
         UnculledDepth,
     };
 
     static constexpr uint32_t kApproachFrames = 8;
+    // culled capture to unculled capture, before rounding up to the jitter cycle: one settle frame
+    static constexpr uint32_t kMinCaptureDistance = 3;
     static constexpr uint32_t kWarmupFrames = 8;
     // 45 degrees and the approach turn, in Camera::rotate units
     static constexpr float kEighthTurn = 392.699f;
@@ -85,6 +88,8 @@ private:
     uint32_t frame = 0;
     size_t poseIndex = 0;
     uint32_t poseFrame = 0;
+    // frames from a culled capture to its unculled one; a multiple of the jitter phase count
+    uint32_t captureDistance = kMinCaptureDistance;
     uint32_t passedCount = 0;
     // sums of the deltas given to Camera::rotate
     float yaw = 0.0f;

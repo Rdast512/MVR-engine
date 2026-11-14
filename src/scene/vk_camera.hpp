@@ -55,7 +55,16 @@ public:
 
     // one persistently mapped GpuCameraData buffer per frame slot; freed by the destructor
     void createBuffers(const Device& device, const VkAllocator& allocator);
-    void updateCameraData(uint8_t currentImage);
+    // frameIndex picks the jitter phase
+    void updateCameraData(uint8_t currentImage, uint64_t frameIndex);
+
+    // ENGINE_JITTER=1
+    [[nodiscard]] static bool isJitterRequested();
+    // Halton(2,3) phases per cycle: 8 * (display / render)^2 (engine spec §12.2)
+    [[nodiscard]] uint32_t getJitterPhaseCount() const;
+    // subpixel jitter of the raster (cameraData.jitterOffset); off until DLSS resolves it (PBR plan H1), since the
+    // display would shimmer by half a pixel
+    bool isJitterEnabled = false;
 
     // after updateCameraData: first frame, focusOn, teleportTo, a projection change, or any swapchain recreation (setRenderExtent);
     // cameraData.prevViewProj equals viewProj then
@@ -66,6 +75,7 @@ public:
     SwapChain& swapChain;
     GpuCameraData cameraData = {};
     glm::mat4 prevViewProj = {};
+    glm::vec3 prevCameraPos{0.0f};
     std::array<void*, 2> cameraBuffersMapped = {nullptr, nullptr};
     std::array<vk::raii::Buffer, 2> cameraBuffers = {nullptr, nullptr};
     std::array<VmaAllocation, 2> cameraBuffersMemory = {nullptr, nullptr};
@@ -74,6 +84,8 @@ public:
 private:
     void updateVectors();
     void updateProjection();
+    // NDC offset of the frame's phase, (-0.5, 0.5] px per axis
+    [[nodiscard]] glm::vec2 computeJitterOffset(uint64_t frameIndex) const;
 
     // orientation in radians
     float yaw = -glm::half_pi<float>(); // facing -Z initially
@@ -97,4 +109,5 @@ private:
     static constexpr float kMouseSensitivity = 0.002f; // rad/pixel
     static constexpr float kFovMin = glm::radians(10.0f);
     static constexpr float kFovMax = glm::radians(150.0f);
+    static constexpr double kJitterBasePhases = 8.0;
 };

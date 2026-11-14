@@ -58,9 +58,10 @@ void destroyVmaImage(VmaAllocator allocator, vk::raii::Image& image, VmaAllocati
                      const char* tracyName = nullptr);
 
 // uniform + storage usage, host-visible coherent; tracyName nullptr skips Tracy tracking
+// extraUsage adds to uniform | storage | device address, e.g. acceleration-structure build input
 [[nodiscard]] HostBuffer createHostBuffer(vk::DeviceSize size, VmaAllocator allocator, const vk::raii::Device& device,
                                           const std::vector<uint32_t>& queueFamilyIndices, std::string_view debugName,
-                                          const char* tracyName);
+                                          const char* tracyName, vk::BufferUsageFlags2 extraUsage = {});
 // VMA unmaps on destroy; no-op when never created
 void destroyHostBuffer(VmaAllocator allocator, HostBuffer& target, const char* tracyName);
 

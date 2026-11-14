@@ -64,6 +64,7 @@ void Engine::initialize()
     swapChain->init();
 
     camera = std::make_unique<Camera>(*swapChain);
+    camera->isJitterEnabled = Camera::isJitterRequested();
     textureManager = std::make_unique<TextureManager>(*device, *allocator, *descriptorManager);
     textureManager->init();
 
@@ -103,6 +104,7 @@ void Engine::initialize()
     renderer = std::make_unique<Renderer>(*device, *swapChain, *allocator, *frameSync, *scene, *assetBuffers,
                                           *frameData, *descriptorManager, *shaderObjects,
                                           *camera, tracyContext.get());
+    renderer->getRtxdi().isReference = RtxdiContext::isReferenceRequested();
     renderer->rebuildSwapchainResources();
     if (motionTest) {
         renderer->enableMotionCheck();

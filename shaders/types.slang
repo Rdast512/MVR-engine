@@ -36,7 +36,8 @@ public struct GpuCameraData
     public float farZ;
     public float frameDeltaTime;
 
-    public float4 cameraParams;
+    public float3 prevCameraPos; // equal to cameraPos on a cut
+    public float pad0;
 };
 
 public struct GpuObjectUB
@@ -102,6 +103,10 @@ public static const uint kDebugViewReprojection = 17u;
 public static const uint kDebugViewRayMeshlets = 18u;
 public static const uint kDebugViewRayNodeInstances = 19u;
 public static const uint kDebugViewRayShadingNormal = 20u;
+public static const uint kDebugViewAmbientOcclusion = 21u;
+public static const uint kDebugViewUnshadowedLights = 22u;
+public static const uint kDebugViewShadowedLights = 23u;
+public static const uint kDebugViewLightingOnly = 24u;
 public static const uint kDebugViewModeMask = 0xffu;
 public static const uint kDebugViewFlagEdges = 1u << 8;
 
@@ -213,7 +218,7 @@ public struct GpuCullView
     public uint64_t rejectMasks;        // uint per early draw record: meshlets occluded early, re-tested late
     public float4x4 cullViewProj;       // frustum and sub-pixel tests: current, or the frozen cull camera
     public float2 targetSize;           // render target in pixels
-    public float subpixelSnap;          // pixels a vertex may move when snapped to the subpixel grid
+    public float subpixelSnap;          // pixels the raster may move a corner: grid snap plus this frame's jitter
     public uint instanceCandidateCapacity; // list capacities; appends past them are dropped and counted
     public uint drawRecordCapacity;        // rows of this phase's drawRecords region, also the reject masks
     public uint binVisibleCapacity[kRasterBinCount];
@@ -352,7 +357,7 @@ public struct GpuMaterial
     public uint2 pad4;
 };
 
-// model space; loadWorldLight moves it to world space through its owning instance
+// GpuFrameRoot.lights: model space, placed by passes/light_world.slang into GpuFrameRoot.worldLights each frame
 public struct GpuLight
 {
     public float3 position;
@@ -521,7 +526,7 @@ public struct GpuRayCheckStats
     // the decode at the resolve's barycentrics and gradients: any difference is the decode chain's
     public uint maxNormalErrorBits;         // degrees, Surface.normal
     public uint maxGeoNormalErrorBits;      // degrees
-    public uint maxPositionErrorBits;       // world distance between the two intersections / hit distance
+    public uint maxPositionErrorBits;       // pixels between the two intersections on screen
     public uint maxMipErrorBits;            // |log2| of the uv footprint ratio, uv set 0, ray cone vs raster
     public uint maxMaterialNormalErrorBits; // degrees
     // the same at the ray's own barycentrics: intersection noise through steep normal maps, reported only
@@ -544,15 +549,20 @@ public struct GpuMotionCheckStats
     public uint maxCameraErrorBits; // float bits
 };
 
-// 32 B, matches src/render/push_data.hpp: rt_instances pass
+// 56 B, matches src/render/push_data.hpp: rt_instances pass
 public struct RtInstancesPushData
 {
     public uint64_t frameRoot;
-    public uint64_t blasAddresses; // uint64 per ray instance, parallel to GpuFrameRoot.rayInstances
-    public uint64_t tlasInstances; // VkAccelerationStructureInstanceKHR[count]
+    public uint64_t buildRows;  // GpuRayInstanceBuild[count], parallel to GpuFrameRoot.rayInstances
+    public uint64_t writeInfos; // VkPartitionedAccelerationStructureWriteInstanceDataNV[count]
+    public uint64_t operation;  // VkBuildPartitionedAccelerationStructureIndirectCommandNV, argCount appended
+    public uint64_t ptlasState; // one state row per instance: the transform the PTLAS holds
     public uint count;
-    public uint pad0;
+    public uint flags;          // kRtInstancesFlag*
 };
+
+// RtInstancesPushData.flags, matches RtInstancesFlag in src/render/push_data.hpp
+public static const uint kRtInstancesFlagFullBuild = 1u << 0;
 
 // 16 B, matches src/render/push_data.hpp
 public struct PresentPushData
@@ -577,8 +587,9 @@ public static const uint kGuideDiffuseAlbedo = 2;
 public static const uint kGuideSpecularF0 = 3;
 public static const uint kGuideSpecAlbedo = 4;
 public static const uint kGuideEmissive = 5;
-public static const uint kGuideMotion = 6;
-public static const uint kGuideImageCount = 7;
+public static const uint kGuideMotion = 6;   // xy pixels to the previous frame, z view depth change
+public static const uint kGuidePosition = 7; // world position, w view depth (0: empty)
+public static const uint kGuideImageCount = 8;
 
 public struct GpuGuideSet
 {
@@ -598,6 +609,8 @@ public struct GpuTargets
     public uint2 renderSize;
     public GpuGuideSet current; // this frame's, by frame parity
     public GpuGuideSet previous;
+    public uint directRadianceStorage; // RGBA16F, rtxdi_shade; no emissive
+    public uint directRadianceSampled;
 };
 
 // [InstanceIndex()] of a TLAS instance; written by the CPU per scene layout (RayTracingScene)
@@ -605,6 +618,14 @@ public struct GpuRayInstance
 {
     public uint nodeInstanceIndex; // row in GpuFrameRoot.nodeInstances
     public uint primitiveRow;      // row in GpuFrameRoot.primitives
+};
+
+// parallel to GpuRayInstance, per scene layout: the PTLAS instance write's inputs beyond the node instance
+public struct GpuRayInstanceBuild
+{
+    public uint64_t blas;
+    public uint partition; // grid partition, fixed per layout
+    public uint pad0;
 };
 
 // GpuFrameRoot.frameFlags, matches FrameFlag in src/core/types.hpp
@@ -619,7 +640,7 @@ public struct GpuFrameRoot
     public uint64_t primitives;    // GpuPrimitive[], absolute rows
     public uint64_t materials;     // whole GpuMaterial[]; only row 0 (default) is read here
     public uint64_t pbrExtensions; // whole GpuMaterialExtension[], parallel to materials
-    public uint64_t lights;        // GpuLight[lightCount]
+    public uint64_t lights;        // GpuLight[lightCount], model space; point and spot before directional
     public uint64_t tlas;
     public uint64_t nodeInstances; // GpuNodeInstance[nodeInstanceCount]
     public uint64_t drawRecords;     // GpuDrawRecord[], written by the instance cull pass
@@ -635,10 +656,11 @@ public struct GpuFrameRoot
     public float subpixelSnap;    // pixels a vertex may move when snapped to the subpixel grid
     public uint64_t targets;      // GpuTargets
     public uint frameFlags;       // kFrameFlag*
-    public uint pad0;
+    public uint localLightCount;  // lights [0, localLightCount) are point and spot, the rest directional
     public uint64_t rayInstances;   // GpuRayInstance[], 0 until the RT scene exists
     public uint64_t rtxdiConstants; // 0 until M3
     public uint64_t cacheConstants; // SHaRC or NRC constants, 0 until M4
     public uint frameIndex;
     public float exposure;          // pre-exposure, 1 until auto exposure
+    public uint64_t worldLights;    // GpuLight[lightCount], world space, written this frame (loadWorldLight)
 };

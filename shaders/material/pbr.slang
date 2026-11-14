@@ -22,6 +22,8 @@ public struct SampledMaterial
     public float3 emissive;
     public float ao;
     public float3 n; // world, normal-mapped, facing-corrected
+    // scales the whole specular lobe, fresnel included: 0 for unlit, which reflects nothing
+    public float specularWeight;
 };
 
 public struct TextureGradients
@@ -108,6 +110,7 @@ public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, flo
     result.ao = lerp(1.0, occlusion, material.occlusionStrength);
     result.emissive = emissive;
     result.n = surface.normal;
+    result.specularWeight = 1.0;
 
     // assets can ship tangents parallel to the normal; normalizing the zero residual gives NaN
     const float3 orthoTangent = surface.tangent.xyz - surface.normal * dot(surface.normal, surface.tangent.xyz);
@@ -145,6 +148,7 @@ public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, flo
         result.emissive = result.baseColor;
         result.baseColor = float3(0.0, 0.0, 0.0);
         result.metallic = 0.0;
+        result.specularWeight = 0.0;
     }
     return result;
 }

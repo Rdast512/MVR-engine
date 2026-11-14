@@ -23,6 +23,10 @@ struct FrameRootInputs {
     // RayTracingScene of this slot, built on the async compute queue
     vk::DeviceAddress tlas;
     vk::DeviceAddress rayInstances;
+    // WorldLights of this slot, written on the async compute queue
+    vk::DeviceAddress worldLights;
+    // RtxdiContext constants of this slot, written after its fence
+    vk::DeviceAddress rtxdiConstants;
     uint32_t lateVisibleBase;
     uint32_t triangleCullFlags;
     float subpixelSnap;

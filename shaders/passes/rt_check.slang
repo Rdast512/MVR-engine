@@ -23,8 +23,7 @@ static const float kMinUvFootprintArea = 1.0 / 4294967296.0;
 // an edge moves at most as far as its farther corner snaps: subpixelSnap on each axis
 static const float kSnapEdgeScale = 1.41421356;
 static const float kNoEdge = 3.0e38;
-// ray and raster intersections of one triangle differ by up to this over the hit distance (kMaxPositionError in
-// src/core/engine_ray_check.hpp): two triangles closer than that are a depth tie
+// two triangles closer than this along the ray, over the hit distance, are a depth tie: coplanar overlap
 static const float kDepthTieTolerance = 1e-4;
 
 [[vk::push_constant]] ConstantBuffer<RayCheckPushData> push;
@@ -86,6 +85,15 @@ float edgeDistancePixels(TriangleCorners corners, float2 center, float2 targetSi
 bool isOnSnappedEdge(GpuFrameRoot root, TriangleCorners corners, float2 center, float2 targetSize)
 {
     return edgeDistancePixels(corners, center, targetSize) <= kSnapEdgeScale * root.subpixelSnap;
+}
+
+// pixels between two points' projections. A ray and the raster sample one point under the pixel; on a grazing
+// surface a tiny direction error slides the hit far along the triangle, so world distance overstates the miss
+float screenDistancePixels(GpuCameraData camera, float3 a, float3 b, float2 targetSize)
+{
+    const float4 clipA = mul(camera.viewProj, float4(a, 1.0));
+    const float4 clipB = mul(camera.viewProj, float4(b, 1.0));
+    return length((clipA.xy / clipA.w - clipB.xy / clipB.w) * 0.5 * targetSize);
 }
 
 // pcg
@@ -186,7 +194,7 @@ void rayCheckMain(uint3 id : SV_DispatchThreadID)
                                                               2.0 / targetSize);
                 const Surface raster = buildSurface(draw, corners, bary);
                 const Surface traced = decoded.surface;
-                positionError = length(raster.position - traced.position) / max(hit.t, 1e-6);
+                positionError = screenDistancePixels(camera, raster.position, traced.position, targetSize);
 
                 // the ray's ids, fetched positions and facing at the resolve's exact barycentrics and gradients: what
                 // remains is the decode chain, not the intersection. Even a 1 - u - v ulp would cross the texture

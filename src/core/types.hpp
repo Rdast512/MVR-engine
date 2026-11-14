@@ -413,7 +413,8 @@ struct GpuCullView
     // frustum and sub-pixel tests: current viewProj, or the frozen cull camera's
     glm::mat4 cullViewProj{1.0f};
     glm::vec2 targetSize{0.0f}; // render target in pixels
-    // pixels a vertex may move when snapped to the subpixel grid (subPixelPrecisionBits)
+    // pixels the raster may move a corner against cullViewProj: the subpixel grid snap (subPixelPrecisionBits) plus
+    // this frame's jitter, which the cull matrix leaves out (engine spec §12.2)
     float subpixelSnap = 0.0f;
     // capacities of the lists this phase appends to; appends past them are dropped and counted in GpuCullCounters
     uint32_t instanceCandidateCapacity = 0;
@@ -515,7 +516,7 @@ struct GpuRayCheckStats {
     // gradients, in degrees: any difference is the decode chain's
     uint32_t maxNormalErrorBits = 0;
     uint32_t maxGeoNormalErrorBits = 0;
-    // distance between the ray and raster intersections over the hit distance
+    // pixels between the ray and raster intersections on screen
     uint32_t maxPositionErrorBits = 0;
     // |log2| of the ray-cone over the raster uv footprint, uv set 0
     uint32_t maxMipErrorBits = 0;
@@ -812,13 +813,15 @@ struct alignas(16) GpuCameraData {
     glm::vec2 jitterOffset;    // TAA subpixel jitter offset
     float farZ;                // Far clipping plane
     float frameDeltaTime;      // Delta time in seconds
-    glm::vec4 cameraParams; // reserved
+    // cameraPos of the previous frame; equal to cameraPos on a cut, like prevViewProj
+    glm::vec3 prevCameraPos;
+    float pad0;
 };
 static_assert(sizeof(GpuCameraData) == 512);
 static_assert(offsetof(GpuCameraData, prevViewProj) == 384);
 static_assert(offsetof(GpuCameraData, cameraPos) == 448);
 static_assert(offsetof(GpuCameraData, renderTargetSize) == 464);
-static_assert(offsetof(GpuCameraData, cameraParams) == 496);
+static_assert(offsetof(GpuCameraData, prevCameraPos) == 496);
 
 // one row per entity in the per-frame instance buffer
 struct alignas(16) GpuObjectUB {
@@ -890,8 +893,10 @@ enum class GuideImage : uint32_t
     SpecAlbedo,
     // R11G11B10F
     Emissive,
-    // RG16F: render-resolution pixels to the previous frame, no jitter
+    // RGBA16F: render-resolution pixels to the previous frame, no jitter; z = view depth there minus here
     Motion,
+    // RGBA32F: world position, w = view depth (0: empty pixel); the previous set gives RTXDI last frame's surface
+    Position,
     Count,
 };
 inline constexpr size_t kGuideImageCount = std::to_underlying(GuideImage::Count);
@@ -904,7 +909,7 @@ struct GpuGuideSet
     std::array<uint32_t, kGuideImageCount> storage{};
     std::array<uint32_t, kGuideImageCount> sampled{};
 };
-static_assert(sizeof(GpuGuideSet) == 56);
+static_assert(sizeof(GpuGuideSet) == 64);
 
 // render-resolution targets of one frame, reached from GpuFrameRoot::targets
 struct GpuTargets
@@ -923,8 +928,11 @@ struct GpuTargets
     // this frame's set, by frame parity
     GpuGuideSet current;
     GpuGuideSet previous;
+    // RGBA16F linear HDR written by passes/rtxdi_shade.slang; no emissive
+    uint32_t directRadianceStorage = 0;
+    uint32_t directRadianceSampled = 0;
 };
-static_assert(sizeof(GpuTargets) == 144);
+static_assert(sizeof(GpuTargets) == 168);
 static_assert(offsetof(GpuTargets, current) == 32);
 
 // GpuFrameRoot::frameFlags, matches shaders/types.slang kFrameFlag*
@@ -944,6 +952,18 @@ struct GpuRayInstance
 };
 static_assert(sizeof(GpuRayInstance) == 8);
 static_assert(offsetof(GpuRayInstance, nodeInstanceIndex) == 0);
+
+// per ray instance and scene layout, parallel to GpuRayInstance: what the PTLAS instance write needs beyond the
+// node instance (RayTracingScene)
+struct GpuRayInstanceBuild
+{
+    vk::DeviceAddress blas = 0;
+    // grid partition, fixed per layout
+    uint32_t partition = 0;
+    uint32_t pad0 = 0;
+};
+static_assert(sizeof(GpuRayInstanceBuild) == 16);
+static_assert(offsetof(GpuRayInstanceBuild, partition) == 8);
 static_assert(offsetof(GpuRayInstance, primitiveRow) == 4);
 
 // per-frame entry point for every shader: the only address the push data carries
@@ -960,6 +980,7 @@ struct GpuFrameRoot
     vk::DeviceAddress materials = 0;
     // whole GpuMaterialExtension[] buffer, parallel to materials
     vk::DeviceAddress pbrExtensions = 0;
+    // GpuLight[lightCount] in model space, point and spot before directional (AssetBuffers::uploadLights)
     vk::DeviceAddress lights = 0;
     // raw acceleration structure address, 0 until RT exists
     vk::DeviceAddress tlas = 0;
@@ -987,7 +1008,8 @@ struct GpuFrameRoot
     vk::DeviceAddress targets = 0;
     // FrameFlag
     uint32_t frameFlags = 0;
-    uint32_t pad0 = 0;
+    // lights [0, localLightCount) are point and spot, the rest directional: RTXDI's local and infinite regions
+    uint32_t localLightCount = 0;
     // GpuRayInstance[], 0 until the RT scene exists
     vk::DeviceAddress rayInstances = 0;
     // RTXDI constants, 0 until M3
@@ -997,8 +1019,10 @@ struct GpuFrameRoot
     uint32_t frameIndex = 0;
     // pre-exposure, 1 until auto exposure
     float exposure = 1.0f;
+    // GpuLight[lightCount] in world space, written this frame on the async compute queue (WorldLights)
+    vk::DeviceAddress worldLights = 0;
 };
-static_assert(sizeof(GpuFrameRoot) == 176);
+static_assert(sizeof(GpuFrameRoot) == 184);
 static_assert(offsetof(GpuFrameRoot, camera) == 0);
 static_assert(offsetof(GpuFrameRoot, instances) == 8);
 static_assert(offsetof(GpuFrameRoot, models) == 16);
@@ -1021,7 +1045,8 @@ static_assert(offsetof(GpuFrameRoot, triangleCull) == 120);
 static_assert(offsetof(GpuFrameRoot, subpixelSnap) == 124);
 static_assert(offsetof(GpuFrameRoot, targets) == 128);
 static_assert(offsetof(GpuFrameRoot, frameFlags) == 136);
-static_assert(offsetof(GpuFrameRoot, pad0) == 140);
+static_assert(offsetof(GpuFrameRoot, localLightCount) == 140);
+static_assert(offsetof(GpuFrameRoot, worldLights) == 176);
 static_assert(offsetof(GpuFrameRoot, rayInstances) == 144);
 static_assert(offsetof(GpuFrameRoot, rtxdiConstants) == 152);
 static_assert(offsetof(GpuFrameRoot, cacheConstants) == 160);
@@ -1077,8 +1102,6 @@ struct HardwareCapabilities
     vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV clusterAccelerationStructure;
     vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV partitionedAccelerationStructure;
 
-    // optional NV extension: enabled only when supported; its property struct above stays zeroed otherwise
-    bool hasPartitionedAccelerationStructure = false;
     // NRC when its extensions and features exist, else SHaRC, else none
     GiCache giCache = GiCache::None;
 };

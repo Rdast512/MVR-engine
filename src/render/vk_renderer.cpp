@@ -14,7 +14,7 @@
 namespace
 {
     const vk::ImageSubresourceRange kColorRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-    // matches passes/resolve.slang and passes/debug_view.slang
+    // matches passes/resolve.slang, passes/debug_view.slang and the passes/rtxdi_*.slang
     constexpr uint32_t kFullscreenTile = 8;
 
     constexpr uint32_t divideRoundUp(uint32_t value, uint32_t divisor) { return (value + divisor - 1) / divisor; }
@@ -30,7 +30,8 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
     culling(device, allocator, scene, assets, frameData, shaderObjects, dgc),
     hiz(device, allocator, frameSync, descriptorManager, shaderObjects),
     targets(device, allocator, frameSync, descriptorManager),
-    rtScene(device, allocator, scene, assets, frameData, shaderObjects), gpuTimer(device), tracyContext(tracyContext)
+    rtScene(device, allocator, frameSync, scene, assets, frameData, shaderObjects),
+    worldLights(device, allocator, assets, frameData, shaderObjects), rtxdi(device, allocator, assets), gpuTimer(device), tracyContext(tracyContext)
 {
     const vk::DeviceSize maxPushData = device.capabilities.descriptorHeap.maxPushDataSize;
     if (kMaxPushDataBytes > maxPushData) {
@@ -110,6 +111,7 @@ void Renderer::rebuildSwapchainResources()
     // render resolution equals display until upscaling (M3)
     targets.recreate(swapChain.swapChainExtent);
     hiz.recreate(targets);
+    rtxdi.recreate(targets.getExtent());
     camera.setRenderExtent(targets.getExtent());
 }
 
@@ -147,9 +149,11 @@ void Renderer::drawFrame()
     allocator.tracyPlotMemoryBudget();
 
     // after the fence: this slot's camera buffer and query results are no longer touched by the GPU
-    camera.updateCameraData(currentFrame);
+    camera.updateCameraData(currentFrame, frameNumber);
     targets.prepareFrame(currentFrame, frameNumber);
-    rtScene.prepareFrame(currentFrame);
+    rtScene.prepareFrame(currentFrame, frameNumber - 1);
+    worldLights.prepareFrame(currentFrame);
+    rtxdi.prepareFrame(currentFrame, frameNumber);
     gpuTimer.collect(currentFrame);
     if (void* stats = motionCheckStats[currentFrame].mapped) {
         // host writes before the submit are visible to it
@@ -181,8 +185,10 @@ void Renderer::drawFrame()
                                           .drawRecords = culling.drawRecordsAddress(currentFrame),
                                           .visibleMeshlets = culling.visibleMeshletsAddress(currentFrame),
                                           .cullCounters = culling.countersAddress(currentFrame),
-                                          .tlas = rtScene.tlasAddress(currentFrame),
+                                          .tlas = rtScene.tlasAddress(),
                                           .rayInstances = rtScene.rayInstancesAddress(currentFrame),
+                                          .worldLights = worldLights.address(currentFrame),
+                                          .rtxdiConstants = rtxdi.constantsAddress(currentFrame),
                                           .lateVisibleBase = culling.lateVisibleBase(currentFrame),
                                           .triangleCullFlags = culling.triangleCullFlags(currentFrame),
                                           .subpixelSnap = culling.getSubpixelSnap(),
@@ -203,12 +209,18 @@ void Renderer::drawFrame()
         const vk::SemaphoreSubmitInfo tlasWait{.semaphore = *frameSync.computeTimeline,
                                                .value = computeTimelineValues[currentFrame],
                                                .stageMask = vk::PipelineStageFlagBits2::eComputeShader};
+        // the next frame's in-place PTLAS update waits for this frame's rays
+        const vk::SemaphoreSubmitInfo raySignal{.semaphore = *frameSync.rayTimeline,
+                                                .value = frameNumber,
+                                                .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
         const std::array submits{
             vk::SubmitInfo2{.commandBufferInfoCount = 1, .pCommandBufferInfos = &frameCmdInfo},
             vk::SubmitInfo2{.waitSemaphoreInfoCount = 1,
                             .pWaitSemaphoreInfos = &tlasWait,
                             .commandBufferInfoCount = 1,
-                            .pCommandBufferInfos = &rayCmdInfo},
+                            .pCommandBufferInfos = &rayCmdInfo,
+                            .signalSemaphoreInfoCount = 1,
+                            .pSignalSemaphoreInfos = &raySignal},
         };
         graphicsQueue.submit2(submits);
     }
@@ -358,6 +370,13 @@ void Renderer::recordRayCommands(vk::raii::CommandBuffer& cmd)
     cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
     cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
     {
+        ZoneScopedN("DirectLight");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneDirectLight, *cmd, "GPU_DirectLight", gpuTrace);
+#endif
+        recordDirectLight(cmd);
+    }
+    {
         ZoneScopedN("DebugView");
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneDebugView, *cmd, "GPU_DebugView", gpuTrace);
@@ -418,6 +437,7 @@ void Renderer::submitComputeCommands()
     // the shader objects are created for descriptor heaps
     cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
     cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
+    worldLights.recordUpdate(cmd, currentFrame);
     rtScene.recordBuild(cmd, currentFrame);
     cmd.end();
 
@@ -427,7 +447,14 @@ void Renderer::submitComputeCommands()
     const vk::SemaphoreSubmitInfo signalInfo{.semaphore = *frameSync.computeTimeline,
                                              .value = frameNumber,
                                              .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
-    device.computeQueue.submit2(vk::SubmitInfo2{.commandBufferInfoCount = 1,
+    // the PTLAS is updated in place: the previous frame's ray passes must have finished tracing it. Its ray submit
+    // is already queued, so the wait never precedes its signal
+    const vk::SemaphoreSubmitInfo rayWait{.semaphore = *frameSync.rayTimeline,
+                                          .value = frameNumber - 1,
+                                          .stageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR};
+    device.computeQueue.submit2(vk::SubmitInfo2{.waitSemaphoreInfoCount = 1,
+                                                .pWaitSemaphoreInfos = &rayWait,
+                                                .commandBufferInfoCount = 1,
                                                 .pCommandBufferInfos = &cmdInfo,
                                                 .signalSemaphoreInfoCount = 1,
                                                 .pSignalSemaphoreInfos = &signalInfo});
@@ -581,9 +608,35 @@ void Renderer::recordResolve(const vk::raii::CommandBuffer& cmd)
     gpuTimer.end(cmd, GpuTimerScope::Resolve);
 }
 
+// ReSTIR DI: initial reservoirs, then fused resampling + shading into directRadiance
+void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
+{
+    // this frame's guide writes and last frame's reservoir writes -> reads and writes of either pass. Reads of
+    // directRadiance by earlier frames are ordered before this frame's resolve (recordResolve)
+    const vk::MemoryBarrier2 resamplingBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageRead |
+                         vk::AccessFlagBits2::eShaderStorageWrite,
+    };
+    const vk::DependencyInfo dependency{.memoryBarrierCount = 1, .pMemoryBarriers = &resamplingBarrier};
+    cmd.pipelineBarrier2(dependency);
+    // with no lights rtxdi_shade only writes black. Lights arrive only with a load, which resets history, so the
+    // reservoirs skipped meanwhile are never reused
+    if (rtxdi.hasLights()) {
+        dispatchFullscreen(cmd, shaderObjects.frameShaders.rtxdiInitial);
+        // initial reservoirs -> the shade pass's loads
+        cmd.pipelineBarrier2(dependency);
+    }
+    gpuTimer.end(cmd, GpuTimerScope::RtxdiInitial);
+    dispatchFullscreen(cmd, shaderObjects.frameShaders.rtxdiShade);
+    gpuTimer.end(cmd, GpuTimerScope::RtxdiShade);
+}
+
 void Renderer::recordDebugView(const vk::raii::CommandBuffer& cmd)
 {
-    // guide writes -> guide reads; submission order also covers the previous frame's set (Reprojection)
+    // guide and directRadiance writes -> reads; submission order also covers the previous frame's set (Reprojection)
     const vk::MemoryBarrier2 guideBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,

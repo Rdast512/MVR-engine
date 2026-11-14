@@ -102,16 +102,17 @@ The jitter hook: raster and step 4 use `viewProj` plus the jitter as a clip-spac
 | Depth | `D32_SFLOAT`, reverse Z | hardware depth for DLSS (`InUseHWDepth`) |
 | `normalRoughness` | `RGBA16F` | world shading normal, perceptual roughness |
 | `geoNormal` | `RG16_SNORM`, octahedral | facing-corrected |
-| `diffuseAlbedo` | `RGBA8` | `baseColor · (1 − metallic)` |
-| `specularF0` | `RGBA8` | `lerp(0.04, baseColor, metallic)` |
+| `diffuseAlbedo` | `RGBA8` | `baseColor · (1 − metallic)`; a = ao |
+| `specularF0` | `RGBA8` | `lerp(0.04, baseColor, metallic)` × specular weight; a = specular weight (0: unlit) |
 | `specAlbedo` | `RGBA8` | env-BRDF approximation (shared with PBR B2) |
 | `emissive` | `R11G11B10F` | emissive factor × texture × strength |
-| `motion` | `RG16F` | render-resolution pixels, no jitter |
+| `motion` | `RGBA16F` | render-resolution pixels, no jitter; z = view depth there − here (PBR F2) |
+| `position` | `RGBA32F` | world position, w = view depth, 0 on empty pixels (PBR F2): last frame's surfaces for RTXDI |
 
 - Two sets (all rows from `normalRoughness` down), ping-ponged by frame parity; allocated now so RTXDI and ReSTIR GI temporal passes (M3, M4) change no layout.
-- Storage writes of `RG16_SNORM`, `RG16F` and `R11G11B10F` use the SPIR-V `StorageImageExtendedFormats` capability (core since 1.0, no device feature); the format features are checked at startup. Storage images are typed through `storageTex2D<T, format>` (`core/binding.slang`), so no write-without-format is needed.
+- Storage writes of `RG16_SNORM` and `R11G11B10F` use the SPIR-V `StorageImageExtendedFormats` capability (core since 1.0, no device feature); the format features are checked at startup. Storage images are typed through `storageTex2D<T, format>` (`core/binding.slang`), so no write-without-format is needed.
 - Heap indices go into `GpuTargets` (M0), reached from `GpuFrameRoot::targets`.
-- Memory at the reference tier's render size (1707×960): about 105 MB for both sets plus vis buffer and depth; about 66 MB at 1280×720 on the floor tier.
+- Memory: 112 B per pixel since PBR F2 (52 B per set, vis buffer and depth 8 B): about 184 MB at the reference tier's render size (1707×960), about 103 MB at 1280×720 on the floor tier.
 
 ### 3.7 Display path until M3
 

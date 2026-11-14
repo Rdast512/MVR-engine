@@ -80,8 +80,10 @@ void EngineBench::logResults(const MeshletCullStats& cullStats, const RayTracing
     }
     logInfo(std::format("  {:<22} mean {:8.4f} ms", "GPU total", total), "Bench");
     // async compute overlaps the frame: last rolling window, not in the total
-    logInfo(std::format("  async compute: RT instances {:.4f} ms, TLAS build {:.4f} ms, {} instances",
-                        rtStats.instanceWriteMs, rtStats.tlasBuildMs, rtStats.instances),
+    logInfo(std::format("  async compute: RT instances {:.4f} ms, PTLAS build {:.4f} ms, {} instances, {} partitions, "
+                        "{} written",
+                        rtStats.instanceWriteMs, rtStats.tlasBuildMs, rtStats.instances, rtStats.partitions,
+                        rtStats.writtenInstances),
             "Bench");
     // a static view gives the same counts every frame
     const GpuCullCounters& early = cullStats.phase(CullPhase::Early);

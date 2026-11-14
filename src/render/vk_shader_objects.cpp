@@ -84,6 +84,9 @@ void ShaderObjects::createFrameShaders()
     frameShaders.debugView = createComputeShader("debug_view.spv", "debugViewMain", "DebugView");
     frameShaders.motionCheck = createComputeShader("motion_check.spv", "motionCheckMain", "MotionCheck");
     frameShaders.rayCheck = createComputeShader("rt_check.spv", "rayCheckMain", "RayCheck");
+    frameShaders.lightWorld = createComputeShader("light_world.spv", "lightWorldMain", "LightWorld");
+    frameShaders.rtxdiInitial = createComputeShader("rtxdi_initial.spv", "rtxdiInitialMain", "RtxdiInitial");
+    frameShaders.rtxdiShade = createComputeShader("rtxdi_shade.spv", "rtxdiShadeMain", "RtxdiShade");
 }
 
 void ShaderObjects::createRtShaders()

@@ -70,7 +70,7 @@ private:
     static constexpr size_t kMirrorShippedShot = 4;
     static constexpr size_t kMirrorGeneratedShot = 5;
     static constexpr size_t kFlatNormalsShot = 7;
-    static constexpr std::array<Shot, 8> kShots = {{
+    static constexpr std::array<Shot, 12> kShots = {{
         {"gltf/2.0/MetalRoughSpheres/glTF", "MetalRoughSpheres_front", Variant::AsShipped, kFront},
         // the plane lies in xz with its normal +y
         {"gltf/2.0/TwoSidedPlane/glTF", "TwoSidedPlane_top", Variant::AsShipped, {0.0f, 0.8f, 0.6f}},
@@ -85,6 +85,12 @@ private:
         {"models/NormalTangentTest", "NormalTangentTest_front", Variant::AsShipped, kFront},
         // A4: no NORMAL and no normal texture, so the shading normal is the generated flat normal
         {"gltf/2.0/MetalRoughSpheres/glTF", "MetalRoughSpheres_flat_normals_front", Variant::NoNormals, kFront},
+        // B1: KHR_texture_transform on base color, then on every slot and both uv sets
+        {"gltf/2.0/TextureTransformTest/glTF", "TextureTransformTest_front", Variant::AsShipped, kFront},
+        {"gltf/2.0/TextureTransformMultiTest/glTF", "TextureTransformMultiTest_front", Variant::AsShipped, kFront},
+        // E2: point lights (candela, range window) and a directional one (lux) through the world light buffer
+        {"gltf/2.0/LightsPunctualLamp/glTF", "LightsPunctualLamp_front", Variant::AsShipped, kFront},
+        {"gltf/2.0/DirectionalLight/glTF", "DirectionalLight_front", Variant::AsShipped, kFront},
     }};
     static constexpr std::array<NormalCheck, 2> kNormalChecks = {{
         {"A4 generated tangents match the shipped ones (NormalTangentMirrorTest shading normal)", kMirrorGeneratedShot,
@@ -92,9 +98,11 @@ private:
         {"A4 flat normals without NORMAL (MetalRoughSpheres shading normal against the geometric normal)",
          kFlatNormalsShot, DebugView::ShadingNormal, kFlatNormalsShot, DebugView::GeometricNormal},
     }};
-    static constexpr std::array<DebugView, 6> kViews = {
-        DebugView::DiffuseAlbedo, DebugView::SpecularF0,      DebugView::Roughness,
-        DebugView::ShadingNormal, DebugView::GeometricNormal, DebugView::Emissive,
+    static constexpr std::array<DebugView, 10> kViews = {
+        DebugView::DiffuseAlbedo,    DebugView::SpecularF0,       DebugView::Roughness,
+        DebugView::ShadingNormal,    DebugView::GeometricNormal,  DebugView::Emissive,
+        DebugView::AmbientOcclusion, DebugView::UnshadowedLights, DebugView::ShadowedLights,
+        DebugView::LightingOnly,
     };
     // the load frame, then frames with the shot's camera before the first capture
     static constexpr uint32_t kSettleFrames = 3;

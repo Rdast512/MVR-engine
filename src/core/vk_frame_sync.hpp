@@ -34,6 +34,8 @@ public:
     std::vector<vk::raii::Fence> inFlightFences;
     // async compute work of the frame slots signals frame numbers; not recreated with the swapchain
     vk::raii::Semaphore computeTimeline = nullptr;
+    // the ray passes of the frame slots signal frame numbers: the next in-place PTLAS update waits for them
+    vk::raii::Semaphore rayTimeline = nullptr;
     // declared before the buffers: destroyed after them
     vk::raii::CommandPool commandPool = nullptr;
     vk::raii::CommandPool transferCommandPool = nullptr;

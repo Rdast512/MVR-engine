@@ -12,15 +12,17 @@
 #include <vulkan/vulkan_raii.hpp>
 
 // render-resolution targets of the visibility-buffer path (spec/features/visibility_buffer.md §3.6): the depth
-// attachment, the R32_UINT vis buffer, two guide sets by frame parity and the display image, plus one GpuTargets
-// block per frame slot.
-// Guides and the display image stay in eGeneral; the vis buffer is a color attachment while rastering and
-// eShaderReadOnlyOptimal after
+// attachment, the R32_UINT vis buffer, two guide sets by frame parity, the direct radiance and the display image, plus
+// one GpuTargets block per frame slot.
+// Guides, the direct radiance and the display image stay in eGeneral; the vis buffer is a color attachment while
+// rastering and eShaderReadOnlyOptimal after
 class RenderTargets
 {
 public:
     static constexpr vk::Format kVisBufferFormat = vk::Format::eR32Uint;
     static constexpr vk::Format kDisplayFormat = vk::Format::eR16G16B16A16Sfloat;
+    // linear HDR, written by passes/rtxdi_shade.slang
+    static constexpr vk::Format kDirectRadianceFormat = vk::Format::eR16G16B16A16Sfloat;
 
     RenderTargets(const Device& device, const VkAllocator& allocator, FrameSync& frameSync,
                   DescriptorManager& descriptorManager);
@@ -97,6 +99,7 @@ private:
     Target visBuffer;
     vk::raii::ImageView visBufferView = nullptr;
     Target display;
+    Target directRadiance;
     std::array<std::array<Target, kGuideImageCount>, kGuideSetCount> guideSets;
     // sampled depth for the resolve and debug views
     uint32_t depthIndex = kNoneIndex;

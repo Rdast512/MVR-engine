@@ -20,6 +20,9 @@ enum class GpuTimerScope : uint32_t
     LateDraw,
     LateHiZ,
     Resolve,
+    // first span of the ray command buffer: includes any wait for the TLAS build
+    RtxdiInitial,
+    RtxdiShade,
     DebugView,
     // GPU idle until the swapchain image is acquired; not GPU work, so not in the total
     AcquireWait,
@@ -51,6 +54,10 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "Late Hi-Z build";
     case GpuTimerScope::Resolve:
         return "Vis-buffer resolve";
+    case GpuTimerScope::RtxdiInitial:
+        return "ReSTIR DI initial";
+    case GpuTimerScope::RtxdiShade:
+        return "ReSTIR DI shade";
     case GpuTimerScope::DebugView:
         return "Debug view";
     case GpuTimerScope::AcquireWait:

@@ -1,5 +1,5 @@
-// Compares the scalar layout Slang reflects for every struct in shaders/types.slang with sizeof / offsetof of its
-// C++ mirror. A Slang struct without a mirror, a field missing on either side, or a size or offset that differs
+// Compares the scalar layout Slang reflects for every struct in shaders/types.slang, and for GpuRtxdiConstants in
+// shaders/lighting/rtxdi_constants.slang, with sizeof / offsetof of its C++ mirror. A Slang struct without a mirror, a field missing on either side, or a size or offset that differs
 // fails the test. A field the C++ side renames fails to compile (offsetof). Also checks the storage-image format
 // constants of shaders/core/binding.slang against SlangImageFormat.
 // --dump prints the reflected layouts instead of checking them.
@@ -7,6 +7,7 @@
 
 #include "core/types.hpp"
 #include "render/push_data.hpp"
+#include "render/vk_rtxdi.hpp"
 #include "test_support.hpp"
 
 #include <slang-com-ptr.h>
@@ -65,7 +66,8 @@ namespace
             LAYOUT_FIELD(GpuCameraData, jitterOffset),
             LAYOUT_FIELD(GpuCameraData, farZ),
             LAYOUT_FIELD(GpuCameraData, frameDeltaTime),
-            LAYOUT_FIELD(GpuCameraData, cameraParams),
+            LAYOUT_FIELD(GpuCameraData, prevCameraPos),
+            LAYOUT_FIELD(GpuCameraData, pad0),
         }},
         {"GpuObjectUB", sizeof(GpuObjectUB), {
             LAYOUT_FIELD(GpuObjectUB, modelMatrix),
@@ -339,10 +341,12 @@ namespace
         }},
         {"RtInstancesPushData", sizeof(RtInstancesPushData), {
             LAYOUT_FIELD(RtInstancesPushData, frameRoot),
-            LAYOUT_FIELD(RtInstancesPushData, blasAddresses),
-            LAYOUT_FIELD(RtInstancesPushData, tlasInstances),
+            LAYOUT_FIELD(RtInstancesPushData, buildRows),
+            LAYOUT_FIELD(RtInstancesPushData, writeInfos),
+            LAYOUT_FIELD(RtInstancesPushData, operation),
+            LAYOUT_FIELD(RtInstancesPushData, ptlasState),
             LAYOUT_FIELD(RtInstancesPushData, count),
-            LAYOUT_FIELD(RtInstancesPushData, pad0),
+            LAYOUT_FIELD(RtInstancesPushData, flags),
         }},
         {"CullPushData", sizeof(CullPushData), {
             LAYOUT_FIELD(CullPushData, frameRoot),
@@ -425,10 +429,17 @@ namespace
             LAYOUT_FIELD(GpuTargets, renderSize),
             LAYOUT_FIELD(GpuTargets, current),
             LAYOUT_FIELD(GpuTargets, previous),
+            LAYOUT_FIELD(GpuTargets, directRadianceStorage),
+            LAYOUT_FIELD(GpuTargets, directRadianceSampled),
         }},
         {"GpuRayInstance", sizeof(GpuRayInstance), {
             LAYOUT_FIELD(GpuRayInstance, nodeInstanceIndex),
             LAYOUT_FIELD(GpuRayInstance, primitiveRow),
+        }},
+        {"GpuRayInstanceBuild", sizeof(GpuRayInstanceBuild), {
+            LAYOUT_FIELD(GpuRayInstanceBuild, blas),
+            LAYOUT_FIELD(GpuRayInstanceBuild, partition),
+            LAYOUT_FIELD(GpuRayInstanceBuild, pad0),
         }},
         {"GpuFrameRoot", sizeof(GpuFrameRoot), {
             LAYOUT_FIELD(GpuFrameRoot, camera),
@@ -453,14 +464,33 @@ namespace
             LAYOUT_FIELD(GpuFrameRoot, subpixelSnap),
             LAYOUT_FIELD(GpuFrameRoot, targets),
             LAYOUT_FIELD(GpuFrameRoot, frameFlags),
-            LAYOUT_FIELD(GpuFrameRoot, pad0),
+            LAYOUT_FIELD(GpuFrameRoot, localLightCount),
             LAYOUT_FIELD(GpuFrameRoot, rayInstances),
             LAYOUT_FIELD(GpuFrameRoot, rtxdiConstants),
             LAYOUT_FIELD(GpuFrameRoot, cacheConstants),
             LAYOUT_FIELD(GpuFrameRoot, frameIndex),
             LAYOUT_FIELD(GpuFrameRoot, exposure),
+            LAYOUT_FIELD(GpuFrameRoot, worldLights),
         }},
     };
+
+    // textual mirror next to RTXDI's parameter structs, reflected through its own source module
+    const StructLayout kRtxdiConstants = {"GpuRtxdiConstants", sizeof(GpuRtxdiConstants), {
+        LAYOUT_FIELD(GpuRtxdiConstants, runtime),
+        LAYOUT_FIELD(GpuRtxdiConstants, lightBuffer),
+        LAYOUT_FIELD(GpuRtxdiConstants, reservoirBuffer),
+        LAYOUT_FIELD(GpuRtxdiConstants, bufferIndices),
+        LAYOUT_FIELD(GpuRtxdiConstants, initialSampling),
+        LAYOUT_FIELD(GpuRtxdiConstants, temporalResampling),
+        LAYOUT_FIELD(GpuRtxdiConstants, boilingFilter),
+        LAYOUT_FIELD(GpuRtxdiConstants, spatialResampling),
+        LAYOUT_FIELD(GpuRtxdiConstants, spatioTemporalResampling),
+        LAYOUT_FIELD(GpuRtxdiConstants, shading),
+        LAYOUT_FIELD(GpuRtxdiConstants, reservoirs),
+        LAYOUT_FIELD(GpuRtxdiConstants, neighborOffsets),
+        LAYOUT_FIELD(GpuRtxdiConstants, isFusedResampling),
+        LAYOUT_FIELD(GpuRtxdiConstants, reservoirCount),
+    }};
     // clang-format on
 
 #undef LAYOUT_FIELD_AS
@@ -481,6 +511,7 @@ namespace
 
     // core/binding.slang storage-image formats
     constexpr std::array kImageFormats = {
+        ImageFormatConstant{"kImageFormatRgba32f", SLANG_IMAGE_FORMAT_rgba32f},
         ImageFormatConstant{"kImageFormatRgba16f", SLANG_IMAGE_FORMAT_rgba16f},
         ImageFormatConstant{"kImageFormatRg16f", SLANG_IMAGE_FORMAT_rg16f},
         ImageFormatConstant{"kImageFormatR11g11b10f", SLANG_IMAGE_FORMAT_r11f_g11f_b10f},
@@ -506,12 +537,12 @@ namespace
             target.profile = globalSession->findProfile("sm_6_9");
             target.forceGLSLScalarBufferLayout = true;
 
-            const char* searchPaths[] = {ENGINE_SHADER_SOURCE_DIR};
+            const char* searchPaths[] = {ENGINE_SHADER_SOURCE_DIR, ENGINE_RTXDI_INCLUDE_DIR};
             slang::SessionDesc sessionDesc{};
             sessionDesc.targets = &target;
             sessionDesc.targetCount = 1;
             sessionDesc.searchPaths = searchPaths;
-            sessionDesc.searchPathCount = 1;
+            sessionDesc.searchPathCount = 2;
             sessionDesc.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_COLUMN_MAJOR;
             return check(SLANG_SUCCEEDED(globalSession->createSession(sessionDesc, session.writeRef())),
                          "slang session created");
@@ -525,6 +556,21 @@ namespace
                 std::printf("%s\n", static_cast<const char*>(diagnostics->getBufferPointer()));
             }
             check(module != nullptr, std::format("{} loaded", moduleName).c_str());
+            return module;
+        }
+
+        // a textual file (no module declaration) as its own module
+        slang::IModule* loadText(const char* moduleName, const char* includePath)
+        {
+            const std::string source = std::format("#include \"{}\"\n", includePath);
+            const std::string path = std::format("{}.slang", moduleName);
+            Slang::ComPtr<slang::IBlob> diagnostics;
+            slang::IModule* module =
+                session->loadModuleFromSourceString(moduleName, path.c_str(), source.c_str(), diagnostics.writeRef());
+            if (diagnostics) {
+                std::printf("%s\n", static_cast<const char*>(diagnostics->getBufferPointer()));
+            }
+            check(module != nullptr, std::format("{} loaded", includePath).c_str());
             return module;
         }
     };
@@ -635,6 +681,13 @@ int main(int argc, char** argv)
         const StructLayout* mirror = findMirror(type.name);
         if (check(mirror != nullptr, std::format("{} has a C++ mirror", type.name).c_str())) {
             verify(type, *mirror);
+        }
+    }
+    if (slang::IModule* rtxdiModule = slang.loadText("rtxdi_constants_layout", "lighting/rtxdi_constants.slang")) {
+        const std::vector<Reflected> rtxdiTypes = reflectTypes(*rtxdiModule);
+        const auto constants = std::ranges::find(rtxdiTypes, kRtxdiConstants.name, &Reflected::name);
+        if (check(constants != rtxdiTypes.end(), "rtxdi_constants.slang declares GpuRtxdiConstants")) {
+            verify(*constants, kRtxdiConstants);
         }
     }
     if (slang::IModule* bindingModule = slang.load("core/binding")) {

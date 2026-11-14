@@ -1,5 +1,6 @@
 #include "vk_asset_buffers.hpp"
 #include <algorithm>
+#include <iterator>
 #include <array>
 #include <cmath>
 #include <concepts>
@@ -823,6 +824,11 @@ void AssetBuffers::attachEntity(EntityId entity, ModelId modelId)
 
 void AssetBuffers::uploadLights()
 {
+    // RTXDI's local and infinite regions; stable, so a light keeps its relative order across loads
+    std::vector<GpuLight>& rows = lightStore.uploaded;
+    const auto infinite = std::ranges::stable_partition(
+        rows, [](const GpuLight& light) { return light.type != GpuLightType::Directional; });
+    uploadedLocalLights = static_cast<uint32_t>(std::distance(rows.begin(), infinite.begin()));
     const std::span<const std::byte> bytes = std::as_bytes(std::span(lightStore.uploaded));
     if (!bytes.empty()) {
         const std::array uploads{AssetUpload{.id = AssetBuffer::Lights, .bytes = bytes, .dstOffset = 0}};

@@ -16,7 +16,7 @@ namespace
     {
         return std::format("{} interior px: {} misses, {} id mismatches, {} empty hits, {} self hits; {} back-face hits, "
                            "{} edge mismatches, {} depth ties; decode max error normal {:.4f} deg, geometric normal {:.4f} deg, "
-                           "material normal {:.4f} deg; position {:.2e}, mip {:.3f} ({} px over 0.5); at the hit's "
+                           "material normal {:.4f} deg; position {:.2e} px, mip {:.3f} ({} px over 0.5); at the hit's "
                            "barycentrics normal {:.4f} deg, material normal {:.4f} deg",
                            stats.interiorPixels, stats.misses, stats.idMismatches, stats.emptyHits, stats.selfHits,
                            stats.backFaceHits, stats.edgeMismatches, stats.depthTies,
@@ -81,7 +81,7 @@ void EngineRayCheck::logSummary() const
     };
     logInfo(std::format("{} interior px checked; {} back-face hits; {} depth ties; edge mismatches {:.3f}% of edge px; "
                         "decode max error normal {:.4f} deg, geometric normal {:.4f} deg, material normal {:.4f} deg; "
-                        "position {:.2e}, mip {:.3f} ({:.3f}% of interior px over 0.5); at the hit's barycentrics "
+                        "position {:.2e} px, mip {:.3f} ({:.3f}% of interior px over 0.5); at the hit's barycentrics "
                         "normal {:.4f} deg, material normal {:.4f} deg",
                         interiorPixels, backFaceHits, depthTies, ratio(edgeMismatches, edgePixels), maxNormalError,
                         maxGeoNormalError, maxMaterialNormalError, maxPositionError, maxMipError,

@@ -6,6 +6,8 @@ set(RENDER_SOURCES
     vk_render_targets.cpp
     vk_renderer.cpp
     vk_rt_scene.cpp
+    vk_rtxdi.cpp
+    vk_world_lights.cpp
     vk_shader_objects.cpp
 )
 

@@ -12,7 +12,7 @@ Every temporal consumer (DLSS-RR, RTXDI and ReSTIR GI temporal reuse) finds a pi
 
 | Item | Rule |
 |---|---|
-| Image | `Motion` guide, `RG16F`, render resolution, both guide sets |
+| Image | `Motion` guide, `RGBA16F` (xy motion; z = view depth there − here, for RTXDI since PBR F2), render resolution, both guide sets |
 | Unit | render-resolution pixels (DLSS `InMVScaleX/Y = 1`, feature flag `MVLowRes`) |
 | Direction | current → previous: `previousPixel = currentPixel + motion` |
 | Jitter | excluded: both positions use the **unjittered** `viewProj` / `prevViewProj`. DLSS gets the jitter separately (`InJitterOffsetX/Y`, render pixels); `MVJittered` is not set |
@@ -22,7 +22,7 @@ Every temporal consumer (DLSS-RR, RTXDI and ReSTIR GI temporal reuse) finds a pi
 | No history | zero motion, and the frame reports a history reset (§4) |
 | Depth | reverse Z; DLSS creation sets `DepthInverted` |
 
-`RG16F` holds sub-pixel precision for small motions (11-bit mantissa: 1/2048 px below 1 px) and about 0.5 px at 1000 px of motion. Both are within what DLSS tolerates.
+Half floats hold sub-pixel precision for small motions (11-bit mantissa: 1/2048 px below 1 px) and about 0.5 px at 1000 px of motion. Both are within what DLSS tolerates.
 
 ---
 

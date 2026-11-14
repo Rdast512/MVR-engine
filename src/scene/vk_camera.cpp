@@ -6,7 +6,11 @@
 
 #include <glm/gtc/constants.hpp>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <string_view>
 
 Camera::Camera(SwapChain& swapChain) : swapChain(swapChain)
 {
@@ -132,7 +136,45 @@ void Camera::updateProjection()
     projDirty = false;
 }
 
-void Camera::updateCameraData(uint8_t currentImage)
+namespace
+{
+    // radical inverse of index in base
+    float halton(uint32_t index, uint32_t base)
+    {
+        float result = 0.0f;
+        float fraction = 1.0f;
+        while (index > 0) {
+            fraction /= static_cast<float>(base);
+            result += fraction * static_cast<float>(index % base);
+            index /= base;
+        }
+        return result;
+    }
+} // namespace
+
+bool Camera::isJitterRequested()
+{
+    const char* text = std::getenv("ENGINE_JITTER");
+    return text != nullptr && std::string_view(text) == "1";
+}
+
+uint32_t Camera::getJitterPhaseCount() const
+{
+    const vk::Extent2D display = swapChain.swapChainExtent;
+    const double areaRatio = (static_cast<double>(display.width) * display.height) /
+                             (static_cast<double>(renderExtent.width) * renderExtent.height);
+    return std::max(1u, static_cast<uint32_t>(std::lround(kJitterBasePhases * areaRatio)));
+}
+
+glm::vec2 Camera::computeJitterOffset(uint64_t frameIndex) const
+{
+    // index 0 is (0, 0) in every base: start the cycle at 1
+    const auto index = static_cast<uint32_t>(frameIndex % getJitterPhaseCount()) + 1;
+    const glm::vec2 pixels(halton(index, 2) - 0.5f, halton(index, 3) - 0.5f);
+    return 2.0f * pixels / glm::vec2(renderExtent.width, renderExtent.height);
+}
+
+void Camera::updateCameraData(uint8_t currentImage, uint64_t frameIndex)
 {
     ZoneScopedN("Camera::updateCameraData");
 
@@ -144,10 +186,13 @@ void Camera::updateCameraData(uint8_t currentImage)
         updateProjection();
     }
 
+    // raster and resolve only: viewProj and every matrix derived from it stay unjittered
+    cameraData.jitterOffset = isJitterEnabled ? computeJitterOffset(frameIndex) : glm::vec2(0.0f);
     cameraData.view = glm::lookAt(cameraData.cameraPos, cameraData.cameraPos + forward, worldUp);
     cameraData.viewProj = cameraData.proj * cameraData.view;
     // a cut has no previous view: no camera motion instead of a one-frame jump
     cameraData.prevViewProj = isCutFrame ? cameraData.viewProj : prevViewProj;
+    cameraData.prevCameraPos = isCutFrame ? cameraData.cameraPos : prevCameraPos;
 
     // inverses for screen-to-world reconstruction
     cameraData.invView = glm::inverse(cameraData.view);
@@ -157,4 +202,5 @@ void Camera::updateCameraData(uint8_t currentImage)
     std::memcpy(cameraBuffersMapped[currentImage], &cameraData, sizeof(cameraData));
 
     prevViewProj = cameraData.viewProj;
+    prevCameraPos = cameraData.cameraPos;
 }

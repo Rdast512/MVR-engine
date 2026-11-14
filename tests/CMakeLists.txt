@@ -101,7 +101,10 @@ endif ()
 find_package(slang CONFIG REQUIRED PATHS ${_slangPackageDir} NO_DEFAULT_PATH)
 
 add_executable(layout_test layout_test.cpp)
-target_compile_definitions(layout_test PRIVATE ENGINE_SHADER_SOURCE_DIR="${ENGINE_SLANG_INCLUDE_DIR}")
+set(_rtxdiIncludeDir ${ENGINE_SLANG_THIRDPARTY_INCLUDE_DIRS})
+list(FILTER _rtxdiIncludeDir INCLUDE REGEX "rtxdi")
+target_compile_definitions(layout_test PRIVATE ENGINE_SHADER_SOURCE_DIR="${ENGINE_SLANG_INCLUDE_DIR}"
+                                               ENGINE_RTXDI_INCLUDE_DIR="${_rtxdiIncludeDir}")
 target_link_libraries(layout_test PRIVATE engine_build_config ThirdParty::all engine_test_support slang::slang)
 target_precompile_headers(layout_test PRIVATE ${CMAKE_SOURCE_DIR}/src/pch.h)
 if (ENGINE_USE_MIMALLOC)

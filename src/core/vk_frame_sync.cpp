@@ -12,6 +12,8 @@ FrameSync::FrameSync(const Device& device) : device(device)
     const vk::SemaphoreTypeCreateInfo timelineInfo{.semaphoreType = vk::SemaphoreType::eTimeline, .initialValue = 0};
     computeTimeline = vk::raii::Semaphore(device.vkdevice, vk::SemaphoreCreateInfo{.pNext = &timelineInfo});
     setDebugName(device.vkdevice, computeTimeline, "ComputeTimeline");
+    rayTimeline = vk::raii::Semaphore(device.vkdevice, vk::SemaphoreCreateInfo{.pNext = &timelineInfo});
+    setDebugName(device.vkdevice, rayTimeline, "RayTimeline");
 }
 
 void FrameSync::recreate(uint32_t swapChainImageCount)

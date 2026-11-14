@@ -234,8 +234,11 @@ set(ENGINE_SLANG_FLAGS
 
 set(COMPILED_SHADERS)
 
+# compile units that include lighting/rtxdi_bridge.slang: RTXDI's HLSL converts uint to bool implicitly
+set(RTXDI_SLANG_FLAGS -warnings-disable 30081)
+
 function(engine_add_slang_pass rel_path)
-  cmake_parse_arguments(PARSE_ARGV 1 ARG "" "" "ENTRIES")
+  cmake_parse_arguments(PARSE_ARGV 1 ARG "" "" "ENTRIES;FLAGS")
   set(_src "${ENGINE_SLANG_INCLUDE_DIR}/${rel_path}")
   get_filename_component(_rel_dir ${rel_path} DIRECTORY)
   get_filename_component(_name_we ${_src} NAME_WE)
@@ -257,6 +260,7 @@ function(engine_add_slang_pass rel_path)
       COMMAND ${SLANGC_EXECUTABLE}
       ${_src}
       ${ENGINE_SLANG_FLAGS}
+      ${ARG_FLAGS}
       ${_entry_args}
       -depfile ${_spv}.d
       -o ${_spv}
@@ -271,7 +275,7 @@ endfunction()
 engine_add_slang_pass(passes/mesh_raster.slang ENTRIES meshMain)
 engine_add_slang_pass(passes/mesh_fragment.slang ENTRIES fragMain)
 engine_add_slang_pass(passes/resolve.slang ENTRIES resolveMain)
-engine_add_slang_pass(passes/debug_view.slang ENTRIES debugViewMain)
+engine_add_slang_pass(passes/debug_view.slang ENTRIES debugViewMain FLAGS ${RTXDI_SLANG_FLAGS})
 engine_add_slang_pass(passes/motion_check.slang ENTRIES motionCheckMain)
 engine_add_slang_pass(passes/present.slang ENTRIES presentMesh presentFrag)
 engine_add_slang_pass(passes/meshlet_cull.slang
@@ -280,6 +284,9 @@ engine_add_slang_pass(passes/hiz_view.slang ENTRIES hizViewMesh hizViewFrag)
 engine_add_slang_pass(passes/hiz_build.slang ENTRIES hizBuild)
 engine_add_slang_pass(passes/rt_instances.slang ENTRIES rtInstancesMain)
 engine_add_slang_pass(passes/rt_check.slang ENTRIES rayCheckMain)
+engine_add_slang_pass(passes/light_world.slang ENTRIES lightWorldMain)
+engine_add_slang_pass(passes/rtxdi_initial.slang ENTRIES rtxdiInitialMain FLAGS ${RTXDI_SLANG_FLAGS})
+engine_add_slang_pass(passes/rtxdi_shade.slang ENTRIES rtxdiShadeMain FLAGS ${RTXDI_SLANG_FLAGS})
 
 add_custom_target(Shaders ALL DEPENDS ${COMPILED_SHADERS})
 

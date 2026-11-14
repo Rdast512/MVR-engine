@@ -36,14 +36,26 @@ enum class DebugView : uint32_t
     RayNodeInstances,
     // material normal of the decoded hit, textures sampled at ray-cone gradients
     RayShadingNormal,
-    // reserved, not implemented yet
+    // DiffuseAlbedo.a: the occlusion texture with its strength
+    AmbientOcclusion,
+    // every world light on the guides with no visibility test: checks the light buffer before the lighting passes
+    UnshadowedLights,
+    // every world light through the RTXDI bridge (RAB_*) with a visibility ray each: the reference ReSTIR DI converges to
+    ShadowedLights,
+    // ReSTIR DI directRadiance + the emissive guide: the lighting output until the combine pass (M4)
     LightingOnly,
+    // reserved, not implemented yet
     DlssInput,
     Count,
 };
 
 // shaders/types.slang kDebugViewRayMeshlets
 static_assert(std::to_underlying(DebugView::RayMeshlets) == 18);
+// shaders/types.slang kDebugViewAmbientOcclusion
+static_assert(std::to_underlying(DebugView::AmbientOcclusion) == 21);
+static_assert(std::to_underlying(DebugView::UnshadowedLights) == 22);
+static_assert(std::to_underlying(DebugView::ShadowedLights) == 23);
+static_assert(std::to_underlying(DebugView::LightingOnly) == 24);
 
 enum class DebugViewCategory : uint8_t
 {
@@ -107,7 +119,10 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"Ray meshlets", DebugViewCategory::RayTracing, true},
     {"Ray node instances", DebugViewCategory::RayTracing, true},
     {"Ray shading normal", DebugViewCategory::RayTracing, true},
-    {"Lighting only", DebugViewCategory::Lighting, false},
+    {"Ambient occlusion", DebugViewCategory::Guides, true},
+    {"Unshadowed lights", DebugViewCategory::Lighting, true},
+    {"Shadowed lights", DebugViewCategory::Lighting, true},
+    {"Lighting only", DebugViewCategory::Lighting, true},
     {"DLSS input", DebugViewCategory::Upscaling, false},
 }};
 

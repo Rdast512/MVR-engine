@@ -135,6 +135,8 @@ public:
     [[nodiscard]] std::span<const ModelAllocation> models() const noexcept { return modelAllocations; }
     // appends are exact, so used bytes / stride is the uploaded element count
     [[nodiscard]] uint32_t uploadedCount(AssetBuffer id) const noexcept;
+    // leading point and spot rows of the light buffer; the directional rows follow
+    [[nodiscard]] uint32_t localLightCount() const noexcept { return uploadedLocalLights; }
     // bytes the model's slices occupy, shared by all its entities
     [[nodiscard]] vk::DeviceSize modelGpuBytes(ModelId modelId) const noexcept;
     // {used, capacity} summed over all asset buffers
@@ -183,7 +185,7 @@ private:
     void appendMaterialUploads(PackedScratch& packed, std::vector<AssetUpload>& uploads) const;
     // links the entity to the model and appends its light rows; call uploadLights after
     void attachEntity(EntityId entity, ModelId modelId);
-    // rewrites the light buffer from LightStore::uploaded
+    // rewrites the light buffer from LightStore::uploaded, point and spot rows first
     void uploadLights();
     // drops a model nothing draws; returns its texture references
     [[nodiscard]] std::vector<uint32_t> eraseModel(ModelId modelId);
@@ -207,6 +209,7 @@ private:
     GeometryStore& geometryStore;
     MaterialStore& materialStore;
     LightStore& lightStore;
+    uint32_t uploadedLocalLights = 0;
 
     std::array<DeviceBuffer, kAssetBufferCount> assetBuffers;
     // indexed by ModelId (ObjectStorage::modelIds)

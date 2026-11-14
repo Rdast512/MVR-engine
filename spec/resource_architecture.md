@@ -54,7 +54,7 @@ Payloads never live in descriptor heaps; heaps never hold vertex or material byt
 | DGC preprocess | `DeviceGeneratedCommands` | device-local, dedicated | 1 per frame slot, one region per (phase, raster bin) | resized with the sequence capacity |
 | Descriptor heaps | `DescriptorManager` | host-visible, dedicated, `vmaMapMemory` | resource + sampler | engine lifetime |
 | Texture | `TextureManager::loadedTextures` → `TextureAsset` | device-local image | per unique image | refcounted per model |
-| Depth, vis buffer, guides, display | `RenderTargets` (`depthAttachment`, `visBuffer`, two guide sets, `display`), plus one `GpuTargets` block per frame slot | device-local images; `GpuTargets` host-visible | 1 each, guides ×2 | recreated on resize |
+| Depth, vis buffer, guides, direct radiance, display | `RenderTargets` (`depthAttachment`, `visBuffer`, two guide sets, `directRadiance`, `display`), plus one `GpuTargets` block per frame slot | device-local images; `GpuTargets` host-visible | 1 each, guides ×2 | recreated on resize |
 | Hi-Z pyramid | `HiZPyramid` | device-local image | 1 | recreated on resize |
 | Staging | local in `uploadAssetBuffers` | host-visible, `TransferSrc` only | 1 per batch | destroyed after the copy |
 
@@ -111,7 +111,7 @@ Usage for all: `TransferSrc | TransferDst | StorageBuffer | ShaderDeviceAddress`
 | `Indices` | `uint32` | model-relative vertex ids | reachable, unused |
 | `Materials` | `GpuMaterial` (240 B) | factors (emissive strength folded in), flags, 5 texture + 5 sampler heap indices, 5 UV sets, 5 UV matrices | fragment via `loadMaterial`; `DoubleSided` flag read by `loadDrawContext` |
 | `PbrExt` | `GpuMaterialExtension` (724 B) | glTF extension rows, parallel to `Materials` | `loadMaterialExtension`, no consumer yet |
-| `Lights` | `GpuLight` (64 B) | model-space punctual lights + owning `instanceIndex` | `loadWorldLight`, no consumer yet |
+| `Lights` | `GpuLight` (64 B) | model-space punctual lights + owning `instanceIndex`, point and spot first (`localLightCount`) | `light_world` (E2) |
 | `Primitives` | `GpuPrimitive` (40 B) | one row per **mesh** primitive: meshlet/vertex/index/group ranges, `materialId`, `flags` (material double-sided bit, copied at pack), model-relative | mesh + fragment via `loadDrawContext`; cull |
 | `Nodes` | `GpuNode` (112 B) | mesh placements: affine `localToModel` rows, model-space sphere, mesh-space box, primitive range, `NodeFlag` | instance cull (box) |
 
@@ -226,7 +226,7 @@ Per frame, in recording order:
   Inactive entities are skipped.
 - On the GPU, per phase: `cullInstances` copies the templates of visible instances into `drawRecords`; `cullMeshlets` (early) or `cullRejectedMeshlets` (late) appends `GpuVisibleMeshlet` entries per raster bin; `buildMeshSequences` writes `MeshDgcSequence`s and their counts. The CPU never writes draw records or sequences.
 
-`GpuFrameRoot` (176 B):
+`GpuFrameRoot` (184 B):
 
 | Field | Points at |
 |---|---|
@@ -244,10 +244,13 @@ Per frame, in recording order:
 | `debugView` | `DebugViewSettings::packed()`: `kDebugView*` mode in the low byte, `kDebugViewFlagEdges` (bit 8) |
 | `cullCounters` | `GpuCullCounters[kCullPhaseCount]`; the mesh shaders add triangle counts |
 | `triangleCull`, `subpixelSnap` | `TriangleCullFlag` bits; snap of the small-triangle test |
-| `targets` | `GpuTargets` of this frame slot: heap indices of the vis buffer, depth, display and both guide sets, render size |
+| `targets` | `GpuTargets` of this frame slot: heap indices of the vis buffer, depth, display, both guide sets and `directRadiance`, render size |
 | `frameFlags` | `FrameFlag` bits (`HistoryReset`) |
-| `rayInstances`, `rtxdiConstants`, `cacheConstants` | 0 until M2, M3 and M4 |
+| `localLightCount` | leading point and spot rows of `lights` and `worldLights`; the directional rows follow |
+| `rayInstances`, `cacheConstants` | 0 until M2 and M4 |
+| `rtxdiConstants` | `GpuRtxdiConstants` of this frame slot (`RtxdiContext`, PBR F1): RTXDI parameter blocks, light regions, reservoir and neighbor-offset addresses, the reservoir count and the resampling flag (F3); host-visible, written after the slot's fence. Shaders reach it through `lighting/rtxdi_bridge.slang` (F2) |
 | `frameIndex`, `exposure` | frame counter; pre-exposure, 1 until auto exposure |
+| `worldLights` | `GpuLight[lightCount]` of this frame slot in world space, written by `light_world` on the async compute queue (`WorldLights`); readers wait for the compute timeline |
 
 ### Culling data
 
@@ -271,7 +274,7 @@ Capacities are exact scene totals today. Every append still goes through a capac
 | `CullPushData {frameRoot, cullView}` | 16 | cull passes and `buildMeshSequences` |
 | `HiZPushData` | 48 | `hiz_build`: source and up to 3 destination heap indices, source mip, level count, sizes |
 | `HiZViewPushData` | 24 | `hiz_view` debug pass |
-| `FramePushData {frameRoot}` | 8 | `resolve`, `debug_view` |
+| `FramePushData {frameRoot}` | 8 | `resolve`, `debug_view`, `light_world` |
 | `MotionCheckPushData {frameRoot, stats}` | 16 | `motion_check`, `ENGINE_MOTION_TEST` only; `stats` is a host-visible `GpuMotionCheckStats` (40 B) per frame slot |
 | `RayCheckPushData {frameRoot, stats}` | 16 | `rt_check`, `ENGINE_RT_CHECK` only; `stats` is a host-visible `GpuRayCheckStats` (68 B) per frame slot |
 | `PresentPushData {frameRoot, displaySize}` | 16 | `present` |
@@ -286,7 +289,8 @@ model     = root.models[node.modelIndex]
 primitive = model.primitives[model.meshletPrimitives[visible.meshletRow]]
 material  = root.materials[primitive.materialId == kNoneIndex ? 0 : primitive.materialId]   DoubleSided flag
 extension = same index as material, from root.pbrExtensions  (loadMaterialExtension)
-light     = root.lights[i], moved to world space by root.instances[light.instanceIndex].modelMatrix  (loadWorldLight)
+light     = root.worldLights[i]  (loadWorldLight); light_world writes it from root.lights[i] and
+            root.instances[light.instanceIndex].modelMatrix  (toWorldLight)
 meshlet   = model.meshlets[visible.meshletRow]
 vertex    = model.vertices[model.meshletVertices[meshlet.vertexOffset + i]]
 ```
@@ -317,7 +321,8 @@ Rules:
 | `MeshPushData` | 16 | all offsets asserted |
 | `MeshDgcSequence` | 32 | 16 B push data + 12 B draw command, `alignas(16)` so the BDA stays 8-byte aligned |
 | `CullPushData` | 16 | |
-| `GpuFrameRoot` | 176 | `lightCount` @ 88, `cullCounters` @ 112, `targets` @ 128, `exposure` @ 172 |
+| `GpuRtxdiConstants` | 360 | RTXDI blocks, `reservoirs` @ 336, `neighborOffsets` @ 344, `isFusedResampling` @ 352, `reservoirCount` @ 356 (F3); Slang mirror in `lighting/rtxdi_constants.slang` (textual, RTXDI's C structs), checked by `layout_test` |
+| `GpuFrameRoot` | 184 | `lightCount` @ 88, `cullCounters` @ 112, `targets` @ 128, `localLightCount` @ 140, `exposure` @ 172, `worldLights` @ 176 |
 | `GpuModel` | 112 | `meshletBounds` @ 16, `primitives` @ 96, `attributeMask` @ 104 |
 | `GpuNode` | 112 | affine rows; `firstPrimitive` @ 64, `bboxMin` @ 80 |
 | `GpuNodeInstance` | 144 | `entityIndex` @ 128 |
@@ -335,8 +340,8 @@ Rules:
 | `GpuLight` | 64 | model space; `instanceIndex` @ 56; `type` is a raw `uint` |
 | `GpuMaterialExtension` | 724 | `GpuTextureRef` 36 B, `GpuUvTransform` 20 B; key offsets asserted |
 | `GpuVertex` | 32 | |
-| `GpuCameraData` | 512 | size and key offsets asserted |
-| `GpuTargets` | 144 | two `GpuGuideSet` (56 B each); `current` @ 32 |
+| `GpuCameraData` | 512 | size and key offsets asserted; `prevCameraPos` @ 496 (F2, was the unused `cameraParams`) |
+| `GpuTargets` | 168 | two `GpuGuideSet` (64 B each: 8 guides since F2's `Position`); `current` @ 32; `directRadianceStorage` / `directRadianceSampled` @ 160 (F3) |
 
 ---
 
@@ -461,9 +466,9 @@ What the target architecture adds to or removes from the resources above, by spe
 | M1 | **Done.** Visibility buffer (`R32_UINT`: visible-list row + triangle) at render resolution, `renderExtent` separate from the swapchain extent, `displayColor` until M3; `GpuVisibleMeshlet` rows are what it indexes ([visibility_buffer.md](./features/visibility_buffer.md)) | §8.3 |
 | M1 | **Done.** State groups replaced by bins by pipeline (opaque, later alpha-tested); two-sided by winding flip, cluster and group state bits | §8.1 A6, §8.2 |
 | M1 | **Done.** Render-resolution shading surface and DLSS guides (`normalRoughness`, `geoNormal`, `diffuseAlbedo`, `specularF0`, `specAlbedo`, `emissive`, `motion`), two sets ping-ponged by frame parity, written by the compute resolve | §9.3 |
-| M2 | Per-cluster CLAS (object space, shared by instances), one cluster BLAS per primitive, GPU-written `VkAccelerationStructureInstanceKHR[]` + `GpuRayInstance[]`, TLAS; build scratch freed after load, CLAS moved to final size; `tlas` and `rayInstances` in the frame root | §10.2–10.3 |
+| M2 | Per-cluster CLAS (object space, shared by instances), one cluster BLAS per primitive, one PTLAS updated in place with its scratch and a 48-byte state row per instance (PBR C4); per frame slot the CPU-written `GpuRayInstance[]` + `GpuRayInstanceBuild[]` (per layout), the GPU-written `VkPartitionedAccelerationStructureWriteInstanceDataNV[]` and a host-visible op entry; build scratch freed after load, CLAS moved to final size; `tlas` and `rayInstances` in the frame root | §10.2–10.3 |
 | M2 | Async compute queue for the RT scene build, timeline semaphore before the first ray pass | §5, §13 |
-| M3–M5 | RTXDI reservoirs, light buffer and constants; SHaRC hash/resolved buffers; NRC SDK buffers; `directRadiance`, `indirectRadiance`, `noisyColor`, DLSS output (display resolution); per-SDK constants in the frame root | §11, §12 |
+| M3–M4 | RTXDI reservoirs, light buffer and constants; NRC SDK buffers; `directRadiance`, `indirectRadiance`, `noisyColor`, DLSS output (display resolution); per-SDK constants in the frame root | §11, §12 |
 | M6 | OMM arrays per primitive (NVIDIA OMM SDK) with a per-cluster OMM index buffer, baked from the final cluster triangles | §7.1, §10.5 |
 | M7 | Material bin tile lists, counts and the per-pixel bin-id image; DGC compute execution set | §9.1–9.2 |
 | M7 | Emissive-triangle light list built on the GPU at load | §6.1, §11.2 |
@@ -488,7 +493,7 @@ The binding model (§1, model slices, frame root, handle-or-address) carries ove
 | `GpuMeshletBounds` edge lengths are stored but unused until software raster | `buildMeshlets` |
 | The late meshlet pass projects boxes twice (cull and occlusion matrices) even when they are equal | `meshlet_cull.slang` |
 | Buffer policy lives in `vk_utils.cpp` (`createBuffer`), image policy in `VkAllocator` (`vk_allocator.hpp`) | allocator |
-| `loadWorldLight` reads the owner's instance row, which inactive entities leave stale | `frame.slang` |
+| `toWorldLight` (in `light_world`) reads the owner's instance row, which inactive entities leave stale | `frame.slang` |
 | Untested: load two models, then unload one (model table rewrite, primitive and group compaction, light owner rewrite, fallback heap slot) | — |
 
 ---
@@ -497,6 +502,13 @@ The binding model (§1, model slices, frame root, handle-or-address) carries ove
 
 | Date | Change |
 |---|---|
+| 2026-11-14 | PBR C4 built: the M2 row lists the PTLAS, its state rows and the per-slot write lists and op entries; the per-slot TLAS is gone |
+| 2026-11-14 | PTLAS required (engine spec §10.3): the M2 row gains the PTLAS buffers of PBR C4 |
+| 2026-11-14 | NVIDIA only, NRC only (engine spec §1.2, §11.4): SHaRC and `IRadianceCache` dropped; M5 merged into M4 |
+| 2026-11-14 | PBR F3: `directRadiance` (RGBA16F) in `RenderTargets` and `GpuTargets` (168 B); `GpuRtxdiConstants` 360 B with `isFusedResampling` and `reservoirCount`, which bounds the bridge's reservoir accessor |
+| 2026-11-14 | PBR F2: `GpuGuideSet` 64 B with the `Position` guide (RGBA32F), `Motion` RGBA16F, `GpuTargets` 160 B; `GpuCameraData.prevCameraPos`; `GpuRtxdiConstants` gets its Slang mirror |
+| 2026-11-14 | PBR F1: `rtxdiConstants` points at the slot's `GpuRtxdiConstants` (352 B); RTXDI reservoirs (3 × array pitch × 24 B, shared by the slots) and neighbor offsets (`float2[8192]`) |
+| 2026-11-14 | PBR E2: `GpuFrameRoot` 184 B with `localLightCount` and `worldLights`; light rows point and spot first |
 | 2026-11-13 | PBR C3: `RayCheckPushData` and `GpuRayCheckStats`; ray debug views |
 | 2026-11-13 | Brought up to the M1 working tree (engine spec §20.4): `GpuFrameRoot` 176 B with `targets`, `frameFlags`, RT and SDK addresses, `frameIndex`, `exposure`; `GpuCullView` 288 B; `HiZPushData` 48 B; reverse-Z depth, vis buffer, guides and display image; raster bins replace state groups; `debug_view` replaces the `mesh_debug` raster variant; §12 M0/M1 rows marked done |
 | 2026-11-11 | `ResourceManager` split ([resource_manager_split.md](./features/resource_manager_split.md)): `FrameSync` (fences, semaphores, command pools and buffers), `AssetBuffers` (asset buffers, model catalog, model table, lights), `FrameData` (frame roots, instance and node-instance rows); depth moved to `RenderTargets`, camera buffers to `Camera::createBuffers`. The frame root takes pass addresses through `FrameRootInputs`. No layout, address or upload-order change |

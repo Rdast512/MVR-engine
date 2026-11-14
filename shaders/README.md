@@ -9,7 +9,7 @@
 | `geometry/*` | Meshlet, vertex and triangle fetch; triangle cull; vis-buffer payload; surface interpolation |
 | `material/*` | Bindless texture fetch + PBR/BRDF |
 | `lighting/lights` | `evalLight`: KHR_lights_punctual radiance, range window, spot cone |
-| `gi/sharc` | Hash / accum / resolved buffers + update/query/resolve |
+| `gi/sharc` | SHaRC, dropped (NRC only); to delete |
 | `passes/*` | Compile units, one dispatch or RT pipeline each |
 
 Files land with the milestone that fills them ([docs/engine_spec.md §16.2](../docs/engine_spec.md#162-milestones)); no empty stubs.

@@ -1,6 +1,6 @@
 ---
 name: pbr-lighting-materials
-description: Shading rules of the PBR plan — glTF 2.0 metallic-roughness BRDF, materials, KHR_texture_transform, KHR_materials_emissive_strength and KHR_lights_punctual on the engine_spec path (visibility-buffer resolve, RTXDI ReSTIR DI, SER indirect bounce + SHaRC/NRC + ReSTIR GI, OMM, DLSS-RR; NVIDIA RTX 20+). Use when writing BRDF, lights, materials, sampleMaterial, the resolve, shading, GGX, sampling glTF PBR textures, or editing brdf.slang / pbr.slang / lights.slang.
+description: Shading rules of the PBR plan — glTF 2.0 metallic-roughness BRDF, materials, KHR_texture_transform, KHR_materials_emissive_strength and KHR_lights_punctual on the engine_spec path (visibility-buffer resolve, RTXDI ReSTIR DI, SER indirect bounce + NRC + ReSTIR GI, OMM, DLSS-RR; NVIDIA RTX 20+ only). Use when writing BRDF, lights, materials, sampleMaterial, the resolve, shading, GGX, sampling glTF PBR textures, or editing brdf.slang / pbr.slang / lights.slang.
 ---
 
 # PBR / lighting / materials — agent instructions
@@ -18,8 +18,8 @@ Do not invent a second BRDF. Copy inputs from glTF Appendix B. Microfacet `D`/`G
 
 ## Engine path
 
-- Target is **NVIDIA RTX 20+** now. No vendor checks or fallbacks; AMD is a later target, so NVIDIA-only pieces (NRC, DLSS-RR, cluster AS) stay behind their own modules (spec §1.2).
-- Lighting is only **RTXDI** ReSTIR DI (direct), one SER indirect bounce + **SHaRC** or **NRC** + **ReSTIR GI** (indirect), **OMM** (alpha on rays), **DLSS-RR** (denoise + upscale). No raster lighting, no reference path.
+- Target is **NVIDIA RTX 20+** only. No vendor checks, fallbacks or ports; NVIDIA-only pieces (NRC, DLSS-RR, cluster AS, SER) are the target stack (spec §1.2).
+- Lighting is only **RTXDI** ReSTIR DI (direct), one SER indirect bounce + **NRC** + **ReSTIR GI** (indirect), **OMM** (alpha on rays), **DLSS-RR** (denoise + upscale). No raster lighting, no reference path.
 - Primary surface: **visibility buffer**. Raster writes depth + a 32-bit `(visibleRow, triangle)` payload. The compute resolve rebuilds the triangle, computes perspective-correct barycentrics and their screen gradients, runs `sampleMaterial`, and writes BRDF inputs (guides), not lit color.
 - Rays: hits that are **shaded** go through one SER RT pipeline shape (raygen, miss, minimal closest-hit; shading in raygen). **Visibility** rays are ray queries. No any-hit. RT geometry is one CLAS per cluster + one cluster BLAS per primitive, TLAS built on the GPU (spec §10).
 - One decode: a vis-buffer pixel and a ray hit both resolve to `(nodeInstance, cluster, triangle)` and build the same `Surface`; the same `sampleMaterial` shades both.
@@ -152,7 +152,7 @@ angularAttenuation *= angularAttenuation
 Core glTF has no IBL, and the engine has none. Spec §11–12, plan Phases F–H:
 
 - **Direct:** **RTXDI** ReSTIR DI picks which light to shade and shadow-tests it with one visibility ray. Light sources are punctual lights and, from M7, emissive triangles (`Power_RIS`). Its target pdf is `luminance(f · L_i · NdotL)` from the same `evalBrdf` / `evalLight`. The punctual loop above is the math RTXDI estimates; it is not a pass in the engine. Ground truth is RTXDI with resampling mode `None` and many initial samples.
-- **Indirect:** one ray per pixel from the primary surface, direction from `sampleBrdf`. At the secondary hit: `sampleMaterial`, direct light through RTXDI sampling without reuse + one visibility ray, its emissive, then the **radiance cache** (SHaRC on the floor tier, NRC on the reference tier, behind `IRadianceCache`) for every further bounce. The cache term at the primary vertex is multiplied by `ao`. **ReSTIR GI** then resamples these samples temporally and spatially.
+- **Indirect:** one ray per pixel from the primary surface, direction from `sampleBrdf`. At the secondary hit: `sampleMaterial`, direct light through RTXDI sampling without reuse + one visibility ray, its emissive, then the **radiance cache** (NRC on every tier) for every further bounce. The cache term at the primary vertex is multiplied by `ao`. **ReSTIR GI** then resamples these samples temporally and spatially.
 - **Combine:** `noisyColor = L_direct + L_indirect + emissive`, the only place the terms meet. Direct is never AO-scaled.
 - **Denoise / upscale:** **DLSS-RR** on the noisy linear HDR. Guides: `c_diff` as diffuse albedo, `envBrdfApprox` as specular albedo, shading normal + **perceptual** roughness, hardware depth, unjittered motion.
 

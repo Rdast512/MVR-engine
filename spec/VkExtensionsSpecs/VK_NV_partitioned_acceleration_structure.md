@@ -1,6 +1,6 @@
 # VK_NV_partitioned_acceleration_structure — Implementation Spec
 
-**Status in this repo: ENABLED (device extension + feature + properties cached), NOT CONSUMED — optional NVIDIA path, not baseline RT.**
+**Status in this repo (2026-11-14): REQUIRED by the engine spec (§10.3), NOT CONSUMED yet.** The device enables it when present and caches its properties, but still treats it as optional; PBR plan C4 makes it required and replaces the per-slot full TLAS build with one PTLAS. Design: [ray_tracing_mega_geometry.md §3.6](../features/ray_tracing_mega_geometry.md).
 
 Official sources:
 
@@ -45,20 +45,20 @@ vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV partitionedAccele
 
 - Partitioned AS build/update APIs (per NVIDIA header)
 - Partition/instance management for world streaming
-- Optional extension gating for non-NVIDIA devices
+- Required-set entry at device creation (C4)
 - Hook into ray query / RT pipeline scene representation
 
 ---
 
 ## 2. What the extension provides
 
-Partitioned acceleration structures split large top-level or world structures into **partitions** that can be updated or streamed independently — aimed at large open worlds where a single monolithic TLAS rebuild is too expensive. This is **vendor-only** NVIDIA, not promoted, and **not** a substitute for portable `VK_KHR_acceleration_structure` TLAS rebuild/refit.
+Partitioned acceleration structures split large top-level or world structures into **partitions** that can be updated or streamed independently — aimed at large open worlds where a single monolithic TLAS rebuild is too expensive. It is NVIDIA-only and not promoted to core. The engine targets NVIDIA RTX only (engine spec §1.2), and the PTLAS is its TLAS.
 
-This repo caches `HardwareCapabilities::partitionedAccelerationStructure` and currently lists `vk::NVPartitionedAccelerationStructureExtensionName` as a **required** device extension (same portability hazard as cluster AS). Feature is on; **not consumed**. Optionalize before depending on it; keep a KHR TLAS path for tools, multi-vendor, and small scenes.
+This repo requires the extension and its `partitionedAccelerationStructure` feature at device creation (PBR C4) and caches `HardwareCapabilities::partitionedAccelerationStructure` (`maxPartitionCount` 16,777,215 on the RTX 5070). `RayTracingScene` builds and updates the engine's one PTLAS.
 
 | Feature | Role | Engine relevance |
 | --- | --- | --- |
-| Partitioned AS feature | Master enable | Optional large-world path |
+| Partitioned AS feature | Master enable | the engine TLAS (required, C4) |
 | Properties | Partition limits / caps | Design of streaming tiles |
 | Build/update commands | NVIDIA partitioned AS API family | Partial world updates |
 
@@ -114,7 +114,7 @@ Properties are **implementation-dependent**. Read `HardwareCapabilities::partiti
 
 | File | Action |
 | --- | --- |
-| `src/core/vk_device.hpp` | Listed as **required** (multi-vendor concern — same as cluster AS) |
+| `src/core/vk_device.cpp` | In `kRequiredDeviceExtensions` and `kRequiredFeatures` (C4); `maxPartitionCount` logged |
 | `src/core/vk_device.cpp` | Feature + properties assigned |
 | `src/core/types.hpp` | Properties field present |
 
@@ -122,53 +122,28 @@ Properties are **implementation-dependent**. Read `HardwareCapabilities::partiti
 
 | Module | Role |
 | --- | --- |
-| Future AS / scene streaming module | Partitioned TLAS-like structure per world tile |
-| Default path | KHR TLAS rebuild/update |
-| `vk_renderer.cpp` | Raster only today — no AS |
-
-Prefer a single scene interface:
-
-```text
-ITopLevelStructure → KhrTlas | NvPartitionedAs
-```
-
-so ray query / RT pipeline code does not fork everywhere.
+| `src/render/vk_rt_scene.*` (`RayTracingScene`) | one PTLAS updated in place, its scratch and state rows, the per-slot write lists and op entries (C4, built) |
+| `shaders/passes/rt_instances.slang` | `WRITE_INSTANCE` arguments for changed rows, appended to the op's `argCount` |
+| `shaders/passes/rt_instances.slang` | writes the `WRITE_INSTANCE` ops (all rows after a layout change, changed rows otherwise) and the op count |
+| `GpuFrameRoot.tlas` | the PTLAS address, traced as a raw address like the TLAS before it |
 
 ---
 
 ## 5. Recommended implementation order
 
-| Priority | Change | File(s) | Why |
-| --- | --- | --- | --- |
-| P0 | KHR TLAS with refit/rebuild | AS module | Portable |
-| P1 | Optionalize NV partitioned extension | `vk_device.*` | Non-NVIDIA device create |
-| P2 | Partitioned AS for world tiles | AS + streaming | Large worlds |
-| P3 | Balance vs cluster AS (NV) | AS module | Prefer one NV strategy first |
+PBR plan C4 and feature-spec step RT9 hold the order and the done-when. In short:
 
-### Implementation recipe
-
-1. Implement KHR TLAS rebuild/refit first (`VK_KHR_acceleration_structure` is enabled, **not consumed**). Partitioned AS is not the portable world structure.
-2. Optionalize `NVPartitionedAccelerationStructure` (today it is **required** — device create fails off NVIDIA). Same hazard as cluster AS.
-3. Read `device.getCapabilities().partitionedAccelerationStructure.maxPartitionCount` (and any other local `vulkan.hpp` fields). Do not hardcode a Required Limits number.
-4. Stream only dirty partitions; record NVIDIA partitioned build/update commands from the headers this repo compiles with.
-5. Barrier before `traceRays` / `rayQuery`. Keep a single scene interface (`KhrTlas | NvPartitionedAs`) so shaders do not fork.
-6. Prefer one NVIDIA strategy first if both cluster and partitioned AS are in play.
+1. Move the extension into the required set.
+2. Size one PTLAS from `vkGetPartitionedAccelerationStructuresBuildSizesNV` with the instance capacity, the grid's partition count and the global-partition capacity, within `maxPartitionCount` (VUID-10535).
+3. Write ops on the GPU, build indirectly in place (src = dst, allowed by VUID-10549), after a wait on the previous frame's last ray pass.
+4. Add the OMM 2-state ray flag to every ray: PTLAS has no 2-state instance flag.
+5. Measure update and trace cost against the full TLAS build.
 
 ---
 
 ## 6. Concrete integration sketch
 
-```cpp
-const auto& partProps = device.getCapabilities().partitionedAccelerationStructure;
-// Gate partition counts and buffer sizes from partProps
-
-// Streaming tick:
-// 1) Update only dirty partitions' instance data
-// 2) Record NVIDIA partitioned AS update commands
-// 3) Barrier before traceRays / rayQuery
-```
-
-Keep KHR TLAS path for tools, multi-vendor, and small scenes.
+See [ray_tracing_mega_geometry.md §3.6](../features/ray_tracing_mega_geometry.md) (API summary, engine mapping, frames in flight).
 
 ---
 
@@ -179,7 +154,7 @@ Keep KHR TLAS path for tools, multi-vendor, and small scenes.
 3. Partition counts ≤ property limits.
 4. Partial updates do not leave stale partitions addressable incorrectly.
 5. Trace/query after barrier sees new partition data.
-6. Fallback KHR path still works when NV path disabled.
+6. `ENGINE_RT_CHECK` matches the vis buffer on every frame, as with the full TLAS build.
 
 ---
 
@@ -189,25 +164,24 @@ Keep KHR TLAS path for tools, multi-vendor, and small scenes.
 
 ### Engine status
 
-Enabled, not consumed.
+Required by the spec, not consumed yet (C4).
 
 ## 9. Dependencies and interactions
 
 | Dependency / sibling | Interaction |
 | --- | --- |
-| `VK_KHR_acceleration_structure` | Baseline TLAS/BLAS |
+| `VK_KHR_acceleration_structure` | AS objects, BLAS references in instances, the `accelerationStructure` limits |
 | `VK_NV_cluster_acceleration_structure` | Complementary NV geometry clustering |
 | RT pipeline / ray query | Consumers of the world structure |
-| Scene streaming | Primary motivation for partitions |
+| `VK_EXT_opacity_micromap` | no 2-state instance flag: rays set the 2-state ray flag instead |
 
 ---
 
 ## 10. Non-goals / do not do
 
-- Do not make partitioned AS the only supported world structure.
-- Do not require it for small demo scenes.
-- Do not assume AMD/Intel support.
-- Do not implement before a correct KHR TLAS update story exists (harder to debug).
+- Do not keep a per-frame full TLAS build next to the PTLAS.
+- Do not write ops on the CPU.
+- Do not keep one PTLAS per frame slot: updates apply to their source (feature spec §3.6).
 
 ---
 
@@ -215,7 +189,6 @@ Enabled, not consumed.
 
 | Question | Answer |
 | --- | --- |
-| Is NV partitioned AS enabled? | **Yes** — extension + feature + properties cached |
-| Is it used? | **No** |
-| Highest-value next steps | KHR TLAS first; optionalize NV; then partitioned streaming |
-| Secondary steps | Co-design with NV cluster AS for end-to-end NVIDIA large-world path |
+| Is NV partitioned AS enabled? | **Yes**, required at device creation (C4) |
+| Is it used? | **Yes**: one PTLAS updated in place every frame on async compute; a still frame writes no instances (C4, 2026-11-14) |
+| Next step | Bistro measurements (M9, engine spec Q10); `UPDATE_INSTANCE` ops once BLAS change per frame (cluster LOD, post-1.0) |

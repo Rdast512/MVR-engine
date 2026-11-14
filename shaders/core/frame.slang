@@ -78,12 +78,18 @@ public GpuMaterialExtension loadMaterialExtension(GpuFrameRoot root, uint row)
     return bdaPtr<GpuMaterialExtension>(root.pbrExtensions)[row];
 }
 
-// lights are stored in model space; the owning instance places them in the world
-public GpuLight loadWorldLight(GpuFrameRoot root, uint lightIndex)
+// a model-space light row placed by its owning instance: unit direction; intensity, range and cone keep their values,
+// since KHR_lights_punctual does not scale them by the node
+public GpuLight toWorldLight(GpuFrameRoot root, GpuLight light)
 {
-    GpuLight light = bdaPtr<GpuLight>(root.lights)[lightIndex];
     const float4x4 model = bdaPtr<GpuObjectUB>(root.instances)[light.instanceIndex].modelMatrix;
     light.position = mul(model, float4(light.position, 1.0)).xyz;
     light.direction = normalize(mul(model, float4(light.direction, 0.0)).xyz);
     return light;
+}
+
+// this frame's world-space row (passes/light_world.slang); readers wait for the compute timeline
+public GpuLight loadWorldLight(GpuFrameRoot root, uint lightIndex)
+{
+    return bdaPtr<GpuLight>(root.worldLights)[lightIndex];
 }

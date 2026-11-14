@@ -5,6 +5,7 @@ import core.binding;
 import core.frame;
 import core.math;
 import geometry.surface;
+import raytracing.trace;
 
 // ray hits -> the Surface the vis-buffer resolve builds (plan C3, spec/features/ray_tracing_mega_geometry.md §5-7)
 
@@ -73,11 +74,12 @@ public PrimaryRay primaryRay(GpuCameraData camera, uint2 pixel, float2 targetSiz
 }
 
 // closest hit. Every instance is FORCE_OPAQUE until plan D, so Proceed() reports no candidates; no facing cull,
-// since a back face blocks light (spec §6.2)
+// since a back face blocks light (spec §6.2). OMM 2-state comes from the ray flag: PTLAS has no instance flag for it
 public bool traceClosest(GpuFrameRoot root, RayDesc ray, out RayHit hit)
 {
     hit = {};
-    RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> query;
+    requireOmm2StateRayFlag();
+    RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OMM_2_STATE> query;
     query.TraceRayInline(RaytracingAccelerationStructure(root.tlas), RAY_FLAG_NONE, 0xFF, ray);
     while (query.Proceed())
     {

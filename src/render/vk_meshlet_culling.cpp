@@ -382,6 +382,9 @@ void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, con
 {
     const glm::mat4& viewProj = settings.isCameraFrozen ? frozenViewProj : camera.cameraData.viewProj;
     const glm::vec3& position = settings.isCameraFrozen ? frozenPosition : camera.cameraData.cameraPos;
+    // the raster adds the jitter, the cull matrix does not: widen the pixel tests by it (engine spec §12.2)
+    const glm::vec2 jitterPixels =
+        glm::abs(camera.cameraData.jitterOffset) * 0.5f * camera.cameraData.renderTargetSize;
 
     const FrameBuffers& buffers = frames[frameSlot];
     const GpuCullView view{
@@ -407,7 +410,7 @@ void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, con
         .rejectMasks = buffers.rejectMasks.address,
         .cullViewProj = viewProj,
         .targetSize = camera.cameraData.renderTargetSize,
-        .subpixelSnap = subpixelSnap,
+        .subpixelSnap = subpixelSnap + std::max(jitterPixels.x, jitterPixels.y),
         .instanceCandidateCapacity = buffers.instanceCapacity,
         // the phase regions are templates.drawRecords.size() apart (drawRecordBase below)
         .drawRecordCapacity = static_cast<uint32_t>(templates.drawRecords.size()),
