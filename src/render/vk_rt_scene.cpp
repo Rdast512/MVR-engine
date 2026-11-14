@@ -24,8 +24,6 @@ namespace
     constexpr uint32_t kRtInstancesGroupSize = 64;
     // PtlasInstanceState in rt_instances.slang: the 3x4 transform the PTLAS holds
     constexpr vk::DeviceSize kPtlasStateRowBytes = 48;
-    // grid cells are sized for about this many instances (the sample's grid holds ~1200 per partition at 1.2 M)
-    constexpr uint32_t kTargetInstancesPerPartition = 64;
     // VkPartitionedAccelerationStructureWriteInstanceDataNV::instanceID carries the primitive row
     constexpr uint32_t kCustomIndexLimit = 1u << 24;
     // VUID-vkCmdBuildPartitionedAccelerationStructuresNV-pBuildInfo-10542/-10544/-10545: 256-byte aligned
@@ -86,7 +84,8 @@ void RayTracingScene::prepareFrame(uint32_t frameSlot, uint64_t lastSubmittedFra
 {
     ZoneScopedN("RayTracingScene::prepareFrame");
     collectResults(frameSlot);
-    if (templates.generation != frameData.layoutGeneration()) {
+    if (templates.layoutGeneration != frameData.layoutGeneration() ||
+        templates.instancesPerPartition != settings.instancesPerPartition) {
         buildTemplates();
     }
     const PtlasShape& shape = templates.shape;
@@ -95,7 +94,7 @@ void RayTracingScene::prepareFrame(uint32_t frameSlot, uint64_t lastSubmittedFra
         shape.maxPerPartition > sized.maxPerPartition) {
         createPtlas(lastSubmittedFrame);
     }
-    if (frames[frameSlot].generation != templates.generation) {
+    if (frames[frameSlot].version != templates.version) {
         uploadTemplates(frameSlot);
     }
     // the GPU appends to argCount; the slot's last build has completed
@@ -118,7 +117,9 @@ void RayTracingScene::buildTemplates()
     ZoneScopedN("RayTracingScene::buildTemplates");
     templates.rows.clear();
     templates.builds.clear();
-    templates.generation = frameData.layoutGeneration();
+    templates.layoutGeneration = frameData.layoutGeneration();
+    templates.instancesPerPartition = settings.instancesPerPartition;
+    ++templates.version;
 
     const ObjectStorage& storage = scene.objectStorage;
     const GeometryStore& geometry = scene.geometryStore;
@@ -170,7 +171,8 @@ void RayTracingScene::buildTemplates()
     if (maxPartitions == 0) {
         throw std::runtime_error("rt: maxPartitionCount is 0");
     }
-    auto axis = static_cast<uint32_t>(std::ceil(std::sqrt(static_cast<double>(count) / kTargetInstancesPerPartition)));
+    const double cellInstances = std::max(templates.instancesPerPartition, 1u);
+    auto axis = static_cast<uint32_t>(std::ceil(std::sqrt(static_cast<double>(count) / cellInstances)));
     axis = std::max(axis, 1u);
     while (axis > 1 && axis * axis > maxPartitions) {
         --axis;
@@ -213,7 +215,7 @@ void RayTracingScene::uploadTemplates(uint32_t frameSlot)
     std::memcpy(buffers.rayInstances.mapped, templates.rows.data(), std::span(templates.rows).size_bytes());
     std::memcpy(buffers.builds.mapped, templates.builds.data(), std::span(templates.builds).size_bytes());
     buffers.count = count;
-    buffers.generation = templates.generation;
+    buffers.version = templates.version;
     TracyPlot("RT/Instances", static_cast<double>(count));
 }
 
@@ -260,7 +262,7 @@ void RayTracingScene::createPtlas(uint64_t lastSubmittedFrame)
                                       vk::BufferUsageFlagBits2::eStorageBuffer, "PtlasState");
     ptlas.sizedFor = sized;
     // the first build starts from nothing
-    ptlas.generation = ~0u;
+    ptlas.version = ~0u;
     logInfo(std::format("PTLAS for {} instances, {} partitions, {} per partition: {} KiB, scratch {} KiB",
                         sized.instances, sized.partitions, sized.maxPerPartition,
                         divideRoundUp(static_cast<uint32_t>(sizes.accelerationStructureSize), 1024),
@@ -274,7 +276,7 @@ void RayTracingScene::destroyPtlas()
     destroyAlignedBuffer(ptlas.scratch);
     destroyAlignedBuffer(ptlas.state);
     ptlas.sizedFor = {};
-    ptlas.generation = ~0u;
+    ptlas.version = ~0u;
 }
 
 void RayTracingScene::createFrameBuffers(uint32_t frameSlot, uint32_t capacity)
@@ -312,7 +314,7 @@ void RayTracingScene::destroyFrameBuffers(FrameBuffers& buffers)
     destroyAlignedBuffer(buffers.writeInfos);
     buffers.capacity = 0;
     buffers.count = 0;
-    buffers.generation = ~0u;
+    buffers.version = ~0u;
     buffers.isSubmitted = false;
 }
 
@@ -362,7 +364,7 @@ void RayTracingScene::recordBuild(const vk::raii::CommandBuffer& cmd, uint32_t f
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &reuseBarrier});
 
     // a new layout or a new PTLAS: every row writes its instance into an empty PTLAS
-    const bool isFullBuild = ptlas.generation != templates.generation;
+    const bool isFullBuild = settings.isFullBuildForced || ptlas.version != templates.version;
     if (buffers.count > 0) {
         const RtInstancesPushData push{
             .frameRoot = frameData.frameRootAddress(frameSlot),
@@ -400,7 +402,7 @@ void RayTracingScene::recordBuild(const vk::raii::CommandBuffer& cmd, uint32_t f
         .srcInfos = buffers.operation.address,
         .srcInfosCount = buffers.operation.address + kOpCountOffset,
     });
-    ptlas.generation = templates.generation;
+    ptlas.version = templates.version;
     if (buffers.isTimed) {
         cmd.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, *timestamps, firstQuery + 2);
     }

@@ -34,6 +34,16 @@ public:
         float tlasBuildMs = 0.0f;
     };
 
+    // runtime PTLAS controls, read by the next prepareFrame / recordBuild
+    struct Settings
+    {
+        // grid cells are sized for about this many instances; a change rebuilds the templates and the PTLAS. ~16 and
+        // ~256 showed no consistent win over 64 on the 5070 (plan C4)
+        uint32_t instancesPerPartition = 64;
+        // every frame writes every instance into an empty PTLAS: the full-build cost, for comparison
+        bool isFullBuildForced = false;
+    };
+
     RayTracingScene(const Device& device, const VkAllocator& allocator, const FrameSync& frameSync, const Scene& scene,
                     const AssetBuffers& assets, const FrameData& frameData, const ShaderObjects& shaderObjects);
     ~RayTracingScene();
@@ -59,6 +69,8 @@ public:
     }
     [[nodiscard]] Stats getStats() const noexcept;
 
+    Settings settings;
+
 private:
     static constexpr size_t kHistorySize = 120;
     // start, after the instance writes, after the PTLAS build
@@ -79,7 +91,11 @@ private:
         // parallel to rows
         std::vector<GpuRayInstanceBuild> builds;
         PtlasShape shape;
-        uint32_t generation = ~0u;
+        // FrameData::layoutGeneration and the grid density they were built for
+        uint32_t layoutGeneration = ~0u;
+        uint32_t instancesPerPartition = 0;
+        // bumped by every build; slots and the PTLAS compare against it
+        uint32_t version = 0;
     };
 
     // device-local buffer whose address is aligned up inside a slack allocation
@@ -101,7 +117,8 @@ private:
         AlignedBuffer writeInfos;
         uint32_t capacity = 0;
         uint32_t count = 0;
-        uint32_t generation = ~0u;
+        // template version uploaded
+        uint32_t version = ~0u;
         bool isTimed = false;
         bool isSubmitted = false;
     };
@@ -114,8 +131,8 @@ private:
         // one row per instance: the transform the PTLAS holds, for change detection
         AlignedBuffer state;
         PtlasShape sizedFor;
-        // layout generation the PTLAS was last fully built for
-        uint32_t generation = ~0u;
+        // template version the PTLAS was last fully built for
+        uint32_t version = ~0u;
     };
 
     void buildTemplates();

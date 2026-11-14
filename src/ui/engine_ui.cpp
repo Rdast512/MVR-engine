@@ -322,6 +322,7 @@ void EngineUi::buildFrame(const FrameStats& stats)
             drawCameraPanel();
             drawDebugViewPanel();
             drawCullingPanel();
+            drawRayTracingPanel();
             drawInstanceFieldPanel();
         }
         ImGui::End();
@@ -805,6 +806,86 @@ void EngineUi::drawCullingPanel()
         ImGui::PlotLines(std::format("##gpuTimer{}", i).c_str(), samples.data(), static_cast<int>(samples.size()),
                          timer.historyOffset(), overlay.c_str(), 0.0f, FLT_MAX, {-FLT_MIN, kPlotHeight});
     }
+}
+
+// runtime controls of what is built: RTX Mega Geometry (PTLAS) and RTXDI. RTXGI (NRC, ReSTIR GI) has no pass yet
+void EngineUi::drawRayTracingPanel()
+{
+    if (!ImGui::CollapsingHeader("Ray tracing")) {
+        return;
+    }
+    const auto sliderU32 = [](const char* label, uint32_t& value, uint32_t minimum, uint32_t maximum) {
+        ImGui::SliderScalar(label, ImGuiDataType_U32, &value, &minimum, &maximum, "%u", ImGuiSliderFlags_AlwaysClamp);
+    };
+
+    ImGui::SeparatorText("RTX Mega Geometry");
+    RayTracingScene::Settings& ptlas = context.renderer.getRayTracingScene().settings;
+    const RayTracingScene::Stats rt = context.renderer.getRayTracingStats();
+    ImGui::Text("PTLAS: %u instances in %u partitions, %u written, update %.3f ms", rt.instances, rt.partitions,
+                rt.writtenInstances, rt.tlasBuildMs);
+    ImGui::SetItemTooltip("one CLAS per meshlet and one cluster BLAS per primitive, built at load; the PTLAS is "
+                          "updated in place on async compute");
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
+    sliderU32("Instances per partition", ptlas.instancesPerPartition, 1, 1024);
+    ImGui::SetItemTooltip("grid density of the PTLAS partitions; a change rebuilds the PTLAS");
+    ImGui::Checkbox("Force full PTLAS build", &ptlas.isFullBuildForced);
+    ImGui::SetItemTooltip("rewrite every instance into an empty PTLAS each frame, to compare against the "
+                          "changed-only update");
+
+    ImGui::SeparatorText("RTXDI (ReSTIR DI)");
+    RtxdiContext& rtxdi = context.renderer.getRtxdi();
+    RtxdiContext::Settings& di = rtxdi.settings;
+    ImGui::Checkbox("Reference (no reuse)", &rtxdi.isReference);
+    ImGui::SetItemTooltip("no reuse, 32 local + 8 infinite candidates: the unbiased ground truth of the fused pass");
+    ImGui::BeginDisabled(rtxdi.isReference);
+    sliderU32("Local light candidates", di.localLightSamples, 0, 64);
+    ImGui::SetItemTooltip("initial RIS candidates per pixel from point and spot lights");
+    sliderU32("Infinite light candidates", di.infiniteLightSamples, 0, 16);
+    ImGui::SetItemTooltip("initial RIS candidates per pixel from directional lights");
+    ImGui::EndDisabled();
+    ImGui::Checkbox("Initial visibility", &di.isInitialVisibilityEnabled);
+    ImGui::SetItemTooltip("one shadow ray per pixel in the initial pass; occluded samples are dropped before reuse");
+
+    ImGui::BeginDisabled(rtxdi.isReference);
+    sliderU32("Spatial samples", di.spatialSamples, 0, 16);
+    ImGui::SetItemTooltip("neighbor reservoirs merged per pixel by the fused spatiotemporal pass");
+    sliderU32("Disocclusion boost samples", di.disocclusionBoostSamples, 0, 32);
+    ImGui::SetItemTooltip("spatial samples while a pixel's history is shorter than the max history length");
+    ImGui::SliderFloat("Sampling radius", &di.samplingRadius, 1.0f, 64.0f, "%.0f px", ImGuiSliderFlags_AlwaysClamp);
+    sliderU32("Max history length", di.maxHistoryLength, 1, 64);
+    ImGui::SetItemTooltip("frames of temporal reuse: longer is smoother, slower to react to changes");
+    ImGui::SliderFloat("Depth threshold", &di.depthThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("relative depth difference above which a neighbor or history pixel is rejected");
+    ImGui::SliderFloat("Normal threshold", &di.normalThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("minimum dot product of normals for a neighbor or history pixel to be reused");
+    constexpr std::array kBiasModes{"Off", "Basic", "Pairwise", "Ray traced"};
+    int biasMode = static_cast<int>(di.biasCorrection);
+    if (ImGui::Combo("Bias correction", &biasMode, kBiasModes.data(), static_cast<int>(kBiasModes.size()))) {
+        di.biasCorrection = static_cast<ReSTIRDI_SpatioTemporalBiasCorrectionMode>(biasMode);
+    }
+    ImGui::SetItemTooltip("Pairwise matches the reference; RTXDI 3.1's fused Basic darkens by ~35%% "
+                          "(considerations C-F3-2); Ray traced adds a shadow ray per reused sample");
+    ImGui::Checkbox("Visibility shortcut", &di.isVisibilityShortcutEnabled);
+    ImGui::SetItemTooltip("skip the bias-correction ray for samples reused from the previous frame");
+    ImGui::SameLine();
+    ImGui::Checkbox("Material similarity", &di.isMaterialSimilarityTestEnabled);
+    ImGui::SetItemTooltip("reject neighbors whose roughness or reflectance differs too much");
+    ImGui::Checkbox("Boiling filter", &di.isBoilingFilterEnabled);
+    ImGui::SetItemTooltip("suppress reservoirs far brighter than their 8x8 tile, which spread as bright blotches");
+    ImGui::BeginDisabled(!di.isBoilingFilterEnabled);
+    ImGui::SliderFloat("Boiling strength", &di.boilingFilterStrength, 0.0f, 1.0f, "%.2f",
+                       ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+
+    if (ImGui::Button("Defaults")) {
+        ptlas = {};
+        rtxdi.isReference = false;
+        di = RtxdiContext::defaultSettings();
+    }
+
+    ImGui::SeparatorText("RTXGI");
+    ImGui::TextDisabled("NRC, ReSTIR GI and the bounce count come with the M4 path tracer (PBR plan G1-G6)");
 }
 
 void EngineUi::drawInstanceFieldPanel()

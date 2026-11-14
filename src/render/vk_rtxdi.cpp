@@ -75,16 +75,6 @@ void RtxdiContext::recreate(vk::Extent2D renderExtent)
         .CheckerboardSamplingMode = rtxdi::CheckerboardMode::Off,
     });
     configure();
-    RTXDI_DISpatioTemporalResamplingParameters spatioTemporal = context->GetSpatioTemporalResamplingParameters();
-    // RTXDI 3.1's fused Basic path skips naive neighbors (discountNaiveSamples) after marking them for its
-    // normalization, the temporal one included, so their M stays 1 and keeps darkening: 35% on LightsPunctualLamp.
-    // Pairwise MIS discounts only spatial neighbors and matched the reference within 0.5% (plan F3)
-    spatioTemporal.biasCorrectionMode = ReSTIRDI_SpatioTemporalBiasCorrectionMode::Pairwise;
-    // permutation decorrelates frames for denoisers, but the frame-to-frame change grew from 0.8% to 20.5% of the
-    // signal (lamp, static camera); revisit with DLSS-RR (H1). Turning it on also needs this setter every frame:
-    // SetFrameIndex rehashes only the temporal pass's uniformRandomNumber, so the fused one would stay 0
-    spatioTemporal.enablePermutationSampling = 0;
-    context->SetSpatioTemporalResamplingParameters(spatioTemporal);
     RTXDI_ShadingParameters shading = context->GetShadingParameters();
     // one final visibility ray per pixel (spec §11.2): rtxdi_shade never reuses the stored visibility
     shading.reuseFinalVisibility = 0;
@@ -107,6 +97,34 @@ void RtxdiContext::recreate(vk::Extent2D renderExtent)
             "Rtxdi");
 }
 
+RtxdiContext::Settings RtxdiContext::defaultSettings()
+{
+    const RTXDI_DIInitialSamplingParameters initial = rtxdi::GetDefaultReSTIRDIInitialSamplingParams();
+    const RTXDI_DISpatioTemporalResamplingParameters spatioTemporal =
+        rtxdi::GetDefaultReSTIRDISpatioTemporalResamplingParams();
+    const RTXDI_BoilingFilterParameters boiling = rtxdi::GetDefaultReSTIRDIBoilingFilterParams();
+    return Settings{
+        .localLightSamples = initial.numLocalLightSamples,
+        .infiniteLightSamples = initial.numInfiniteLightSamples,
+        .isInitialVisibilityEnabled = initial.enableInitialVisibility != 0,
+        .spatialSamples = spatioTemporal.numSamples,
+        .disocclusionBoostSamples = spatioTemporal.numDisocclusionBoostSamples,
+        .samplingRadius = spatioTemporal.samplingRadius,
+        .maxHistoryLength = spatioTemporal.maxHistoryLength,
+        .depthThreshold = spatioTemporal.depthThreshold,
+        .normalThreshold = spatioTemporal.normalThreshold,
+        // RTXDI 3.1's fused Basic path skips naive neighbors (discountNaiveSamples) after marking them for its
+        // normalization, the temporal one included, so their M stays 1 and keeps darkening: 35% on
+        // LightsPunctualLamp. Pairwise MIS discounts only spatial neighbors and matched the reference within 0.5%
+        // (plan F3)
+        .biasCorrection = ReSTIRDI_SpatioTemporalBiasCorrectionMode::Pairwise,
+        .isVisibilityShortcutEnabled = spatioTemporal.enableVisibilityShortcut != 0,
+        .isMaterialSimilarityTestEnabled = spatioTemporal.enableMaterialSimilarityTest != 0,
+        .isBoilingFilterEnabled = boiling.enableBoilingFilter != 0,
+        .boilingFilterStrength = boiling.boilingFilterStrength,
+    };
+}
+
 bool RtxdiContext::isReferenceRequested()
 {
     const char* text = std::getenv("ENGINE_RTXDI_REFERENCE");
@@ -124,12 +142,36 @@ void RtxdiContext::configure()
     initialSampling.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Uniform;
     // a BRDF ray finds a light only on emissive triangles (M7); until then each one is a wasted ray per pixel
     initialSampling.numBrdfSamples = 0;
-    if (isReference) {
-        initialSampling.numLocalLightSamples = kReferenceLocalLightSamples;
-        initialSampling.numInfiniteLightSamples = kReferenceInfiniteLightSamples;
-    }
+    initialSampling.numLocalLightSamples = isReference ? kReferenceLocalLightSamples : settings.localLightSamples;
+    initialSampling.numInfiniteLightSamples =
+        isReference ? kReferenceInfiniteLightSamples : settings.infiniteLightSamples;
+    initialSampling.enableInitialVisibility = settings.isInitialVisibilityEnabled ? 1u : 0u;
     context->SetInitialSamplingParameters(initialSampling);
+
+    RTXDI_DISpatioTemporalResamplingParameters spatioTemporal = context->GetSpatioTemporalResamplingParameters();
+    spatioTemporal.numSamples = settings.spatialSamples;
+    spatioTemporal.numDisocclusionBoostSamples = settings.disocclusionBoostSamples;
+    spatioTemporal.samplingRadius = settings.samplingRadius;
+    spatioTemporal.maxHistoryLength = settings.maxHistoryLength;
+    spatioTemporal.depthThreshold = settings.depthThreshold;
+    spatioTemporal.normalThreshold = settings.normalThreshold;
+    spatioTemporal.biasCorrectionMode = settings.biasCorrection;
+    spatioTemporal.enableVisibilityShortcut = settings.isVisibilityShortcutEnabled ? 1u : 0u;
+    spatioTemporal.enableMaterialSimilarityTest = settings.isMaterialSimilarityTestEnabled ? 1u : 0u;
+    // permutation decorrelates frames for denoisers, but the frame-to-frame change grew from 0.8% to 20.5% of the
+    // signal (lamp, static camera); revisit with DLSS-RR (H1). Turning it on also needs this setter every frame:
+    // SetFrameIndex rehashes only the temporal pass's uniformRandomNumber, so the fused one would stay 0
+    spatioTemporal.enablePermutationSampling = 0;
+    context->SetSpatioTemporalResamplingParameters(spatioTemporal);
+
+    context->SetBoilingFilterParameters(RTXDI_BoilingFilterParameters{
+        .enableBoilingFilter = settings.isBoilingFilterEnabled ? 1u : 0u,
+        .boilingFilterStrength = settings.boilingFilterStrength,
+        .pad1 = 0,
+        .pad2 = 0,
+    });
     isReferenceApplied = isReference;
+    appliedSettings = settings;
 }
 
 void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex)
@@ -137,6 +179,8 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex)
     if (isReference != isReferenceApplied) {
         configure();
         logInfo(std::format("ReSTIR DI: {}", isReference ? "reference (no reuse)" : "fused spatiotemporal"), "Rtxdi");
+    } else if (settings != appliedSettings) {
+        configure();
     }
     // rotates the reservoir buffer indices and the frame's random number
     context->SetFrameIndex(frameIndex);

@@ -52,6 +52,7 @@ public:
 
     [[nodiscard]] MeshletCulling& getCulling() noexcept { return culling; }
     [[nodiscard]] RtxdiContext& getRtxdi() noexcept { return rtxdi; }
+    [[nodiscard]] RayTracingScene& getRayTracingScene() noexcept { return rtScene; }
     [[nodiscard]] const GpuTimer& getGpuTimer() const noexcept { return gpuTimer; }
     [[nodiscard]] uint32_t getHiZMipCount() const noexcept { return hiz.mipCount(); }
     [[nodiscard]] RayTracingScene::Stats getRayTracingStats() const noexcept { return rtScene.getStats(); }

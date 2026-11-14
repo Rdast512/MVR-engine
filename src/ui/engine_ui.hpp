@@ -104,6 +104,7 @@ private:
     void drawEntityTransformControls();
     void drawCameraPanel();
     void drawCullingPanel();
+    void drawRayTracingPanel();
     void drawInstanceFieldPanel();
 
     UiContext context;

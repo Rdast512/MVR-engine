@@ -48,6 +48,32 @@ static_assert(offsetof(GpuRtxdiConstants, reservoirs) == 336);
 class RtxdiContext
 {
 public:
+    // runtime ReSTIR DI parameters, applied by the next prepareFrame. The fused pass reads the initial sampling,
+    // spatiotemporal and boiling filter blocks; the reference mode overrides the candidate counts
+    struct Settings
+    {
+        uint32_t localLightSamples = 0;
+        uint32_t infiniteLightSamples = 0;
+        // one shadow ray per pixel in the initial pass; occluded candidates are dropped before reuse
+        bool isInitialVisibilityEnabled = false;
+        uint32_t spatialSamples = 0;
+        // spatial samples while the reservoir's history is shorter than maxHistoryLength
+        uint32_t disocclusionBoostSamples = 0;
+        float samplingRadius = 0.0f;
+        uint32_t maxHistoryLength = 0;
+        float depthThreshold = 0.0f;
+        float normalThreshold = 0.0f;
+        ReSTIRDI_SpatioTemporalBiasCorrectionMode biasCorrection = ReSTIRDI_SpatioTemporalBiasCorrectionMode::Pairwise;
+        bool isVisibilityShortcutEnabled = false;
+        bool isMaterialSimilarityTestEnabled = false;
+        bool isBoilingFilterEnabled = false;
+        float boilingFilterStrength = 0.0f;
+
+        bool operator==(const Settings&) const = default;
+    };
+    // RTXDI's defaults with the engine's choices (plan F3): Pairwise MIS
+    [[nodiscard]] static Settings defaultSettings();
+
     RtxdiContext(const Device& device, const VkAllocator& allocator, const AssetBuffers& assets);
     ~RtxdiContext();
 
@@ -77,12 +103,13 @@ public:
     // plan F3 ground truth: resampling None with kReference* initial candidates instead of fused spatiotemporal
     // reuse with the library's counts; read by the next prepareFrame
     bool isReference = false;
+    Settings settings = defaultSettings();
 
 private:
     static constexpr uint32_t kReferenceLocalLightSamples = 32;
     static constexpr uint32_t kReferenceInfiniteLightSamples = 8;
 
-    // resampling mode and initial sampling of isReference
+    // resampling mode of isReference and every parameter block of settings
     void configure();
     void destroyReservoirs();
 
@@ -91,6 +118,7 @@ private:
     const AssetBuffers& assets;
     std::unique_ptr<rtxdi::ReSTIRDIContext> context;
     bool isReferenceApplied = false;
+    Settings appliedSettings;
     vk::raii::Buffer reservoirs = nullptr;
     VmaAllocation reservoirMemory = nullptr;
     vk::DeviceAddress reservoirAddress = 0;
