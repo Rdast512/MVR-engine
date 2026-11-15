@@ -504,6 +504,7 @@ namespace
             LAYOUT_FIELD(GpuFrameRoot, frameIndex),
             LAYOUT_FIELD(GpuFrameRoot, exposure),
             LAYOUT_FIELD(GpuFrameRoot, worldLights),
+            LAYOUT_FIELD(GpuFrameRoot, prevWorldLights),
         }},
     };
 

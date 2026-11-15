@@ -72,22 +72,31 @@ Resampling mode `TemporalAndSpatial` (the library default), reference `None` as 
 
 ### 3.3 Settings
 
-`RtxdiContext::Settings` keeps one set of thresholds for both passes (the library defaults are equal) and splits the rest:
+`RtxdiContext::Settings` keeps one set of thresholds for both passes (the library defaults are equal) and splits the rest. Two sets exist (2026-11-15):
 
-| Setting | Goes to | Default |
-|---|---|---|
-| local / infinite candidates, initial visibility | initial sampling | library (8 / 1 / on) |
-| `maxHistoryLength` | temporal; also spatial `targetHistoryLength` | 20 |
-| temporal bias correction (`Off`, `Basic`, `Raytraced`) | temporal | `Basic` (library; §6.1) |
-| visibility shortcut, fallback sampling (new) | temporal | off / on |
-| spatial samples, disocclusion boost samples, sampling radius | spatial | **0** / 8 / 32: neighbors only while history is short, as the fused pass did (§1, §6.1; C-R32-1) |
-| spatial bias correction (`Off`, `Basic`, `Pairwise`, `Raytraced`) | spatial | **Pairwise** (§6.1) |
-| material similarity | spatial | on |
-| depth / normal thresholds | both | 0.1 / 0.5 |
-| boiling filter, strength | temporal pass | on / 0.2 |
+- **`defaultSettings()`, the engine default:** the RTXDI sample's default `Medium` preset (`Samples/FullSample/Source/UserInterface.cpp`, `ApplyPreset`) over the library defaults, so the engine's cost can be compared with NVIDIA's sample.
+- **`convergedSettings()`:** the configuration the convergence check holds to its bounds (§4, §6.1). The `NVIDIA defaults` and `Converged` buttons in the RTXDI panel switch between them.
 
-- **`targetHistoryLength` = `maxHistoryLength`.** The library defaults spatial `targetHistoryLength` to 0, which never triggers the disocclusion boost. The fused pass boosted below `maxHistoryLength`, so the engine keeps that.
-- **Permutation sampling** stays off (C-F3-3).
+| Setting | Goes to | Default (NVIDIA `Medium`) | Converged |
+|---|---|---|---|
+| local / infinite / BRDF candidates | initial sampling | 8 / 1 / 1 | 8 / 1 / 0 |
+| local light sampling | initial sampling | `Uniform`: the preset's `ReGIR_RIS` needs presampling (M7) | `Uniform` |
+| initial visibility | initial sampling | on | on |
+| `maxHistoryLength` | temporal | 20 | 20 |
+| temporal bias correction (`Off`, `Basic`, `Raytraced`) | temporal | `Raytraced` | `Basic` |
+| visibility shortcut | temporal; also discards an occluded final sample | on | off |
+| fallback sampling (new in 3.2) | temporal | on | on |
+| permutation sampling | temporal | on (library) | off (C-F3-3) |
+| spatial samples | spatial | 2: the preset's 1, made even for the stratified walk | 0 (C-R32-1) |
+| disocclusion boost samples, target history length | spatial | 8 / 0: the library's 0 never boosts | 8 / 20 |
+| sampling radius | spatial | 32 | 32 |
+| spatial bias correction (`Off`, `Basic`, `Pairwise`, `Raytraced`) | spatial | `Basic` | Pairwise |
+| material similarity | spatial | on | on |
+| depth / normal thresholds | both | 0.1 / 0.5 | 0.1 / 0.5 |
+| boiling filter, strength | temporal pass | on / 0.2 | on / 0.2 |
+| final visibility reuse (age ≤ 4 frames, ≤ 16 px) | shade pass | on | off |
+
+- **Final visibility reuse** follows the sample's `ShadingHelpers.hlsli`. `rtxdi_shade` stores each traced final visibility in the reservoir (`RTXDI_StoreVisibilityInDIReservoir`, which resets its age and distance). With reuse on, a stored visibility young and close enough replaces the ray (`RTXDI_GetDIReservoirVisibility`). With the visibility shortcut on, storing an occluded result discards the sample and keeps M.
 - **Even spatial counts.** Stratified sampling wants even sample counts, so the UI rounds the spatial and boost counts down to even.
 
 ### 3.4 Neighbor offsets
@@ -100,6 +109,7 @@ The stratified table: `FillNeighborOffsetBuffer(buffer, 8192, StratifiedLowDiscr
 
 The guide capture gains one check after its shots: `LightsPunctualLamp` (5 point lights, static camera, jitter off).
 
+- **Settings:** the shot holds `RtxdiContext::convergedSettings()` and the guide capture restores the previous settings after it. The check gates the port, not the defaults: the NVIDIA defaults fail it (§6.4).
 - **Reference:** the shot's `Shadowed lights` capture, the exact punctual sum with one shadow ray per light, kept as linear luminance.
 - **Tested:** `Lighting only` (ReSTIR DI `directRadiance` + the same emissive), 16 warm-up frames, then 64 captured frames.
 - **Metrics,** as in F3: luminance differences as a share of the reference's summed luminance:
@@ -171,3 +181,33 @@ Every row is one deterministic guide-capture run (§4). Shares of the reference'
 | GPU total | 1.624 ms | 1.726 ms | 1.719 ms |
 
 The before run came about 40 minutes earlier in the same session; the old binary could not be re-run alternately. The unchanged initial pass and DLSS-RR read 6–10% higher in the after rounds, so most of the +0.02 ms is drift. The temporal and spatial passes together (0.106 ms) against the fused pass (0.098 ms) are within the ±5% bench noise plus that drift.
+
+### 6.4 NVIDIA defaults (2026-11-15)
+
+The engine defaults became the RTXDI sample's `Medium` preset (§3.3), so the engine's cost can be compared with NVIDIA's samples. The other NVIDIA components already matched their reference samples: CLAS and cluster BLAS build with fast trace and the minimum position truncation (`vk_lod_clusters`), the PTLAS builds with fast trace (`vk_partitioned_tlas`), and DLSS-RR uses Quality mode with the `Default` preset (`vk_denoise_dlssrr`). The RTXDI sample itself renders at native resolution (`resolutionScale` 1), which is the engine's DLAA mode.
+
+**Convergence on `LightsPunctualLamp`** (§4 metrics, one deterministic run):
+
+| Configuration | Bias | Tiles median / p90 / max | Per-frame error | Frame-to-frame |
+|---|---|---|---|---|
+| NVIDIA defaults | −1.336% | 7.34% / 26.36% / 64.09% | 54.94% | 68.16% |
+| converged (the check) | −0.134% | 0.79% / 2.87% / 9.52% | 4.75% | 1.50% |
+
+The NVIDIA defaults fail the check, consistent with §6.1: permutation sampling and per-frame spatial reuse each raise the tile error far past 3% on this scene. The sample is tuned to be denoised by DLSS-RR; whether its raw output blotches the same way on this scene is not checked (C-R32-1).
+
+**Cost** (sunlit Sponza bench, 6000 frames, 853×480 render size, layers off; the two variants alternated over two rounds by swapping `libengine_runtime.dll`, where a temporary build applied `convergedSettings` at startup):
+
+| Span | NVIDIA, round 1 | NVIDIA, round 2 | converged, round 1 | converged, round 2 |
+|---|---|---|---|---|
+| ReSTIR DI initial | 0.1769 ms | 0.1767 ms | 0.1375 ms | 0.1372 ms |
+| ReSTIR DI temporal | 0.0770 ms | 0.0756 ms | 0.0667 ms | 0.0668 ms |
+| ReSTIR DI shade (spatial + shade) | 0.0951 ms | 0.0949 ms | 0.0353 ms | 0.0364 ms |
+| ReSTIR DI total | 0.349 ms | 0.347 ms | 0.240 ms | 0.240 ms |
+| DLSS-RR | 1.1490 ms | 1.1523 ms | 1.1462 ms | 1.1492 ms |
+| GPU total | 1.738 ms | 1.740 ms | 1.630 ms | 1.635 ms |
+
+- The BRDF candidate adds 0.04 ms to the initial pass. Its ray finds no light until emissive triangles (M7).
+- The shade pass's +0.06 ms is the net of 2 `Basic` spatial samples every frame and final visibility reuse; they were not measured apart.
+- `Raytraced` temporal bias correction with the visibility shortcut adds 0.01 ms.
+
+**Validation:** core, sync and best practices + NVIDIA on the guide capture with `ENGINE_RT_CHECK` and on the motion test; GPU-AV on the guide capture. The engine produced no messages; NGX's known ones remain (C-H1-2). Motion test 13 of 13, cull check 16 of 16, ray check 234 of 234, normal checks 2 of 2, convergence check passed, ctest 7 of 7.

@@ -16,5 +16,5 @@ find_package(Threads REQUIRED)
 
 add_library(engine_core SHARED ${CORE_SOURCES})
 target_compile_definitions(engine_core PRIVATE ENGINE_LOG_DLL=\"core\")
-target_link_libraries(engine_core PUBLIC engine_build_config engine_util ThirdParty::all ThirdPartyImpl Threads::Threads)
+target_link_libraries(engine_core PUBLIC engine_build_config engine_util ThirdParty::all Threads::Threads)
 target_precompile_headers(engine_core PRIVATE ${PCH_HEADER})

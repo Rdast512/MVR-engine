@@ -72,7 +72,8 @@ void transitionImageLayout(
 void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags2 usage, vk::MemoryPropertyFlags properties,
                   vk::raii::Buffer& buffer, VmaAllocation& bufferMemory, VmaAllocator allocator,
                   const vk::raii::Device& device, const std::vector<uint32_t>& queueFamilyIndices,
-                  std::string_view debugName, VmaAllocationCreateFlags extraAllocationFlags)
+                  std::string_view debugName, VmaAllocationCreateFlags extraAllocationFlags,
+                  vk::DeviceSize minAlignment)
 {
     ZoneScopedN("createBuffer");
     logInfo("createBuffer() started", "Utils");
@@ -106,19 +107,16 @@ void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags2 usage, vk::MemoryPr
     allocInfo.flags |= extraAllocationFlags;
     // BestPractices-vkBindBufferMemory-small-dedicated-allocation: do not force
     // dedicated blocks for small buffers (validation threshold is typically 1 MiB).
-    // dgc preprocess faults on nvidia when suballocated, so it stays dedicated
     constexpr vk::DeviceSize kMinDedicatedAllocationBytes = 1024 * 1024;
-    const bool isPreprocess = (usage & vk::BufferUsageFlagBits2::ePreprocessBufferEXT) != vk::BufferUsageFlags2{};
-    if ((allocInfo.flags & VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT) != 0 && size < kMinDedicatedAllocationBytes &&
-        !isPreprocess) {
+    if ((allocInfo.flags & VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT) != 0 && size < kMinDedicatedAllocationBytes) {
         allocInfo.flags &= ~VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     }
 
     // bind after naming so bind-time validation messages carry the name
     allocInfo.flags |= VMA_ALLOCATION_CREATE_DONT_BIND_BIT;
     VkBuffer rawBuffer{};
-    if (vmaCreateBuffer(allocator, &static_cast<const VkBufferCreateInfo&>(bufferInfo), &allocInfo, &rawBuffer,
-                        &bufferMemory, nullptr) != VK_SUCCESS) {
+    if (vmaCreateBufferWithAlignment(allocator, &static_cast<const VkBufferCreateInfo&>(bufferInfo), &allocInfo,
+                                     minAlignment, &rawBuffer, &bufferMemory, nullptr) != VK_SUCCESS) {
         throw std::runtime_error("Failed to allocate buffer with VMA");
     }
     buffer = vk::raii::Buffer(device, rawBuffer);

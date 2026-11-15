@@ -17,5 +17,7 @@ target_link_libraries(engine_mi_new_delete PRIVATE ThirdParty::mimalloc)
 
 add_library(engine_util SHARED ${UTIL_SOURCES})
 target_compile_definitions(engine_util PRIVATE ENGINE_LOG_DLL=\"util\")
-target_link_libraries(engine_util PUBLIC engine_build_config ThirdParty::all ThirdPartyImpl)
+# the only module holding the single-header implementations (VMA, stb, tinygltf); auto-export serves the others
+target_link_libraries(engine_util PUBLIC engine_build_config ThirdParty::all
+        PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,ThirdPartyImpl>")
 target_precompile_headers(engine_util PRIVATE ${PCH_HEADER})

@@ -70,7 +70,7 @@ vk::Extent2D SwapChain::chooseSwapExtent(
 }
 
 
-void SwapChain::createSwapChain() {
+void SwapChain::createSwapChain(vk::SwapchainKHR oldSwapChain) {
 
     // caps2 avoids the legacy-gpdsc2 validation warning
     const vk::PhysicalDeviceSurfaceInfo2KHR surfaceInfo{.surface = *surface};
@@ -136,7 +136,8 @@ void SwapChain::createSwapChain() {
         .preTransform = surfaceCapabilities.currentTransform,
         .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
         .presentMode = chosenPresentMode,
-        .clipped = true};
+        .clipped = true,
+        .oldSwapchain = oldSwapChain};
 
     swapChain = vk::raii::SwapchainKHR(vkDevice, swapChainCreateInfo);
     swapChainImages = swapChain.getImages();
@@ -158,16 +159,13 @@ void SwapChain::createImageViews() {
     }
 }
 
-void SwapChain::cleanupSwapChain() {
-    swapChainImageViews.clear();
-    swapChain = nullptr;
-}
-
 void SwapChain::recreateSwapChain() {
     ZoneScopedN("SwapChain::recreateSwapChain");
     TracyMessageL("Swapchain recreated");
     vkDevice.waitIdle();
-    cleanupSwapChain();
-    createSwapChain();
+    // destroyed after the new swapchain is created from it
+    const vk::raii::SwapchainKHR oldSwapChain = std::move(swapChain);
+    swapChainImageViews.clear();
+    createSwapChain(*oldSwapChain);
     createImageViews();
 }

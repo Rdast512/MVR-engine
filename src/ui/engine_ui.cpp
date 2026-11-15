@@ -858,14 +858,16 @@ void EngineUi::drawRayTracingPanel()
     ImGui::SetItemTooltip("initial RIS candidates per pixel from point and spot lights");
     sliderU32("Infinite light candidates", di.infiniteLightSamples, 0, 16);
     ImGui::SetItemTooltip("initial RIS candidates per pixel from directional lights");
+    sliderU32("BRDF candidates", di.brdfSamples, 0, 4);
+    ImGui::SetItemTooltip("one ray each along a BRDF sample; until emissive triangles (M7) no hit names a light, so "
+                          "they only cost");
     ImGui::EndDisabled();
     ImGui::Checkbox("Initial visibility", &di.isInitialVisibilityEnabled);
     ImGui::SetItemTooltip("one shadow ray per pixel in the initial pass; occluded samples are dropped before reuse");
 
     ImGui::BeginDisabled(rtxdi.isReference);
     sliderU32("Max history length", di.maxHistoryLength, 1, 64);
-    ImGui::SetItemTooltip("frames of temporal reuse: longer is smoother, slower to react to changes. Below it, the "
-                          "spatial pass takes the disocclusion boost samples");
+    ImGui::SetItemTooltip("frames of temporal reuse: longer is smoother, slower to react to changes");
     comboEnum("Temporal bias correction", di.temporalBiasCorrection, std::array{"Off", "Basic", "Ray traced"},
               std::array{ReSTIRDI_TemporalBiasCorrectionMode::Off, ReSTIRDI_TemporalBiasCorrectionMode::Basic,
                          ReSTIRDI_TemporalBiasCorrectionMode::Raytraced});
@@ -876,6 +878,9 @@ void EngineUi::drawRayTracingPanel()
     ImGui::Checkbox("Fallback sampling", &di.isFallbackSamplingEnabled);
     ImGui::SetItemTooltip("when no history pixel matches, reuse last frame's reservoir at the same pixel (RTXDI 3.2, "
                           "aimed at screen-edge disocclusions; considerations C-M4-1)");
+    ImGui::Checkbox("Permutation sampling", &di.isPermutationSamplingEnabled);
+    ImGui::SetItemTooltip("take history from a permuted neighbor pixel: decorrelates frames for the denoiser, raises "
+                          "frame-to-frame change (considerations C-F3-3)");
 
     // the stratified neighbor walk covers quadrants in pairs
     sliderU32("Spatial samples", di.spatialSamples, 0, 16);
@@ -883,7 +888,9 @@ void EngineUi::drawRayTracingPanel()
     ImGui::SetItemTooltip("neighbor reservoirs merged per pixel by the spatial pass (even)");
     sliderU32("Disocclusion boost samples", di.disocclusionBoostSamples, 0, 32);
     di.disocclusionBoostSamples &= ~1u;
-    ImGui::SetItemTooltip("spatial samples while a pixel's history is shorter than the max history length (even)");
+    ImGui::SetItemTooltip("spatial samples while a pixel's history is shorter than the boost history length (even)");
+    sliderU32("Boost history length", di.disocclusionHistoryLength, 0, 64);
+    ImGui::SetItemTooltip("history length below which the disocclusion boost applies; 0 never boosts (RTXDI default)");
     ImGui::SliderFloat("Sampling radius", &di.samplingRadius, 1.0f, 64.0f, "%.0f px", ImGuiSliderFlags_AlwaysClamp);
     comboEnum("Spatial bias correction", di.spatialBiasCorrection, std::array{"Off", "Basic", "Pairwise", "Ray traced"},
               std::array{ReSTIRDI_SpatialBiasCorrectionMode::Off, ReSTIRDI_SpatialBiasCorrectionMode::Basic,
@@ -902,6 +909,19 @@ void EngineUi::drawRayTracingPanel()
     ImGui::SliderFloat("Boiling strength", &di.boilingFilterStrength, 0.0f, 1.0f, "%.2f",
                        ImGuiSliderFlags_AlwaysClamp);
     ImGui::EndDisabled();
+    ImGui::Checkbox("Reuse final visibility", &di.isFinalVisibilityReused);
+    ImGui::SetItemTooltip("skip the shading ray for a sample tested at most 4 frames ago within 16 px; stale on "
+                          "moving geometry");
+    if (ImGui::Button("NVIDIA defaults")) {
+        di = RtxdiContext::defaultSettings();
+    }
+    ImGui::SetItemTooltip("the RTXDI sample's Medium preset (uniform local light sampling until ReGIR, M7)");
+    ImGui::SameLine();
+    if (ImGui::Button("Converged")) {
+        di = RtxdiContext::convergedSettings();
+    }
+    ImGui::SetItemTooltip("the convergence check's configuration: unbiased on a static camera, neighbors only on "
+                          "disocclusion");
     ImGui::EndDisabled();
 
     ImGui::SeparatorText("DLSS Ray Reconstruction");

@@ -25,6 +25,8 @@ struct FrameRootInputs {
     vk::DeviceAddress rayInstances;
     // WorldLights of this slot, written on the async compute queue
     vk::DeviceAddress worldLights;
+    // WorldLights of the previous frame's slot; 0 on a history reset
+    vk::DeviceAddress prevWorldLights;
     // RtxdiContext constants of this slot, written after its fence
     vk::DeviceAddress rtxdiConstants;
     uint32_t lateVisibleBase;

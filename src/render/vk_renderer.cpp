@@ -31,7 +31,7 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
     hiz(device, allocator, frameSync, descriptorManager, shaderObjects),
     targets(device, allocator, frameSync, descriptorManager),
     rtScene(device, allocator, frameSync, scene, assets, frameData, shaderObjects),
-    worldLights(device, allocator, assets, frameData, shaderObjects), rtxdi(device, allocator, worldLights),
+    worldLights(device, allocator, frameSync, assets, frameData, shaderObjects), rtxdi(device, allocator, worldLights),
     dlss(device, frameSync), post(device, allocator, shaderObjects), gpuTimer(device), tracyContext(tracyContext)
 {
     const vk::DeviceSize maxPushData = device.capabilities.descriptorHeap.maxPushDataSize;
@@ -121,6 +121,13 @@ void Renderer::rebuildSwapchainResources()
     post.requestSnap();
 }
 
+void Renderer::recreateSwapchain()
+{
+    isSwapchainRecreatePending = false;
+    swapChain.recreateSwapChain();
+    rebuildSwapchainResources();
+}
+
 void Renderer::drawFrame()
 {
     ZoneScopedN("Renderer::drawFrame");
@@ -151,9 +158,8 @@ void Renderer::drawFrame()
         // it before the fence signals, so this returns at once; it keeps slot reuse independent of what that submit
         // records
         const uint64_t value = computeTimelineValues[currentFrame];
-        const vk::SemaphoreWaitInfo waitInfo{.semaphoreCount = 1,
-                                             .pSemaphores = &*frameSync.computeTimeline,
-                                             .pValues = &value};
+        const vk::SemaphoreWaitInfo waitInfo{
+            .semaphoreCount = 1, .pSemaphores = &*frameSync.computeTimeline, .pValues = &value};
         while (vk::Result::eTimeout == deviceRef.waitSemaphores(waitInfo, UINT64_MAX))
             ;
     }
@@ -164,7 +170,7 @@ void Renderer::drawFrame()
     camera.updateCameraData(currentFrame, frameNumber, isDlssPresented());
     targets.prepareFrame(currentFrame, frameNumber, isDlssPresented());
     rtScene.prepareFrame(currentFrame, frameNumber - 1);
-    worldLights.prepareFrame(currentFrame);
+    worldLights.prepareFrame(currentFrame, frameNumber - 1);
     isLightSetChanged = worldLights.lightCount() != lastLightCount;
     lastLightCount = worldLights.lightCount();
     rtxdi.prepareFrame(currentFrame, frameNumber);
@@ -194,25 +200,28 @@ void Renderer::drawFrame()
         if (isHistoryReset) {
             TracyMessageL("History reset");
         }
-        frameData.write(currentFrame, FrameRootInputs{
-                                          .camera = camera.cameraBufferAddresses[currentFrame],
-                                          .targets = targets.targetsAddress(currentFrame),
-                                          .drawRecords = culling.drawRecordsAddress(currentFrame),
-                                          .visibleMeshlets = culling.visibleMeshletsAddress(currentFrame),
-                                          .cullCounters = culling.countersAddress(currentFrame),
-                                          .tlas = rtScene.tlasAddress(),
-                                          .rayInstances = rtScene.rayInstancesAddress(currentFrame),
-                                          .worldLights = worldLights.address(currentFrame),
-                                          .rtxdiConstants = rtxdi.constantsAddress(currentFrame),
-                                          .lateVisibleBase = culling.lateVisibleBase(currentFrame),
-                                          .triangleCullFlags = culling.triangleCullFlags(currentFrame),
-                                          .subpixelSnap = culling.getSubpixelSnap(),
-                                          .debugView = debugView.packed(),
-                                          .frameFlags = isHistoryReset ? FrameFlag::HistoryReset : 0u,
-                                          .frameIndex = frameNumber,
-                                          .lightCount = worldLights.lightCount(),
-                                          .localLightCount = worldLights.localLightCount(),
-                                      });
+        frameData.write(currentFrame,
+                        FrameRootInputs{
+                            .camera = camera.cameraBufferAddresses[currentFrame],
+                            .targets = targets.targetsAddress(currentFrame),
+                            .drawRecords = culling.drawRecordsAddress(currentFrame),
+                            .visibleMeshlets = culling.visibleMeshletsAddress(currentFrame),
+                            .cullCounters = culling.countersAddress(currentFrame),
+                            .tlas = rtScene.tlasAddress(),
+                            .rayInstances = rtScene.rayInstancesAddress(currentFrame),
+                            .worldLights = worldLights.address(currentFrame),
+                            // a light set change resets history, so both frames share their rows
+                            .prevWorldLights = isHistoryReset ? 0 : worldLights.address(previousFrameSlot()),
+                            .rtxdiConstants = rtxdi.constantsAddress(currentFrame),
+                            .lateVisibleBase = culling.lateVisibleBase(currentFrame),
+                            .triangleCullFlags = culling.triangleCullFlags(currentFrame),
+                            .subpixelSnap = culling.getSubpixelSnap(),
+                            .debugView = debugView.packed(),
+                            .frameFlags = isHistoryReset ? FrameFlag::HistoryReset : 0u,
+                            .frameIndex = frameNumber,
+                            .lightCount = worldLights.lightCount(),
+                            .localLightCount = worldLights.localLightCount(),
+                        });
     }
     // after the frame root and node instances of the slot are written
     submitComputeCommands();
@@ -254,8 +263,7 @@ void Renderer::drawFrame()
     if (result == vk::Result::eErrorOutOfDateKHR) {
         // no present this frame: an empty submit signals the fence after the frame work, so the slot stays usable
         graphicsQueue.submit2(vk::ArrayProxy<const vk::SubmitInfo2>{}, fence);
-        swapChain.recreateSwapChain();
-        rebuildSwapchainResources();
+        requestSwapchainRecreate();
         return;
     }
 
@@ -299,8 +307,7 @@ void Renderer::drawFrame()
     }
 
     if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
-        swapChain.recreateSwapChain();
-        rebuildSwapchainResources();
+        requestSwapchainRecreate();
     } else if (result != vk::Result::eSuccess) {
         throw std::runtime_error("failed to present swap chain image!");
     }
@@ -471,11 +478,13 @@ void Renderer::submitComputeCommands()
     const vk::SemaphoreSubmitInfo signalInfo{.semaphore = *frameSync.computeTimeline,
                                              .value = frameNumber,
                                              .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
-    // the PTLAS is updated in place: the previous frame's ray passes must have finished tracing it. Its ray submit
-    // is already queued, so the wait never precedes its signal
+    // the PTLAS is updated in place, and the light rows written here are the previous frame's previous-frame rows:
+    // its ray passes must have finished with both. Its ray submit is already queued, so the wait never precedes its
+    // signal
     const vk::SemaphoreSubmitInfo rayWait{.semaphore = *frameSync.rayTimeline,
                                           .value = frameNumber - 1,
-                                          .stageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR};
+                                          .stageMask = vk::PipelineStageFlagBits2::eComputeShader |
+                                                       vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR};
     device.computeQueue.submit2(vk::SubmitInfo2{.waitSemaphoreInfoCount = 1,
                                                 .pWaitSemaphoreInfos = &rayWait,
                                                 .commandBufferInfoCount = 1,
@@ -739,12 +748,13 @@ void Renderer::recordReconstruction(const vk::raii::CommandBuffer& cmd)
 
 void Renderer::recordDebugView(const vk::raii::CommandBuffer& cmd)
 {
-    // guide and directRadiance writes -> reads; submission order also covers the previous frame's set (Reprojection)
+    // guide, directRadiance and reservoir writes -> reads; submission order also covers the previous frame's set
+    // (Reprojection)
     const vk::MemoryBarrier2 guideBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
         .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageRead,
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &guideBarrier});
     // DLSS-RR's output replaces it; the motion and ray checks still find the barrier above

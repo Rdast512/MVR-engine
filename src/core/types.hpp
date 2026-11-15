@@ -1050,12 +1050,14 @@ struct GpuFrameRoot
     // SHaRC or NRC constants, 0 until M4
     vk::DeviceAddress cacheConstants = 0;
     uint32_t frameIndex = 0;
-    // pre-exposure, 1 until auto exposure
+    // 1: the exposure reaches post and DLSS-RR as an image (considerations C-H2-1)
     float exposure = 1.0f;
     // GpuLight[lightCount] in world space, written this frame on the async compute queue (WorldLights)
     vk::DeviceAddress worldLights = 0;
+    // last frame's worldLights, same rows; 0 on a history reset
+    vk::DeviceAddress prevWorldLights = 0;
 };
-static_assert(sizeof(GpuFrameRoot) == 184);
+static_assert(sizeof(GpuFrameRoot) == 192);
 static_assert(offsetof(GpuFrameRoot, camera) == 0);
 static_assert(offsetof(GpuFrameRoot, instances) == 8);
 static_assert(offsetof(GpuFrameRoot, models) == 16);
@@ -1080,6 +1082,7 @@ static_assert(offsetof(GpuFrameRoot, targets) == 128);
 static_assert(offsetof(GpuFrameRoot, frameFlags) == 136);
 static_assert(offsetof(GpuFrameRoot, localLightCount) == 140);
 static_assert(offsetof(GpuFrameRoot, worldLights) == 176);
+static_assert(offsetof(GpuFrameRoot, prevWorldLights) == 184);
 static_assert(offsetof(GpuFrameRoot, rayInstances) == 144);
 static_assert(offsetof(GpuFrameRoot, rtxdiConstants) == 152);
 static_assert(offsetof(GpuFrameRoot, cacheConstants) == 160);

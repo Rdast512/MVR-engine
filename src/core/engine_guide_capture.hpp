@@ -31,8 +31,10 @@ public:
         bool shouldCapture = false;
     };
 
-    // modelBounds: entity 0's model-space bounding sphere, once the scene has an entity
-    [[nodiscard]] Request beginFrame(Camera& camera, DebugViewSettings& debugView, std::optional<glm::vec4> modelBounds);
+    // modelBounds: entity 0's model-space bounding sphere, once the scene has an entity. rtxdi holds
+    // RtxdiContext::convergedSettings through the convergence shot
+    [[nodiscard]] Request beginFrame(Camera& camera, DebugViewSettings& debugView, RtxdiContext::Settings& rtxdi,
+                                     std::optional<glm::vec4> modelBounds);
     // after the frame's fence; true once every shot is written and the checks are logged
     [[nodiscard]] bool endFrame(const std::optional<Renderer::DisplayCapture>& capture);
 
@@ -99,11 +101,11 @@ private:
         {"A4 flat normals without NORMAL (MetalRoughSpheres shading normal against the geometric normal)",
          kFlatNormalsShot, DebugView::ShadingNormal, kFlatNormalsShot, DebugView::GeometricNormal},
     }};
-    static constexpr std::array<DebugView, 10> kViews = {
+    static constexpr std::array<DebugView, 11> kViews = {
         DebugView::DiffuseAlbedo,    DebugView::SpecularF0,       DebugView::Roughness,
         DebugView::ShadingNormal,    DebugView::GeometricNormal,  DebugView::Emissive,
         DebugView::AmbientOcclusion, DebugView::UnshadowedLights, DebugView::ShadowedLights,
-        DebugView::LightingOnly,
+        DebugView::LightingOnly,     DebugView::RtxdiReservoirs,
     };
     // ReSTIR DI (Lighting only) averaged over frames against Shadowed lights on the lamp shot, after its views
     static constexpr size_t kConvergenceShot = 10;
@@ -167,4 +169,6 @@ private:
     bool isConvergenceRunning = false;
     // set once the run is evaluated
     std::optional<bool> isConvergencePassed;
+    // the settings replaced while the convergence shot runs
+    std::optional<RtxdiContext::Settings> heldRtxdiSettings;
 };

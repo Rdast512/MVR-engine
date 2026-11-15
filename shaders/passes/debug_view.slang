@@ -10,6 +10,7 @@ import material.pbr;
 import lighting.lights;
 
 #include "lighting/rtxdi_bridge.slang"
+#include "Rtxdi/DI/ReservoirStorage.hlsli"
 
 // the display image until lighting (M3): the albedo guide, or the selected debug view (src/render/debug_view.hpp)
 
@@ -175,6 +176,28 @@ float3 shadowedLights(GpuFrameRoot root, GpuGuideSet set, uint2 pixel)
     return color;
 }
 
+// the reservoir rtxdi_shade stored this frame: hue by light index, brightness by M against maxHistoryLength.
+// Spatial reuse adds neighbor counts on top, so a pixel can saturate. Black: no light sampled
+float3 rtxdiReservoir(GpuFrameRoot root, uint2 pixel)
+{
+    // with no lights rtxdi_shade stores no reservoir
+    if (root.lightCount == 0)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    rtxdiBridgeInit(root);
+    const GpuRtxdiConstants constants = loadRtxdiConstants(root);
+    const RTXDI_DIReservoir reservoir = RTXDI_LoadDIReservoir(
+        constants.reservoirBuffer, RTXDI_PixelPosToReservoirPos(pixel, constants.runtime.activeCheckerboardField),
+        constants.bufferIndices.shadingInputBufferIndex);
+    if (!RTXDI_IsValidDIReservoir(reservoir))
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    const float historyCap = max(float(constants.temporalResampling.maxHistoryLength), 1.0);
+    return idColor(RTXDI_GetDIReservoirLightIndex(reservoir)) * (0.15 + 0.85 * saturate(reservoir.M / historyCap));
+}
+
 float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCameraData camera, uint2 pixel, float depth)
 {
     const GpuGuideSet set = targets.current;
@@ -203,6 +226,8 @@ float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCamer
         return shadowedLights(root, set, pixel);
     case kDebugViewDlssInput:
         return tex2D(targets.noisyColorSampled).Load(int3(pixel, 0)).rgb;
+    case kDebugViewRtxdiReservoirs:
+        return rtxdiReservoir(root, pixel);
     case kDebugViewLightingOnly:
         // what the combine pass will add (M4); converges to Shadowed lights
         return tex2D(targets.directRadianceSampled).Load(int3(pixel, 0)).rgb + loadGuide(set, kGuideEmissive, pixel).rgb;

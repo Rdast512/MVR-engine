@@ -102,6 +102,7 @@ void FrameData::writeFrameRoot(uint32_t frameSlot, const FrameRootInputs& inputs
         .frameIndex = inputs.frameIndex,
         .exposure = 1.0f,
         .worldLights = inputs.worldLights,
+        .prevWorldLights = inputs.prevWorldLights,
     };
 }
 

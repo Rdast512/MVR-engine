@@ -53,20 +53,24 @@ public:
     {
         uint32_t localLightSamples = 0;
         uint32_t infiniteLightSamples = 0;
+        // one ray each; until emissive triangles (M7) no hit names a light
+        uint32_t brdfSamples = 0;
         // one shadow ray per pixel in the initial pass; occluded candidates are dropped before reuse
         bool isInitialVisibilityEnabled = false;
 
-        // temporal; also the spatial pass's disocclusion target (targetHistoryLength)
         uint32_t maxHistoryLength = 0;
         ReSTIRDI_TemporalBiasCorrectionMode temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Basic;
         bool isVisibilityShortcutEnabled = false;
         // a failed surface match tries one zero-motion sample without the similarity tests (RTXDI 3.2)
         bool isFallbackSamplingEnabled = false;
+        // history from a permuted pixel: decorrelates frames for a denoiser, raises frame-to-frame change
+        bool isPermutationSamplingEnabled = false;
 
         // even: the stratified neighbor walk covers quadrants in pairs
         uint32_t spatialSamples = 0;
-        // spatial samples while the reservoir's history is shorter than maxHistoryLength
+        // spatial samples while the reservoir's history is shorter than disocclusionHistoryLength; 0 never boosts
         uint32_t disocclusionBoostSamples = 0;
+        uint32_t disocclusionHistoryLength = 0;
         float samplingRadius = 0.0f;
         ReSTIRDI_SpatialBiasCorrectionMode spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Basic;
         bool isMaterialSimilarityTestEnabled = false;
@@ -77,11 +81,17 @@ public:
         // after temporal resampling
         bool isBoilingFilterEnabled = false;
         float boilingFilterStrength = 0.0f;
+        // the shade pass skips its ray for a sample tested at most finalVisibilityMaxAge frames ago, within
+        // finalVisibilityMaxDistance px (RTXDI's 4 / 16)
+        bool isFinalVisibilityReused = false;
 
         bool operator==(const Settings&) const = default;
     };
-    // RTXDI's defaults with the engine's choices (spec/features/rtxdi_3_2_update.md §3.3)
+    // the RTXDI sample's default Medium preset (spec/features/rtxdi_3_2_update.md §3.3)
     [[nodiscard]] static Settings defaultSettings();
+    // the configuration the guide capture's convergence check holds to its bounds (§6.1): reuse that stays unbiased
+    // on a static camera, no neighbors past the disocclusion boost
+    [[nodiscard]] static Settings convergedSettings();
 
     RtxdiContext(const Device& device, const VkAllocator& allocator, const WorldLights& worldLights);
     ~RtxdiContext();

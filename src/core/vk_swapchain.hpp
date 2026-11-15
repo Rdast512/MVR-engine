@@ -2,7 +2,6 @@
 #include <vulkan/vulkan_raii.hpp>
 #include "vk_device.hpp"
 #include <vulkan/vulkan_enums.hpp>
-// TODO add callback for window resize
 
 class SwapChain
 {
@@ -10,7 +9,8 @@ class SwapChain
     [[nodiscard]] vk::PresentModeKHR chooseSwapPresentMode(
         const std::vector<vk::PresentModeKHR> &availablePresentModes) const;
     vk::Extent2D chooseSwapExtent(const vk::SurfaceCapabilitiesKHR &capabilities) const;
-    void createSwapChain();
+    // oldSwapChain: retired by the new one, which may reuse its resources
+    void createSwapChain(vk::SwapchainKHR oldSwapChain = nullptr);
     void createImageViews();
 public:
     SwapChain(SDL_Window *window, const Device &device);
@@ -35,6 +35,6 @@ public:
     vk::Format swapChainImageFormat = vk::Format::eUndefined;
     std::vector<vk::raii::ImageView> swapChainImageViews;
 
+    // device idle: replaces the swapchain at the surface's current extent
     void recreateSwapChain();
-    void cleanupSwapChain();
 };

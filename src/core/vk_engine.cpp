@@ -235,8 +235,9 @@ void Engine::run()
                 } else if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
                     windowFocused = false;
                 } else if (e.type == SDL_EVENT_WINDOW_RESIZED) {
-                    if (swapChain && renderer) {
-                        recreateSwapchain();
+                    // a drag sends many; the swapchain is recreated once, below
+                    if (renderer) {
+                        renderer->requestSwapchainRecreate();
                     }
                 } else if (e.type == SDL_EVENT_WINDOW_MINIMIZED) {
                     minimized = true;
@@ -244,6 +245,10 @@ void Engine::run()
                     minimized = false;
                 }
             }
+        }
+
+        if (!minimized && renderer && renderer->isSwapchainRecreateRequested()) {
+            recreateSwapchain();
         }
 
 #if ENGINE_ENABLE_IMGUI
@@ -288,7 +293,8 @@ void Engine::run()
                 const ObjectStorage& objects = scene->objectStorage;
                 const std::optional<glm::vec4> bounds =
                     objects.size() > 0 ? std::optional(objects.localBounds[0]) : std::nullopt;
-                applyGuideCaptureRequest(guideCapture->beginFrame(*camera, renderer->debugView, bounds));
+                applyGuideCaptureRequest(
+                    guideCapture->beginFrame(*camera, renderer->debugView, renderer->getRtxdi().settings, bounds));
             }
             if (cullCheck &&
                 cullCheck->beginFrame(*camera, renderer->getCulling().settings, renderer->debugView).shouldCapture) {
@@ -416,8 +422,7 @@ void Engine::recreateSwapchain()
         return;
     }
 
-    swapChain->recreateSwapChain();
-    renderer->rebuildSwapchainResources();
+    renderer->recreateSwapchain();
 
 #if ENGINE_ENABLE_IMGUI
     ui->onSwapchainRecreated();

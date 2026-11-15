@@ -33,7 +33,7 @@ void transitionImageLayout(
     std::optional<vk::AccessFlags2> dstAccessMaskOverride = std::nullopt);
 
 // Creates a VkBuffer with VMA allocation, named before its memory is bound.  Pure utility — does not depend on any
-// manager class.
+// manager class. minAlignment: lower bound on the buffer's start, on top of its memory requirements; 0 for none
 void createBuffer(
     vk::DeviceSize size,
     vk::BufferUsageFlags2 usage,
@@ -44,7 +44,8 @@ void createBuffer(
     const vk::raii::Device& device,
     const std::vector<uint32_t>& queueFamilyIndices,
     std::string_view debugName,
-    VmaAllocationCreateFlags extraAllocationFlags = 0);
+    VmaAllocationCreateFlags extraAllocationFlags = 0,
+    vk::DeviceSize minAlignment = 0);
 
 // Ends a one-time command buffer, submits it and blocks until the queue drains.
 void submitAndWait(vk::raii::CommandBuffer& commandBuffer, const vk::raii::Queue& queue);

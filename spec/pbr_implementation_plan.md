@@ -114,7 +114,7 @@ Resource details: [resource_architecture.md](./resource_architecture.md). Vis-bu
 | Piece | State |
 |---|---|
 | glTF parse → `MaterialStore` / `LightStore` / `GeometryStore`, shared refcounted models and materials, mesh/node split, `GpuNodeInstance` | done |
-| Frame root | `GpuFrameRoot` 184 B: camera, instances, models, primitives, materials, pbrExtensions, lights, `tlas` (0), nodeInstances, drawRecords, visibleMeshlets, 4 counts, `lateVisibleBase`, `debugView`, `cullCounters`, `triangleCull`, `subpixelSnap`, `targets`, `frameFlags`, `localLightCount`, `rayInstances`, `rtxdiConstants` (F1), `cacheConstants` (0 until M4), `frameIndex`, `exposure` (1: H2 keeps the exposure in an image, C-H2-1), `worldLights` (E2) |
+| Frame root | `GpuFrameRoot` 192 B: camera, instances, models, primitives, materials, pbrExtensions, lights, `tlas` (the PTLAS, C4), nodeInstances, drawRecords, visibleMeshlets, 4 counts, `lateVisibleBase`, `debugView`, `cullCounters`, `triangleCull`, `subpixelSnap`, `targets`, `frameFlags`, `localLightCount`, `rayInstances`, `rtxdiConstants` (F1), `cacheConstants` (0 until M4), `frameIndex`, `exposure` (1: H2 keeps the exposure in an image, C-H2-1), `worldLights` (E2), `prevWorldLights` (last frame's rows, F2) |
 | Render targets | done: `RenderTargets` ([vk_render_targets.cpp](../src/render/vk_render_targets.cpp)); `GpuTargets` 168 B per frame slot: vis buffer, depth, display (RGBA16F), linear sampler, render size, `current` / `previous` guide sets by frame parity, `directRadiance` (RGBA16F, F3) |
 | Culling + raster | done: two-phase GPU culling, reverse Z, 3-level Hi-Z, `RasterBin {Opaque, AlphaTested}` with `DrawRecordFlag::TwoSided` and winding flip. Both bins share one fragment shader and DGC state until M6 |
 | Resolve | done: one tiled compute dispatch (8×8). Olano–Greer homogeneous barycentrics evaluated at (+1, 0) and (0, +1), `SampleGrad`, motion from current and previous transforms. `debug_view` writes the display image; `present` draws it into the sRGB swapchain with ImGui in the same rendering |
@@ -190,15 +190,18 @@ public struct GpuRayInstance
     public uint primitiveRow;      // row in GpuFrameRoot.primitives
 }
 
-// appended to GpuFrameRoot after frameFlags; 184 B since E2 (the static_assert in types.hpp owns the size)
+// appended to GpuFrameRoot after frameFlags; 192 B since F2's previous-frame lights (the static_assert in types.hpp
+// owns the size)
 public struct GpuFrameRoot
 {
     // ... existing fields through `frameFlags` ...
-    public uint64_t rayInstances;   // GpuRayInstance[], 0 until C2
-    public uint64_t rtxdiConstants; // GpuRtxdiConstants (F1)
-    public uint64_t cacheConstants; // NRC constants, 0 until M4
+    public uint64_t rayInstances;    // GpuRayInstance[], 0 until C2
+    public uint64_t rtxdiConstants;  // GpuRtxdiConstants (F1)
+    public uint64_t cacheConstants;  // NRC constants, 0 until M4
     public uint     frameIndex;
-    public float    exposure;       // H2 pre-exposure, fed to DLSS-RR
+    public float    exposure;        // 1: the exposure reaches post and DLSS-RR as an image (C-H2-1)
+    public uint64_t worldLights;     // E2
+    public uint64_t prevWorldLights; // last frame's worldLights; 0 on a history reset (F2)
 }
 ```
 
@@ -323,8 +326,7 @@ SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodB
   - **Unlit:** `baseColor = 0`, `metallic = 0`, the color goes into `emissive`. Every consumer then handles unlit with no special case.
   - **`KHR_texture_transform`** (2026-11-09): per slot from the A1 `GpuMaterial` matrices, applied in `textureGradients` only when the slot's flag bit is set: `uv' = M·(uv, 1)`, and the matrix's 2×2 part on `ddx`/`ddy`. The normal slot also moves the tangent frame to `dP/du'`, `-dP/dv'` (`transformTangentFrame`).
   - `KHR_materials_emissive_strength`: nothing in the shader; A1 folds it into `emissiveFactor`.
-- **Open (M3, with E1):**
-  - `lodBias = log2(render / display)` once DLSS-RR sets the render resolution.
+- ~~**Open (M3, with E1):** `lodBias = log2(render / display)` once DLSS-RR sets the render resolution.~~ Done with H1 (E1): `Camera::updateProjection` writes `GpuCameraData.lodBias`, and the resolve passes it to `sampleMaterial`.
 - **Done when:** ~~the roughness and F0 debug views on `MetalRoughSpheres` match the texture layout~~ (done 2026-11-13 by the E1 guide capture); ~~`TextureTransformTest` matches the Khronos screenshot in kind~~ (done 2026-11-14).
 - **Checked (2026-11-14, RTX 5070):** `ENGINE_GUIDE_CAPTURE` now also captures `TextureTransformTest` and `TextureTransformMultiTest`, with validation clean (core, sync, best practices + NVIDIA). No code change was needed.
   - `TextureTransformTest` (diffuse albedo) matches the screenshot. All three offset quads show their checkmark, and the rotation, scale and combined arrows each point at the green marker, not the yellow (not applied) or red (opposite rotation) one.
@@ -756,8 +758,8 @@ SDK: `NVIDIA-RTX/RTXDI-Library` (host C++ + HLSL headers), pinned in `ThirdParty
     - **Lights:** `RAB_LightInfo` is `GpuLight` (E2's world row). `RAB_LightSample` holds `evalLight`'s direction, distance and radiance for the surface it was sampled for; RTXDI always scores a sample against that same surface. Punctual lights are analytic (`RAB_IsAnalyticLightSample` true, solid-angle pdf 0), so RTXDI skips light/BRDF MIS for them.
     - **Shading:** `shadeLightSample(surface, sample)` = `evalBrdf · L_i · NdotL`; the target pdf is its luminance, and F3 shades with the same function.
     - **Visibility:** `traceVisibility` (D4 contract) from `rasterRayOrigin`. That is the spec's `offsetRay` reference along the geometric normal on the ray's side, scaled by `max(|p|, viewDepth) / 65536`. Raster surfaces have no traced triangle, so `safeSpawnPoint` does not apply. The temporal variant traces from last frame's surface through this frame's TLAS.
+  - **Previous-frame light rows (2026-11-15, considerations C-F2-1):** `GpuFrameRoot.prevWorldLights` is the previous frame slot's `WorldLights` buffer, 0 on a history reset; `RAB_LoadLightInfo(i, true)` reads it, or this frame's row when it is 0. A light set change resets history, so both frames share their rows. Sync: the next frame's light pass waits on the ray timeline at the compute stage as well, and growing a slot's buffer waits for the last submitted ray passes. On `LightsPunctualLamp` (static lights) the convergence check reads the same numbers with and without it, while `rtxdi_temporal.spv` differs.
   - **Not built (listed in the bridge header):**
-    - previous-frame light rows: `RAB_LoadLightInfo(i, true)` returns this frame's row, so a moving light's temporal bias correction sees its new position;
     - presampling (M7);
     - emissive triangles (M7): BRDF rays never name a light, and the local source pdf is uniform;
     - environment light: `lightPresent` stays 0.
@@ -802,12 +804,14 @@ Output: `directRadiance` (RGBA16F, linear HDR, render res), a new `GpuTargets` e
     - With no light loaded, `rtxdi_initial` is skipped and `rtxdi_shade` only writes zeros (a uniform early-out). A transfer clear drew `BestPractices-AMD-ClearAttachment-ClearImage-color`. Lights arrive only with a load, which resets history, so the skipped reservoirs are never reused.
   - **`directRadiance`:** RGBA16F in `RenderTargets`, `eGeneral`, reached through `GpuTargets.directRadianceStorage` / `directRadianceSampled` (`GpuTargets` 168 B). It holds no emissive term: that is the combine's (G6).
   - **Debug view:** `Lighting only` shows `directRadiance` + the emissive guide, the lighting output until G6. The guide capture writes it for every shot (10 views, 120 PNGs).
+  - **Reservoir view (2026-11-15):** `RTXDI reservoirs` (Lighting) shows the reservoir `rtxdi_shade` stored: hue by light index, brightness by M against `maxHistoryLength` (spatial reuse can saturate it), black where no light was sampled. The guide capture writes it as an 11th view (132 PNGs). The extra view shifts the frame index at the convergence shot, so its numbers moved to bias +0.034%, tile p90 2.14%, per-frame 4.80%, frame-to-frame 1.50%.
   - **Configuration** (`RtxdiContext`). Each change from the library defaults was measured on `LightsPunctualLamp`:
     - **Pairwise MIS** instead of `Basic` bias correction. RTXDI 3.1's fused `Basic` path skips naive neighbors (`discountNaiveSamples`, M ≤ 2) after it has already marked them for its normalization, the temporal neighbor included. A skipped temporal reservoir is not merged, so its M stays at 1 and it is skipped again the next frame. The result was 35% darker than the reference. `Basic` without the discount is unbiased but flickers twice as much as Pairwise.
     - **Permutation sampling off.** It raised the frame-to-frame change from 0.8% to 20.5% of the signal on a static camera. It exists to decorrelate frames for denoisers, so H1 revisits it with DLSS-RR. RTXDI 3.1's `SetFrameIndex` rehashes only the temporal pass's `uniformRandomNumber`, so turning it on also needs `SetSpatioTemporalResamplingParameters` every frame.
     - **`numBrdfSamples` 0** until emissive triangles (M7). No BRDF ray can find a light before then, so each one was a wasted ray per pixel.
     - **`reuseFinalVisibility` off:** one final visibility ray per pixel (spec §11.2).
     - Every other parameter keeps the library default: 8 local and 1 infinite candidates, history 20, boiling filter 0.2, 1 spatial sample, 8 on disocclusion.
+    - Superseded on 2026-11-15: the defaults are the RTXDI sample's `Medium` preset, and the measured configuration lives on as `RtxdiContext::convergedSettings`, which the convergence check holds ([rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md) §3.3, §6.4; considerations C-R32-1).
   - **Reference** (ground truth): resampling `None` with 32 local and 8 infinite candidates. Select it with `ENGINE_RTXDI_REFERENCE=1` or the `ReSTIR DI reference` checkbox under `Lighting only`.
   - **Constants:** `GpuRtxdiConstants` gains `isFusedResampling` and `reservoirCount` (360 B).
   - **Bounds-checked reads in the bridge.** RTXDI reads its buffers as structured buffers under robust access, where out-of-range reads return zeros.
@@ -827,8 +831,8 @@ Output: `directRadiance` (RGBA16F, linear HDR, render res), a new `GpuTargets` e
   - **Cost.** On the lamp (about 57,000 lit pixels of 921,600): initial 0.05 ms, shade 0.08 ms; in the reference configuration, 0.06 ms each. On Sponza without lights, before the skip, the two passes cost 0.051 and 0.250 ms. That is a floor for a fully lit 1280×720 frame, since it has no light evaluation and no rays. With the skip, the two spans cost 0.011 and 0.013 ms and the frame total returns to 0.30 ms.
   - Validation clean (core, sync, best practices + NVIDIA) on the guide capture with `ENGINE_RT_CHECK`, on the guide capture in the reference configuration, on the motion test and on the cull check. GPU-assisted validation was clean on the guide capture before the no-light path, which adds only a uniform early write. With AMD best practices and performance warnings on as well, only the older warnings in [considerations.md](./considerations.md) remain.
   - Regressions: motion test 13 of 13, cull check 16 of 16, ray check every frame (154, 318 and 294 frames), guide normal checks 2 of 2, ctest 7 of 7. The layout test covers `GpuTargets` (168 B) and `GpuRtxdiConstants` (360 B).
-- **Open (spec §11.2, §14):**
-  - an RTXDI reservoir debug view (spec §14 lists it); `Lighting only` shows only the shaded result;
+- **Open (spec §11.2):**
+  - ~~an RTXDI reservoir debug view (spec §14)~~: done 2026-11-15 (`RTXDI reservoirs`, above);
   - the environment light, "when present" in spec §11.2: no task and no source yet (glTF carries none). It needs RTXDI's environment presampling, so it fits M7 with `Power_RIS` (considerations C-F3-5).
 
 ### Phase G — Indirect: SER bounce, NRC, ReSTIR GI (M4)

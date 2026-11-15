@@ -37,9 +37,10 @@ uint32_t WorldLights::lightCount() const
 
 uint32_t WorldLights::localLightCount() const { return assets.localLightCount(); }
 
-WorldLights::WorldLights(const Device& device, const VkAllocator& allocator, const AssetBuffers& assets,
-                         const FrameData& frameData, const ShaderObjects& shaderObjects)
-    : device(device), allocator(allocator), assets(assets), frameData(frameData), shaderObjects(shaderObjects)
+WorldLights::WorldLights(const Device& device, const VkAllocator& allocator, const FrameSync& frameSync,
+                         const AssetBuffers& assets, const FrameData& frameData, const ShaderObjects& shaderObjects) :
+    device(device), allocator(allocator), frameSync(frameSync), assets(assets), frameData(frameData),
+    shaderObjects(shaderObjects)
 {
 }
 
@@ -57,7 +58,7 @@ void WorldLights::destroySlot(SlotBuffer& slot) const
     slot.capacity = 0;
 }
 
-void WorldLights::prepareFrame(uint32_t frameSlot)
+void WorldLights::prepareFrame(uint32_t frameSlot, uint64_t lastSubmittedFrame)
 {
     const uint32_t count = lightCount();
     SlotBuffer& slot = slots[frameSlot];
@@ -65,6 +66,13 @@ void WorldLights::prepareFrame(uint32_t frameSlot)
         return;
     }
     ZoneScopedN("WorldLights::grow");
+    // rare: only a light count above every earlier one
+    if (lastSubmittedFrame > 0 && slot.memory != nullptr) {
+        const vk::SemaphoreWaitInfo waitInfo{
+            .semaphoreCount = 1, .pSemaphores = &*frameSync.rayTimeline, .pValues = &lastSubmittedFrame};
+        while (vk::Result::eTimeout == device.vkdevice.waitSemaphores(waitInfo, UINT64_MAX))
+            ;
+    }
     destroySlot(slot);
     // powers of two: a scene that loads lights one model at a time reallocates rarely
     slot.capacity = std::bit_ceil(count);
@@ -86,8 +94,8 @@ void WorldLights::recordUpdate(const vk::raii::CommandBuffer& cmd, uint32_t fram
     const float elevation = glm::radians(sun.elevationDegrees);
     const glm::vec3 towardSun{std::cos(elevation) * std::cos(azimuth), std::sin(elevation),
                               std::cos(elevation) * std::sin(azimuth)};
-    // readers wait for the compute timeline, which covers these writes; the slot's previous readers finished before
-    // the CPU reached this slot again
+    // readers wait for the compute timeline, which covers these writes. The slot's earlier readers are done: its own
+    // frame by the slot fence, the next frame (previous-frame rows) by this submit's ray timeline wait
     const LightWorldPushData push{
         .frameRoot = frameData.frameRootAddress(frameSlot),
         .sunDirection = -towardSun,

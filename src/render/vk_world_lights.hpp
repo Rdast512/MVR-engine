@@ -4,6 +4,7 @@
 #include "core/vk_asset_buffers.hpp"
 #include "core/vk_device.hpp"
 #include "core/vk_frame_data.hpp"
+#include "core/vk_frame_sync.hpp"
 #include "vk_shader_objects.hpp"
 
 #include <array>
@@ -15,7 +16,8 @@
 // model-space rows of the light asset buffer with their entity's matrix, so lights follow their entity with no CPU
 // loop. Rows keep the asset buffer's order, point and spot before directional (RTXDI's local and infinite regions).
 // The engine's sun (PBR plan E3) is one more directional row after them. Recorded into the slot's async compute
-// command buffer, before the TLAS build
+// command buffer, before the TLAS build. The next frame reads a slot's rows as its previous-frame lights, so a slot is
+// rewritten only after that frame's ray passes
 class WorldLights
 {
 public:
@@ -35,8 +37,8 @@ public:
     };
     [[nodiscard]] static Sun defaultSun();
 
-    WorldLights(const Device& device, const VkAllocator& allocator, const AssetBuffers& assets,
-                const FrameData& frameData, const ShaderObjects& shaderObjects);
+    WorldLights(const Device& device, const VkAllocator& allocator, const FrameSync& frameSync,
+                const AssetBuffers& assets, const FrameData& frameData, const ShaderObjects& shaderObjects);
     ~WorldLights();
 
     WorldLights(const WorldLights&) = delete;
@@ -44,8 +46,9 @@ public:
     WorldLights(WorldLights&&) = delete;
     WorldLights& operator=(WorldLights&&) = delete;
 
-    // the slot is not in flight: grows its buffer to the uploaded light count
-    void prepareFrame(uint32_t frameSlot);
+    // the slot is not in flight: grows its buffer to the uploaded light count. lastSubmittedFrame: the frame number
+    // submitted last, which reads this slot as its previous frame; growing waits for its ray passes
+    void prepareFrame(uint32_t frameSlot, uint64_t lastSubmittedFrame);
     // compute queue, heaps bound. The slot's frame root must be written before submit
     void recordUpdate(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot) const;
 
@@ -73,6 +76,7 @@ private:
 
     const Device& device;
     const VkAllocator& allocator;
+    const FrameSync& frameSync;
     const AssetBuffers& assets;
     const FrameData& frameData;
     const ShaderObjects& shaderObjects;

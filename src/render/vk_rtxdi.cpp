@@ -86,10 +86,6 @@ void RtxdiContext::recreate(vk::Extent2D renderExtent)
         .CheckerboardSamplingMode = rtxdi::CheckerboardMode::Off,
     });
     configure();
-    RTXDI_ShadingParameters shading = context->GetShadingParameters();
-    // one final visibility ray per pixel (spec §11.2): rtxdi_shade never reuses the stored visibility
-    shading.reuseFinalVisibility = 0;
-    context->SetShadingParameters(shading);
 
     destroyReservoirs();
     const RTXDI_ReservoirBufferParameters reservoirParams = context->GetReservoirBufferParameters();
@@ -115,29 +111,46 @@ RtxdiContext::Settings RtxdiContext::defaultSettings()
     const RTXDI_DITemporalResamplingParameters temporal = rtxdi::GetDefaultReSTIRDITemporalResamplingParams();
     const RTXDI_DISpatialResamplingParameters spatial = rtxdi::GetDefaultReSTIRDISpatialResamplingParams();
     const RTXDI_BoilingFilterParameters boiling = rtxdi::GetDefaultReSTIRDIBoilingFilterParams();
+    const RTXDI_ShadingParameters shading = rtxdi::GetDefaultReSTIRDIShadingParams();
+    // RTXDI-Library Samples/FullSample UserInterface.cpp ApplyPreset(Medium) over the library defaults. Its ReGIR_RIS
+    // local sampling needs presampling (M7): uniform, same candidate count
     return Settings{
         .localLightSamples = initial.numLocalLightSamples,
         .infiniteLightSamples = initial.numInfiniteLightSamples,
+        .brdfSamples = initial.numBrdfSamples,
         .isInitialVisibilityEnabled = initial.enableInitialVisibility != 0,
         .maxHistoryLength = temporal.maxHistoryLength,
-        .temporalBiasCorrection = temporal.biasCorrectionMode,
-        .isVisibilityShortcutEnabled = temporal.enableVisibilityShortcut != 0,
+        .temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Raytraced,
+        .isVisibilityShortcutEnabled = true,
         .isFallbackSamplingEnabled = temporal.enableFallbackSampling != 0,
-        // 3.1's fused pass counted the temporal reservoir as its first spatial sample, so its default of 1 took
-        // neighbors only on disocclusions. 3.2's 2 per frame feed neighbors back through the temporal history: on
-        // LightsPunctualLamp tile p90 49.6% (Basic) and 21.7% (Pairwise) against 2.9% with neighbors only below
-        // maxHistoryLength (spec/features/rtxdi_3_2_update.md §6)
-        .spatialSamples = 0,
+        .isPermutationSamplingEnabled = temporal.enablePermutationSampling != 0,
+        // the preset's 1, rounded up to even for the stratified walk (NormalizeDISpatialSampleCount)
+        .spatialSamples = 2,
         .disocclusionBoostSamples = spatial.numDisocclusionBoostSamples,
+        .disocclusionHistoryLength = spatial.targetHistoryLength,
         .samplingRadius = spatial.samplingRadius,
-        // Basic weighs neighbors with mismatched BRDFs poorly: tile p90 6.3% against Pairwise's 2.9% (same capture)
-        .spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Pairwise,
+        .spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Basic,
         .isMaterialSimilarityTestEnabled = spatial.enableMaterialSimilarityTest != 0,
         .depthThreshold = spatial.depthThreshold,
         .normalThreshold = spatial.normalThreshold,
         .isBoilingFilterEnabled = boiling.enableBoilingFilter != 0,
         .boilingFilterStrength = boiling.boilingFilterStrength,
+        .isFinalVisibilityReused = shading.reuseFinalVisibility != 0,
     };
+}
+
+RtxdiContext::Settings RtxdiContext::convergedSettings()
+{
+    Settings converged = defaultSettings();
+    converged.brdfSamples = 0;
+    converged.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Basic;
+    converged.isVisibilityShortcutEnabled = false;
+    converged.isPermutationSamplingEnabled = false;
+    converged.spatialSamples = 0;
+    converged.disocclusionHistoryLength = converged.maxHistoryLength;
+    converged.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Pairwise;
+    converged.isFinalVisibilityReused = false;
+    return converged;
 }
 
 bool RtxdiContext::isReferenceRequested()
@@ -153,8 +166,7 @@ void RtxdiContext::configure()
     RTXDI_DIInitialSamplingParameters initialSampling = rtxdi::GetDefaultReSTIRDIInitialSamplingParams();
     // Power_RIS needs the light PDF texture (M7)
     initialSampling.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Uniform;
-    // a BRDF ray finds a light only on emissive triangles (M7); until then each one is a wasted ray per pixel
-    initialSampling.numBrdfSamples = 0;
+    initialSampling.numBrdfSamples = isReference ? 0u : settings.brdfSamples;
     initialSampling.numLocalLightSamples = isReference ? kReferenceLocalLightSamples : settings.localLightSamples;
     initialSampling.numInfiniteLightSamples =
         isReference ? kReferenceInfiniteLightSamples : settings.infiniteLightSamples;
@@ -168,10 +180,8 @@ void RtxdiContext::configure()
     temporal.normalThreshold = settings.normalThreshold;
     temporal.enableVisibilityShortcut = settings.isVisibilityShortcutEnabled ? 1u : 0u;
     temporal.enableFallbackSampling = settings.isFallbackSamplingEnabled ? 1u : 0u;
-    // permutation decorrelates frames for denoisers, but the frame-to-frame change grew from 0.8% to 20.5% of the
-    // signal (lamp, static camera; considerations C-F3-3). SetFrameIndex still rehashes uniformRandomNumber, which
-    // the fallback sample permutes with
-    temporal.enablePermutationSampling = 0;
+    // SetFrameIndex rehashes uniformRandomNumber either way: the fallback sample permutes with it
+    temporal.enablePermutationSampling = settings.isPermutationSamplingEnabled ? 1u : 0u;
     context->SetTemporalResamplingParameters(temporal);
 
     RTXDI_DISpatialResamplingParameters spatial = context->GetSpatialResamplingParameters();
@@ -182,8 +192,7 @@ void RtxdiContext::configure()
     spatial.depthThreshold = settings.depthThreshold;
     spatial.normalThreshold = settings.normalThreshold;
     spatial.enableMaterialSimilarityTest = settings.isMaterialSimilarityTestEnabled ? 1u : 0u;
-    // the library's 0 never boosts; the fused pass boosted below maxHistoryLength
-    spatial.targetHistoryLength = settings.maxHistoryLength;
+    spatial.targetHistoryLength = settings.disocclusionHistoryLength;
     spatial.neighborOffsetSamplingMode = kNeighborSamplingMode;
     context->SetSpatialResamplingParameters(spatial);
 
@@ -193,6 +202,10 @@ void RtxdiContext::configure()
         .pad1 = 0,
         .pad2 = 0,
     });
+
+    RTXDI_ShadingParameters shading = context->GetShadingParameters();
+    shading.reuseFinalVisibility = settings.isFinalVisibilityReused ? 1u : 0u;
+    context->SetShadingParameters(shading);
     isReferenceApplied = isReference;
     appliedSettings = settings;
 }

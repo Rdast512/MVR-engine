@@ -606,19 +606,7 @@ add_library(ThirdPartyImpl STATIC implementations.cpp)
 # *_IMPLEMENTATION TUs must not pick up the engine PCH (guards already set).
 set_source_files_properties(implementations.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 
-# Add tiny glTF C source to static ThirdPartyImpl
-# tiny_gltf_v3.c is C code; compile it as C11 and enable stdio-backed fs helpers.
-target_sources(ThirdPartyImpl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tiny_gltf_v3.c)
-set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/tiny_gltf_v3.c PROPERTIES LANGUAGE C)
-
-# Ensure C11 is used for C sources and define TINYGLTF3_ENABLE_FS for the C compilation unit.
-target_compile_options(ThirdPartyImpl PRIVATE
-        $<$<AND:$<COMPILE_LANGUAGE:C>,$<NOT:$<C_COMPILER_ID:MSVC>>>:-std=c11>
-        $<$<AND:$<COMPILE_LANGUAGE:C>,$<C_COMPILER_ID:MSVC>>:/std:c11>
-)
-target_compile_definitions(ThirdPartyImpl PRIVATE
-        $<$<COMPILE_LANGUAGE:C>:TINYGLTF3_ENABLE_FS>
-)
+# tiny_gltf_v3.c is compiled inside implementations.cpp (TINYGLTF3_IMPLEMENTATION includes it), not on its own
 
 # IMPORTANT: Because this static lib will be linked into a SHARED library (engine_util.dll),
 # it must be compiled with Position Independent Code (PIC).

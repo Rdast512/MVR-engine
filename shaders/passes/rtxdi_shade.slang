@@ -9,9 +9,11 @@ static const uint kRtxdiTile = 8; // matches src/render/vk_renderer.cpp
 #include "Rtxdi/Utils/RandomSamplerPerPassSeeds.hlsli"
 
 // ReSTIR DI spatial resampling and shading (spec/features/rtxdi_3_2_update.md §3.1): this pixel's temporal reservoir
-// against this frame's neighbors, one final visibility ray, then directRadiance = evalBrdf · L_i · NdotL · W. Without
+// against this frame's neighbors, the final visibility, then directRadiance = evalBrdf · L_i · NdotL · W. Without
 // spatial resampling (the reference) it shades the reservoir it loads. Neighbors are read from the temporal output
-// and the result is written to the shading buffer, a different one, which is next frame's temporal input
+// and the result is written to the shading buffer, a different one, which is next frame's temporal input. The final
+// visibility is stored in the reservoir; with reuseFinalVisibility a young enough stored one replaces the ray, as in
+// the RTXDI sample's ShadingHelpers.hlsli
 
 [[vk::push_constant]] ConstantBuffer<FramePushData> push;
 
@@ -66,9 +68,26 @@ void rtxdiShadeMain(uint3 id : SV_DispatchThreadID)
             RAB_SamplePolymorphicLight(RAB_LoadLightInfo(RTXDI_GetDIReservoirLightIndex(reservoir), false), surface,
                                        RTXDI_GetDIReservoirSampleUV(reservoir));
         const float3 shade = shadeLightSample(surface, sample);
-        if (any(shade > 0.0) && RAB_GetConservativeVisibility(surface, sample))
+        if (any(shade > 0.0))
         {
-            radiance = shade * RTXDI_GetDIReservoirInvPdf(reservoir);
+            float3 visibility = float3(0.0, 0.0, 0.0);
+            bool isReused = false;
+            if (constants.shading.reuseFinalVisibility != 0)
+            {
+                RTXDI_VisibilityReuseParameters reuse;
+                reuse.maxAge = constants.shading.finalVisibilityMaxAge;
+                reuse.maxDistance = constants.shading.finalVisibilityMaxDistance;
+                isReused = RTXDI_GetDIReservoirVisibility(reservoir, reuse, visibility);
+            }
+            if (!isReused)
+            {
+                visibility = RAB_GetConservativeVisibility(surface, sample) ? float3(1.0, 1.0, 1.0)
+                                                                           : float3(0.0, 0.0, 0.0);
+                // the visibility shortcut also drops an occluded sample here, keeping M
+                RTXDI_StoreVisibilityInDIReservoir(reservoir, visibility,
+                                                   constants.temporalResampling.enableVisibilityShortcut != 0);
+            }
+            radiance = shade * visibility * RTXDI_GetDIReservoirInvPdf(reservoir);
         }
     }
     RTXDI_StoreDIReservoir(reservoir, constants.reservoirBuffer, reservoirPosition,

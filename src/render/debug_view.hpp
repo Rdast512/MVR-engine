@@ -46,6 +46,8 @@ enum class DebugView : uint32_t
     LightingOnly,
     // passes/combine.slang's noisyColor: what DLSS-RR receives as color, at render resolution
     DlssInput,
+    // the reservoir rtxdi_shade stored: hue by light, brightness by its sample count M up to the history cap
+    RtxdiReservoirs,
     Count,
 };
 
@@ -57,6 +59,7 @@ static_assert(std::to_underlying(DebugView::UnshadowedLights) == 22);
 static_assert(std::to_underlying(DebugView::ShadowedLights) == 23);
 static_assert(std::to_underlying(DebugView::LightingOnly) == 24);
 static_assert(std::to_underlying(DebugView::DlssInput) == 25);
+static_assert(std::to_underlying(DebugView::RtxdiReservoirs) == 26);
 
 enum class DebugViewCategory : uint8_t
 {
@@ -125,6 +128,7 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"Shadowed lights", DebugViewCategory::Lighting, true},
     {"Lighting only", DebugViewCategory::Lighting, true},
     {"DLSS input", DebugViewCategory::Upscaling, true},
+    {"RTXDI reservoirs", DebugViewCategory::Lighting, true},
 }};
 
 [[nodiscard]] constexpr const DebugViewInfo& debugViewInfo(DebugView view)

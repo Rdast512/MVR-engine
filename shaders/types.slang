@@ -108,6 +108,7 @@ public static const uint kDebugViewUnshadowedLights = 22u;
 public static const uint kDebugViewShadowedLights = 23u;
 public static const uint kDebugViewLightingOnly = 24u;
 public static const uint kDebugViewDlssInput = 25u;
+public static const uint kDebugViewRtxdiReservoirs = 26u;
 public static const uint kDebugViewModeMask = 0xffu;
 public static const uint kDebugViewFlagEdges = 1u << 8;
 
@@ -713,6 +714,7 @@ public struct GpuFrameRoot
     public uint64_t rtxdiConstants; // 0 until M3
     public uint64_t cacheConstants; // SHaRC or NRC constants, 0 until M4
     public uint frameIndex;
-    public float exposure;          // pre-exposure, 1 until auto exposure
+    public float exposure;          // 1: the exposure reaches post and DLSS-RR as an image (considerations C-H2-1)
     public uint64_t worldLights;    // GpuLight[lightCount], world space, written this frame (loadWorldLight)
+    public uint64_t prevWorldLights; // last frame's worldLights, same rows; 0 on a history reset
 };

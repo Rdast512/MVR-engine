@@ -92,7 +92,8 @@ class Engine
     void applyMotionTestRequest(const EngineMotionTest::Request& request);
     // the model swap and capture the guide capture asks for before its frame
     void applyGuideCaptureRequest(const EngineGuideCapture::Request& request);
-    // waits idle, rebuilds swapchain-sized resources and the UI image count
+    // the one recreate path, at most once per frame before it is built: swapchain, swapchain-sized resources and the
+    // UI image count
     void recreateSwapchain();
 
 public:

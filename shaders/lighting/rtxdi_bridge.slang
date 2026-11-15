@@ -6,12 +6,11 @@
 // call. Light and BRDF math stays in lighting.lights and material.brdf: the bridge only composes them.
 //
 // Surfaces come from the guide sets: current or previous by frame parity, so a previous-frame surface is last frame's
-// resolve output (position guide, normals, albedos, camera position). Lights are E2's world rows; light index i is
-// row i in both frames (RAB_TranslateLightIndex is the identity), and a load or unload resets history.
+// resolve output (position guide, normals, albedos, camera position). Lights are E2's world rows, last frame's for
+// previous-frame loads; light index i is row i in both frames (RAB_TranslateLightIndex is the identity), and a load or
+// unload resets history.
 //
 // Not built yet:
-//   - previous-frame light rows: RAB_LoadLightInfo(i, true) returns this frame's row, so a moving light's temporal
-//     bias correction sees its current position
 //   - presampling (Power_RIS / ReGIR, M7): RAB_LoadCompactLightInfo, RAB_StoreCompactLightInfo, RIS buffer
 //   - emissive triangles (M7): RAB_TraceRayForLocalLight never names a light; RAB_EvaluateLocalLightSourcePdf is the
 //     uniform pdf
@@ -80,6 +79,7 @@ struct RtxdiBridgeState
     float3 prevCameraPos;
     uint64_t tlas;
     uint64_t worldLights;
+    uint64_t prevWorldLights;
     uint lightCount;
     RtxdiReservoirBuffer reservoirs;
     uint64_t neighborOffsets;
@@ -100,6 +100,7 @@ void rtxdiBridgeInit(GpuFrameRoot root)
     gRtxdiBridge.prevCameraPos = camera[0].prevCameraPos;
     gRtxdiBridge.tlas = root.tlas;
     gRtxdiBridge.worldLights = root.worldLights;
+    gRtxdiBridge.prevWorldLights = root.prevWorldLights;
     gRtxdiBridge.lightCount = root.lightCount;
     gRtxdiBridge.reservoirs.address = constants[0].reservoirs;
     gRtxdiBridge.reservoirs.count = constants[0].reservoirCount;
@@ -268,15 +269,17 @@ RAB_LightSample RAB_EmptyLightSample()
     return sample;
 }
 
-// previousFrame: this frame's row too (see the header comment). Out of range: the empty light, which shades to 0
-// (see RtxdiReservoirBuffer)
+// previousFrame: last frame's row, or this frame's after a history reset. Out of range: the empty light, which shades
+// to 0 (see RtxdiReservoirBuffer)
 RAB_LightInfo RAB_LoadLightInfo(uint index, bool previousFrame)
 {
     if (index >= gRtxdiBridge.lightCount)
     {
         return RAB_EmptyLightInfo();
     }
-    return bdaPtr<GpuLight>(gRtxdiBridge.worldLights)[index];
+    const uint64_t rows =
+        previousFrame && gRtxdiBridge.prevWorldLights != 0 ? gRtxdiBridge.prevWorldLights : gRtxdiBridge.worldLights;
+    return bdaPtr<GpuLight>(rows)[index];
 }
 
 // light rows keep their index across frames until a load or unload, which resets history

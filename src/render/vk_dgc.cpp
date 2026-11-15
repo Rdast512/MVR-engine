@@ -216,12 +216,11 @@ void DeviceGeneratedCommands::allocatePreprocessBuffer(uint32_t frameSlot, uint3
 
     vk::raii::Buffer buffer({});
     VmaAllocation memory = nullptr;
-    // own block puts the buffer at offset 0, so every region is 4 KiB aligned
+    // suballocated at a page-aligned start, so every region is 4 KiB aligned
     createBuffer(preprocessSize,
                  vk::BufferUsageFlagBits2::ePreprocessBufferEXT | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                 vk::MemoryPropertyFlagBits::eDeviceLocal, buffer, memory, allocator.allocator,
-                 device.vkdevice, device.queueFamilyIndices, std::format("DgcPreprocess_{}", frameSlot),
-                 VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
+                 vk::MemoryPropertyFlagBits::eDeviceLocal, buffer, memory, allocator.allocator, device.vkdevice,
+                 device.queueFamilyIndices, std::format("DgcPreprocess_{}", frameSlot), 0, kPreprocessRegionAlignment);
 
     preprocessBuffers[frameSlot] = std::move(buffer);
     preprocessMemory[frameSlot] = memory;

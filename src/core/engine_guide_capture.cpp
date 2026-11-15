@@ -148,8 +148,17 @@ std::optional<std::filesystem::path> EngineGuideCapture::prepareModel(const Shot
 }
 
 EngineGuideCapture::Request EngineGuideCapture::beginFrame(Camera& camera, DebugViewSettings& debugView,
+                                                           RtxdiContext::Settings& rtxdi,
                                                            std::optional<glm::vec4> modelBounds)
 {
+    // the check gates the ReSTIR DI port, not the defaults: the NVIDIA defaults fail it (spec rtxdi_3_2_update §6.1)
+    const bool isConvergenceShot = shotIndex == kConvergenceShot;
+    if (isConvergenceShot && !heldRtxdiSettings) {
+        heldRtxdiSettings = std::exchange(rtxdi, RtxdiContext::convergedSettings());
+    } else if (!isConvergenceShot && heldRtxdiSettings) {
+        rtxdi = *heldRtxdiSettings;
+        heldRtxdiSettings.reset();
+    }
     Request request;
     if (shotIndex >= kShots.size()) {
         return request;

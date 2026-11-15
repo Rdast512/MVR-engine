@@ -44,6 +44,11 @@ public:
 
     void setTracyContext(VkTracyContext* tracyContextIn);
     void rebuildSwapchainResources();
+    // a window resize, or an out-of-date or suboptimal swapchain found by drawFrame
+    void requestSwapchainRecreate() noexcept { isSwapchainRecreatePending = true; }
+    [[nodiscard]] bool isSwapchainRecreateRequested() const noexcept { return isSwapchainRecreatePending; }
+    // waits idle, replaces the swapchain and rebuilds the resources sized by it; between frames only
+    void recreateSwapchain();
     void drawFrame();
     void waitIdle() const;
 
@@ -119,6 +124,10 @@ private:
     void recordHiZView(const vk::raii::CommandBuffer& cmd) const;
     // one thread per render pixel, FramePushData
     void dispatchFullscreen(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader) const;
+    [[nodiscard]] uint32_t previousFrameSlot() const noexcept
+    {
+        return (currentFrame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+    }
     static void setViewport(const vk::raii::CommandBuffer& cmd, vk::Extent2D extent);
 
     Device& device;
@@ -162,4 +171,5 @@ private:
     // extent of the capture the slot recorded last; nullopt when it recorded none
     std::array<std::optional<vk::Extent2D>, MAX_FRAMES_IN_FLIGHT> displayCaptureExtents;
     bool isDisplayCapturePending = false;
+    bool isSwapchainRecreatePending = false;
 };
