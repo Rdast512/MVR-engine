@@ -22,6 +22,8 @@ enum class GpuTimerScope : uint32_t
     Resolve,
     // first span of the ray command buffer: includes any wait for the TLAS build
     RtxdiInitial,
+    RtxdiTemporal,
+    // spatial resampling and shading
     RtxdiShade,
     Combine,
     // zero while a debug view is shown: the DLSS-RR evaluation is skipped
@@ -61,6 +63,8 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "Vis-buffer resolve";
     case GpuTimerScope::RtxdiInitial:
         return "ReSTIR DI initial";
+    case GpuTimerScope::RtxdiTemporal:
+        return "ReSTIR DI temporal";
     case GpuTimerScope::RtxdiShade:
         return "ReSTIR DI shade";
     case GpuTimerScope::Combine:

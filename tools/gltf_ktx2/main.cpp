@@ -10,7 +10,7 @@
 // -> UASTC encode (libktx/Basis) -> transcode to BC7 -> zstd -> write. BC7 needs no transcoding at load:
 // the engine's KTX path uploads it as-is.
 //
-// Color space comes from how materials sample the image (same rules as the engine loader). An image
+// Color space comes from how materials sample the image (rules shared with the engine loader). An image
 // sampled as both sRGB and linear gets two files, and the linear uses are pointed at a cloned image.
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -19,6 +19,8 @@
 #include "stb_image.h"
 
 #include "json.hpp"
+
+#include "core/texture_color_space.hpp"
 
 #include <ktx.h>
 #include <vulkan/vulkan_core.h>
@@ -143,13 +145,6 @@ namespace
 
     // ── material usage ───────────────────────────────────────────
 
-    // texture-info keys sampled as sRGB; every other "*Texture" key is linear (matches the engine loader)
-    bool isSrgbSlot(std::string_view key)
-    {
-        return key == "baseColorTexture" || key == "emissiveTexture" || key == "specularColorTexture" ||
-            key == "sheenColorTexture" || key == "diffuseTransmissionColorTexture";
-    }
-
     bool isNormalSlot(std::string_view key) { return key == "normalTexture" || key == "clearcoatNormalTexture"; }
 
     struct TextureUse
@@ -176,7 +171,9 @@ namespace
             Json& value = it.value();
             if (key.ends_with("Texture") && value.is_object() && value.contains("index") &&
                 value["index"].is_number_integer()) {
-                uses.push_back({.info = &value, .srgb = isSrgbSlot(key), .normal = isNormalSlot(key)});
+                uses.push_back({.info = &value,
+                                .srgb = gltfTextureSlotColorSpace(key) == TextureColorSpace::Srgb,
+                                .normal = isNormalSlot(key)});
             }
             collectTextureUses(value, uses);
         }
@@ -184,11 +181,7 @@ namespace
 
     // ── image source ─────────────────────────────────────────────
 
-    enum class Space : uint8_t
-    {
-        Srgb,
-        Linear
-    };
+    using Space = TextureColorSpace;
 
     struct ImageInfo
     {

@@ -1,7 +1,7 @@
 #ifndef ENGINE_LIGHTING_RTXDI_BRIDGE_SLANG
 #define ENGINE_LIGHTING_RTXDI_BRIDGE_SLANG
 
-// RTXDI application bridge (PBR plan F2): the resource macros and the RAB_* set the pinned RTXDI 3.1 DI headers call.
+// RTXDI application bridge (PBR plan F2): the resource macros and the RAB_* set the pinned RTXDI 3.2 DI headers call.
 // Textual, once per compile unit, before any Rtxdi/DI header; call rtxdiBridgeInit before the first RAB_* or RTXDI_*
 // call. Light and BRDF math stays in lighting.lights and material.brdf: the bridge only composes them.
 //
@@ -39,11 +39,11 @@ import raytracing.trace;
 #include "Rtxdi/RtxdiParameters.h"
 #include "Rtxdi/Utils/RandomSamplerState.hlsli"
 
-// RTXDI reads its buffers as structured buffers under robust buffer access, where out-of-range reads return zeros:
-// the fused pairwise pass loads the back-projected pixel even when no temporal surface was found there, off screen
-// included, and then loads the light of its result even when that is empty (light 0, also with no lights). Through BDA
-// those reads fault, so the reservoir accessor and RAB_LoadLightInfo check their bounds: zeros out of range, stores
-// dropped
+// RTXDI reads its buffers as structured buffers under robust buffer access, where out-of-range reads return zeros.
+// 3.1's fused pass relied on it: it loaded the reservoir of an off-screen back-projected pixel and light 0 of an empty
+// result, also with no lights, and through BDA those reads faulted. 3.2 dropped that pass and guards the empty result,
+// but the library still assumes robust buffers, so the reservoir accessor and RAB_LoadLightInfo check their bounds:
+// zeros out of range, stores dropped
 struct RtxdiReservoirBuffer
 {
     uint64_t address;

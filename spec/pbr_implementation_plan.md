@@ -65,7 +65,8 @@ every frame                                     GRAPHICS                     ASY
                         (done, M1; per-bin shaders in M7)          [E1]    │
   ─────────────── timeline wait: TLAS ready ───────────────────────────────┘
   rtxdi_initial (CS+RQ) local + infinite + BRDF candidates → reservoirs    [F3]
-  rtxdi_shade (CS+RQ)   fused spatiotemporal → final visibility → direct   [F3]
+  rtxdi_temporal (CS)   temporal resampling → boiling filter               [F3]
+  rtxdi_shade (CS+RQ)   spatial resampling → final visibility → direct     [F3]
   NRC update            training paths                                     [G3]
   indirect (RT, SER)    1 ray/px → X₂ shading → cache query → GI samples   [G2]
   NRC                   QueryAndTrain → custom resolve into GI samples     [G3]
@@ -95,7 +96,7 @@ Every ray pass reads the TLAS address from `GpuFrameRoot.tlas`: the one PTLAS (C
 | 9 | **Default material:** metallic 1, roughness 1, white. It renders dark without GI, which is correct |
 | 10 | **AO:** sampled in the resolve and stored with the guides. Applied only to the radiance-cache query term at the primary vertex. Never on direct light |
 | 11 | **GI cache:** NRC only, on every tier (M4). No cache interface: the indirect pass calls the NRC bridge directly |
-| 12 | **RTXDI light sampling:** `Uniform` for punctual-only scenes (M3). `Power_RIS` (presample pass + PDF texture) once emissive triangles are lights (M7). Resampling: `FusedSpatiotemporal` |
+| 12 | **RTXDI light sampling:** `Uniform` for punctual-only scenes (M3). `Power_RIS` (presample pass + PDF texture) once emissive triangles are lights (M7). Resampling: `TemporalAndSpatial` (RTXDI 3.2 dropped `FusedSpatiotemporal`; [rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md)) |
 | 13 | **Scene data per frame:** the CPU writes `GpuFrameRoot`, the camera and changed transforms. Ray instance ops, the PTLAS update and the RTXDI light buffer are written on the GPU from the persistent tables (spec P2) |
 | 14 | **C++ style** (`cpp-guidelines` skill, `.clang-tidy`): PascalCase types and `enum class` enumerators; camelCase functions, members, locals; class constants `kPascalCase`; getters `getX` / `isX` / `hasX`; no `m_` or trailing `_`. RAII owners of AS, micromaps, RT pipelines and SDK objects are move-only (Rule of Five); everything else follows the Rule of Zero. `const`/`constexpr` by default, `explicit` single-argument constructors, `[[nodiscard]]` on getters, named constants instead of magic numbers. Failures throw `std::runtime_error` with context. `.hpp` + `#pragma once`, no `using namespace` in headers |
 | 15 | **Comments** (`main-guidelines` skill), in C++ and Slang: lowercase, 2–8 words, why or non-obvious behavior only, no trailing period |
@@ -704,7 +705,7 @@ SDK: `NVIDIA-RTX/RTXDI-Library` (host C++ + HLSL headers), pinned in `ThirdParty
 #### F1 · Host context — built (2026-11-14)
 
 - `rtxdi::ReSTIRDIContext` with `ReSTIRDIStaticParameters { renderWidth, renderHeight, CheckerboardMode::Off }`. `SetFrameIndex` each frame; recreate on resize with `RenderTargets::recreate`.
-- Local light sampling `Uniform` until M7, then `Power_RIS` (presample pass + PDF texture). Resampling `FusedSpatiotemporal` (§2 #12).
+- Local light sampling `Uniform` until M7, then `Power_RIS` (presample pass + PDF texture). Resampling `TemporalAndSpatial` (§2 #12) since the RTXDI 3.2 update (2026-11-15, [rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md)); F1–F3 below describe the 3.1 build, with `FusedSpatiotemporal`.
 - Buffers: DI reservoirs (`RTXDI_PackedDIReservoir`, sized by the context), neighbor offsets (`rtxdi::FillNeighborOffsetBuffer` once), one host-visible constants block per frame slot reached through `GpuFrameRoot.rtxdiConstants`.
 - **As built:** `RtxdiContext` (`src/render/vk_rtxdi.*`), owned by `Renderer`.
   - **Context:** created in `recreate(renderExtent)`, which `Renderer::rebuildSwapchainResources` calls after `RenderTargets::recreate` with the device idle. It is configured with `FusedSpatiotemporal` (the library default is `TemporalAndSpatial`) and `Uniform` local light sampling; every other parameter keeps the library default. `prepareFrame(slot, frameNumber)` runs after the slot's fence: `SetFrameIndex`, then the slot's constants.
@@ -780,7 +781,9 @@ SDK: `NVIDIA-RTX/RTXDI-Library` (host C++ + HLSL headers), pinned in `ThirdParty
   - Validation clean (core, sync, best practices + NVIDIA) on the guide capture with `ENGINE_RT_CHECK` and on the motion test.
   - Regressions: motion test 13 of 13, cull check 16 of 16, ray check every frame (294, 318 and 142 frames), guide normal checks 2 of 2, ctest 7 of 7 (the layout test now includes `GpuRtxdiConstants`).
 
-#### F3 · Passes — built (2026-11-14)
+#### F3 · Passes — built (2026-11-14), split for RTXDI 3.2 (2026-11-15)
+
+Since the RTXDI 3.2 update the fused `rtxdi_shade` below is three passes: `rtxdi_initial`, `rtxdi_temporal` (`RTXDI_DITemporalResampling` + boiling filter) and `rtxdi_shade` (`RTXDI_DISpatialResampling` + final visibility + shading). The configuration, the convergence numbers and the guide capture's permanent convergence check are in [rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md); the text below records the 3.1 build.
 
 | Pass | Calls |
 |---|---|

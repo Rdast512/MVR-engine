@@ -269,7 +269,7 @@ engine_fetch_declare(meshoptimizer
 # 15. RTXDI (ReSTIR DI host lib + HLSL headers)
 engine_fetch_declare(rtxdi
         GIT_REPOSITORY https://github.com/NVIDIA-RTX/RTXDI-Library.git
-        GIT_TAG f12037fa8e97ebc08e9e3edfd2de528ed1772a4b
+        GIT_TAG b67f61cd0bfa6792acbf5429bb29a68ee5cdd808 # 3.2
 )
 
 # 16. SHaRC (header-only shader lib)

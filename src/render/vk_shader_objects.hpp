@@ -73,8 +73,9 @@ public:
         vk::raii::ShaderEXT rayCheck = nullptr;
         // passes/light_world.slang; async compute, before the TLAS build
         vk::raii::ShaderEXT lightWorld = nullptr;
-        // passes/rtxdi_initial.slang and passes/rtxdi_shade.slang: ReSTIR DI, after the TLAS wait
+        // passes/rtxdi_initial.slang, rtxdi_temporal.slang and rtxdi_shade.slang: ReSTIR DI, after the TLAS wait
         vk::raii::ShaderEXT rtxdiInitial = nullptr;
+        vk::raii::ShaderEXT rtxdiTemporal = nullptr;
         vk::raii::ShaderEXT rtxdiShade = nullptr;
         // passes/combine.slang: noisyColor, the DLSS-RR color input
         vk::raii::ShaderEXT combine = nullptr;

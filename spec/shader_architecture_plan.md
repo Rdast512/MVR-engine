@@ -85,7 +85,7 @@ The spec's §5 frame, stage by stage, with the shader that runs it.
 | 6' | World lights; RT instance writes → PTLAS update in place (PBR C4) | `light_world`, `rt_instances` | async compute | [exists] | M2, M3 (E2) |
 | 8 | Classify: vis buffer → material tiles, bin-id image | `classify` | graphics | [new] | M7 |
 | 9 | Resolve + shade → shading surface + DLSS guides | `resolve` (one tiled dispatch until M7, then one shader per bin through a DGC execution set) | graphics | [exists], one tiled dispatch | M1, M7 |
-| 10 | ReSTIR DI: initial → spatiotemporal → visibility | `rtxdi_presample` (M7), `rtxdi_initial`, `rtxdi_shade` (fused: no separate resample pass) | graphics | [exists] except `rtxdi_presample` | M3 |
+| 10 | ReSTIR DI: initial → temporal → spatial → visibility | `rtxdi_presample` (M7), `rtxdi_initial`, `rtxdi_temporal`, `rtxdi_shade` (spatial resampling + shading) | graphics | [exists] except `rtxdi_presample` | M3; split for RTXDI 3.2 |
 | 11 | NRC + indirect | `pathtrace_update` and `pathtrace_query` with `NRC_*` defines → `QueryAndTrain` (host) → `nrc_resolve` | graphics | [new] | M4 |
 | 12 | ReSTIR GI: temporal + spatial | `restir_gi` | graphics | [new] | M4 |
 | 13 | Combine: direct + indirect + emissive | `combine` | graphics | [new] | M4 |
@@ -183,7 +183,7 @@ Buffers (BDA, [resource_architecture.md](./resource_architecture.md) §12):
 | `rt_instances` | [exists] (C4) | compute, async | node instances, `GpuRayInstance`, `GpuRayInstanceBuild`, PTLAS state rows | PTLAS `WRITE_INSTANCE` arguments for changed rows (all rows on a full build), their count in the op entry, updated state rows | M2 |
 | `rt_check` | [exists] | compute + ray query | TLAS, vis buffer, `decodeHit` | `GpuRayCheckStats` (host-visible) | M2, `ENGINE_RT_CHECK` only |
 | `rtxdi_presample` | [new] | compute | light list | PDF texture, RIS buffers | M7 (`Power_RIS`) |
-| `rtxdi_initial`, `rtxdi_shade` | [exists] (F3; the fused mode needs no `rtxdi_resample`) | compute + ray query | guides (both sets), motion, lights, TLAS | reservoirs, `directRadiance` | M3 |
+| `rtxdi_initial`, `rtxdi_temporal`, `rtxdi_shade` | [exists] (F3; `rtxdi_temporal` since RTXDI 3.2, [rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md); `rtxdi_shade` runs the spatial step) | compute + ray query | guides (both sets), motion, lights, TLAS | reservoirs, `directRadiance` | M3 |
 | `pathtrace_update` | [new] | RT pipeline + SER | guides, TLAS, slices, materials, lights, cache | NRC training (`NRC_UPDATE`) | M4 |
 | `pathtrace_query` | [new] | RT pipeline + SER | same | ReSTIR GI initial samples, NRC query records | M4 |
 | `pathtrace` | [new] | — | — | — | shared path code; becomes a module imported by the two above |

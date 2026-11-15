@@ -10,6 +10,7 @@
 #include "../util/vk_utils.hpp"
 #include "../static_headers/logger.hpp"
 #include "vk_descriptors.hpp"
+#include "texture_color_space.hpp"
 #include "ktxvulkan.h"
 #include <cstdint>
 #include <filesystem>
@@ -20,12 +21,6 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-
-enum class TextureColorSpace : uint8_t
-{
-    Srgb = 0,
-    Linear = 1,
-};
 
 // Loads textures into GPU images and registers SampledImage descriptors on the
 // resource heap. Sampling state comes from the DescriptorManager sampler heap

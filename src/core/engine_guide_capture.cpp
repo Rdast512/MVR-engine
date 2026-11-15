@@ -73,6 +73,19 @@ namespace
     }
 
     // debug_view writes n * 0.5 + 0.5; empty pixels decode to a zero or non-unit vector
+    // shaders/core/math.slang luminance
+    std::vector<float> decodeLuminance(const Renderer::DisplayCapture& capture)
+    {
+        const size_t texelCount = static_cast<size_t>(capture.extent.width) * capture.extent.height;
+        std::vector<float> luminance(texelCount);
+        for (size_t texel = 0; texel < texelCount; ++texel) {
+            const uint16_t* rgb = &capture.rgba16f[texel * 4];
+            luminance[texel] = 0.2126f * glm::unpackHalf1x16(rgb[0]) + 0.7152f * glm::unpackHalf1x16(rgb[1]) +
+                0.0722f * glm::unpackHalf1x16(rgb[2]);
+        }
+        return luminance;
+    }
+
     glm::vec3 decodeNormal(std::span<const uint16_t> rgba16f, size_t texel)
     {
         const glm::vec3 encoded(glm::unpackHalf1x16(rgba16f[texel * 4]), glm::unpackHalf1x16(rgba16f[texel * 4 + 1]),
@@ -157,8 +170,9 @@ EngineGuideCapture::Request EngineGuideCapture::beginFrame(Camera& camera, Debug
         const float distance = kFramingMargin * modelBounds->w / std::sin(halfFov);
         camera.lookAt(center + distance * glm::normalize(shot.viewDirection), center);
     }
-    debugView.view = kViews[viewIndex];
-    request.shouldCapture = shotFrame >= kSettleFrames && modelBounds.has_value();
+    debugView.view = isConvergenceRunning ? DebugView::LightingOnly : kViews[viewIndex];
+    request.shouldCapture = shotFrame >= kSettleFrames && modelBounds.has_value() &&
+        (!isConvergenceRunning || convergence->frame >= kConvergenceWarmupFrames);
     return request;
 }
 
@@ -171,6 +185,9 @@ bool EngineGuideCapture::endFrame(const std::optional<Renderer::DisplayCapture>&
         ++shotFrame;
         return false;
     }
+    if (isConvergenceRunning) {
+        return advanceConvergence(capture) && finishShot();
+    }
     if (!capture) {
         logError(std::format("{}: no model to frame, shot skipped", kShots[shotIndex].name), "GuideCapture");
         return finishShot();
@@ -179,7 +196,16 @@ bool EngineGuideCapture::endFrame(const std::optional<Renderer::DisplayCapture>&
         ++writtenCount;
     }
     keepNormals(*capture);
+    if (shotIndex == kConvergenceShot && kViews[viewIndex] == DebugView::ShadowedLights) {
+        convergence.emplace();
+        convergence->extent = capture->extent;
+        convergence->reference = decodeLuminance(*capture);
+    }
     if (++viewIndex < kViews.size()) {
+        return false;
+    }
+    if (shotIndex == kConvergenceShot && convergence) {
+        isConvergenceRunning = true;
         return false;
     }
     return finishShot();
@@ -200,6 +226,13 @@ bool EngineGuideCapture::finishShot()
         logInfo(summary, "GuideCapture");
     } else {
         logError(summary, "GuideCapture");
+    }
+    if (!isConvergencePassed) {
+        logError("Convergence check: not run", "GuideCapture");
+    } else if (*isConvergencePassed) {
+        logInfo("Convergence check: passed", "GuideCapture");
+    } else {
+        logError("Convergence check: FAILED", "GuideCapture");
     }
     return true;
 }
@@ -268,6 +301,95 @@ size_t EngineGuideCapture::evaluateNormalChecks() const
         }
     }
     return passed;
+}
+
+bool EngineGuideCapture::advanceConvergence(const std::optional<Renderer::DisplayCapture>& capture)
+{
+    ConvergenceRun& run = *convergence;
+    if (run.frame++ < kConvergenceWarmupFrames) {
+        return false;
+    }
+    if (!capture || capture->extent != run.extent) {
+        logError("FAIL ReSTIR DI convergence: capture missing or resized", "GuideCapture");
+        isConvergenceRunning = false;
+        isConvergencePassed = false;
+        return true;
+    }
+    std::vector<float> frame = decodeLuminance(*capture);
+    if (run.sum.empty()) {
+        run.sum.assign(frame.size(), 0.0);
+    }
+    for (size_t texel = 0; texel < frame.size(); ++texel) {
+        run.sum[texel] += frame[texel];
+        run.absoluteErrorSum += std::abs(frame[texel] - run.reference[texel]);
+        if (!run.previous.empty()) {
+            run.changeSum += std::abs(frame[texel] - run.previous[texel]);
+        }
+    }
+    run.previous = std::move(frame);
+    if (++run.capturedFrames < kConvergenceFrames) {
+        return false;
+    }
+    isConvergenceRunning = false;
+    isConvergencePassed = evaluateConvergence();
+    return true;
+}
+
+bool EngineGuideCapture::evaluateConvergence() const
+{
+    const ConvergenceRun& run = *convergence;
+    const double frames = run.capturedFrames;
+    const auto meanAt = [&](size_t texel) { return run.sum[texel] / frames; };
+    double referenceTotal = 0.0;
+    double meanTotal = 0.0;
+    for (size_t texel = 0; texel < run.reference.size(); ++texel) {
+        referenceTotal += run.reference[texel];
+        meanTotal += meanAt(texel);
+    }
+    if (referenceTotal <= 0.0) {
+        logError("FAIL ReSTIR DI convergence: the reference is black", "GuideCapture");
+        return false;
+    }
+
+    // signed per tile: the noise cancels within a tile, a local bias does not
+    std::vector<double> tileShares;
+    const uint32_t width = run.extent.width;
+    const uint32_t height = run.extent.height;
+    for (uint32_t tileY = 0; tileY < height; tileY += kConvergenceTileSize) {
+        for (uint32_t tileX = 0; tileX < width; tileX += kConvergenceTileSize) {
+            double reference = 0.0;
+            double difference = 0.0;
+            for (uint32_t y = tileY; y < std::min(tileY + kConvergenceTileSize, height); ++y) {
+                for (uint32_t x = tileX; x < std::min(tileX + kConvergenceTileSize, width); ++x) {
+                    const size_t texel = static_cast<size_t>(y) * width + x;
+                    reference += run.reference[texel];
+                    difference += meanAt(texel) - run.reference[texel];
+                }
+            }
+            if (reference > 0.0) {
+                tileShares.push_back(std::abs(difference) / reference);
+            }
+        }
+    }
+    std::ranges::sort(tileShares);
+    const auto tileQuantile = [&](double quantile)
+    { return tileShares[static_cast<size_t>(quantile * static_cast<double>(tileShares.size() - 1))]; };
+    const double bias = (meanTotal - referenceTotal) / referenceTotal;
+    const double tileP90 = tileQuantile(0.9);
+    const bool isPassed = std::abs(bias) <= kMaxConvergenceBias && tileP90 <= kMaxConvergenceTileP90;
+    const std::string detail = std::format(
+        "{}, {} frames after {}: bias {:+.3f}%, {}x{} tiles median {:.2f}% / p90 {:.2f}% / max {:.2f}% ({} tiles), "
+        "per-frame error {:.2f}%, frame-to-frame change {:.2f}%",
+        kShots[kConvergenceShot].name, run.capturedFrames, kConvergenceWarmupFrames, bias * 100.0, kConvergenceTileSize,
+        kConvergenceTileSize, tileQuantile(0.5) * 100.0, tileP90 * 100.0, tileShares.back() * 100.0, tileShares.size(),
+        run.absoluteErrorSum / frames / referenceTotal * 100.0,
+        run.changeSum / (frames - 1.0) / referenceTotal * 100.0);
+    if (isPassed) {
+        logInfo(std::format("PASS ReSTIR DI convergence ({})", detail), "GuideCapture");
+    } else {
+        logError(std::format("FAIL ReSTIR DI convergence ({})", detail), "GuideCapture");
+    }
+    return isPassed;
 }
 
 bool EngineGuideCapture::writePng(const Renderer::DisplayCapture& capture) const

@@ -3,7 +3,8 @@
 add_executable(gltf_ktx2 main.cpp)
 target_compile_features(gltf_ktx2 PRIVATE cxx_std_23)
 # vulkan_core.h only for VkFormat values; no Vulkan loader link
-target_include_directories(gltf_ktx2 PRIVATE "${CMAKE_SOURCE_DIR}/ThirdParty" "${Vulkan_INCLUDE_DIR}")
+# src only for the header-only slot color-space rules shared with the engine loader
+target_include_directories(gltf_ktx2 PRIVATE "${CMAKE_SOURCE_DIR}/ThirdParty" "${CMAKE_SOURCE_DIR}/src" "${Vulkan_INCLUDE_DIR}")
 target_link_libraries(gltf_ktx2 PRIVATE ThirdParty::ktx)
 
 # libktx is a DLL/.so; put it next to the tool so it runs from the build dir

@@ -632,10 +632,10 @@ void Renderer::recordResolve(const vk::raii::CommandBuffer& cmd)
     gpuTimer.end(cmd, GpuTimerScope::Resolve);
 }
 
-// ReSTIR DI: initial reservoirs, then fused resampling + shading into directRadiance
+// ReSTIR DI: initial reservoirs, temporal resampling, then spatial resampling + shading into directRadiance
 void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
 {
-    // this frame's guide writes and last frame's reservoir writes -> reads and writes of either pass. Reads of
+    // this frame's guide writes and last frame's reservoir writes -> reads and writes of every pass. Reads of
     // directRadiance by earlier frames are ordered before this frame's resolve (recordResolve)
     const vk::MemoryBarrier2 resamplingBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
@@ -648,12 +648,19 @@ void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
     cmd.pipelineBarrier2(dependency);
     // with no lights rtxdi_shade only writes black. Lights arrive only with a load, which resets history, so the
     // reservoirs skipped meanwhile are never reused
-    if (worldLights.hasLights()) {
+    const bool hasLights = worldLights.hasLights();
+    if (hasLights) {
         dispatchFullscreen(cmd, shaderObjects.frameShaders.rtxdiInitial);
-        // initial reservoirs -> the shade pass's loads
+        // initial reservoirs -> the temporal pass's loads and in-place stores
         cmd.pipelineBarrier2(dependency);
     }
     gpuTimer.end(cmd, GpuTimerScope::RtxdiInitial);
+    if (hasLights) {
+        dispatchFullscreen(cmd, shaderObjects.frameShaders.rtxdiTemporal);
+        // temporal reservoirs -> the spatial pass's neighbor loads
+        cmd.pipelineBarrier2(dependency);
+    }
+    gpuTimer.end(cmd, GpuTimerScope::RtxdiTemporal);
     dispatchFullscreen(cmd, shaderObjects.frameShaders.rtxdiShade);
     gpuTimer.end(cmd, GpuTimerScope::RtxdiShade);
 }

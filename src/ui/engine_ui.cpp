@@ -164,6 +164,17 @@ namespace
             textureRow(textures, "Diffuse transmission color map", e.diffuseTransmissionColor.tex);
         }
     }
+
+    // enum values need not be contiguous (RTXDI's temporal bias modes skip Pairwise)
+    template <typename Enum, size_t Count>
+    void comboEnum(const char* label, Enum& value, const std::array<const char*, Count>& names,
+                   const std::array<Enum, Count>& values)
+    {
+        int index = static_cast<int>(std::ranges::find(values, value) - values.begin());
+        if (ImGui::Combo(label, &index, names.data(), static_cast<int>(Count))) {
+            value = values[static_cast<size_t>(index)];
+        }
+    }
 } // namespace
 
 EngineUi::EngineUi(const UiContext& context) : context(context)
@@ -563,7 +574,7 @@ void EngineUi::drawDebugViewPanel()
     case DebugViewCategory::Lighting:
         if (settings.view == DebugView::LightingOnly) {
             ImGui::Checkbox("ReSTIR DI reference", &context.renderer.getRtxdi().isReference);
-            ImGui::SetItemTooltip("no reuse, more initial candidates: the unbiased ground truth of the fused pass");
+            ImGui::SetItemTooltip("no reuse, more initial candidates: the unbiased ground truth of the reuse passes");
             ImGui::TextDisabled("converges to Shadowed lights");
         }
         break;
@@ -841,7 +852,7 @@ void EngineUi::drawRayTracingPanel()
     RtxdiContext& rtxdi = context.renderer.getRtxdi();
     RtxdiContext::Settings& di = rtxdi.settings;
     ImGui::Checkbox("Reference (no reuse)", &rtxdi.isReference);
-    ImGui::SetItemTooltip("no reuse, 32 local + 8 infinite candidates: the unbiased ground truth of the fused pass");
+    ImGui::SetItemTooltip("no reuse, 32 local + 8 infinite candidates: the unbiased ground truth of the reuse passes");
     ImGui::BeginDisabled(rtxdi.isReference);
     sliderU32("Local light candidates", di.localLightSamples, 0, 64);
     ImGui::SetItemTooltip("initial RIS candidates per pixel from point and spot lights");
@@ -852,29 +863,39 @@ void EngineUi::drawRayTracingPanel()
     ImGui::SetItemTooltip("one shadow ray per pixel in the initial pass; occluded samples are dropped before reuse");
 
     ImGui::BeginDisabled(rtxdi.isReference);
-    sliderU32("Spatial samples", di.spatialSamples, 0, 16);
-    ImGui::SetItemTooltip("neighbor reservoirs merged per pixel by the fused spatiotemporal pass");
-    sliderU32("Disocclusion boost samples", di.disocclusionBoostSamples, 0, 32);
-    ImGui::SetItemTooltip("spatial samples while a pixel's history is shorter than the max history length");
-    ImGui::SliderFloat("Sampling radius", &di.samplingRadius, 1.0f, 64.0f, "%.0f px", ImGuiSliderFlags_AlwaysClamp);
     sliderU32("Max history length", di.maxHistoryLength, 1, 64);
-    ImGui::SetItemTooltip("frames of temporal reuse: longer is smoother, slower to react to changes");
+    ImGui::SetItemTooltip("frames of temporal reuse: longer is smoother, slower to react to changes. Below it, the "
+                          "spatial pass takes the disocclusion boost samples");
+    comboEnum("Temporal bias correction", di.temporalBiasCorrection, std::array{"Off", "Basic", "Ray traced"},
+              std::array{ReSTIRDI_TemporalBiasCorrectionMode::Off, ReSTIRDI_TemporalBiasCorrectionMode::Basic,
+                         ReSTIRDI_TemporalBiasCorrectionMode::Raytraced});
+    ImGui::SetItemTooltip("Ray traced adds a shadow ray per pixel reusing last frame's sample");
+    ImGui::Checkbox("Visibility shortcut", &di.isVisibilityShortcutEnabled);
+    ImGui::SetItemTooltip("skip the temporal bias-correction ray for samples tested at their pixel last frame");
+    ImGui::SameLine();
+    ImGui::Checkbox("Fallback sampling", &di.isFallbackSamplingEnabled);
+    ImGui::SetItemTooltip("when no history pixel matches, reuse last frame's reservoir at the same pixel (RTXDI 3.2, "
+                          "aimed at screen-edge disocclusions; considerations C-M4-1)");
+
+    // the stratified neighbor walk covers quadrants in pairs
+    sliderU32("Spatial samples", di.spatialSamples, 0, 16);
+    di.spatialSamples &= ~1u;
+    ImGui::SetItemTooltip("neighbor reservoirs merged per pixel by the spatial pass (even)");
+    sliderU32("Disocclusion boost samples", di.disocclusionBoostSamples, 0, 32);
+    di.disocclusionBoostSamples &= ~1u;
+    ImGui::SetItemTooltip("spatial samples while a pixel's history is shorter than the max history length (even)");
+    ImGui::SliderFloat("Sampling radius", &di.samplingRadius, 1.0f, 64.0f, "%.0f px", ImGuiSliderFlags_AlwaysClamp);
+    comboEnum("Spatial bias correction", di.spatialBiasCorrection, std::array{"Off", "Basic", "Pairwise", "Ray traced"},
+              std::array{ReSTIRDI_SpatialBiasCorrectionMode::Off, ReSTIRDI_SpatialBiasCorrectionMode::Basic,
+                         ReSTIRDI_SpatialBiasCorrectionMode::Pairwise, ReSTIRDI_SpatialBiasCorrectionMode::Raytraced});
+    ImGui::SetItemTooltip("Ray traced adds a shadow ray per merged neighbor");
+    ImGui::Checkbox("Material similarity", &di.isMaterialSimilarityTestEnabled);
+    ImGui::SetItemTooltip("reject neighbors whose roughness or reflectance differs too much");
+
     ImGui::SliderFloat("Depth threshold", &di.depthThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("relative depth difference above which a neighbor or history pixel is rejected");
     ImGui::SliderFloat("Normal threshold", &di.normalThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("minimum dot product of normals for a neighbor or history pixel to be reused");
-    constexpr std::array kBiasModes{"Off", "Basic", "Pairwise", "Ray traced"};
-    int biasMode = static_cast<int>(di.biasCorrection);
-    if (ImGui::Combo("Bias correction", &biasMode, kBiasModes.data(), static_cast<int>(kBiasModes.size()))) {
-        di.biasCorrection = static_cast<ReSTIRDI_SpatioTemporalBiasCorrectionMode>(biasMode);
-    }
-    ImGui::SetItemTooltip("Pairwise matches the reference; RTXDI 3.1's fused Basic darkens by ~35%% "
-                          "(considerations C-F3-2); Ray traced adds a shadow ray per reused sample");
-    ImGui::Checkbox("Visibility shortcut", &di.isVisibilityShortcutEnabled);
-    ImGui::SetItemTooltip("skip the bias-correction ray for samples reused from the previous frame");
-    ImGui::SameLine();
-    ImGui::Checkbox("Material similarity", &di.isMaterialSimilarityTestEnabled);
-    ImGui::SetItemTooltip("reject neighbors whose roughness or reflectance differs too much");
     ImGui::Checkbox("Boiling filter", &di.isBoilingFilterEnabled);
     ImGui::SetItemTooltip("suppress reservoirs far brighter than their 8x8 tile, which spread as bright blotches");
     ImGui::BeginDisabled(!di.isBoilingFilterEnabled);

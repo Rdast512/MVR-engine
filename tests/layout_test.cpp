@@ -517,11 +517,10 @@ namespace
         LAYOUT_FIELD(GpuRtxdiConstants, temporalResampling),
         LAYOUT_FIELD(GpuRtxdiConstants, boilingFilter),
         LAYOUT_FIELD(GpuRtxdiConstants, spatialResampling),
-        LAYOUT_FIELD(GpuRtxdiConstants, spatioTemporalResampling),
         LAYOUT_FIELD(GpuRtxdiConstants, shading),
         LAYOUT_FIELD(GpuRtxdiConstants, reservoirs),
         LAYOUT_FIELD(GpuRtxdiConstants, neighborOffsets),
-        LAYOUT_FIELD(GpuRtxdiConstants, isFusedResampling),
+        LAYOUT_FIELD(GpuRtxdiConstants, resamplingMode),
         LAYOUT_FIELD(GpuRtxdiConstants, reservoirCount),
     }};
     // clang-format on

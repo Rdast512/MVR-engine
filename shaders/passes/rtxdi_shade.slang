@@ -4,25 +4,20 @@ import core.frame;
 
 static const uint kRtxdiTile = 8; // matches src/render/vk_renderer.cpp
 
-// before the RTXDI headers: the filter's groupshared arrays are sized by the group
-#define RTXDI_ENABLE_BOILING_FILTER
-#define RTXDI_BOILING_FILTER_GROUP_SIZE 8 // kRtxdiTile
-
 #include "lighting/rtxdi_bridge.slang"
-#include "Rtxdi/DI/BoilingFilter.hlsli"
-#include "Rtxdi/DI/SpatioTemporalResampling.hlsli"
+#include "Rtxdi/DI/SpatialResampling.hlsli"
 #include "Rtxdi/Utils/RandomSamplerPerPassSeeds.hlsli"
 
-// ReSTIR DI fused spatiotemporal resampling and shading (PBR plan F3): this pixel's initial reservoir against last
-// frame's reservoirs at the reprojected pixel and its neighbors, the boiling filter, one final visibility ray, then
-// directRadiance = evalBrdf · L_i · NdotL · W. The reference configuration (isFusedResampling 0) and a history reset
-// shade the initial reservoir instead. The result is stored for next frame's reuse
+// ReSTIR DI spatial resampling and shading (spec/features/rtxdi_3_2_update.md §3.1): this pixel's temporal reservoir
+// against this frame's neighbors, one final visibility ray, then directRadiance = evalBrdf · L_i · NdotL · W. Without
+// spatial resampling (the reference) it shades the reservoir it loads. Neighbors are read from the temporal output
+// and the result is written to the shading buffer, a different one, which is next frame's temporal input
 
 [[vk::push_constant]] ConstantBuffer<FramePushData> push;
 
 [shader("compute")]
 [numthreads(kRtxdiTile, kRtxdiTile, 1)]
-void rtxdiShadeMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_GroupThreadID)
+void rtxdiShadeMain(uint3 id : SV_DispatchThreadID)
 {
     const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
     rtxdiBridgeInit(root);
@@ -37,41 +32,30 @@ void rtxdiShadeMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_GroupThre
         }
         return;
     }
+    if (any(id.xy >= gRtxdiBridge.renderSize))
+    {
+        return;
+    }
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
-    // no early return before the boiling filter: it synchronizes the whole group. Out of bounds the surface is empty
     const RAB_Surface surface = RAB_GetGBufferSurface(int2(id.xy), false);
     const uint2 reservoirPosition = RTXDI_PixelPosToReservoirPos(id.xy, constants.runtime.activeCheckerboardField);
     RTXDI_DIReservoir reservoir = RTXDI_EmptyDIReservoir();
     if (RAB_IsSurfaceValid(surface))
     {
         reservoir = RTXDI_LoadDIReservoir(constants.reservoirBuffer, reservoirPosition,
-                                          constants.bufferIndices.initialSamplingOutputBufferIndex);
-    }
-
-    // uniform: after a reset the previous guides and reservoirs do not apply (undefined after a resize)
-    if (constants.isFusedResampling != 0 && hasHistory(root))
-    {
-        if (RAB_IsSurfaceValid(surface))
+                                          constants.bufferIndices.spatialResamplingInputBufferIndex);
+        // after a reset too: the neighbors are this frame's
+        if ((constants.resamplingMode & 2u) != 0)
         {
             RTXDI_RandomSamplerState rng = RTXDI_InitRandomSampler(id.xy, constants.runtime.frameIndex,
-                                                                   RTXDI_DI_TEMPORAL_RESAMPLING_RANDOM_SEED);
-            const float3 motion = tex2D(gRtxdiBridge.current.sampled[kGuideMotion]).Load(int3(id.xy, 0)).xyz;
-            int2 temporalPixel;
+                                                                   RTXDI_DI_SPATIAL_RESAMPLING_RANDOM_SEED);
             // re-evaluated below from the final reservoir
             RAB_LightSample selectedSample = RAB_EmptyLightSample();
-            reservoir = RTXDI_DISpatioTemporalResampling(
-                id.xy, surface, reservoir, rng, motion, constants.bufferIndices.temporalResamplingInputBufferIndex,
-                constants.runtime, constants.reservoirBuffer, constants.spatioTemporalResampling, temporalPixel,
-                selectedSample);
+            reservoir = RTXDI_DISpatialResampling(id.xy, surface, reservoir, rng, constants.runtime,
+                                                  constants.reservoirBuffer,
+                                                  constants.bufferIndices.spatialResamplingInputBufferIndex,
+                                                  constants.spatialResampling, selectedSample);
         }
-        if (constants.boilingFilter.enableBoilingFilter != 0)
-        {
-            RTXDI_BoilingFilter(localId.xy, constants.boilingFilter.boilingFilterStrength, reservoir);
-        }
-    }
-    if (any(id.xy >= gRtxdiBridge.renderSize))
-    {
-        return;
     }
 
     float3 radiance = float3(0.0, 0.0, 0.0);

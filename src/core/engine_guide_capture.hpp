@@ -15,7 +15,8 @@
 
 // guide captures for the E1 comparison with the Khronos screenshots and the A4 shading-attribute checks
 // (spec/pbr_implementation_plan.md E1, A4): each model alone at the origin, framed from a fixed direction, every guide
-// view written as a PNG under logs/guides; then the normal checks compare captures pixel by pixel.
+// view written as a PNG under logs/guides; then the normal checks compare captures pixel by pixel, and the convergence
+// check compares ReSTIR DI's mean against the exact punctual sum (spec/features/rtxdi_3_2_update.md §4).
 // ENGINE_GUIDE_CAPTURE=1 enables the run; the engine quits once the last shot is written and the checks are logged
 class EngineGuideCapture
 {
@@ -104,6 +105,14 @@ private:
         DebugView::AmbientOcclusion, DebugView::UnshadowedLights, DebugView::ShadowedLights,
         DebugView::LightingOnly,
     };
+    // ReSTIR DI (Lighting only) averaged over frames against Shadowed lights on the lamp shot, after its views
+    static constexpr size_t kConvergenceShot = 10;
+    static constexpr uint32_t kConvergenceWarmupFrames = 16;
+    static constexpr uint32_t kConvergenceFrames = 64;
+    static constexpr uint32_t kConvergenceTileSize = 16;
+    // shares of the reference's summed luminance; RTXDI 3.1's fused pass read +0.13% and 2.43%, its Basic bug -35%
+    static constexpr double kMaxConvergenceBias = 0.005;
+    static constexpr double kMaxConvergenceTileP90 = 0.03;
     // the load frame, then frames with the shot's camera before the first capture
     static constexpr uint32_t kSettleFrames = 3;
     // bounding sphere to frame height
@@ -122,6 +131,10 @@ private:
     void keepNormals(const Renderer::DisplayCapture& capture);
     // logs every check; the number that passed
     [[nodiscard]] size_t evaluateNormalChecks() const;
+    // one frame of the convergence run; true after its last frame
+    [[nodiscard]] bool advanceConvergence(const std::optional<Renderer::DisplayCapture>& capture);
+    // logs the metrics; true when within the limits
+    [[nodiscard]] bool evaluateConvergence() const;
     // next shot; true after the last one
     bool finishShot();
 
@@ -133,4 +146,25 @@ private:
     std::optional<std::pair<std::string, Variant>> loadedModel;
     // decoded normals per (shot, view) a check reads; zero where the pixel is empty
     std::map<std::pair<size_t, DebugView>, std::vector<glm::vec3>> keptNormals;
+
+    struct ConvergenceRun
+    {
+        vk::Extent2D extent;
+        // Shadowed lights luminance of the convergence shot
+        std::vector<float> reference;
+        // tested luminance summed over the captured frames
+        std::vector<double> sum;
+        std::vector<float> previous;
+        // over frames of the pixel sum of |frame - reference| and of |frame - previous frame|
+        double absoluteErrorSum = 0.0;
+        double changeSum = 0.0;
+        // frames since the run began, warm-up included
+        uint32_t frame = 0;
+        uint32_t capturedFrames = 0;
+    };
+    // engaged from the reference capture; the run begins after the shot's last view
+    std::optional<ConvergenceRun> convergence;
+    bool isConvergenceRunning = false;
+    // set once the run is evaluated
+    std::optional<bool> isConvergencePassed;
 };

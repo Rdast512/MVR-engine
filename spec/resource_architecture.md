@@ -321,7 +321,7 @@ Rules:
 | `MeshPushData` | 16 | all offsets asserted |
 | `MeshDgcSequence` | 32 | 16 B push data + 12 B draw command, `alignas(16)` so the BDA stays 8-byte aligned |
 | `CullPushData` | 16 | |
-| `GpuRtxdiConstants` | 360 | RTXDI blocks, `reservoirs` @ 336, `neighborOffsets` @ 344, `isFusedResampling` @ 352, `reservoirCount` @ 356 (F3); Slang mirror in `lighting/rtxdi_constants.slang` (textual, RTXDI's C structs), checked by `layout_test` |
+| `GpuRtxdiConstants` | 328 | RTXDI 3.2 blocks, `reservoirs` @ 304, `neighborOffsets` @ 312, `resamplingMode` @ 320, `reservoirCount` @ 324; Slang mirror in `lighting/rtxdi_constants.slang` (textual, RTXDI's C structs), checked by `layout_test` |
 | `GpuFrameRoot` | 184 | `lightCount` @ 88, `cullCounters` @ 112, `targets` @ 128, `localLightCount` @ 140, `exposure` @ 172, `worldLights` @ 176 |
 | `GpuModel` | 112 | `meshletBounds` @ 16, `primitives` @ 96, `attributeMask` @ 104 |
 | `GpuNode` | 112 | affine rows; `firstPrimitive` @ 64, `bboxMin` @ 80 |
@@ -502,6 +502,7 @@ The binding model (§1, model slices, frame root, handle-or-address) carries ove
 
 | Date | Change |
 |---|---|
+| 2026-11-15 | RTXDI 3.2 ([rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md)): `GpuRtxdiConstants` 328 B, without the spatiotemporal block, with 3.2's longer temporal block and `resamplingMode` in place of `isFusedResampling`. Reservoirs unchanged |
 | 2026-11-14 | PBR H2: `RenderTargets` gains the display-resolution post target (RGBA16F) and the 1×1 R32F exposure image; `GpuTargets` 200 B. `PostProcess` owns a host-visible 256-bin histogram buffer and one `GpuExposureReadback` (16 B) per frame slot |
 | 2026-11-14 | PBR C4 built: the M2 row lists the PTLAS, its state rows and the per-slot write lists and op entries; the per-slot TLAS is gone |
 | 2026-11-14 | PTLAS required (engine spec §10.3): the M2 row gains the PTLAS buffers of PBR C4 |

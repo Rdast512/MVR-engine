@@ -16,11 +16,10 @@ struct GpuRtxdiConstants
     RTXDI_DITemporalResamplingParameters temporalResampling;
     RTXDI_BoilingFilterParameters boilingFilter;
     RTXDI_DISpatialResamplingParameters spatialResampling;
-    RTXDI_DISpatioTemporalResamplingParameters spatioTemporalResampling;
     RTXDI_ShadingParameters shading;
     uint64_t reservoirs;      // RTXDI_PackedDIReservoir[c_NumReSTIRDIReservoirBuffers * reservoirArrayPitch]
     uint64_t neighborOffsets; // float2[neighborOffsetMask + 1]
-    uint isFusedResampling;   // 0: the reference, rtxdi_shade shades the initial sample
+    uint resamplingMode;      // rtxdi::ReSTIRDI_ResamplingMode: bit 0 temporal, bit 1 spatial; 0 is the reference
     uint reservoirCount;      // rows behind reservoirs
 };
 
