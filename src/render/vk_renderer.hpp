@@ -16,6 +16,7 @@
 #include "debug_view.hpp"
 #include "vk_meshlet_culling.hpp"
 #include "vk_render_targets.hpp"
+#include "vk_rt_pipeline.hpp"
 #include "vk_rt_scene.hpp"
 #include "vk_rtxdi.hpp"
 #include "vk_world_lights.hpp"
@@ -85,6 +86,8 @@ public:
     void enableRayCheck();
     // the frame recorded last; complete only after its fence, e.g. a waitIdle
     [[nodiscard]] const GpuRayCheckStats& getLastRayCheck() const;
+    // the SER check of the frame recorded last, indexed by isReorderEnabled; same completion rule
+    [[nodiscard]] std::span<const GpuSerCheckStats, 2> getLastSerCheck() const;
 
     // ENGINE_GUIDE_CAPTURE: the next recorded frame copies the presented image (the DLSS-RR output for Lit, else the
     // display image) to host memory after the debug view
@@ -117,6 +120,8 @@ private:
     void recordDebugView(const vk::raii::CommandBuffer& cmd);
     void recordMotionCheck(const vk::raii::CommandBuffer& cmd);
     void recordRayCheck(const vk::raii::CommandBuffer& cmd);
+    // SER pipeline against traceClosest, reorder off then on
+    void recordSerCheck(const vk::raii::CommandBuffer& cmd);
     // grows this slot's readback buffer; the slot's fence has been waited
     void recordDisplayCapture(const vk::raii::CommandBuffer& cmd);
     void recordPresent(vk::raii::CommandBuffer& cmd, uint32_t imageIndex);
@@ -164,6 +169,10 @@ private:
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> motionCheckStats;
     // per frame slot; empty unless enableRayCheck
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> rayCheckStats;
+    // per frame slot, GpuSerCheckStats per reorder mode; empty unless enableRayCheck
+    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> serCheckStats;
+    // passes/rt_ser_check.slang, indexed by isReorderEnabled; created by enableRayCheck
+    std::array<std::optional<RtPipeline>, 2> serCheckPipelines;
     uint32_t lastRecordedFrame = 0;
     // per frame slot; grown on the first capture at a larger extent
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> displayCaptures;

@@ -412,6 +412,19 @@ namespace
             LAYOUT_FIELD(RayCheckPushData, frameRoot),
             LAYOUT_FIELD(RayCheckPushData, stats),
         }},
+        {"SerCheckPushData", sizeof(SerCheckPushData), {
+            LAYOUT_FIELD(SerCheckPushData, frameRoot),
+            LAYOUT_FIELD(SerCheckPushData, stats),
+        }},
+        {"GpuSerCheckStats", sizeof(GpuSerCheckStats), {
+            LAYOUT_FIELD(GpuSerCheckStats, rays),
+            LAYOUT_FIELD(GpuSerCheckStats, hits),
+            LAYOUT_FIELD(GpuSerCheckStats, hitMismatches),
+            LAYOUT_FIELD(GpuSerCheckStats, idMismatches),
+            LAYOUT_FIELD(GpuSerCheckStats, dataMismatches),
+            LAYOUT_FIELD(GpuSerCheckStats, maxBarycentricErrorBits),
+            LAYOUT_FIELD(GpuSerCheckStats, maxDistanceErrorBits),
+        }},
         {"GpuRayCheckStats", sizeof(GpuRayCheckStats), {
             LAYOUT_FIELD(GpuRayCheckStats, coveredPixels),
             LAYOUT_FIELD(GpuRayCheckStats, interiorPixels),

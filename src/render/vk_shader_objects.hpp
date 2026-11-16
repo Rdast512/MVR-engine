@@ -5,6 +5,10 @@
 
 #include <array>
 #include <string_view>
+#include <vector>
+
+// SPIR-V of a file under ENGINE_SHADER_DIR/passes; throws when it cannot be opened
+[[nodiscard]] std::vector<char> readPassSpirv(std::string_view file);
 
 // linked mesh + fragment VK_EXT_shader_object pairs plus the unlinked compute shaders; all raster state is dynamic
 class ShaderObjects

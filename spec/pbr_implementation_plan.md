@@ -243,6 +243,8 @@ Each task lists **Do**, **Done when**, and **Must not** where relevant, plus its
 
 ### Phase A — Contracts (M0)
 
+See the [M0 as-built specs](./m0/README.md) for implementation contracts, verification and the remaining acceptance checks.
+
 #### A1 · POD layouts and constants — done (2026-11-08)
 
 - **Files:** `src/core/types.hpp`, `src/render/push_data.hpp`, `shaders/types.slang`, `src/core/vk_device.cpp`
@@ -250,7 +252,7 @@ Each task lists **Do**, **Done when**, and **Must not** where relevant, plus its
   - Slang `AlphaMode`, `LightType` and material flag constants mirroring `GpuMaterialFlag` (§4.2); move `kMaterialFlagUnlit` out of `material/pbr.slang`.
   - `enum class GpuLightType : uint32_t { Directional, Point, Spot }` (values used by `lightTypeFromName`); `GpuLight.type` becomes `GpuLightType`. Keep 64 B.
   - `GpuRayInstance` (8 B) and the `GpuFrameRoot` fields of §4.2 plus `frameFlags` (`kFrameFlagHistoryReset`, [motion_vectors.md](./features/motion_vectors.md) §4), with size and offset asserts.
-  - Cache `vk::PhysicalDeviceOpacityMicromapPropertiesEXT` in `HardwareCapabilities::opacityMicromap`, and `vk::PhysicalDeviceRayTracingInvocationReorderPropertiesEXT` with its hint logged at startup ([shader_execution_reordering.md](./features/shader_execution_reordering.md) SER1).
+  - Cache `vk::PhysicalDeviceOpacityMicromapPropertiesEXT` in `HardwareCapabilities::opacityMicromap`, and `vk::PhysicalDeviceRayTracingInvocationReorderPropertiesEXT` with its hint logged at startup ([g1_ser_rt_pipeline.md](./m4/g1_ser_rt_pipeline.md) SER1).
   - **Core-material data lives in `GpuMaterial`** (decided 2026-11-08). The resolve and every hit already load one `GpuMaterial` row; a second table would add a pointer load and a second row of cache lines per pixel, and `GpuMaterialExtension` (724 B per row) is mostly data no shader reads yet. So:
     - `KHR_materials_emissive_strength` is folded into `emissiveFactor` on the CPU when the row is packed: no field, no shader math;
     - `KHR_texture_transform` is precomputed on the CPU into one 2×3 float matrix per slot (`M = T · R · S`; 24 B × 5 slots), so the shader does no `sin`/`cos`. Rotation block in rows is `[c s; −s c]`, as in the Khronos sample renderer and the extension's example (v grows down); the GLSL snippet in the extension README has the opposite sign;
@@ -837,46 +839,15 @@ Output: `directRadiance` (RGBA16F, linear HDR, render res), a new `GpuTargets` e
 
 ### Phase G — Indirect: SER bounce, NRC, ReSTIR GI (M4)
 
-Spec §11.1, §11.3–11.6.
+Spec §11.1, §11.3–11.6. Started 2026-11-16. Each step has its own spec under [m4/](./m4/), which holds the scope, decisions, done-when and log of that step; this section only indexes them.
 
-#### G1 · SER RT pipeline
-
-- **Feature spec:** [shader_execution_reordering.md](./features/shader_execution_reordering.md) (SER1–SER6). It refines the steps below: the hint is computed from `InstanceIndex()` before the invoke, and the invoke stays because `HitObject::GetClusterID` is NV-only while position fetch on the hit object is EXT-only.
-- **Files:** `src/render/vk_rt_pipeline.{hpp,cpp}` (new), `shaders/raytracing/*`
-- **Do:**
-  - `VkPipeline` + SBT per shaded-ray pass: one raygen, one miss, one hit group (closest-hit only). Descriptor-heap pipeline flag as on the shader objects; `allowClusterAccelerationStructure` for cluster hits. Dispatch with `vkCmdTraceRaysIndirect2KHR`.
-  - Raygen: `HitObject::TraceRay` → `ReorderThread(hit, materialBin, bits)` → invoke the minimal closest-hit that returns `{rayInstance, meshletRow, triangle, barycentrics, hitT}` (skip the invoke if Slang exposes `ClusterID` and attributes on `HitObject`, spec Q8) → shade in raygen with `decodeHit` → `sampleMaterial` → BRDF. Until M7 the hint is the material's shader id; misses get their own bin.
-  - `rayTracingInvocationReorderReorderingHint` is already logged at startup (A1).
-- **Done when:** a debug raygen reproduces the C3 debug view; reorder on/off timings recorded on the 5070.
-
-#### G2 · Indirect pass
-
-- One ray per pixel from the primary surface (guides + depth), direction from `sampleBrdf` (VNDF), origin offset along `GeoNormal` plus the CLAS truncation bound (spec §10.2). Floor tier: half resolution, checkerboard.
-- At X₂: `decodeHit` → `sampleMaterial` → direct light via `RTXDI_SampleLocalLights` / `RTXDI_SampleInfiniteLights` without reuse + one `traceVisibility` → add emissive → query the cache for bounces 2…∞, weighted by the primary `ao` (§2 #10).
-- Writes the ReSTIR GI initial sample (hit position, normal, radiance). With NRC the cache radiance is not known yet: the pass writes the query record and G3's resolve completes the sample.
-
-#### G3 · NRC (M4)
-
-SDK: NVIDIA RTX Neural Radiance Cache (Vulkan host library + HLSL headers), pinned; prebuilt DLLs (NRC + CUDA runtime) copied next to the executable. Verify every SDK name against the pinned headers.
-
-- **Device:** enable `VK_NV_cooperative_vector` and merge NRC's required extensions and features, next to H1's NGX set. They are required: device creation throws when one is missing, with no SHaRC fallback.
-- **Context:** `nrc::vulkan::Context` after device init; `Configure` (render resolution, `kMaxBounces`, training budget) at init and on resize. The SDK allocates its buffers; the engine gives each a heap slot or BDA and never resizes them.
-- **Per frame:** `BeginFrame` (scene AABB from §9, training on) → `NrcConstants` into the per-slot block → update paths (`NRC_UPDATE`) + G2 as the query pass (`NRC_QUERY`) → `QueryAndTrain` (inference, then one training step) → **custom resolve** writing `throughput × cachedRadiance` into the ReSTIR GI samples (NRC guide step 7), not the SDK's combined-signal resolve → `EndFrame` after submit.
-- **Update paths** are shaded rays: they run in the G1 SER pipeline, reordering at every bounce (spec §11.1: the frame's most incoherent rays).
-- **Debug view:** the cache's radiance at the primary surface (spec §14, "cache debug resolve").
-- **`gi/nrc_bridge.slang`** matches the SDK's HLSL buffer packing with an explicit Slang layout, never by editing vendor headers.
-- Constants per frame slot through `GpuFrameRoot.cacheConstants`.
-- **Done when:** both tiers run NRC; training loss falls after load; the cache debug view shows cached radiance; an interior lit only by a sun is not black; the cache row of spec §2.3 is measured on the 2060 Super (spec R4).
-
-#### G5 · ReSTIR GI (M4)
-
-- RTXDI ReSTIR GI on the G2 samples: temporal then spatial reuse, boiling filter on, reconnection visibility through `traceVisibility`. Output `indirectRadiance` (RGBA16F, render res).
-- **Done when:** `Sponza` with a sun shows bounce light under arches, stable after DLSS-RR, and converges to the ground truth of spec §14: the same path code accumulated over many frames with the cache off and a high bounce count, on a static frame.
-
-#### G6 · Combine
-
-- `combine` CS: `noisyColor = directRadiance + indirectRadiance + emissive` (RGBA16F). The only place the three terms meet.
-- **Must not:** apply AO to direct, add a second path loop, or touch SDK buffers outside their bridge files and host modules.
+| Step | Spec | Summary | Status |
+|---|---|---|---|
+| G1 | [g1_ser_rt_pipeline.md](./m4/g1_ser_rt_pipeline.md) | `VkPipeline` + SBT per shaded-ray pass, `HitObject` trace → reorder → minimal closest-hit → shade in raygen; checked against the C3 ray-query path | built 2026-11-16; 2060 Super numbers open |
+| G2 | [g2_indirect_pass.md](./m4/g2_indirect_pass.md) | 1 ray/px from the primary surface, direct light at X₂, cache query, ReSTIR GI initial samples | not started |
+| G3 | [g3_nrc.md](./m4/g3_nrc.md) | NRC context, update paths in the SER pipeline, `QueryAndTrain`, custom resolve | not started |
+| G5 | [g5_restir_gi.md](./m4/g5_restir_gi.md) | RTXDI ReSTIR GI → `indirectRadiance` | not started |
+| G6 | [g6_combine.md](./m4/g6_combine.md) | `noisyColor = direct + indirect + emissive` | direct + emissive built (H1) |
 
 ### Phase H — DLSS Ray Reconstruction + post (M3)
 
@@ -973,7 +944,7 @@ A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
 | Milestone (spec §16.2) | Tasks |
 |---|---|
 | M0 Contracts | A1, A2, A3, A4 (**done**; A4 checked by `ENGINE_GUIDE_CAPTURE`), animation removal (**done**) |
-| M1 Vis buffer | B1, E1 (**done**; E1 guides vs Khronos screenshots and motion checked 2026-11-13); 32-bit payload kept, V8 deferred; culling lossless under reverse Z (`ENGINE_CULL_CHECK`, 2026-11-13); **M1 done** (spec §16.2) |
+| [M1 Vis buffer](./m1/README.md) | B1, E1 (**done**; E1 guides vs Khronos screenshots and motion checked 2026-11-13); 32-bit payload kept, V8 deferred; culling lossless under reverse Z (`ENGINE_CULL_CHECK`, 2026-11-13); **M1 done** (spec §16.2) |
 | M2 Cluster RT bring-up | C1, C2, C3 (**built**; C3's `ENGINE_RT_CHECK` closes C1's trace check), C4 PTLAS (**built** 2026-11-14 after M2 was reopened). Open: the async overlap capture and the 2060 Super |
 | M3 First lit frame | B1 (**done**), B2 (**done**), B3 (**done**), E1 (**done**: AO, jitter, unlit specular, `lodBias`), E2 (**done**: punctual; emissive triangles M7), F1 (**done**), F2 (**done**), F3 (**done**), H1 (**done**), H2 (**done**), E3 sun (**done**); **M3 done** (2026-11-14) |
 | M4 Indirect | G1, G2, G3 (NRC), G5, G6 |

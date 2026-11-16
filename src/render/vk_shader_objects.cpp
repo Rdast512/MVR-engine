@@ -12,21 +12,18 @@
     #define ENGINE_SHADER_DIR "./shaders"
 #endif
 
-namespace
+std::vector<char> readPassSpirv(std::string_view file)
 {
-    std::vector<char> readFile(const std::string& filename)
-    {
-        std::ifstream file(filename, std::ios::ate | std::ios::binary);
-
-        if (!file.is_open()) {
-            throw std::runtime_error("failed to open shader: " + filename);
-        }
-        std::vector<char> buffer(file.tellg());
-        file.seekg(0, std::ios::beg);
-        file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        return buffer;
+    const std::string filename = (std::filesystem::path(ENGINE_SHADER_DIR) / "passes" / file).string();
+    std::ifstream stream(filename, std::ios::ate | std::ios::binary);
+    if (!stream.is_open()) {
+        throw std::runtime_error("failed to open shader: " + filename);
     }
-} // namespace
+    std::vector<char> buffer(stream.tellg());
+    stream.seekg(0, std::ios::beg);
+    stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    return buffer;
+}
 
 ShaderObjects::ShaderObjects(const vk::raii::Device& device) : device(device) {}
 
@@ -102,7 +99,7 @@ void ShaderObjects::createRtShaders()
 vk::raii::ShaderEXT ShaderObjects::createComputeShader(std::string_view file, const char* entry,
                                                        std::string_view debugName) const
 {
-    const auto spirv = readFile((std::filesystem::path(ENGINE_SHADER_DIR) / "passes" / file).string());
+    const auto spirv = readPassSpirv(file);
     const vk::ShaderCreateInfoEXT createInfo{
         .flags = vk::ShaderCreateFlagBitsEXT::eDescriptorHeap,
         .stage = vk::ShaderStageFlagBits::eCompute,
@@ -124,10 +121,8 @@ void ShaderObjects::bindComputeShader(const vk::raii::CommandBuffer& cmd, const 
 
 ShaderObjects::MeshShaderPair ShaderObjects::createMeshShaderPair(const MeshShaderSource& source) const
 {
-    const auto passDir = std::filesystem::path(ENGINE_SHADER_DIR) / "passes";
-    const auto meshSpirv = readFile((passDir / source.meshFile).string());
-    const auto fragSpirv =
-        source.fragmentFile == source.meshFile ? meshSpirv : readFile((passDir / source.fragmentFile).string());
+    const auto meshSpirv = readPassSpirv(source.meshFile);
+    const auto fragSpirv = source.fragmentFile == source.meshFile ? meshSpirv : readPassSpirv(source.fragmentFile);
 
     // link stage lets the driver optimize the mesh->fragment interface like a monolithic pipeline;
     // heap mode runs without set layouts or push constant ranges

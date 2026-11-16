@@ -50,6 +50,9 @@ Renderer::~Renderer()
     for (HostBuffer& stats : rayCheckStats) {
         destroyHostBuffer(allocator.allocator, stats, nullptr);
     }
+    for (HostBuffer& stats : serCheckStats) {
+        destroyHostBuffer(allocator.allocator, stats, nullptr);
+    }
     for (HostBuffer& capture : displayCaptures) {
         destroyHostBuffer(allocator.allocator, capture, nullptr);
     }
@@ -73,8 +76,31 @@ void Renderer::enableRayCheck()
             rayCheckStats[slot] = createHostBuffer(sizeof(GpuRayCheckStats), allocator.allocator, device.vkdevice,
                                                    device.queueFamilyIndices, std::format("RayCheckStats_{}", slot),
                                                    nullptr);
+            serCheckStats[slot] = createHostBuffer(sizeof(std::array<GpuSerCheckStats, 2>), allocator.allocator,
+                                                   device.vkdevice, device.queueFamilyIndices,
+                                                   std::format("SerCheckStats_{}", slot), nullptr);
         }
     }
+    for (const bool isReorderEnabled : {false, true}) {
+        std::optional<RtPipeline>& pipeline = serCheckPipelines[isReorderEnabled ? 1 : 0];
+        if (!pipeline) {
+            pipeline.emplace(device, allocator,
+                             RtPipeline::Source{.file = "rt_ser_check.spv",
+                                                .raygenEntry = "serCheckRaygen",
+                                                .missEntry = "serCheckMiss",
+                                                .closestHitEntry = "serCheckClosestHit",
+                                                .debugName = isReorderEnabled ? "SerCheckReorder" : "SerCheck",
+                                                .isReorderEnabled = isReorderEnabled});
+        }
+    }
+}
+
+std::span<const GpuSerCheckStats, 2> Renderer::getLastSerCheck() const
+{
+    if (serCheckStats[lastRecordedFrame].mapped == nullptr) {
+        throw std::logic_error("SER check read without enableRayCheck");
+    }
+    return std::span<const GpuSerCheckStats, 2>(static_cast<const GpuSerCheckStats*>(serCheckStats[lastRecordedFrame].mapped), 2);
 }
 
 const GpuRayCheckStats& Renderer::getLastRayCheck() const
@@ -183,6 +209,9 @@ void Renderer::drawFrame()
     if (void* stats = rayCheckStats[currentFrame].mapped) {
         *static_cast<GpuRayCheckStats*>(stats) = {};
     }
+    if (void* stats = serCheckStats[currentFrame].mapped) {
+        *static_cast<std::array<GpuSerCheckStats, 2>*>(stats) = {};
+    }
 
     // the fence covers both submits of this slot; every path below ends in a submit that signals it
     deviceRef.resetFences(fence);
@@ -234,7 +263,8 @@ void Renderer::drawFrame()
         const vk::CommandBufferSubmitInfo rayCmdInfo{.commandBuffer = *rayCmd};
         const vk::SemaphoreSubmitInfo tlasWait{.semaphore = *frameSync.computeTimeline,
                                                .value = computeTimelineValues[currentFrame],
-                                               .stageMask = vk::PipelineStageFlagBits2::eComputeShader};
+                                               .stageMask = vk::PipelineStageFlagBits2::eComputeShader |
+                                                   vk::PipelineStageFlagBits2::eRayTracingShaderKHR};
         // the next frame's in-place PTLAS update waits for this frame's rays
         const vk::SemaphoreSubmitInfo raySignal{.semaphore = *frameSync.rayTimeline,
                                                 .value = frameNumber,
@@ -419,6 +449,17 @@ void Renderer::recordRayCommands(vk::raii::CommandBuffer& cmd)
     }
     if (rayCheckStats[currentFrame].mapped != nullptr) {
         recordRayCheck(cmd);
+    }
+    gpuTimer.end(cmd, GpuTimerScope::SelfTests);
+    if (serCheckStats[currentFrame].mapped != nullptr) {
+        ZoneScopedN("SerCheck");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneSerCheck, *cmd, "GPU_SerCheck", gpuTrace);
+#endif
+        recordSerCheck(cmd);
+    } else {
+        gpuTimer.end(cmd, GpuTimerScope::SerCheck);
+        gpuTimer.end(cmd, GpuTimerScope::SerCheckReorder);
     }
     displayCaptureExtents[currentFrame].reset();
     if (isDisplayCapturePending) {
@@ -776,6 +817,32 @@ void Renderer::recordMotionCheck(const vk::raii::CommandBuffer& cmd)
     // a fence wait alone does not make device writes visible to the host
     const vk::MemoryBarrier2 readbackBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &readbackBarrier});
+}
+
+// reads the frame root, camera and TLAS only; writes only its stats buffer
+void Renderer::recordSerCheck(const vk::raii::CommandBuffer& cmd)
+{
+    const vk::Extent2D extent = targets.getExtent();
+    for (const bool isReorderEnabled : {false, true}) {
+        const size_t mode = isReorderEnabled ? 1 : 0;
+        const SerCheckPushData push{
+            .frameRoot = frameData.frameRootAddress(currentFrame),
+            .stats = serCheckStats[currentFrame].address + sizeof(GpuSerCheckStats) * mode,
+        };
+        const RtPipeline& pipeline = *serCheckPipelines[mode];
+        pipeline.bind(cmd);
+        cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
+        pipeline.traceRays(cmd, currentFrame, extent);
+        gpuTimer.end(cmd, isReorderEnabled ? GpuTimerScope::SerCheckReorder : GpuTimerScope::SerCheck);
+    }
+    // a fence wait alone does not make device writes visible to the host
+    const vk::MemoryBarrier2 readbackBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
         .dstStageMask = vk::PipelineStageFlagBits2::eHost,
         .dstAccessMask = vk::AccessFlagBits2::eHostRead,

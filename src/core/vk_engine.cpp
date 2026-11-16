@@ -117,7 +117,8 @@ void Engine::initialize()
     }
     if (rayCheck) {
         renderer->enableRayCheck();
-        logInfo("Ray check: primary rays against the vis buffer every frame, results follow", "RayCheck");
+        logInfo("Ray check: primary rays against the vis buffer and through the SER pipeline every frame, results follow",
+                "RayCheck");
     }
 
 #if ENGINE_ENABLE_IMGUI
@@ -320,7 +321,7 @@ void Engine::run()
             }
             if (rayCheck) {
                 deviceRef.waitIdle();
-                quit = rayCheck->endFrame(renderer->getLastRayCheck(), isRayCheckStandalone) || quit;
+                quit = rayCheck->endFrame(renderer->getLastRayCheck(), renderer->getLastSerCheck(), isRayCheckStandalone) || quit;
             }
         } else {
             ZoneScopedN("MinimizedWait");

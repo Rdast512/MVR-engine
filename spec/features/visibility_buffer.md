@@ -237,7 +237,7 @@ All decided 2026-11-07.
 | V4 | done: `RasterBin`, `DrawRecordFlag::TwoSided`, winding flip in `mesh_raster` | one DGC state command buffer for both bins until M6 gives `AlphaTested` its own fragment shader |
 | V5 | done: vis-buffer raster, `debug_view`, `present`; `mesh_debug`, `RasterVariant` and `fragmentShaderBarycentric` removed | barycentrics from Olano–Greer homogeneous edge functions, valid for triangles crossing the eye plane. The Hi-Z view now draws in the present pass, so it shows the final pyramid (the next frame's early test) |
 | V6 | done: resolve, `sampleMaterial`, all §3.6 guides, motion | guide storage writes go through typed images (`RWTexture2D<T, 0, format>`, AU5) with a startup format-feature check; sampled views serve the reads. Checked on Sponza: unit normals, shading and geometric normals in one hemisphere, geometric normal facing the viewer, zero motion for a static camera. Motion under camera and entity motion checked by the scripted motion test ([motion_vectors.md](./motion_vectors.md) §5.1, 2026-11-13). Guides of `MetalRoughSpheres`, `TwoSidedPlane` and `UnlitTest` match the Khronos screenshots in kind (`ENGINE_GUIDE_CAPTURE`, PBR plan E1, 2026-11-13) |
-| V7 | cleanup done | spec §2.3 timings not recorded on either tier |
+| V7 | cleanup done | RTX 5070 stage timings recorded on 2026-11-13 (engine spec §2.3). RTX 2060 Super timings remain open under [M0 A10 and C-M0-1](../m0/a10_culling_baseline.md). |
 | V8 | deferred (2026-11-08): 32-bit payload kept | |
 
 Validation: no errors after startup, during frames, or on resize. The remaining best-practice warnings come from pre-existing code or the ImGui backend, apart from `Depth32Format`, which reverse Z justifies (commented at `findDepthFormat`).

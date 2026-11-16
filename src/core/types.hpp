@@ -469,6 +469,26 @@ struct GpuCullCounters
     uint32_t drawRecordsOverflowed = 0;
     uint32_t visibleOverflowed = 0;
 };
+// rt_ser_check pass, ENGINE_RT_CHECK only (spec/m4/g1_ser_rt_pipeline.md §4): the SER trace against traceClosest on
+// the same primary ray, one per reorder mode; zeroed by the CPU per frame
+struct GpuSerCheckStats {
+    uint32_t rays = 0;
+    // traceClosest hits
+    uint32_t hits = 0;
+    // one of the two hits, the other misses
+    uint32_t hitMismatches = 0;
+    // another (ray instance, meshlet, triangle)
+    uint32_t idMismatches = 0;
+    // same ids, other barycentrics, hit distance, positions or transforms
+    uint32_t dataMismatches = 0;
+    // float bits
+    uint32_t maxBarycentricErrorBits = 0;
+    // float bits, relative to the hit distance
+    uint32_t maxDistanceErrorBits = 0;
+};
+static_assert(sizeof(GpuSerCheckStats) == 28);
+static_assert(offsetof(GpuSerCheckStats, maxDistanceErrorBits) == 24);
+
 // motion_check pass, ENGINE_MOTION_TEST only (spec/features/motion_vectors.md §5); zeroed by the CPU per frame
 struct GpuMotionCheckStats {
     uint32_t pixels = 0;

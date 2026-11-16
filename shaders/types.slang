@@ -522,6 +522,26 @@ public struct RayCheckPushData
     public uint64_t stats; // GpuRayCheckStats
 };
 
+// 16 B, matches src/render/push_data.hpp
+public struct SerCheckPushData
+{
+    public uint64_t frameRoot;
+    public uint64_t stats; // GpuSerCheckStats of the pipeline's reorder mode
+};
+
+// 28 B, matches src/core/types.hpp: rt_ser_check pass, ENGINE_RT_CHECK only. The SER trace against traceClosest on
+// the same primary ray: both are the same traversal, so every field must match bit for bit
+public struct GpuSerCheckStats
+{
+    public uint rays;
+    public uint hits;           // traceClosest hits
+    public uint hitMismatches;  // one of the two hits, the other misses
+    public uint idMismatches;   // another (ray instance, meshlet, triangle)
+    public uint dataMismatches; // same ids, other barycentrics, hit distance, positions or transforms
+    public uint maxBarycentricErrorBits; // float bits
+    public uint maxDistanceErrorBits;    // float bits, relative to the hit distance
+};
+
 // 68 B, matches src/core/types.hpp: rt_check pass, ENGINE_RT_CHECK only. max* fields are float bits
 public struct GpuRayCheckStats
 {

@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-13 · **Status:** C1 built (CLAS + cluster BLAS per primitive), RT1–RT3 done (C2 built), RT4–RT5 done (C3 built); PTLAS required since 2026-11-14 and built (C4, RT9 done); the RT pipeline not started · **Milestone:** M2 (C2, C3, C4), M4 (RT pipeline, SER), M6 (OMM), post-1.0 (LOD, §16.3)
 **Implements:** engine spec §10 (RT scene), §11.1 (ray model); plan C2, C3, D4, G1 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
-**Related:** [shader_execution_reordering.md](./shader_execution_reordering.md), [visibility_buffer.md](./visibility_buffer.md), sample [README](../../reference/vk_lod_clusters/README.md) and [docs/](../../reference/vk_lod_clusters/docs/); secondary references in §1.1
+**Related:** [g1_ser_rt_pipeline.md](../m4/g1_ser_rt_pipeline.md), [visibility_buffer.md](./visibility_buffer.md), sample [README](../../reference/vk_lod_clusters/README.md) and [docs/](../../reference/vk_lod_clusters/docs/); secondary references in §1.1
 
 This document maps the NVIDIA sample `reference/vk_lod_clusters` onto the engine: what it does for ray tracing, which parts the engine takes as they are, which parts it changes, and in what order to build them. Sample paths are relative to `reference/vk_lod_clusters/` unless a section names another reference. Line numbers are from the vendored copy and are given for orientation only.
 
@@ -199,7 +199,7 @@ Required since 2026-11-14 (engine spec §10.3); built 2026-11-14 (plan C4, step 
 
 ### 4.2 Closest-hit payload
 
-The sample's path-trace closest-hit (`render_pathtrace_clusters.rchit.glsl`) writes `{hitT, instanceID, clusterID, triangleID, barycentrics}` plus either the 3 fetched positions or the world geometric normal (`PATHTRACE_HIT_POSITIONS`). The engine's SER design ([shader_execution_reordering.md](./shader_execution_reordering.md) §3) writes `{clusterId, triangle, barycentrics, hitT}` (24 B) and takes the positions from `HitObject::GetTriangleVertexPositions` in raygen, which keeps the payload small across `ReorderThread`.
+The sample's path-trace closest-hit (`render_pathtrace_clusters.rchit.glsl`) writes `{hitT, instanceID, clusterID, triangleID, barycentrics}` plus either the 3 fetched positions or the world geometric normal (`PATHTRACE_HIT_POSITIONS`). The engine's SER design ([g1_ser_rt_pipeline.md](../m4/g1_ser_rt_pipeline.md) §3) writes `{clusterId, triangle, barycentrics, hitT}` (24 B) and takes the positions from `HitObject::GetTriangleVertexPositions` in raygen, which keeps the payload small across `ReorderThread`.
 
 **Reading `ClusterID` in Slang.** The sample declares it in GLSL with `spirv_decorate(extensions = ["SPV_NV_cluster_acceleration_structure"], capabilities = [5437], 11, 5436) in int gl_ClusterIDNV_` (BuiltIn `ClusterIDNV` = 5436, capability `RayTracingClusterAccelerationStructureNV` = 5437). If the pinned Slang has no closest-hit intrinsic for it, use the same SPIR-V through `spirv_asm` in one helper in `raytracing.hit`. The SER4 compile probe answers which.
 

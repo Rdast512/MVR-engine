@@ -30,9 +30,9 @@ struct MeshletCullSettings
     // keeps culling against the camera captured when it was frozen, and occlusion against the pyramid of that frame
     // (vk_lod_clusters' freeze): the pyramid is not rebuilt while frozen. Fly out to inspect the result
     bool isCameraFrozen = false;
-    // per-triangle tests in the mesh shaders; off by default until measured (meshlet_culling_options.md 2D)
-    bool isTriangleBackfaceEnabled = false;
-    bool isSmallTriangleEnabled = false;
+    // per-triangle tests in the mesh shaders; double-sided primitives skip the backface test
+    bool isTriangleBackfaceEnabled = true;
+    bool isSmallTriangleEnabled = true;
     // 0 = device maxMeshWorkGroupCount; small values force many DGC sequences per execute
     uint32_t maxMeshletsPerSequence = 0;
 };

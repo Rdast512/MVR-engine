@@ -223,7 +223,7 @@ set(ENGINE_SLANG_CONFIG_FLAGS
 # shared by engine passes and test shaders
 set(ENGINE_SLANG_FLAGS
     -target spirv
-    -profile sm_6_9
+    -profile sm_6_10
     -capability ${ENGINE_SLANG_CAPABILITY_STRING}
     -matrix-layout-column-major
     -fvk-use-entrypoint-name
@@ -284,6 +284,7 @@ engine_add_slang_pass(passes/hiz_view.slang ENTRIES hizViewMesh hizViewFrag)
 engine_add_slang_pass(passes/hiz_build.slang ENTRIES hizBuild)
 engine_add_slang_pass(passes/rt_instances.slang ENTRIES rtInstancesMain)
 engine_add_slang_pass(passes/rt_check.slang ENTRIES rayCheckMain)
+engine_add_slang_pass(passes/rt_ser_check.slang ENTRIES serCheckRaygen serCheckClosestHit serCheckMiss)
 engine_add_slang_pass(passes/light_world.slang ENTRIES lightWorldMain)
 engine_add_slang_pass(passes/rtxdi_initial.slang ENTRIES rtxdiInitialMain FLAGS ${RTXDI_SLANG_FLAGS})
 engine_add_slang_pass(passes/rtxdi_temporal.slang ENTRIES rtxdiTemporalMain FLAGS ${RTXDI_SLANG_FLAGS})

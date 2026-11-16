@@ -116,6 +116,15 @@ struct RayCheckPushData {
 
 static_assert(sizeof(RayCheckPushData) == 16);
 
+// rt_ser_check pass; must match shaders/types.slang SerCheckPushData
+struct SerCheckPushData {
+    vk::DeviceAddress frameRoot;
+    // GpuSerCheckStats of the pipeline's reorder mode
+    vk::DeviceAddress stats;
+};
+
+static_assert(sizeof(SerCheckPushData) == 16);
+
 // passes/exposure.slang (both entries); must match shaders/types.slang ExposurePushData
 struct ExposurePushData {
     vk::DeviceAddress frameRoot;
@@ -191,4 +200,4 @@ static_assert(sizeof(HiZViewPushData) == 24);
 inline constexpr size_t kMaxPushDataBytes =
     std::max({sizeof(MeshPushData), sizeof(CullPushData), sizeof(HiZPushData), sizeof(HiZViewPushData),
               sizeof(FramePushData), sizeof(PresentPushData), sizeof(RtInstancesPushData),
-              sizeof(ExposurePushData), sizeof(LightWorldPushData)});
+              sizeof(ExposurePushData), sizeof(LightWorldPushData), sizeof(SerCheckPushData)});
