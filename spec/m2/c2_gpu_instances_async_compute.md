@@ -27,6 +27,29 @@
 
 [RT scene](../../src/render/vk_rt_scene.cpp) · [Instance shader](../../shaders/passes/rt_instances.slang) · [Frame sync](../../src/core/vk_frame_sync.cpp) · [Renderer submits](../../src/render/vk_renderer.cpp)
 
+## Slot and queue decisions
+
+| Owner | On layout change | Per frame |
+|---|---|---|
+| CPU instance metadata | Build contiguous active node/primitive rows and upload them after slot waits. | Reuse metadata. The normal frame path publishes transforms. |
+| Async compute | Recreate or resize the slot's build resources as needed. | GPU reads world transforms, writes instances or C4 changes, builds and signals compute. |
+| Graphics | Use the current slot's root and row tables. | Submit raster and resolve independently of the TLAS wait. Ray work waits for that frame's compute timeline. |
+
+C2's original KHR build used a host-known count because it came
+from the scene metadata and the 5070 reported no KHR indirect AS
+build. It built one AS per slot. C4 shares one PTLAS and introduces
+a reverse edge from previous rays to the next AS update.
+[Renderer](../../src/render/vk_renderer.cpp) · [C4](c4_partitioned_tlas.md)
+
+## Tasks and acceptance
+
+| Task | State and evidence |
+|---|---|
+| Publish metadata and GPU instances | Built. CPU reference matched GPU transform and metadata readback. |
+| Establish the ray-only ready wait | Built. Raster and resolve submit separately. |
+| Record a full-build comparator | Done on RTX 5070. |
+| Capture actual queue overlap | Open. Stage timings and queue selection do not quantify overlap. |
+
 ## Verification
 
 The RTX 5070 readback matched the CPU reference for 103, 167, 359 and

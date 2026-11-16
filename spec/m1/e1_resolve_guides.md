@@ -46,6 +46,33 @@ The depth and visibility targets belong to the current frame. The two guide
 sets retain the previous surface data for temporal consumers.
 [Motion contract](motion_vectors.md) · [Engine spec §9.3](../../docs/engine_spec.md)
 
+## Guide lifetime and synchronization
+
+The resolve owns guide storage writes. Its slot block points to
+current and previous frame-number parity. Current vis and depth do
+not retain prior-surface data. M3 F2 adds a position guide for that
+need. The image set and its slot-local handle block have distinct
+lifetimes.
+
+| Edge | Dependency |
+|---|---|
+| Raster/Hi-Z to resolve | Visibility color writes become sampled reads. Depth is already readable. |
+| Old readers to parity reuse | Order older compute/present reads before this frame overwrites images. |
+| Resolve to shading/debug | Storage writes become visible to sampled readers. The ray submit also waits for its compute timeline value. |
+
+Guides stay linear and roughness stays perceptual. Background
+always writes its guide values, including direction-only motion,
+so uncovered pixels cannot retain old contents.
+[Resolve recording](../../src/render/vk_renderer.cpp) · [F2 history](../m3/f2_rtxdi_bridge.md)
+
+## Tasks and acceptance
+
+| Task | State |
+|---|---|
+| Bind render-sized primary targets and guide sets | Done in [V1](v1_render_targets.md). |
+| Reconstruct and write guides in one tiled dispatch | Done in [V6](v6_material_resolve.md), checked by the captures below. |
+| Provide motion and later temporal input | Motion verified on M1. AO, jitter and specular weight are [M3 E1](../m3/e1_guide_followups.md). |
+
 ## Verification
 
 `ENGINE_GUIDE_CAPTURE=1` records PNGs under `logs/guides`. M1 evidence

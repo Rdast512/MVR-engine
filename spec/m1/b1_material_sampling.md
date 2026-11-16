@@ -30,6 +30,28 @@ M3 adds a zero specular weight for unlit. The resolve samples visible
 surfaces, while M6 owns alpha coverage at raster time.
 [Material shader](../../shaders/material/pbr.slang) · [Surface reconstruction](../../shaders/geometry/surface.slang) · [Texture color space](../../src/core/texture_color_space.hpp)
 
+## Shader contract and fallback logic
+
+Color views decode RGB from sRGB in hardware. Alpha remains coverage
+data. The sampler checks both texture and sampler indices before
+creating a handle. The default texel value of 1 passes the factors
+through. Normal mapping additionally requires valid handedness and
+a nondegenerate tangent after orthogonalizing it against the normal.
+
+Decode normal XY to `[-1, 1]`, reconstruct Z from XY, scale XY by
+normal strength and normalize after transforming through the world
+tangent basis. This supports BC5 and keeps the glTF +Y convention.
+The shared surface provides facing and handedness under mirroring.
+[Color-space mapping](../../src/core/texture_color_space.hpp) · [Surface](../../shaders/geometry/surface.slang)
+
+## Tasks and acceptance
+
+| Task | State and evidence |
+|---|---|
+| Centralize core sampling and missing-slot logic | Done. Raster resolves sampled material through B1. M2 ray hits supply their own gradients. |
+| Preserve sidedness and normal mapping | Done. A4 tangent and E1 two-sided comparisons. |
+| Verify slot transforms | Done in [M3 B1](../m3/b1_texture_transform.md), covering UV0, UV1 and normal-frame adjustment. |
+
 ## Verification
 
 The M1 `MetalRoughSpheres` guide capture showed the expected metallic,

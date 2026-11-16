@@ -45,6 +45,35 @@ SBT record index, and the decompression method mask and maximum indirect count.
 M4 G1, M6 and M8 own the uses of these queried values.
 [Device initialization](../../src/core/vk_device.cpp) · [M4 G1](../m4/g1_ser_rt_pipeline.md)
 
+## Decisions and data flow
+
+| Decision | Implementation constraint | Reason |
+|---|---|---|
+| A device address at the start of push data | `FramePushData` is 8 B. `MeshPushData` is 16 B, with the first visible row and meshlet count at bytes 8 and 12. | Raster can use the same root contract inside each DGC sequence. Pass-local values do not expand the root. |
+| Frame-local addresses, global material IDs | Material IDs name the shared material table. Geometry slices are reached through the model row. Ray-instance primitive rows are absolute and cluster IDs are relative to their model. | GPU asset allocation changes can patch addresses without changing the cluster's identity within its model. |
+| Precompute core material data on upload | The five UV matrices start at byte 112 of `GpuMaterial`. Flag bit and matrix slot order match the texture fields. | The common material path fetches one material row and applies the same packed transform to UVs and derivatives. |
+| Discover capabilities once | Query the device's OMM, reorder and decompression properties on startup and cache them in `HardwareCapabilities`. | The later owners can choose paths using device data. Logging a feature's properties establishes no performance result. |
+
+Current root offsets are `tlas` 56, `targets` 128, `frameFlags` 136,
+`rayInstances` 144, `rtxdiConstants` 152, `cacheConstants` 160,
+`frameIndex` 168, `exposure` 172, `worldLights` 176 and
+`prevWorldLights` 184. These are the current ABI after later milestones
+added data. A1's producer contract is that each address belongs to the
+published frame and is initialized before its consumer runs. See A2 for
+publication and the zero/default values.
+[Push layouts](../../src/render/push_data.hpp) · [Frame data](a2_slang_modules.md) · [Resource architecture](../resource_architecture.md)
+
+## Tasks and acceptance
+
+| Task | State | Evidence |
+|---|---|---|
+| Mirror alpha and light enums, material bits and ray row | Done | C++ sizes and offsets are asserted. The reflected layout test covers the shader mirror. |
+| Pack UV transforms and emissive strength | Done | M3 B1 checked five slots and both supported UV sets. |
+| Provide frame-root and render-target layouts | Done | M1 resolve reads the root and slot target block. Later owners extend those same two layouts. |
+| Cache OMM and SER properties and log SER and decompression data | Done | Device initialization owns the queries. G1 consumed the reorder hint on RTX 5070. |
+
+[M3 B1 check](../m3/b1_texture_transform.md) · [G1 capability evidence](../m4/g1_ser_rt_pipeline.md)
+
 ## Verification
 
 The host assertions guard layout at compile time. `ctest -R '^layout$'` checks

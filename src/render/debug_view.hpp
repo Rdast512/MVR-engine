@@ -48,6 +48,8 @@ enum class DebugView : uint32_t
     DlssInput,
     // the reservoir rtxdi_shade stored: hue by light, brightness by its sample count M up to the history cap
     RtxdiReservoirs,
+    // the indirect pass's initial ReSTIR GI reservoir shaded without reuse: one-bounce indirect light, 1 sample
+    IndirectSamples,
     Count,
 };
 
@@ -60,6 +62,7 @@ static_assert(std::to_underlying(DebugView::ShadowedLights) == 23);
 static_assert(std::to_underlying(DebugView::LightingOnly) == 24);
 static_assert(std::to_underlying(DebugView::DlssInput) == 25);
 static_assert(std::to_underlying(DebugView::RtxdiReservoirs) == 26);
+static_assert(std::to_underlying(DebugView::IndirectSamples) == 27);
 
 enum class DebugViewCategory : uint8_t
 {
@@ -129,6 +132,7 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"Lighting only", DebugViewCategory::Lighting, true},
     {"DLSS input", DebugViewCategory::Upscaling, true},
     {"RTXDI reservoirs", DebugViewCategory::Lighting, true},
+    {"Indirect samples", DebugViewCategory::Lighting, true},
 }};
 
 [[nodiscard]] constexpr const DebugViewInfo& debugViewInfo(DebugView view)

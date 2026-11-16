@@ -22,6 +22,38 @@ implementation, as `raytracing/trace.slang` did in M3.
 
 [Resource split](../features/resource_manager_split.md) · [UI split](../features/engine_ui_split.md) · [Color-space policy](../../src/core/texture_color_space.hpp) · [Link ownership](../../src/util/CMakeLists.txt) · [Recreate path](../../src/core/vk_engine.cpp)
 
+## Original A3 and audit decisions
+
+A3 removed the obsolete G-buffer and Lambert shader path after raster
+changed to writing visibility. It kept the required device-side RT
+extension and feature configuration so M2 and M4 could build on it.
+AU7 later removed empty units from build and shader lists. That distinction
+explains why some files reappear in later milestones with working code.
+
+AU2 and AU3 are coupled to the frame and app ownership rules. The asset
+store handles persistent table storage, `FrameData` publishes slot state,
+`FrameSync` owns pools and fences, and the renderer owns its attachments.
+The UI issues requests through the engine rather than controlling asset
+and swapchain lifetimes directly.
+
+The swapchain path implements AU10 in three stages. SDL resize or an
+acquire/present status sets one pending flag. The engine services it
+before building the next eligible frame. The renderer supplies the
+previous swapchain to creation and rebuilds extent-dependent resources,
+then the engine refreshes ImGui. The out-of-date acquire path still
+signals the current slot fence after the offscreen submit.
+[Swapchain](../../src/core/vk_swapchain.cpp) · [Renderer](../../src/render/vk_renderer.cpp)
+
+## Tasks and acceptance
+
+| Task | State | Evidence |
+|---|---|---|
+| Remove obsolete shader path and scaffold units | Done | A3 and AU7 records list removed paths and the remaining runtime pass owners. |
+| Separate ownership and remove stale interfaces | Done | AU2/AU3 feature specs and current renderer/app entry points. |
+| Centralize texture space and dependency linkage | Done | C-M0-4 and C-M0-3 record the shared mapping and one implementation library owner. |
+| Make swapchain recreation converge on one path | Done | C-M0-2 records one rebuild in the resize scenario. |
+| GPU scene deltas and loader split | Later work | AU4 and the remaining AU6 items retain their owners. |
+
 ## Verification and open work
 
 - C-M0-2 records one recreate for the scripted resize and 13 of 13 motion

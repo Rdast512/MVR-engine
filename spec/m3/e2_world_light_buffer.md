@@ -22,6 +22,30 @@
 
 [World lights](../../src/render/vk_world_lights.cpp) · [GPU conversion](../../shaders/passes/light_world.slang) · [Asset light upload](../../src/core/vk_asset_buffers.cpp) · [Renderer submits](../../src/render/vk_renderer.cpp)
 
+## Data ownership and ordering
+
+| Data | Writer | Reader and lifetime |
+|---|---|---|
+| Model-space punctual rows | Asset integration and unload through `AssetBuffers` | Persistent input to `light_world`. Stable-partition point/spot before directional when the set changes. |
+| Slot world rows | One GPU invocation per output light, on the compute queue | Current DI and debug readers wait for compute completion. Prior-frame DI can read the other slot via F2. |
+| Light region split | `WorldLights::localLightCount` and total count | Root and RTXDI agree on local and infinite index regions. Sun is appended after asset rows. |
+
+The shader multiplies position by the entity world matrix with w = 1
+and direction with w = 0 then normalizes. Keep intensity, range and
+cones authored. This avoids per-light CPU world transforms. A growth
+allocates capacity at the next power of two after earlier ray readers
+have finished. A zero total skips the dispatch. The receiver still
+handles the no-light case so old direct-light output cannot leak.
+
+## Tasks and acceptance
+
+| Task | State and evidence |
+|---|---|
+| Upload model-space rows grouped by sampling region | Done. Lamp has five locals. Directional fixture has one infinite row. |
+| Transform and publish world lights on compute | Done. The co-rotated lamp/camera check confirms light placement follows the mesh. |
+| Order reuse and resize with prior-frame reads | Done with F2's previous address and ray timeline. |
+| Add emissive geometry lights | Deferred to M7. |
+
 ## Verification
 
 `Unshadowed lights` sums the guide-based BRDF and punctual contributions.

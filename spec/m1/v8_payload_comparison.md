@@ -23,6 +23,19 @@ Record the comparison under Q3. The 32-bit payload fits the planned L1
 packed 64-bit depth-and-payload atomic. A format change needs measured
 benefit and a supported path for L1.
 
+## Tasks and acceptance
+
+| Task | State and gate |
+|---|---|
+| Add a temporary wide path | Deferred. Change integer attachment, fetch and pack/unpack together. Preserve depth-based coverage and all row/cull-phase semantics. |
+| Validate equal outputs | Open. Run the same cull and guide checks before comparing cost. |
+| Time and profile both widths | Open. Match GPU, driver, scene, resolution, frame count and flags. Record mean raster/resolve times and bandwidth evidence for each. |
+| Resolve Q3 | Open. Record whether a change wins and how the L1 packed software-raster depth path stays viable. |
+
+V7 records current 32-bit cost. The milestone record has no 64-bit
+measurement.
+[V7 benchmark](v7_cleanup_and_timings.md)
+
 ## Log
 
 | Date | Change |

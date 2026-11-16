@@ -41,6 +41,27 @@ still transitions for later passes. M3 jitter uses unjittered cull matrices
 and widens the conservative subpixel bounds.
 [Cull host](../../src/render/vk_meshlet_culling.cpp) · [Cull passes](../../shaders/passes/meshlet_cull.slang) · [Renderer](../../src/render/vk_renderer.cpp)
 
+## Phase invariants
+
+| Query | Matrix and pyramid | Rejection |
+|---|---|---|
+| Early frustum and subpixel | Current or frozen view | Terminal. |
+| Early occlusion | Previous transforms against previous Hi-Z, or frozen transforms against frozen Hi-Z | Instance candidate or one meshlet bit in the early record's reject mask. |
+| Late occlusion | Current transforms against the early build | Final. Only early occlusion rejects enter this phase. |
+
+The projected rect is tested at its center. A finer mip is usable
+when the rect fits that mip's 2×2 filter footprint. Compare the
+nearest bound depth against the farthest depth in that footprint,
+with the conservative nudge applied in reverse-Z direction.
+
+## Tasks and acceptance
+
+| Task | State |
+|---|---|
+| Adopt reverse depth end to end | Built in [V2](v2_reverse_z.md). |
+| Keep mip footprint compatible with multi-level reduction | Built in [V3](v3_hiz_build.md). |
+| Preserve previous/current and frozen history | Built. The 16-pose check covers a stale early pyramid after a turn. Frozen fly-out remains open under engine spec §8.1. |
+
 ## Verification
 
 `hiz_footprint` exercises mip and sample-footprint selection in reverse Z.

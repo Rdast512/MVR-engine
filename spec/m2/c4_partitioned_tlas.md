@@ -35,12 +35,50 @@ The two-state OMM flag travels with rays. With Slang 2026.20,
 C-C4-3 specifies rechecking it on a Slang upgrade.
 [Visibility trace](../../shaders/raytracing/trace.slang) · [Closest query](../../shaders/geometry/hit.slang) · [M4 G1](../m4/g1_ser_rt_pipeline.md)
 
+## Update states and barriers
+
+| State | GPU work | Build behavior |
+|---|---|---|
+| New layout, resized PTLAS or forced rebuild | Emit all rows and save transforms. | Source address 0. Use the input shape that sized the destination. |
+| Valid layout with changed transforms | Compare to the saved 48 B transform. Append each changed row once with a wave reservation. | Update in place. Make shader writes to the operation data and count visible to AS build. |
+| Still or empty scene | Unchanged rows emit no writes. The empty scene still gets a valid PTLAS. | A zero-op stream preserves the AS address contract. |
+
+The CPU sizes for at most one write per row and resets the slot's
+count after the compute wait. The previous ray timeline protects
+the shared AS, and the current compute signal protects the next
+ray submit. Growth waits for both timelines. Count readback is
+only telemetry, ordered by a compute-to-host barrier and the slot
+wait. The UI can force a full build or change grid density.
+
+Fixed membership makes transform edits cheap to express. It can
+widen bounds for a moving instance far from its original cell.
+The 5070 comparison measured additional update cost from a global
+partition variant and kept the uniform XZ grid.
+[PTLAS recording](../../src/render/vk_rt_scene.cpp) · [Grid settings](../../docs/settings.md)
+
+## Tasks and acceptance
+
+| Task | State |
+|---|---|
+| Require PTLAS support and align storage/scratch | Built. RTX 2060 Super capability check open. |
+| Emit GPU ops/count and protect in-place updates | Built. Still frames write zero instances. |
+| Apply OMM two-state at ray level | Built. SPIR-V workaround remains C-C4-3. |
+| Verify parity and compare against C2 | Recorded on the 5070, including moving rows and model unload. |
+
 ## Verification
 
 The 2026-11-14 RTX 5070 checks matched 318/318 motion, 294/294 cull and
-154/154 guide frames. Still frames wrote zero instances. Sponza build time
-was 0.015–0.018 ms still and 0.12 ms when all 103 instances moved, against
-the 0.101 ms C2 full build. Field 64 reached 0.18 ms fully moving.
+154/154 guide frames. Still frames wrote zero instances. These are
+the recorded async-build times on driver 621.01 in Release without
+layers. Fields add their instances to startup Sponza.
+
+| Scene | C2 full build | C4 still | C4 moving |
+|---|---:|---:|---:|
+| Sponza, 103 rows | 0.101 ms | 0.015–0.018 ms | 0.12 ms, 103 writes |
+| Field 8, 167 rows | 0.104 ms | 0.017 ms | — |
+| Field 16, 359 rows | 0.119 ms | 0.017 ms | — |
+| Field 64, 4,199 rows | 0.150 ms | 0.016–0.019 ms | 0.12 ms for 359 writes, 0.18 ms for 4,199 |
+
 C-C4-4 tracks the cost of non-empty updates. Floor-tier capability and
 overlap evidence are tracked by [M2 acceptance](./README.md#recorded-acceptance).
 [PBR plan, C4](../pbr_implementation_plan.md) · [Considerations](../considerations.md)

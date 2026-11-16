@@ -109,6 +109,7 @@ public static const uint kDebugViewShadowedLights = 23u;
 public static const uint kDebugViewLightingOnly = 24u;
 public static const uint kDebugViewDlssInput = 25u;
 public static const uint kDebugViewRtxdiReservoirs = 26u;
+public static const uint kDebugViewIndirectSamples = 27u;
 public static const uint kDebugViewModeMask = 0xffu;
 public static const uint kDebugViewFlagEdges = 1u << 8;
 

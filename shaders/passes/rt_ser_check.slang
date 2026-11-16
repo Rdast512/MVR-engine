@@ -55,7 +55,7 @@ void serCheckRaygen()
 
     // the SER trace first, so only the ray lives across the reorder
     RayHit shaded;
-    const bool isShadedHit = traceShaded(root, primary.ray, shaded);
+    const bool isShadedHit = traceShaded(root.tlas, primary.ray, shaded);
     RayHit expected;
     const bool isExpectedHit = traceClosest(root, primary.ray, expected);
 

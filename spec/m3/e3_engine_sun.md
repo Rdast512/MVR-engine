@@ -18,13 +18,37 @@ Lit/RR path. Toggling the sun changes the light count and resets temporal
 history. Guide captures disable it to preserve the assets' own lighting.
 [World lights](../../src/render/vk_world_lights.cpp) · [Sun row](../../shaders/passes/light_world.slang) · [Sun panel](../../src/ui/engine_ui.cpp) · [Guide capture](../../src/core/engine_guide_capture.cpp)
 
+## Settings and history decisions
+
+Sponza has no authored punctual light. An engine directional
+row gives the courtyard a reproducible direct-light source while
+keeping the model reusable. The sun needs no model or entity row.
+For azimuth a and elevation e, its direction toward the sky is
+`(cos(e)cos(a), sin(e), cos(e)sin(a))`. The GPU row stores the negative
+of that vector and B3 returns the opposite for shading and visibility.
+
+Changes to direction or intensity update the row in place. Keeping
+the same light index allows F2's previous-row history to describe
+the light at its previous settings. A toggle changes the light
+set size and invalidates that index history. The 10 lux default
+keeps M3's linear FP16 input inside its usable range, with post
+exposure providing the display adjustment.
+
+## Tasks and acceptance
+
+| Task | State and evidence |
+|---|---|
+| Add one world-space sun in the infinite region | Done. Root light totals and the RTXDI region include it. |
+| Wire controls and test asset isolation | Done. UI controls enable, color, lux and angles. Guide runs preserve each fixture's own lights. |
+| Prove vertex/ray/shading behavior on lit Sponza | Done. Shadowed courtyard and pose-repeat evidence below. |
+| Provide gallery illumination | M4 indirect remains the intended owner under C-E3-1. |
+
 ## Verification
 
 The sunlit courtyard shows floor and upper-arch lighting and the
 planters' and columns' shadows. The startup camera stays in the
-+Z gallery for benchmark continuity. Its roof and curtains block direct
-sun across the recorded direction sweep, so gallery bounce lighting
-comes with M4.
++Z gallery for benchmark continuity. The 18-direction sweep lit at most
+0.6% of that view directly. Gallery bounce lighting comes with M4.
 
 The original Quality-mode courtyard run recorded 0.35% temporal
 deviation of the mean with the camera still. The pose-repeat checks

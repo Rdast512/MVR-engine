@@ -6,6 +6,7 @@
 **Used by:** [G2 indirect pass](./g2_indirect_pass.md), [G3 NRC](./g3_nrc.md) update paths
 **Related:** [Slang SER reference](../../ThirdParty/Slang-win/share/doc/slang/shader-execution-reordering.md) (pinned v2026.22), [vk_raytracing_tutorial_v2_reference.md](../../reference/vk_raytracing_tutorial_v2_reference.md), [ray_tracing_mega_geometry.md](../features/ray_tracing_mega_geometry.md) §6
 **Considerations:** C-G1-1 (`ClusterIDNV` through `spirv_asm`), C-G1-2 (no subgroup ops after `ReorderThread`)
+**Follow-ups:** [g1_ser_followups.md](./g1_ser_followups.md) (alignment with NVIDIA's SER code)
 **History:** written 2026-11-08 as `spec/features/shader_execution_reordering.md`; moved here on 2026-11-16 when M4 started
 
 Secondary rays scatter: neighbouring pixels in a warp hit different objects with different materials, so the warp runs every material's code path with most lanes idle, and fetches unrelated memory. SER lets the hardware regroup threads by what they hit **between traversal and shading**, so each warp shades one material over coherent data. It is the main lever on the indirect bounce and the cache training paths, the most expensive and most incoherent work in the frame (spec §2.3: 3.0–3.5 ms indirect, 0.6–0.8 ms cache).
@@ -35,7 +36,7 @@ G1 builds the pipeline infrastructure and proves it on primary rays, where the r
 | `VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT` through `VkPipelineCreateFlags2CreateInfo`, `VK_NULL_HANDLE` layout | SDK 1.4.363, [VK_EXT_descriptor_heap.md](../VkExtensionsSpecs/VK_EXT_descriptor_heap.md) | same heaps and `pushDataEXT` as the shader objects |
 | `VkRayTracingPipelineClusterAccelerationStructureCreateInfoNV { allowClusterAccelerationStructure }` | SDK `vulkan_core.h` | hits on CLAS geometry and `ClusterIDNV` |
 | EXT `HitObject` on Slang 2026.22: `TraceRay`, `ReorderThread`, `Invoke`, `IsHit`, `GetInstanceIndex`, `GetPrimitiveIndex`, `GetAttributes`, `GetTriangleVertexPositions`, `GetObjectToWorld` / `GetWorldToObject` (`float4x3`), `GetRayDesc().TMax` = hit distance (`OpHitObjectGetRayTMaxEXT`) | SER4 probe, `spirv-val` clean | everything but the cluster id comes from the hit object |
-| `HitObject::GetRayTCurrent` is HLSL / CUDA only | SER4 probe | `GetRayDesc().TMax` instead |
+| `HitObject::GetRayTCurrent` is HLSL / CUDA only: the core module declares `[require(hlsl, …)]`, `[require(cuda, …)]` and has no SPIR-V case, in 2026.22 and on master (2026-11-17). The SER doc's "Vulkan EXT" note is wrong. No flag helps: `-ignore-capabilities` fails with E41009 (no body), `-emit-spirv-via-glsl` and `-target glsl` with E36107 | SER4 probe; core-module source checked 2026-11-17 ([follow-ups](./g1_ser_followups.md) S5) | `GetRayDesc().TMax` instead, which emits the one `OpHitObjectGetRayTMaxEXT`. Upstream: issue [#12554](https://github.com/shader-slang/slang/issues/12554), fix in draft PR [#12566](https://github.com/shader-slang/slang/pull/12566) (open 2026-11-17); switching gains nothing, the value is the same |
 | `HitObject::GetClusterID` is NV-only; no `ClusterID()` intrinsic for SPIR-V hit shaders | SER4 probe | the closest-hit invoke stays and reads `ClusterIDNV` through `spirv_asm` (C-G1-1). Closes Q8 |
 | `[vk::constant_id(0)] const bool` in a module is emitted as `OpSpecConstantTrue` + `SpecId 0` | probe | reordering is a specialization constant (§3) |
 | Slang 2026.22 emits `RAY_FLAG_FORCE_OMM_2_STATE` without its SPIR-V capability | considerations C-C4-3 | `traceShaded` calls `requireOmm2StateRayFlag()` |
@@ -47,7 +48,7 @@ G1 builds the pipeline infrastructure and proves it on primary rays, where the r
 ```
 // raygen (raytracing/ser.slang traceShaded)
 hit = HitObject::TraceRay(tlas, SKIP_PROCEDURAL | FORCE_OMM_2_STATE, 0xff, 0, 0, 0, ray, payload)
-if (kIsSerReorderEnabled) ReorderThread(hit, hit.IsHit() ? kSerHintHit : kSerHintMiss, kSerHintBits)
+if (kIsSerReorderEnabled) ReorderThread(hit)            // no hint before M7 (follow-ups S1)
 if (hit.IsHit()) HitObject::Invoke(hit, payload)      // closest-hit writes ClusterIDNV only
 RayHit from the hit object + payload.clusterId → decodeHit → sampleMaterial → BRDF (G2)
 ```
@@ -55,7 +56,7 @@ RayHit from the hit object + payload.clusterId → decodeHit → sampleMaterial 
 | Decision | Rule | Why |
 |---|---|---|
 | Hint | material shader bin of the hit primitive from M7 (spec §9.1); misses get their own value | groups lanes that run the same shading code |
-| Hint before M7 | hit (0) or miss (1), 1 bit. Every primitive is `RasterBin::Opaque` until M6, so the bin carries no information yet | fewest bits that separate anything |
+| Hint before M7 | none: `ReorderThread(hit)`. The sort already groups by shader (hit group, miss) and NOPs before any hint; NVIDIA's `vk_gltf_renderer` and `ser_pathtrace` use the plain form. Replaced the 1-bit hit/miss hint on 2026-11-16 ([follow-ups](./g1_ser_followups.md) S1) | the hint would repeat the shader sort |
 | Payload | `ClusterPayload { clusterId }`, 4 B | the only field the EXT hit object lacks |
 | `RayHit` | the same struct `traceClosest` fills, so `decodeHit` serves both paths | one decode path |
 | Misses | not invoked; the miss shader is an empty SBT record | nothing to shade |
@@ -114,6 +115,8 @@ Release, validation off, bench mode (`ENGINE_RT_CHECK=1 ENGINE_BENCH_FRAMES=2000
 
 Dispatch order has no effect (both spans equal when both use one mode). Primary rays are coherent, so reordering only adds cost here; the gain is measured on G2's incoherent bounce rays. A runtime branch around `ReorderThread` slows the off path by 0.18 ms even when not taken, hence the specialization constant.
 
+On G2's bounce rays (2026-11-17, [follow-ups](./g1_ser_followups.md) §6): `ReorderThread` costs ~0.067 ms at 853×480 by itself, the closest-hit `Invoke` < 1 %, and the reorder still does not pay with one material model.
+
 Still open: the 2060 Super's logged hint and on/off numbers.
 
 ---
@@ -129,7 +132,7 @@ Still open: the 2060 Super's logged hint and on/off numbers.
 | SER5 | hint: hit / miss until M7, 1 bit | done 2026-11-16; material bins from M7 |
 | SER6 | `rt_ser_check` in `ENGINE_RT_CHECK`, timer scopes `SER check` / `SER check, reorder`, §5 numbers | done on the 5070; 2060 Super open |
 
-Moved out of G1: the UI reorder toggle goes to G2, the first pass a user sees; with the specialization constant it switches between two pipelines. The `SER` source for the `Ray *` debug views is dropped: the check compares every field bit for bit, which a debug image would only repeat.
+Moved out of G1: the UI reorder toggle goes to G2 (done), the first pass a user sees; with the specialization constant it switches between two pipelines. The `SER` source for the `Ray *` debug views is dropped: the check compares every field bit for bit, which a debug image would only repeat.
 
 ---
 

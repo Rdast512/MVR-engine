@@ -13,6 +13,7 @@
 #include "vk_post.hpp"
 #include "vk_gpu_timer.hpp"
 #include "vk_hiz.hpp"
+#include "vk_indirect.hpp"
 #include "debug_view.hpp"
 #include "vk_meshlet_culling.hpp"
 #include "vk_render_targets.hpp"
@@ -61,6 +62,7 @@ public:
 
     [[nodiscard]] MeshletCulling& getCulling() noexcept { return culling; }
     [[nodiscard]] RtxdiContext& getRtxdi() noexcept { return rtxdi; }
+    [[nodiscard]] IndirectPass& getIndirect() noexcept { return indirect; }
     [[nodiscard]] WorldLights& getWorldLights() noexcept { return worldLights; }
     [[nodiscard]] RayTracingScene& getRayTracingScene() noexcept { return rtScene; }
     [[nodiscard]] Dlss& getDlss() noexcept { return dlss; }
@@ -152,6 +154,8 @@ private:
     RayTracingScene rtScene;
     WorldLights worldLights;
     RtxdiContext rtxdi;
+    // writes rtxdi's GI reservoirs
+    IndirectPass indirect;
     Dlss dlss;
     PostProcess post;
     // false after a resize or a frame without the Lit view: the next evaluation resets DLSS history

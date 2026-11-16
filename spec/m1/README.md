@@ -16,7 +16,19 @@ design and implementation history.
 | [B1 · Material sampling](b1_material_sampling.md) | Core metallic-roughness channels, normal mapping and explicit gradients |
 | [E1 · Resolve and guides](e1_resolve_guides.md) | V1 and V6, render targets, surface reconstruction and guide outputs |
 | [Motion vectors and reprojection](motion_vectors.md) | E1 motion, history ownership and scripted verification |
-| [V8 · Visibility payload comparison](v8_payload_comparison.md) | Deferred 32-bit and 64-bit raster/resolve comparison |
+
+## Visibility-buffer implementation steps
+
+| Step | Technical spec | State |
+|---|---|---|
+| V1 | [Render targets and extent](v1_render_targets.md) | Built |
+| V2 | [Reverse-Z depth convention](v2_reverse_z.md) | Built and checked |
+| V3 | [Three-level Hi-Z build](v3_hiz_build.md) | Built and checked |
+| V4 | [Raster bins and winding](v4_raster_bins.md) | Opaque built. M6 owns alpha coverage. |
+| V5 | [Visibility output and debug presentation](v5_visibility_output.md) | Built |
+| V6 | [Material resolve, guides and motion](v6_material_resolve.md) | Built and checked |
+| V7 | [Cleanup and stage timing](v7_cleanup_and_timings.md) | RTX 5070 recorded. Floor-tier results tracked in M0. |
+| V8 | [Payload comparison](v8_payload_comparison.md) | Deferred |
 
 ## Recorded acceptance
 

@@ -41,6 +41,26 @@ winding. The fragment shader forwards `SV_PrimitiveID` to the unsigned target.
 
 [Renderer](../../src/render/vk_renderer.cpp) · [DGC](../../src/render/vk_dgc.cpp) · [Debug views](../../shaders/passes/debug_view.slang) · [Present](../../shaders/passes/present.slang)
 
+## State and synchronization decisions
+
+Preprocessing's phase/bin state command buffer uses the same shaders
+and dynamic state as execute. The visibility image carries no facing
+flag. Stable triangle identity lets raster resolve and RT share a
+corner loader.
+
+The host orders early color writes before late attachment loads and
+transitions depth back from early Hi-Z sampling before late testing.
+Resolve receives the final color writes through a color-to-compute
+barrier. Late Hi-Z leaves depth sampled.
+
+## Tasks and acceptance
+
+| Task | Contract and result |
+|---|---|
+| Separate bin assignment and winding | [V4](v4_raster_bins.md) records the two-sided checks and M6 handoff. |
+| Produce and display a stable visibility payload | [V5](v5_visibility_output.md) documents coverage and resize validation for the present split. |
+| Retire the old raster path | [V7](v7_cleanup_and_timings.md) records variant cleanup and phase timing. |
+
 ## Verification and remaining work
 
 V7 removed the mesh-debug raster path and obsolete varyings. The RTX 5070

@@ -25,6 +25,8 @@ enum class GpuTimerScope : uint32_t
     RtxdiTemporal,
     // spatial resampling and shading
     RtxdiShade,
+    // SER bounce ray into the initial ReSTIR GI reservoirs (spec/m4/g2_indirect_pass.md)
+    Indirect,
     Combine,
     // zero while a debug view is shown: the DLSS-RR evaluation is skipped
     Dlss,
@@ -72,6 +74,8 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "ReSTIR DI temporal";
     case GpuTimerScope::RtxdiShade:
         return "ReSTIR DI shade";
+    case GpuTimerScope::Indirect:
+        return "Indirect";
     case GpuTimerScope::Combine:
         return "Combine";
     case GpuTimerScope::Dlss:

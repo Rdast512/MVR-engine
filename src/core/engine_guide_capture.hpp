@@ -101,11 +101,11 @@ private:
         {"A4 flat normals without NORMAL (MetalRoughSpheres shading normal against the geometric normal)",
          kFlatNormalsShot, DebugView::ShadingNormal, kFlatNormalsShot, DebugView::GeometricNormal},
     }};
-    static constexpr std::array<DebugView, 11> kViews = {
+    static constexpr std::array<DebugView, 12> kViews = {
         DebugView::DiffuseAlbedo,    DebugView::SpecularF0,       DebugView::Roughness,
         DebugView::ShadingNormal,    DebugView::GeometricNormal,  DebugView::Emissive,
         DebugView::AmbientOcclusion, DebugView::UnshadowedLights, DebugView::ShadowedLights,
-        DebugView::LightingOnly,     DebugView::RtxdiReservoirs,
+        DebugView::LightingOnly,     DebugView::RtxdiReservoirs,  DebugView::IndirectSamples,
     };
     // ReSTIR DI (Lighting only) averaged over frames against Shadowed lights on the lamp shot, after its views
     static constexpr size_t kConvergenceShot = 10;

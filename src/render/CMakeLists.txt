@@ -4,6 +4,7 @@ set(RENDER_SOURCES
         vk_post.cpp
     vk_gpu_timer.cpp
     vk_hiz.cpp
+    vk_indirect.cpp
     vk_meshlet_culling.cpp
     vk_render_targets.cpp
     vk_renderer.cpp

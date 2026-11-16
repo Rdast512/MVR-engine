@@ -754,6 +754,8 @@ void Device::queryCapabilities()
     {
         // eNone: reorder calls are legal no-ops
         const auto& ser = capabilities.rayTracingInvocationReorder;
+        capabilities.isSerReordering =
+            ser.rayTracingInvocationReorderReorderingHint == vk::RayTracingInvocationReorderModeEXT::eReorder;
         logInfo(std::format("SER: hint={} maxSbtRecordIndex={}", vk::to_string(ser.rayTracingInvocationReorderReorderingHint),
                              ser.maxShaderBindingTableRecordIndex),
                  "Device");

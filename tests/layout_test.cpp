@@ -536,6 +536,11 @@ namespace
         LAYOUT_FIELD(GpuRtxdiConstants, neighborOffsets),
         LAYOUT_FIELD(GpuRtxdiConstants, resamplingMode),
         LAYOUT_FIELD(GpuRtxdiConstants, reservoirCount),
+        LAYOUT_FIELD(GpuRtxdiConstants, giReservoirBuffer),
+        LAYOUT_FIELD(GpuRtxdiConstants, giBufferIndices),
+        LAYOUT_FIELD(GpuRtxdiConstants, giReservoirs),
+        LAYOUT_FIELD(GpuRtxdiConstants, giReservoirCount),
+        LAYOUT_FIELD(GpuRtxdiConstants, pad0),
     }};
     // clang-format on
 

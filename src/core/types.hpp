@@ -1160,4 +1160,6 @@ struct HardwareCapabilities
 
     // NRC when its extensions and features exist, else SHaRC, else none
     GiCache giCache = GiCache::None;
+    // ReorderThread regroups threads; eNone devices (expected: RTX 20/30) run it as a no-op
+    bool isSerReordering = false;
 };

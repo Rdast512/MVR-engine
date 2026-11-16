@@ -843,8 +843,8 @@ Spec §11.1, §11.3–11.6. Started 2026-11-16. Each step has its own spec under
 
 | Step | Spec | Summary | Status |
 |---|---|---|---|
-| G1 | [g1_ser_rt_pipeline.md](./m4/g1_ser_rt_pipeline.md) | `VkPipeline` + SBT per shaded-ray pass, `HitObject` trace → reorder → minimal closest-hit → shade in raygen; checked against the C3 ray-query path | built 2026-11-16; 2060 Super numbers open |
-| G2 | [g2_indirect_pass.md](./m4/g2_indirect_pass.md) | 1 ray/px from the primary surface, direct light at X₂, cache query, ReSTIR GI initial samples | not started |
+| G1 | [g1_ser_rt_pipeline.md](./m4/g1_ser_rt_pipeline.md) | `VkPipeline` + SBT per shaded-ray pass, `HitObject` trace → reorder → minimal closest-hit → shade in raygen; checked against the C3 ray-query path | built 2026-11-16; 2060 Super numbers open; follow-ups built 2026-11-17 ([g1_ser_followups.md](./m4/g1_ser_followups.md)) |
+| G2 | [g2_indirect_pass.md](./m4/g2_indirect_pass.md) | 1 ray/px from the primary surface, direct light at X₂, cache query, ReSTIR GI initial samples | built 2026-11-16 (cache term with G3); 2060 Super numbers open |
 | G3 | [g3_nrc.md](./m4/g3_nrc.md) | NRC context, update paths in the SER pipeline, `QueryAndTrain`, custom resolve | not started |
 | G5 | [g5_restir_gi.md](./m4/g5_restir_gi.md) | RTXDI ReSTIR GI → `indirectRadiance` | not started |
 | G6 | [g6_combine.md](./m4/g6_combine.md) | `noisyColor = direct + indirect + emissive` | direct + emissive built (H1) |
@@ -943,10 +943,10 @@ A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
 
 | Milestone (spec §16.2) | Tasks |
 |---|---|
-| M0 Contracts | A1, A2, A3, A4 (**done**; A4 checked by `ENGINE_GUIDE_CAPTURE`), animation removal (**done**) |
+| [M0 Contracts](./m0/README.md) | A1, A2, A3, A4 (**done**; A4 checked by `ENGINE_GUIDE_CAPTURE`), animation removal (**done**) |
 | [M1 Vis buffer](./m1/README.md) | B1, E1 (**done**; E1 guides vs Khronos screenshots and motion checked 2026-11-13); 32-bit payload kept, V8 deferred; culling lossless under reverse Z (`ENGINE_CULL_CHECK`, 2026-11-13); **M1 done** (spec §16.2) |
-| M2 Cluster RT bring-up | C1, C2, C3 (**built**; C3's `ENGINE_RT_CHECK` closes C1's trace check), C4 PTLAS (**built** 2026-11-14 after M2 was reopened). Open: the async overlap capture and the 2060 Super |
-| M3 First lit frame | B1 (**done**), B2 (**done**), B3 (**done**), E1 (**done**: AO, jitter, unlit specular, `lodBias`), E2 (**done**: punctual; emissive triangles M7), F1 (**done**), F2 (**done**), F3 (**done**), H1 (**done**), H2 (**done**), E3 sun (**done**); **M3 done** (2026-11-14) |
+| [M2 Cluster RT bring-up](./m2/README.md) | C1, C2, C3 (**built**; C3's `ENGINE_RT_CHECK` closes C1's trace check), C4 PTLAS (**built** 2026-11-14 after M2 was reopened). Open: the async overlap capture and the 2060 Super |
+| [M3 First lit frame](./m3/README.md) | B1 (**done**), B2 (**done**), B3 (**done**), E1 (**done**: AO, jitter, unlit specular, `lodBias`), E2 (**done**: punctual; emissive triangles M7), F1 (**done**), F2 (**done**), F3 (**done**), H1 (**done**), H2 (**done**), E3 sun (**done**); **M3 done** (2026-11-14) |
 | M4 Indirect | G1, G2, G3 (NRC), G5, G6 |
 | M5 | merged into M4 (2026-11-14) |
 | M6 Alpha | D1–D4 |

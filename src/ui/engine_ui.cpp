@@ -960,10 +960,19 @@ void EngineUi::drawRayTracingPanel()
         rtxdi.isReference = false;
         di = RtxdiContext::defaultSettings();
         dlss.settings = {};
+        context.renderer.getIndirect().settings = {};
     }
 
-    ImGui::SeparatorText("RTXGI");
-    ImGui::TextDisabled("NRC, ReSTIR GI and the bounce count come with the M4 path tracer (PBR plan G1-G6)");
+    ImGui::SeparatorText("Indirect (M4)");
+    IndirectPass& indirectPass = context.renderer.getIndirect();
+    IndirectPass::Settings& indirect = indirectPass.settings;
+    ImGui::BeginDisabled(!indirectPass.isReorderSupported());
+    ImGui::Checkbox("Shader execution reordering", &indirect.isReorderEnabled);
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip(indirectPass.isReorderSupported()
+                              ? "regroups bounce rays by hit before shading; off compiles the reorder out. Same image"
+                              : "this GPU does not reorder (rayTracingInvocationReorderReorderingHint is None)");
+    ImGui::TextDisabled("one bounce, no radiance cache or ReSTIR GI yet (PBR plan G3, G5)");
 }
 
 // the engine's directional light after the asset lights (PBR plan E3)

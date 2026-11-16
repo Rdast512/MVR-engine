@@ -24,6 +24,35 @@ Ray meshlet, node-instance and shading-normal views run through
 compute timeline through C2's split submission.
 [Hit helpers](../../shaders/geometry/hit.slang) · [Surface reconstruction](../../shaders/geometry/surface.slang) · [Debug views](../../shaders/passes/debug_view.slang)
 
+## Cone and spawn decisions
+
+The primary ray unprojects reverse-Z near and far after undoing the
+raster jitter. Its origin is the near point and TMax is the distance
+to far. The cone uses center pixel angle times `cos(theta)^1.5`
+to approximate the off-axis projected footprint. Its width grows
+at the hit by `spread × hit.t`. The shared surface estimates the
+footprint in each UV set from the fetched triangle and that cone.
+
+`decodeHit` makes a visible-entry-shaped input from the node and
+cluster rows. Recover attribute streams from the raster tables
+and replace positions with fetched AS positions. Derive facing from
+the transformed outward normal dotted with the ray. For secondary
+rays, `safeSpawnPoint` propagates reconstruction and transform error
+onto the geometric normal and takes the outgoing ray's side.
+[Hit and spawn math](../../shaders/geometry/hit.slang) · [UV footprints](../../shaders/geometry/surface.slang)
+
+## Tasks and acceptance gates
+
+| Task | Gate |
+|---|---|
+| Fetch IDs and positions | Interior ray coverage and IDs agree with the visibility payload. |
+| Share material decode | At raster barycentrics, shading, geometry and material normal errors ≤ 1e−4°. |
+| Measure intersection and texture footprint | Location error ≤ 0.1 px and no interior mip outliers above 0.5 levels. |
+| Bound self-intersection | Zero self-hits. Classify snap edges and coplanar depth ties separately. |
+
+M4 adds a separate SER-to-query comparison to the harness.
+[Thresholds](../../src/core/engine_ray_check.hpp) · [M4 G1](../m4/g1_ser_rt_pipeline.md)
+
 ## Verification
 
 `ENGINE_RT_CHECK=1` compares primary rays to visibility-buffer pixels

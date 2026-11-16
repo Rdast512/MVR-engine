@@ -17,8 +17,8 @@
    one cluster BLAS per mesh primitive from its CLAS addresses. The
    implementation uses device properties for AS limits and alignment.
 3. Build with fast-trace and data-access flags. Position fetch returns
-   the positions used by the AS. Current code uses the device's
-   `minPositionTruncateBitCount`.
+   the positions used by the AS. The host sets
+   `minPositionTruncateBitCount = 0` and passes it to each cluster build.
 4. All instances of the same model share its BLAS entries. A primitive
    without meshlets keeps address zero. Cache-hit instantiation reuses
    existing structures. Final model release frees its structures, and
@@ -27,6 +27,30 @@
 Cluster acceleration structures and ray-tracing position fetch are
 required device capabilities. Per-node world transforms enter at C2.
 [Build implementation](../../src/core/vk_mega_geometry.cpp) · [Asset buffers](../../src/core/vk_asset_buffers.cpp) · [Device requirements](../../src/core/vk_device.cpp)
+
+## Build decisions and memory contract
+
+| Decision | Effect | Reason |
+|---|---|---|
+| Build from final raster meshlets | Cluster-local FP32 positions, byte triangle indices, model-relative cluster ID. | C3 can identify the same triangle and fetch its actual traced vertices. |
+| Use exact preloaded sizing | Size CLAS, place aligned addresses, build CLAS, then size and build BLAS from those addresses. | Host estimates can overallocate. BLAS directly depend on CLAS addresses. |
+| Query limits per device | Reject meshlets above supported cluster maxima. Use separate scratch, cluster and BLAS alignments. | The three allocation constraints are distinct Vulkan properties. |
+| Request fast trace and data access | Position fetch sees the vertices used by the AS. Use zero position truncation at this stage. | Truncation requires measured error and cost evidence. |
+
+Persistent model storage contains the CLAS allocation, cluster BLAS
+allocation and per-primitive address table. Size, temporary input and
+scratch buffers are load-time state. C2/C4 use the table for the
+current layout. Object motion changes instance transforms while the
+asset's geometry stays resident.
+[Build implementation](../../src/core/vk_mega_geometry.cpp) · [C4](c4_partitioned_tlas.md)
+
+## Tasks and acceptance
+
+| Task | State |
+|---|---|
+| Enable cluster AS and position fetch | Built. Floor-tier verification remains Q7. |
+| Validate inputs and build CLAS/BLAS | Built. Check one BLAS per primitive with meshlets and no allocated BLAS for empty primitives. |
+| Preserve model ownership and triangle IDs | Verified via cache-hit reuse and C3 model swap/unload parity. |
 
 ## Verification
 

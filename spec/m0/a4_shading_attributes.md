@@ -27,6 +27,34 @@ Authored normals and tangents are preserved. Cache-hit instantiation reuses the
 asset's completed geometry. Resolve guards remain for degenerate tangent frames.
 [Asset loader](../../src/core/assets_loader.cpp) · [Geometry store](../../src/core/geometry_store.cpp) · [Material sampler](../../shaders/material/pbr.slang)
 
+## Decisions and edge cases
+
+| Input | Rule | Reason |
+|---|---|---|
+| Missing normals | Expand triangle corners and call `meshopt_generateNormals` with flat settings. | Shared indices can cross hard edges. Per-corner output can assign the correct normal to each face. |
+| Missing tangent with a normal texture | Generate on the normal slot's UV set after resolving its `texCoord` override. Require the selected supported stream to exist. | The tangent frame must match the texture's UV axes. A primitive with a missing usable UV stays on the normal-map guard path. |
+| File normals or tangents present | Copy the authored values through expansion and welding. | Generated and authored streams can coexist on a primitive. |
+| UV orientation | Invert v in the tangent-generator input only. Rotation and scale of a material's UV transform are handled in B1's tangent-frame adjustment. | This matches the handedness of the shipped mirror fixture while retaining glTF's stored image coordinates. |
+| Cache hit | Reuse the existing model geometry. | Generation is per model, upstream of raster and RT geometry, and independent of instance transforms. |
+
+Expansion and welding include positions, normals, tangents, UV0,
+UV1 and color. `meshopt_generateVertexRemapMulti` numbers unique corner
+tuples and each stream is rewritten with the same remap. The resulting
+corner index list replaces the source primitive's triangle indices.
+Attribute flags control which streams upload. Cluster building and
+any later CLAS or OMM work see this final vertex and triangle set.
+
+## Tasks and acceptance
+
+| Task | State | Evidence |
+|---|---|---|
+| Clean primitive topology before generating attributes | Done | Loader rejects missing positions and invalid indices and filters empty/degenerate triangle sets. |
+| Generate and upload flat normals | Done | The no-`NORMAL` fixture distinguishes facets from smooth file normals. |
+| Generate compatible tangents including mirrored seams | Done | The mirror fixture compares generated and authored normals and confirms handedness. |
+| Preserve authored data and keep resolve guards | Done | Existing normals/tangents stay authored. Surface and B1 handle degenerate data. |
+
+[M1 material sampling](../m1/b1_material_sampling.md) · [M3 texture transform](../m3/b1_texture_transform.md)
+
 ## Verification
 
 `ENGINE_GUIDE_CAPTURE=1` is the integration entry point. The PBR plan records

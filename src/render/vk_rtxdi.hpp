@@ -6,6 +6,7 @@
 #include "util/vk_utils.hpp"
 
 #include <Rtxdi/DI/ReSTIRDIParameters.h>
+#include <Rtxdi/GI/ReSTIRGIParameters.h>
 
 #include <array>
 #include <cstddef>
@@ -16,6 +17,7 @@
 namespace rtxdi
 {
     class ReSTIRDIContext;
+    class ReSTIRGIContext;
 }
 
 // GpuFrameRoot.rtxdiConstants: every RTXDI parameter block of the frame plus the buffers RTXDI's resampling functions
@@ -38,12 +40,23 @@ struct GpuRtxdiConstants {
     uint32_t resamplingMode;
     // RTXDI_PackedDIReservoir rows behind reservoirs; the bridge drops accesses past it
     uint32_t reservoirCount;
+    // ReSTIR GI (spec/m4/g2_indirect_pass.md): the indirect pass writes initial reservoirs, G5 resamples them
+    RTXDI_ReservoirBufferParameters giReservoirBuffer;
+    RTXDI_GIBufferIndices giBufferIndices;
+    // RTXDI_PackedGIReservoir[c_NumReSTIRGIReservoirBuffers * reservoirArrayPitch]
+    vk::DeviceAddress giReservoirs;
+    // RTXDI_PackedGIReservoir rows behind giReservoirs; the bridge drops accesses past it
+    uint32_t giReservoirCount;
+    uint32_t pad0;
 };
-static_assert(sizeof(GpuRtxdiConstants) == 328);
+static_assert(sizeof(GpuRtxdiConstants) == 392);
 static_assert(offsetof(GpuRtxdiConstants, reservoirs) == 304);
+static_assert(offsetof(GpuRtxdiConstants, giReservoirBuffer) == 328);
+static_assert(offsetof(GpuRtxdiConstants, giReservoirs) == 376);
 
-// RTXDI host side of ReSTIR DI (PBR plan F1): the ReSTIRDIContext at render resolution, the DI reservoir buffer, the
-// neighbor offsets and one constants block per frame slot. Lights come from WorldLights in RTXDI's region order
+// RTXDI host side of ReSTIR DI (PBR plan F1) and ReSTIR GI (M4 G2, G5): the ReSTIRDIContext and ReSTIRGIContext at
+// render resolution, their reservoir buffers, the neighbor offsets and one constants block per frame slot. Lights come
+// from WorldLights in RTXDI's region order
 class RtxdiContext
 {
 public:
@@ -104,7 +117,7 @@ public:
     // ENGINE_RTXDI_REFERENCE=1: start in the reference configuration
     [[nodiscard]] static bool isReferenceRequested();
 
-    // device idle: context and reservoirs at the new render resolution; reservoir contents are undefined, so the
+    // device idle: contexts and reservoirs at the new render resolution; reservoir contents are undefined, so the
     // first frame after it must reset history (resize arrives as a camera cut)
     void recreate(vk::Extent2D renderExtent);
     // the slot is not in flight: applies isReference, advances the context to frameIndex and writes the slot's
@@ -129,17 +142,24 @@ private:
     // resampling mode of isReference and every parameter block of settings
     void configure();
     void destroyReservoirs();
+    void createGiReservoirs();
 
     const Device& device;
     const VkAllocator& allocator;
     const WorldLights& worldLights;
     std::unique_ptr<rtxdi::ReSTIRDIContext> context;
+    // resampling mode None until G5: the indirect pass's initial reservoirs only
+    std::unique_ptr<rtxdi::ReSTIRGIContext> giContext;
     bool isReferenceApplied = false;
     Settings appliedSettings;
     vk::raii::Buffer reservoirs = nullptr;
     VmaAllocation reservoirMemory = nullptr;
     vk::DeviceAddress reservoirAddress = 0;
     uint32_t reservoirCount = 0;
+    vk::raii::Buffer giReservoirs = nullptr;
+    VmaAllocation giReservoirMemory = nullptr;
+    vk::DeviceAddress giReservoirAddress = 0;
+    uint32_t giReservoirCount = 0;
     HostBuffer neighborOffsets;
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> constants;
 };

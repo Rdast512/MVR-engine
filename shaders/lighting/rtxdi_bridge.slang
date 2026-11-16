@@ -1,7 +1,8 @@
 #ifndef ENGINE_LIGHTING_RTXDI_BRIDGE_SLANG
 #define ENGINE_LIGHTING_RTXDI_BRIDGE_SLANG
 
-// RTXDI application bridge (PBR plan F2): the resource macros and the RAB_* set the pinned RTXDI 3.2 DI headers call.
+// RTXDI application bridge (PBR plan F2): the resource macros and the RAB_* set the pinned RTXDI 3.2 DI headers call,
+// plus the GI reservoir buffer the indirect pass writes (M4 G2).
 // Textual, once per compile unit, before any Rtxdi/DI header; call rtxdiBridgeInit before the first RAB_* or RTXDI_*
 // call. Light and BRDF math stays in lighting.lights and material.brdf: the bridge only composes them.
 //
@@ -21,7 +22,9 @@ import core.binding;
 import core.frame;
 import core.math;
 import lighting.lights;
+import geometry.hit;
 import material.brdf;
+import material.pbr;
 import raytracing.trace;
 
 // before any RTXDI header: RtxdiParameters.h defaults it to 1
@@ -30,6 +33,7 @@ import raytracing.trace;
 // RTXDI's buffers live in RtxdiContext's allocations (src/render/vk_rtxdi.cpp). Neighbor offsets are always indexed
 // through neighborOffsetMask, so a plain BDA pointer serves
 #define RTXDI_LIGHT_RESERVOIR_BUFFER gRtxdiBridge.reservoirs
+#define RTXDI_GI_RESERVOIR_BUFFER gRtxdiBridge.giReservoirs
 #define RTXDI_NEIGHBOR_OFFSETS_BUFFER bdaPtr<float2>(gRtxdiBridge.neighborOffsets)
 
 // RTXDI's HLSL converts uint to bool implicitly (E30081): units that include this file compile with
@@ -41,29 +45,29 @@ import raytracing.trace;
 // RTXDI reads its buffers as structured buffers under robust buffer access, where out-of-range reads return zeros.
 // 3.1's fused pass relied on it: it loaded the reservoir of an off-screen back-projected pixel and light 0 of an empty
 // result, also with no lights, and through BDA those reads faulted. 3.2 dropped that pass and guards the empty result,
-// but the library still assumes robust buffers, so the reservoir accessor and RAB_LoadLightInfo check their bounds:
+// but the library still assumes robust buffers, so the reservoir accessors and RAB_LoadLightInfo check their bounds:
 // zeros out of range, stores dropped
-struct RtxdiReservoirBuffer
+struct RtxdiReservoirBuffer<T>
 {
     uint64_t address;
     uint count;
 
-    __subscript(uint index) -> RTXDI_PackedDIReservoir
+    __subscript(uint index) -> T
     {
         get
         {
             if (index >= count)
             {
-                RTXDI_PackedDIReservoir empty = {};
+                T empty = {};
                 return empty;
             }
-            return bdaPtr<RTXDI_PackedDIReservoir>(address)[index];
+            return bdaPtr<T>(address)[index];
         }
         set
         {
             if (index < count)
             {
-                bdaPtr<RTXDI_PackedDIReservoir>(address)[index] = newValue;
+                bdaPtr<T>(address)[index] = newValue;
             }
         }
     }
@@ -81,7 +85,8 @@ struct RtxdiBridgeState
     uint64_t worldLights;
     uint64_t prevWorldLights;
     uint lightCount;
-    RtxdiReservoirBuffer reservoirs;
+    RtxdiReservoirBuffer<RTXDI_PackedDIReservoir> reservoirs;
+    RtxdiReservoirBuffer<RTXDI_PackedGIReservoir> giReservoirs;
     uint64_t neighborOffsets;
     uint localLightCount;
 };
@@ -104,6 +109,8 @@ void rtxdiBridgeInit(GpuFrameRoot root)
     gRtxdiBridge.lightCount = root.lightCount;
     gRtxdiBridge.reservoirs.address = constants[0].reservoirs;
     gRtxdiBridge.reservoirs.count = constants[0].reservoirCount;
+    gRtxdiBridge.giReservoirs.address = constants[0].giReservoirs;
+    gRtxdiBridge.giReservoirs.count = constants[0].giReservoirCount;
     gRtxdiBridge.neighborOffsets = constants[0].neighborOffsets;
     gRtxdiBridge.localLightCount = constants[0].lightBuffer.localLightBufferRegion.numLights;
 }
@@ -168,6 +175,25 @@ RAB_Surface RAB_GetGBufferSurface(int2 pixel, bool previousFrame)
     surface.diffuseAlbedo = tex2D(set.sampled[kGuideDiffuseAlbedo]).Load(texel).rgb;
     surface.specularF0 = specularF0.rgb;
     surface.isLit = specularF0.a > 0.0;
+    return surface;
+}
+
+// a ray hit (M4 G2): the decoded surface and its sampled material, seen from the ray. viewDepth holds the hit
+// distance, only so the surface tests valid; no RTXDI temporal or spatial function receives a hit surface
+RAB_Surface rayHitSurface(DecodedHit decoded, SampledMaterial material, float3 rayDirection, float hitDistance)
+{
+    const BrdfInputs brdf = fromMaterial(material);
+    RAB_Surface surface;
+    surface.position = decoded.surface.position;
+    surface.viewDepth = hitDistance;
+    surface.normal = material.n;
+    surface.roughness = material.roughness;
+    surface.geoNormal = decoded.surface.geoNormal;
+    surface.viewDir = -rayDirection;
+    surface.diffuseAlbedo = brdf.cDiff;
+    // unlit: as the resolve, the weight takes the specular lobe and all light away
+    surface.specularF0 = brdf.f0 * material.specularWeight;
+    surface.isLit = material.specularWeight > 0.0;
     return surface;
 }
 

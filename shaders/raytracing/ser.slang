@@ -13,10 +13,6 @@ public struct ClusterPayload
     public uint clusterId;
 };
 
-// no material bins before M7 and no alpha-tested primitives before M6: hits and misses are the only coherence keys
-public static const uint kSerHintHit = 0;
-public static const uint kSerHintMiss = 1;
-public static const uint kSerHintBits = 1;
 
 // one pipeline per mode (RtPipeline::Source::isReorderEnabled): a runtime branch around ReorderThread costs 0.18 ms
 // with reordering off, against 0.69 ms with it compiled out (G1 check pass, 1280x720, RTX 5070)
@@ -34,21 +30,29 @@ public void writeClusterPayload(inout ClusterPayload payload)
     };
 }
 
-// closest hit through the SER pipeline: the same hit traceClosest reports. Live across the reorder: the ray and the
-// caller's own state only
-public bool traceShaded(GpuFrameRoot root, RayDesc ray, out RayHit hit)
+// closest hit through the SER pipeline: the same hit traceClosest reports. Takes the TLAS address, not the frame root:
+// whatever the caller loaded before and uses after moves with the thread across the reorder, so callers reload frame
+// data after it. An inactive lane (no surface to shade from) joins the reorder with a NOP hit object, so the reorder
+// never sits in divergent control flow, and reports a miss
+public bool traceShaded(uint64_t tlas, RayDesc ray, out RayHit hit, bool isActive = true)
 {
     hit = {};
     ClusterPayload payload = {};
     requireOmm2StateRayFlag();
-    // same flags as traceClosest: no facing cull, OMM 2-state from the ray (PTLAS has no instance flag for it)
-    HitObject hitObject = HitObject::TraceRay(RaytracingAccelerationStructure(root.tlas),
-                                              RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OMM_2_STATE, 0xFF,
-                                              0, 0, 0, ray, payload);
+    HitObject hitObject = HitObject::MakeNop();
+    if (isActive)
+    {
+        // same flags as traceClosest: no facing cull, OMM 2-state from the ray (PTLAS has no instance flag for it)
+        hitObject = HitObject::TraceRay(RaytracingAccelerationStructure(tlas),
+                                        RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OMM_2_STATE, 0xFF, 0, 0, 0,
+                                        ray, payload);
+    }
     const bool isHit = hitObject.IsHit();
+    // no hint before M7 material bins: the sort already separates hit, miss and NOP by shader (NVIDIA
+    // vk_gltf_renderer, vk_mini_samples ser_pathtrace)
     if (kIsSerReorderEnabled)
     {
-        ReorderThread(hitObject, isHit ? kSerHintHit : kSerHintMiss, kSerHintBits);
+        ReorderThread(hitObject);
     }
     if (!isHit)
     {

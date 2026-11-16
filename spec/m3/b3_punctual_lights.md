@@ -22,9 +22,36 @@ cosine and visibility. Entity scale leaves intensity, range and cone
 parameters in their authored units.
 [Light module](../../shaders/lighting/lights.slang) · [World transform](../../shaders/core/frame.slang)
 
+## Numerical contract
+
+| Quantity | Rule |
+|---|---|
+| Finite direction and distance | `d² = max(dot(toLight,toLight), 1e−12)`. Use `sqrt(d²)` for ray distance and vector normalization. |
+| Point and spot attenuation | Use `rangeWindow / max(d², 1e−4)`. This keeps coincident queries finite. |
+| Spot angle | Use `dot(light.direction, −L)`. Divide its difference from outer-cone cosine by `max(1e−3, cos(inner) − cos(outer))`, saturate and square. |
+| Directional shadow ray | Use `kInfiniteDistance`, the largest finite float. The light direction and radiance are independent of point position. |
+
+Light rows store linear color and normalized world direction after
+E2. The return contract deliberately leaves the BRDF and surface
+cosine to the shading caller. The local distance stays available
+for the shadow ray even when attenuation is zero.
+
+## Tasks and acceptance
+
+| Task | State and evidence |
+|---|---|
+| Implement one photometric path for direction, range and cone | Done. GPU worked cases compare radiance, light direction and distance. |
+| Share evaluation across debug and DI | Done. E2 verifies scene placement. F2 uses the same B3 values for target evaluation and final shading. |
+| Keep boundary behavior defined | Done. Unit fixtures cover the range and cone edges alongside direction-only and inverse-square cases. |
+
 ## Verification
 
-The `lights` CTest evaluates GPU worked cases for attenuation, range,
-spot falloff, directions and ray distances. Guide captures exercise the
-lamp and directional sample through E2.
+The recorded `lights` CTest covers 14 GPU cases against a
+double-precision reference and worked values. A 4 cd point light
+at 2 m contributes 1 before range attenuation. At half range the
+window is 0.9375. A 30° sample in a 45° spot cone with zero inner
+angle uses approximately 0.2944 of the on-axis intensity. Range
+and cone boundaries go to zero. Equal cone angles stay finite.
+Flipping the cone dot-product sign failed six checks in the
+recorded negative test. E2 covers scene and transform integration.
 [Host test](../../tests/lights_test.cpp) · [Test shader](../../tests/shaders/lights_numbers.slang)

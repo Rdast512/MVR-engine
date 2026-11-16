@@ -32,7 +32,7 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
     targets(device, allocator, frameSync, descriptorManager),
     rtScene(device, allocator, frameSync, scene, assets, frameData, shaderObjects),
     worldLights(device, allocator, frameSync, assets, frameData, shaderObjects), rtxdi(device, allocator, worldLights),
-    dlss(device, frameSync), post(device, allocator, shaderObjects), gpuTimer(device), tracyContext(tracyContext)
+    indirect(device, allocator), dlss(device, frameSync), post(device, allocator, shaderObjects), gpuTimer(device), tracyContext(tracyContext)
 {
     const vk::DeviceSize maxPushData = device.capabilities.descriptorHeap.maxPushDataSize;
     if (kMaxPushDataBytes > maxPushData) {
@@ -429,6 +429,14 @@ void Renderer::recordRayCommands(vk::raii::CommandBuffer& cmd)
         TracyVkNamedZone(gpuCtx, gpuZoneDirectLight, *cmd, "GPU_DirectLight", gpuTrace);
 #endif
         recordDirectLight(cmd);
+    }
+    {
+        ZoneScopedN("Indirect");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneIndirect, *cmd, "GPU_Indirect", gpuTrace);
+#endif
+        indirect.record(cmd, currentFrame, frameData.frameRootAddress(currentFrame), targets.getExtent());
+        gpuTimer.end(cmd, GpuTimerScope::Indirect);
     }
     {
         ZoneScopedN("Reconstruction");

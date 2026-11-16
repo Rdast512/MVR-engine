@@ -31,6 +31,41 @@ and world-light addresses. `cacheConstants` remains zero pending M4.
 Jitter lives in `GpuCameraData::jitterOffset`.
 [Frame data](../../src/core/vk_frame_data.cpp) · [Renderer](../../src/render/vk_renderer.cpp) · [Render targets](../../src/render/vk_render_targets.cpp) · [Considerations, C-M0-6 and C-H2-1](../considerations.md)
 
+## Toolchain decisions
+
+| Probe | Consequence |
+|---|---|
+| Slang v2026.20 accepted a plain module identifier and a path in the import, typed pointers, typed storage handles and a 64-bit address converted to a ray-tracing AS. | Share shader functions through modules and bind scene buffers through the frame root. Vendor headers that depend on text order still use includes. |
+| Command-line defines reach imported units. Source-file defines have lexical include scope. | Pass SDK flags at the compile unit and preserve ordering for SDK headers and bridge macros. |
+| Applying a format annotation to a heap handle left the SPIR-V image type unknown. | Encode format in the storage image type and verify the enum mapping by reflection. |
+| Slang depfiles include transitive dependencies. | Ninja rebuilds a pass when an imported module changes, without a manually maintained import list. |
+
+The module probes above are historical. The current build pins v2026.22.
+The compiler upgrade does not itself establish that the v2026.20
+`NonUniform` observation has been resolved.
+[Compiler pin](../../ThirdParty/CMakeLists.txt) · [A2 probes and §4.4](../pbr_implementation_plan.md)
+
+## Slot update sequence
+
+1. Wait for the frame slot before rewriting host-visible data. Prepare
+   the active camera and target blocks and collect the current geometry,
+   culling and lighting addresses.
+2. Publish the slot's `GpuFrameRoot` in one write. Use per-pass push data
+   to pass that address into the shader. Each later milestone owns the
+   lifetime and readiness of the addresses it supplies.
+3. A consumer loads the block it needs. Use typed pointers for tables and
+   bindless handles for target views. A history reset makes the old world
+   light address zero and disables reuse through the frame flag.
+
+## Tasks and acceptance
+
+| Task | State | Evidence |
+|---|---|---|
+| Convert library modules and pass imports | Done | Release SPIR-V comparison at bring-up. |
+| Track imported sources in the build | Done | `engine_add_slang_pass` supplies Slang's depfile and CMake's `DEPFILE`. |
+| Publish frame-root additions by slot | Done | Frame index and scalar exposure are written by `FrameData`. C2/C4 and F1/F2 now fill their addresses. |
+| Check host and shader layouts | Done | AU5/AU11 use `layout` CTest to check field counts, offsets and format constants. |
+
 ## Verification
 
 The PBR plan records byte-identical release SPIR-V across all eight original

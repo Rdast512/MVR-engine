@@ -2,6 +2,7 @@
 #include "static_headers/logger.hpp"
 
 #include <Rtxdi/DI/ReSTIRDI.h>
+#include <Rtxdi/GI/ReSTIRGI.h>
 #include <Rtxdi/RtxdiUtils.h>
 
 #include <cassert>
@@ -75,6 +76,24 @@ void RtxdiContext::destroyReservoirs()
     destroyVmaBuffer(allocator.allocator, reservoirs, reservoirMemory);
     reservoirAddress = 0;
     reservoirCount = 0;
+    destroyVmaBuffer(allocator.allocator, giReservoirs, giReservoirMemory);
+    giReservoirAddress = 0;
+    giReservoirCount = 0;
+}
+
+void RtxdiContext::createGiReservoirs()
+{
+    const RTXDI_ReservoirBufferParameters params = giContext->GetReservoirBufferParameters();
+    giReservoirCount = params.reservoirArrayPitch * rtxdi::c_NumReSTIRGIReservoirBuffers;
+    const vk::DeviceSize bytes = static_cast<vk::DeviceSize>(giReservoirCount) * sizeof(RTXDI_PackedGIReservoir);
+    createBuffer(bytes, vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal, giReservoirs, giReservoirMemory, allocator.allocator,
+                 device.vkdevice, device.queueFamilyIndices, "RtxdiGiReservoirs");
+    giReservoirAddress = device.vkdevice.getBufferAddress({.buffer = *giReservoirs});
+    logInfo(std::format("ReSTIR GI: {} reservoir buffers of {} ({:.1f} MiB), initial samples only until G5",
+                        rtxdi::c_NumReSTIRGIReservoirBuffers, params.reservoirArrayPitch,
+                        static_cast<double>(bytes) / (1024.0 * 1024.0)),
+            "Rtxdi");
 }
 
 void RtxdiContext::recreate(vk::Extent2D renderExtent)
@@ -95,6 +114,13 @@ void RtxdiContext::recreate(vk::Extent2D renderExtent)
                  vk::MemoryPropertyFlagBits::eDeviceLocal, reservoirs, reservoirMemory, allocator.allocator,
                  device.vkdevice, device.queueFamilyIndices, "RtxdiReservoirs");
     reservoirAddress = device.vkdevice.getBufferAddress({.buffer = *reservoirs});
+
+    giContext = std::make_unique<rtxdi::ReSTIRGIContext>(rtxdi::ReSTIRGIStaticParameters{
+        .RenderWidth = renderExtent.width,
+        .RenderHeight = renderExtent.height,
+        .CheckerboardSamplingMode = rtxdi::CheckerboardMode::Off,
+    });
+    createGiReservoirs();
 
     logInfo(
         std::format("ReSTIR DI {}x{}: {} reservoir buffers of {} ({:.1f} MiB), {}, uniform local light sampling, {} "
@@ -220,6 +246,7 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex)
     }
     // rotates the reservoir buffer indices and the frame's random number
     context->SetFrameIndex(frameIndex);
+    giContext->SetFrameIndex(frameIndex);
     const RTXDI_DIBufferIndices bufferIndices = context->GetBufferIndices();
     // rtxdi_temporal writes over its own pixel's initial reservoir, and its early-out leaves that as the output
     assert(bufferIndices.temporalResamplingOutputBufferIndex == bufferIndices.initialSamplingOutputBufferIndex);
@@ -254,6 +281,11 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex)
         .neighborOffsets = neighborOffsets.address,
         .resamplingMode = std::to_underlying(context->GetResamplingMode()),
         .reservoirCount = reservoirCount,
+        .giReservoirBuffer = giContext->GetReservoirBufferParameters(),
+        .giBufferIndices = giContext->GetBufferIndices(),
+        .giReservoirs = giReservoirAddress,
+        .giReservoirCount = giReservoirCount,
+        .pad0 = 0,
     };
     std::memcpy(constants[frameSlot].mapped, &data, sizeof(data));
 }

@@ -33,6 +33,30 @@ projection behind either camera yields zero motion.
 
 [Camera](../../src/scene/vk_camera.cpp) · [Object storage](../../src/core/object_storage.cpp) · [Frame data](../../src/core/vk_frame_data.cpp) · [Renderer](../../src/render/vk_renderer.cpp)
 
+## Reprojection logic
+
+For a covered pixel, transform the same interpolated object-space
+point using both world transforms and both unjittered cameras.
+Motion is `(prevClip.xy / prevClip.w − curClip.xy / curClip.w) × renderSize / 2`.
+A reset or invalid clip W writes zero. Sky projects a direction
+with w = 0, so camera translation drops out. F2 writes
+`prevClip.w − curClip.w` in z for covered pixels.
+
+Reprojection debug samples prior albedo at `pixel + motion` and shows
+absolute RGB error. Camera-only validation independently reconstructs
+a world point from current depth. When the object moves, the
+script compares albedo reprojection against the zero-motion control.
+[Debug view](../../shaders/passes/debug_view.slang) · [Feature scenarios](../features/motion_vectors.md)
+
+## Tasks and recorded diagnostics
+
+| Task | Result |
+|---|---|
+| Preserve previous transforms through spawn and reactivation | Spawn initializes from its current matrix. Inactive history advances. Mirrored and moving tests passed. |
+| Suppress reuse after cuts, layout changes and resize | Scripted cuts each had one reset frame with zero motion. |
+| Check camera and entity reprojection | Translation ≤ 0.017 px and mirrored camera yaw ≤ 0.013 px. Entity translation reduced changed pixels from 4.1% to 0.27%, rotation from 2.5% to 0.22%. |
+| Validate the test's sensitivity | Current-only previous matrices failed moving cases. Keeping motion on invalid history failed cut/load cases. Current-camera sky projection failed sky yaw. |
+
 ## Verification
 
 `ENGINE_MOTION_TEST=1` drives the startup Sponza scene and logs

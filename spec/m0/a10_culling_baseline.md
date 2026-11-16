@@ -21,6 +21,29 @@ indicates a sizing defect. Revisit sizing when the post-1.0 LOD cut makes
 list counts view-dependent.
 [Host culling](../../src/render/vk_meshlet_culling.cpp) · [Cull passes](../../shaders/passes/meshlet_cull.slang) · [Culling panel](../../src/ui/engine_ui.cpp)
 
+## Producer and consumer limits
+
+| List | Reservation and bound | Reader rule |
+|---|---|---|
+| Late instance candidates | Early occlusion reserves an index using the late instance dispatch count. Store only below `instanceCandidateCapacity`. | The indirect dispatch may include overflow. The shader rejects the group before reading the list. |
+| Draw records | Visible instances reserve a contiguous range in the phase's indirect meshlet dispatch count. Count each element beyond `drawRecordCapacity`. | Copy only the fitting prefix. Cull and reject-mask readers guard their group index. |
+| Visible meshlets | Wave append into each phase/bin range using a bin capacity from the scene's templates. | Clamp the count before emitting DGC sequences. Each sequence stays within the stored visible region. |
+
+One early reject mask is written per valid record, including zero masks.
+The mask has at most one bit per meshlet in its group. The host checks
+compute dispatch limits when creating the templates and the total size
+of the visible region against the 25-bit payload row space.
+[Host template sizing](../../src/render/vk_meshlet_culling.cpp) · [GPU counters and lists](../../shaders/passes/meshlet_cull.slang)
+
+## Tasks and acceptance
+
+| Task | State | Evidence |
+|---|---|---|
+| Carry bounds to every producer and guard consumers | Done | Candidate, draw-record and visible bounds in the GPU cull path. |
+| Report dropped work | Done | UI shows separate list losses and Tracy plots aggregate overflow. |
+| Compare culling against disabled tests | RTX 5070 done | 16 Sponza poses. Floor-tier capture remains C-M0-1. |
+| Record per-stage Release timing | RTX 5070 done | Both benchmark scenes below. Floor-tier timing remains C-M0-1. |
+
 ## Image check
 
 Run `ENGINE_CULL_CHECK=1` on Sponza. The harness compares diffuse albedo and
