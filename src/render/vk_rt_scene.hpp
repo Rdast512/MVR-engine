@@ -68,6 +68,9 @@ public:
         return frames[frameSlot].rayInstances.address;
     }
     [[nodiscard]] Stats getStats() const noexcept;
+    // world box of every ray instance as of the last prepareFrame: what a ray can hit (NRC scene bounds, M4 G3);
+    // empty (bboxMin > bboxMax) without instances
+    [[nodiscard]] const BoundingBox& getSceneBounds() const noexcept { return templates.sceneBounds; }
 
     Settings settings;
 
@@ -96,6 +99,8 @@ private:
         uint32_t instancesPerPartition = 0;
         // bumped by every build; slots and the PTLAS compare against it
         uint32_t version = 0;
+        // world box of the instances, from the transforms at build time
+        BoundingBox sceneBounds;
     };
 
     // device-local buffer whose address is aligned up inside a slack allocation

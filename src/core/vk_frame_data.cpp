@@ -98,7 +98,7 @@ void FrameData::writeFrameRoot(uint32_t frameSlot, const FrameRootInputs& inputs
         .localLightCount = inputs.localLightCount,
         .rayInstances = inputs.rayInstances,
         .rtxdiConstants = inputs.rtxdiConstants,
-        .cacheConstants = 0,
+        .cacheConstants = inputs.cacheConstants,
         .frameIndex = inputs.frameIndex,
         .exposure = 1.0f,
         .worldLights = inputs.worldLights,

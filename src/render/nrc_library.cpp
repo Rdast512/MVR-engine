@@ -1,8 +1,11 @@
 #include "nrc_library.hpp"
+#include "core/vk_device.hpp"
 
 #include "../static_headers/logger.hpp"
 
 #include <format>
+#include <string>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -11,6 +14,13 @@
 namespace
 {
     constexpr wchar_t kNrcDllName[] = L"NRC_Vulkan.dll";
+
+    [[nodiscard]] std::vector<std::string> toNames(uint32_t (*query)(const char* const*&))
+    {
+        const char* const* names = nullptr;
+        const uint32_t count = query(names);
+        return {names, names + count};
+    }
 
     // names from `llvm-readobj --coff-exports NRC_Vulkan.dll`; recheck on every NRC bump
     struct ExportBinder
@@ -91,4 +101,12 @@ bool NrcLibrary::load(const std::filesystem::path& directory)
     table = api;
     module = handle;
     return true;
+}
+
+SdkExtensions NrcLibrary::requiredExtensions() const
+{
+    // the device list does not depend on the GPU
+    return SdkExtensions{.instance = toNames(table.getVulkanInstanceExtensions),
+                         .device = [names = toNames(table.getVulkanDeviceExtensions)](vk::Instance, vk::PhysicalDevice)
+                         { return names; }};
 }

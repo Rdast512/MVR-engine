@@ -45,33 +45,8 @@ import raytracing.trace;
 // RTXDI reads its buffers as structured buffers under robust buffer access, where out-of-range reads return zeros.
 // 3.1's fused pass relied on it: it loaded the reservoir of an off-screen back-projected pixel and light 0 of an empty
 // result, also with no lights, and through BDA those reads faulted. 3.2 dropped that pass and guards the empty result,
-// but the library still assumes robust buffers, so the reservoir accessors and RAB_LoadLightInfo check their bounds:
-// zeros out of range, stores dropped
-struct RtxdiReservoirBuffer<T>
-{
-    uint64_t address;
-    uint count;
-
-    __subscript(uint index) -> T
-    {
-        get
-        {
-            if (index >= count)
-            {
-                T empty = {};
-                return empty;
-            }
-            return bdaPtr<T>(address)[index];
-        }
-        set
-        {
-            if (index < count)
-            {
-                bdaPtr<T>(address)[index] = newValue;
-            }
-        }
-    }
-};
+// but the library still assumes robust buffers, so the reservoir accessors (CheckedBuffer) and RAB_LoadLightInfo check
+// their bounds: zeros out of range, stores dropped
 
 // uniform per dispatch; filled by rtxdiBridgeInit
 struct RtxdiBridgeState
@@ -85,8 +60,8 @@ struct RtxdiBridgeState
     uint64_t worldLights;
     uint64_t prevWorldLights;
     uint lightCount;
-    RtxdiReservoirBuffer<RTXDI_PackedDIReservoir> reservoirs;
-    RtxdiReservoirBuffer<RTXDI_PackedGIReservoir> giReservoirs;
+    CheckedBuffer<RTXDI_PackedDIReservoir> reservoirs;
+    CheckedBuffer<RTXDI_PackedGIReservoir> giReservoirs;
     uint64_t neighborOffsets;
     uint localLightCount;
 };
@@ -296,7 +271,7 @@ RAB_LightSample RAB_EmptyLightSample()
 }
 
 // previousFrame: last frame's row, or this frame's after a history reset. Out of range: the empty light, which shades
-// to 0 (see RtxdiReservoirBuffer)
+// to 0 (see CheckedBuffer)
 RAB_LightInfo RAB_LoadLightInfo(uint index, bool previousFrame)
 {
     if (index >= gRtxdiBridge.lightCount)

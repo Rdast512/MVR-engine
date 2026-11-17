@@ -40,6 +40,8 @@ struct NrcApi
                                               const nrc::AllocationInfo& allocationInfo) = nullptr;
 };
 
+struct SdkExtensions;
+
 // owns the NRC_Vulkan.dll module; call api().shutdown() before destruction
 class NrcLibrary
 {
@@ -57,6 +59,8 @@ public:
 
     [[nodiscard]] bool isLoaded() const { return module != nullptr; }
     [[nodiscard]] const NrcApi& api() const { return table; }
+    // NRC's instance and device extension lists (NRC guide step 2.2); requires isLoaded()
+    [[nodiscard]] SdkExtensions requiredExtensions() const;
 
 private:
     NrcApi table{};

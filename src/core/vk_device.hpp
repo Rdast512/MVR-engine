@@ -5,14 +5,17 @@
 #include <vector>
 #include "types.hpp"
 
-// extensions a vendor SDK needs on top of the engine's (NGX for DLSS-RR, PBR plan H1). Every name is required:
-// device creation throws when one is missing
+// extensions a vendor SDK needs on top of the engine's (NGX for DLSS-RR, PBR plan H1; NRC, M4 G3). Every name is
+// required: device creation throws when one is missing
 struct SdkExtensions
 {
     std::vector<std::string> instance;
     // asked after the GPU is picked; empty function: none
     std::function<std::vector<std::string>(vk::Instance, vk::PhysicalDevice)> device;
 };
+
+// both sets; duplicates are dropped when the device enables them
+[[nodiscard]] SdkExtensions mergeSdkExtensions(SdkExtensions first, SdkExtensions second);
 
 /**
  * @brief Manages the Vulkan device stack: instance, physical device, logical device, and queues.
@@ -36,8 +39,7 @@ class Device
     void pickPhysicalDevice();
     // prefers dedicated transfer/compute families, then a shared one, then graphics
     void findQueueFamilies(std::span<const vk::QueueFamilyProperties> families);
-    // optional (NV) extensions are enabled only when supported, see HardwareCapabilities::has*;
-    // GI cache tier: NRC extensions/features if present, else SHaRC, see HardwareCapabilities::giCache
+    // optional (NV) extensions are enabled only when supported, see HardwareCapabilities::has*
     void createLogicalDevice();
     void queryCapabilities();
     void createQueues();

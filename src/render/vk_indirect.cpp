@@ -1,44 +1,36 @@
 #include "vk_indirect.hpp"
 #include "push_data.hpp"
+#include "vk_shader_objects.hpp"
 
-IndirectPass::IndirectPass(const Device& device, const VkAllocator& allocator) :
-    pipelines{RtPipeline(device, allocator, source(false)), RtPipeline(device, allocator, source(true))},
-    isReorderAvailable(device.capabilities.isSerReordering)
+namespace
 {
-}
+    // matches shaders/passes/indirect.slang kIndirectTile
+    constexpr uint32_t kIndirectTile = 8;
 
-RtPipeline::Source IndirectPass::source(bool isReorderEnabled)
-{
-    return RtPipeline::Source{.file = "indirect.spv",
-                              .raygenEntry = "indirectRaygen",
-                              .missEntry = "indirectMiss",
-                              .closestHitEntry = "indirectClosestHit",
-                              .debugName = isReorderEnabled ? "IndirectReorder" : "Indirect",
-                              .isReorderEnabled = isReorderEnabled};
-}
+    constexpr uint32_t divideRoundUp(uint32_t value, uint32_t divisor) { return (value + divisor - 1) / divisor; }
+} // namespace
 
-void IndirectPass::record(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot, vk::DeviceAddress frameRoot,
-                          vk::Extent2D extent) const
+void recordIndirectPass(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader,
+                        vk::DeviceAddress frameRoot, vk::Extent2D extent)
 {
     // the resolve's guide writes -> reads; earlier compute reads of the GI reservoirs -> this pass's stores
     const vk::MemoryBarrier2 inputBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageRead |
                          vk::AccessFlagBits2::eShaderStorageWrite,
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &inputBarrier});
 
-    const RtPipeline& pipeline = pipelines[settings.isReorderEnabled && isReorderAvailable ? 1 : 0];
-    pipeline.bind(cmd);
+    ShaderObjects::bindComputeShader(cmd, shader);
     const FramePushData push{.frameRoot = frameRoot};
     cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
-    pipeline.traceRays(cmd, frameSlot, extent);
+    cmd.dispatch(divideRoundUp(extent.width, kIndirectTile), divideRoundUp(extent.height, kIndirectTile), 1);
 
     // GI reservoirs -> the compute passes that read them (debug view; G3 resolve, G5 resampling)
     const vk::MemoryBarrier2 outputBarrier{
-        .srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR,
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
         .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,

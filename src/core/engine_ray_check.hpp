@@ -2,25 +2,20 @@
 
 #include "types.hpp"
 
-#include <array>
 #include <cstdint>
-#include <span>
 
 // ray-tracing check (PBR plan C3): every frame, passes/rt_check.slang traces each pixel's primary ray and compares it
 // with the vis buffer. Passive: the camera and the scene move as another runner scripts them (ENGINE_CULL_CHECK poses,
 // ENGINE_GUIDE_CAPTURE model swaps, ENGINE_MOTION_TEST motion); alone it checks the startup view for a fixed number of
-// frames. The same frames trace the primary rays through the SER pipeline too (passes/rt_ser_check.slang), reorder off
-// and on, which must match traceClosest bit for bit (spec/m4/g1_ser_rt_pipeline.md §4). ENGINE_RT_CHECK=1 enables it;
-// logSummary reports the run when the engine quits
+// frames. ENGINE_RT_CHECK=1 enables it; logSummary reports the run when the engine quits. The SER comparison
+// (passes/rt_ser_check.slang) is shelved with SER (considerations C-G1-3)
 class EngineRayCheck
 {
 public:
     [[nodiscard]] static bool isRequested();
 
     // after the frame's fence; true once a standalone run has checked all its frames
-    // serStats indexed by isReorderEnabled
-    [[nodiscard]] bool endFrame(const GpuRayCheckStats& stats, std::span<const GpuSerCheckStats, 2> serStats,
-                                bool isStandalone);
+    [[nodiscard]] bool endFrame(const GpuRayCheckStats& stats, bool isStandalone);
     void logSummary() const;
 
 private:
@@ -35,18 +30,6 @@ private:
     static constexpr float kMaxPositionError = 0.1f;
 
     [[nodiscard]] static bool isPassing(const GpuRayCheckStats& stats);
-    [[nodiscard]] static bool isPassing(const GpuSerCheckStats& stats);
-
-    // the SER run of one reorder mode over all checked frames
-    struct SerTotals
-    {
-        uint64_t rays = 0;
-        uint64_t hits = 0;
-        uint64_t mismatches = 0;
-        uint32_t passedFrames = 0;
-        float maxBarycentricError = 0.0f;
-        float maxDistanceError = 0.0f;
-    };
 
     uint32_t frame = 0;
     uint32_t checkedFrames = 0;
@@ -65,5 +48,4 @@ private:
     float maxMaterialNormalError = 0.0f;
     float maxHitNormalError = 0.0f;
     float maxHitMaterialNormalError = 0.0f;
-    std::array<SerTotals, 2> serTotals{};
 };

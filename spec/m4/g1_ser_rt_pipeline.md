@@ -1,6 +1,6 @@
 # M4 · G1: SER ray-tracing pipeline
 
-**Started:** 2026-11-16 · **Status:** built 2026-11-16; check passes on the RTX 5070; 2060 Super numbers open · **Milestone:** M4 ([engine_spec.md](../../docs/engine_spec.md) §16.2)
+**Started:** 2026-11-16 · **Status:** built 2026-11-16; check passes on the RTX 5070; **shelved 2026-11-17** (considerations C-G1-3: Slang's EXT `HitObject` support; files kept, not built) · **Milestone:** M4 ([engine_spec.md](../../docs/engine_spec.md) §16.2)
 **Implements:** engine spec §11.1 (ray model), §2.2 SER row, Q8; plan G1 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
 **Depends on:** M2 (cluster RT scene, `GpuRayInstance`, `decodeHit`), M3 (`sampleMaterial`, BRDF, RTXDI sampling)
 **Used by:** [G2 indirect pass](./g2_indirect_pass.md), [G3 NRC](./g3_nrc.md) update paths

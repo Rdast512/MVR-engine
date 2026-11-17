@@ -85,6 +85,9 @@ void ShaderObjects::createFrameShaders()
     frameShaders.rtxdiInitial = createComputeShader("rtxdi_initial.spv", "rtxdiInitialMain", "RtxdiInitial");
     frameShaders.rtxdiTemporal = createComputeShader("rtxdi_temporal.spv", "rtxdiTemporalMain", "RtxdiTemporal");
     frameShaders.rtxdiShade = createComputeShader("rtxdi_shade.spv", "rtxdiShadeMain", "RtxdiShade");
+    frameShaders.indirect = createComputeShader("indirect.spv", "indirectMain", "Indirect");
+    frameShaders.nrcUpdate = createComputeShader("nrc_update.spv", "nrcUpdateMain", "NrcUpdate");
+    frameShaders.nrcResolve = createComputeShader("nrc_resolve.spv", "nrcResolveMain", "NrcResolve");
     frameShaders.combine = createComputeShader("combine.spv", "combineMain", "Combine");
     frameShaders.exposureHistogram = createComputeShader("exposure.spv", "exposureHistogramMain", "ExposureHistogram");
     frameShaders.exposureAdapt = createComputeShader("exposure.spv", "exposureAdaptMain", "ExposureAdapt");

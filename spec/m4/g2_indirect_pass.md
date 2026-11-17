@@ -1,8 +1,8 @@
 # M4 · G2: indirect pass
 
-**Started:** 2026-11-16 · **Status:** built 2026-11-16; 2060 Super numbers open · **Milestone:** M4
+**Started:** 2026-11-16 · **Status:** built 2026-11-16; compute + `traceClosest` since 2026-11-17 (SER shelved, C-G1-3); 2060 Super numbers open · **Milestone:** M4
 **Implements:** engine spec §11.3; plan G2 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
-**Depends on:** [G1](./g1_ser_rt_pipeline.md) (`RtPipeline`, `traceShaded`), E1 (guides), F1–F2 (RTXDI context, bridge), C3 (`decodeHit`, `safeSpawnPoint`)
+**Depends on:** C3 (`traceClosest`; [G1](./g1_ser_rt_pipeline.md)'s `traceShaded` while SER was in use), E1 (guides), F1–F2 (RTXDI context, bridge), C3 (`decodeHit`, `safeSpawnPoint`)
 **Used by:** [G3](./g3_nrc.md) (query pass, resolve completes the samples), [G5](./g5_restir_gi.md) (initial reservoirs)
 **Related:** RTXDI 3.2 `Include/Rtxdi/GI/Reservoir.hlsli`, `ReSTIRGI.h`
 
@@ -82,3 +82,4 @@ Release build, no layers, `Indirect` timer scope, 853×480 render resolution, id
 | 2026-11-16 | design (§1): output to RTXDI GI reservoirs, GI context in `RtxdiContext`, no cache term before G3, floor tier deferred |
 | 2026-11-17 | §4 re-measured on an idle GPU after the G1 follow-ups; reorder off stays the default |
 | 2026-11-16 | built: indirect pass, GI reservoirs, debug view, UI; reorder off by default (§4); GPU-AV device lost bisected to driver + BDA instrumentation after a hit-object trace (C-G2-2) |
+| 2026-11-17 | SER shelved (considerations C-G1-3): `indirect.slang` is a compute pass (`indirectMain`, 8×8) tracing with `traceClosest`; `IndirectPass` became `recordIndirectPass`; the reorder setting and UI toggle are gone. GPU-AV runs it clean (C-G2-2 moot). Gallery `Indirect` 0.576 ms (best 0.544) with the G3 query, against 0.528 (0.475) through the SER pipeline |

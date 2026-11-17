@@ -34,7 +34,14 @@ void Engine::initialize()
     logInfo("ImGui fully disabled (ENGINE_ENABLE_IMGUI=0) — no context, backends, or GPU resources", "Engine");
 #endif
 
-    device = std::make_unique<Device>(window, false, Dlss::requiredExtensions());
+    // NRC is required (engine spec §11.4): no device without its DLL and extensions
+    nrcLibrary = std::make_unique<NrcLibrary>();
+    const char* basePath = SDL_GetBasePath();
+    if (!nrcLibrary->load(basePath != nullptr ? std::filesystem::path(basePath) : std::filesystem::current_path())) {
+        throw std::runtime_error("NRC_Vulkan.dll failed to load");
+    }
+    device = std::make_unique<Device>(window, false,
+                                      mergeSdkExtensions(Dlss::requiredExtensions(), nrcLibrary->requiredExtensions()));
     device->init();
 
     allocator = std::make_unique<VkAllocator>(*device);
@@ -106,7 +113,7 @@ void Engine::initialize()
 
     renderer = std::make_unique<Renderer>(*device, *swapChain, *allocator, *frameSync, *scene, *assetBuffers,
                                           *frameData, *descriptorManager, *shaderObjects,
-                                          *camera, tracyContext.get());
+                                          *camera, *nrcLibrary, tracyContext.get());
     renderer->getRtxdi().isReference = RtxdiContext::isReferenceRequested();
     // the guide shots show the glTF samples' own lights, as Khronos renders them
     renderer->getWorldLights().sun.isEnabled = !EngineGuideCapture::isRequested();
@@ -117,7 +124,7 @@ void Engine::initialize()
     }
     if (rayCheck) {
         renderer->enableRayCheck();
-        logInfo("Ray check: primary rays against the vis buffer and through the SER pipeline every frame, results follow",
+        logInfo("Ray check: primary rays against the vis buffer every frame, results follow",
                 "RayCheck");
     }
 
@@ -321,7 +328,7 @@ void Engine::run()
             }
             if (rayCheck) {
                 deviceRef.waitIdle();
-                quit = rayCheck->endFrame(renderer->getLastRayCheck(), renderer->getLastSerCheck(), isRayCheckStandalone) || quit;
+                quit = rayCheck->endFrame(renderer->getLastRayCheck(), isRayCheckStandalone) || quit;
             }
         } else {
             ZoneScopedN("MinimizedWait");
@@ -622,6 +629,7 @@ void Engine::cleanup()
     // owns the surface, which must go before its window
     device.reset();
     logInfo("Device cleaned up", "Engine");
+    nrcLibrary.reset();
     if (window != nullptr) {
         SDL_DestroyWindow(window);
         logInfo("Window destroyed", "Engine");

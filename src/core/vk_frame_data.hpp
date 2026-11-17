@@ -29,6 +29,8 @@ struct FrameRootInputs {
     vk::DeviceAddress prevWorldLights;
     // RtxdiContext constants of this slot, written after its fence
     vk::DeviceAddress rtxdiConstants;
+    // NrcCache constants of this slot, written while its ray commands are recorded
+    vk::DeviceAddress cacheConstants;
     uint32_t lateVisibleBase;
     uint32_t triangleCullFlags;
     float subpixelSnap;

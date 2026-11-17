@@ -1,3 +1,4 @@
+// SHELVED with SER (considerations C-G1-3): kept in the tree, not built; the frame traces shaded rays with traceClosest
 import types;
 import core.binding;
 import core.frame;

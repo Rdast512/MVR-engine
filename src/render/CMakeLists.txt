@@ -1,15 +1,16 @@
 set(RENDER_SOURCES
     vk_dgc.cpp
     vk_dlss.cpp
+    vk_driver_heap.cpp
         vk_post.cpp
     vk_gpu_timer.cpp
     vk_hiz.cpp
     vk_indirect.cpp
     vk_meshlet_culling.cpp
+    vk_nrc.cpp
     vk_render_targets.cpp
     vk_renderer.cpp
     vk_rt_scene.cpp
-    vk_rt_pipeline.cpp
     vk_rtxdi.cpp
     vk_world_lights.cpp
     vk_shader_objects.cpp

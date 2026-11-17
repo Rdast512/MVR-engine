@@ -70,12 +70,6 @@ constexpr std::array kRequiredDeviceExtensions = {
     vk::NVPartitionedAccelerationStructureExtensionName, // the TLAS (engine spec §10.3, PBR plan C4)
 };
 
-// NRC tier; without them the GI cache falls back to SHaRC
-constexpr std::array kNrcDeviceExtensions = {
-    vk::NVXBinaryImportExtensionName,
-    vk::NVXImageViewHandleExtensionName,
-};
-
 // a VkBool32 feature field, located by its struct's sType and byte offset so one table
 // both enables the feature and names it when the GPU lacks it
 struct FeatureBit
@@ -109,9 +103,12 @@ constexpr std::array kRequiredFeatures = {
     // BC7 KTX2 textures from tools/gltf_ktx2
     ENGINE_CORE_FEATURE(textureCompressionBC),
     ENGINE_CORE_FEATURE(shaderInt64),
+    // NRC's HLSL packs with f32tof16 / f16tof32, which Slang lowers to Float16 + Int16 (gi/nrc_bridge.slang)
+    ENGINE_CORE_FEATURE(shaderInt16),
     // mesh.slang: uint8_t* meshletTriangles via PhysicalStorageBuffer
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, storageBuffer8BitAccess),
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderInt8),
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderFloat16),
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, descriptorIndexing),
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderSampledImageArrayNonUniformIndexing),
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderStorageBufferArrayNonUniformIndexing),
@@ -120,6 +117,8 @@ constexpr std::array kRequiredFeatures = {
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, runtimeDescriptorArray),
     // GpuVertex float3@0/12 packing with slang -fvk-use-scalar-layout
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, scalarBlockLayout),
+    // NRC's device feature list (GetVulkanDeviceFeatures), next to scalarBlockLayout
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, uniformBufferStandardLayout),
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, bufferDeviceAddress),
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, vulkanMemoryModel),
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, vulkanMemoryModelDeviceScope),
@@ -192,17 +191,6 @@ constexpr std::array kRequiredFeatures = {
     ENGINE_FEATURE(PhysicalDeviceRobustness2FeaturesKHR, robustBufferAccess2),
     ENGINE_FEATURE(PhysicalDeviceRobustness2FeaturesKHR, robustImageAccess2),
     ENGINE_FEATURE(PhysicalDeviceRobustness2FeaturesKHR, nullDescriptor),
-};
-
-// NRC guide step 2.2; scalarBlockLayout, bufferDeviceAddress and memory budget are already required
-constexpr std::array kNrcFeatures = {
-    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, uniformBufferStandardLayout),
-};
-
-// SHaRC hash insertion uses 64-bit atomics, resolved entries store float16_t radiance
-constexpr std::array kSharcFeatures = {
-    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderBufferInt64Atomics),
-    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderFloat16),
 };
 
 #undef ENGINE_FEATURE
@@ -305,40 +293,6 @@ void querySupportedFeatures(const vk::raii::PhysicalDevice& device, FeatureChain
         reinterpret_cast<VkPhysicalDeviceFeatures2*>(&supported.get<vk::PhysicalDeviceFeatures2>()));
 }
 
-struct GiCacheSupport
-{
-    GiCache cache = GiCache::None;
-    bool hasSharc = false;
-};
-
-// NRC first, SHaRC as the fallback tier; logs what each tier is missing
-[[nodiscard]] GiCacheSupport selectGiCache(const std::vector<vk::ExtensionProperties>& available,
-                                           FeatureChain& supported)
-{
-    std::vector<std::string_view> nrcMissing;
-#if !defined(_WIN32)
-    nrcMissing.emplace_back("NRC runtime (Windows-only binaries)");
-#endif
-    appendMissingExtensions(available, kNrcDeviceExtensions, nrcMissing);
-    appendMissingFeatures(supported, kNrcFeatures, nrcMissing);
-    std::vector<std::string_view> sharcMissing;
-    appendMissingFeatures(supported, kSharcFeatures, sharcMissing);
-    const bool hasSharc = sharcMissing.empty();
-
-    if (nrcMissing.empty()) {
-        logInfo(std::format("GI cache: NRC{}", hasSharc ? " (SHaRC available alongside)" : ""), "Device");
-        return {GiCache::Nrc, hasSharc};
-    }
-    logInfo(std::format("GI cache: NRC unavailable, missing {}; falling back to SHaRC", joinNames(nrcMissing)),
-            "Device");
-    if (hasSharc) {
-        logInfo("GI cache: SHaRC", "Device");
-        return {GiCache::Sharc, true};
-    }
-    logError(std::format("GI cache disabled: SHaRC missing {}", joinNames(sharcMissing)), "Device");
-    return {};
-}
-
 // unmet extensions, then unmet features; empty when the GPU is usable
 [[nodiscard]] std::vector<std::string_view> missingRequirements(const vk::raii::PhysicalDevice& device)
 {
@@ -396,6 +350,23 @@ void logQueueFamilies(std::span<const QueueFamilyChain> chains)
 }
 } // namespace
 
+
+SdkExtensions mergeSdkExtensions(SdkExtensions first, SdkExtensions second)
+{
+    first.instance.insert(first.instance.end(), std::make_move_iterator(second.instance.begin()),
+                          std::make_move_iterator(second.instance.end()));
+    auto device = [firstDevice = std::move(first.device),
+                   secondDevice = std::move(second.device)](vk::Instance instance, vk::PhysicalDevice gpu)
+    {
+        std::vector<std::string> names = firstDevice ? firstDevice(instance, gpu) : std::vector<std::string>{};
+        if (secondDevice) {
+            std::vector<std::string> more = secondDevice(instance, gpu);
+            names.insert(names.end(), std::make_move_iterator(more.begin()), std::make_move_iterator(more.end()));
+        }
+        return names;
+    };
+    return SdkExtensions{.instance = std::move(first.instance), .device = std::move(device)};
+}
 
 Device::Device(SDL_Window* window, bool enableValidationLayers, SdkExtensions sdkExtensions) :
     window(window), enableValidationLayers(enableValidationLayers), sdkExtensions(std::move(sdkExtensions))
@@ -795,23 +766,10 @@ void Device::createLogicalDevice()
 
     const std::vector<vk::ExtensionProperties> availableExtensions =
         physicalDevice.enumerateDeviceExtensionProperties();
-    FeatureChain supportedFeatures;
-    querySupportedFeatures(physicalDevice, supportedFeatures);
-    const GiCacheSupport giCacheSupport = selectGiCache(availableExtensions, supportedFeatures);
-    capabilities.giCache = giCacheSupport.cache;
-
     // only listed bits are requested; everything else stays false
     FeatureChain featureChain;
     enableFeatures(featureChain, kRequiredFeatures);
     std::vector<const char*> enabledExtensions(kRequiredDeviceExtensions.begin(), kRequiredDeviceExtensions.end());
-    // also under NRC, so both caches can run side by side
-    if (giCacheSupport.hasSharc) {
-        enableFeatures(featureChain, kSharcFeatures);
-    }
-    if (capabilities.giCache == GiCache::Nrc) {
-        enableFeatures(featureChain, kNrcFeatures);
-        enabledExtensions.insert(enabledExtensions.end(), kNrcDeviceExtensions.begin(), kNrcDeviceExtensions.end());
-    }
     const std::vector<std::string> sdkDeviceExtensions =
         sdkExtensions.device ? sdkExtensions.device(*instance, *physicalDevice) : std::vector<std::string>{};
     std::vector<std::string_view> sdkMissing;

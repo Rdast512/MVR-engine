@@ -960,19 +960,24 @@ void EngineUi::drawRayTracingPanel()
         rtxdi.isReference = false;
         di = RtxdiContext::defaultSettings();
         dlss.settings = {};
-        context.renderer.getIndirect().settings = {};
+        context.renderer.getNrc().settings = {};
     }
 
     ImGui::SeparatorText("Indirect (M4)");
-    IndirectPass& indirectPass = context.renderer.getIndirect();
-    IndirectPass::Settings& indirect = indirectPass.settings;
-    ImGui::BeginDisabled(!indirectPass.isReorderSupported());
-    ImGui::Checkbox("Shader execution reordering", &indirect.isReorderEnabled);
-    ImGui::EndDisabled();
-    ImGui::SetItemTooltip(indirectPass.isReorderSupported()
-                              ? "regroups bounce rays by hit before shading; off compiles the reorder out. Same image"
-                              : "this GPU does not reorder (rayTracingInvocationReorderReorderingHint is None)");
-    ImGui::TextDisabled("one bounce, no radiance cache or ReSTIR GI yet (PBR plan G3, G5)");
+    // spec/m4/g3_nrc.md
+    NrcCache& nrcCache = context.renderer.getNrc();
+    NrcCache::Settings& nrc = nrcCache.settings;
+    ImGui::Checkbox("Train NRC", &nrc.isTrainingEnabled);
+    ImGui::SetItemTooltip("off freezes the cache and skips the training paths");
+    int iterations = static_cast<int>(nrc.trainingIterations);
+    if (ImGui::SliderInt("NRC training iterations", &iterations, 1, 4)) {
+        nrc.trainingIterations = static_cast<uint32_t>(iterations);
+    }
+    ImGui::SetItemTooltip("16K training records each; the training paths grow with it");
+    const vk::Extent2D training = nrcCache.getTrainingExtent();
+    ImGui::TextDisabled("%s, training paths %ux%u", nrcCache.isActive() ? "active" : "no scene", training.width,
+                        training.height);
+    ImGui::TextDisabled("one bounce + NRC; ReSTIR GI comes with G5");
 }
 
 // the engine's directional light after the asset lights (PBR plan E3)

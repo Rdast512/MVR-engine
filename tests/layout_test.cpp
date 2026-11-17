@@ -1,5 +1,6 @@
-// Compares the scalar layout Slang reflects for every struct in shaders/types.slang, and for GpuRtxdiConstants in
-// shaders/lighting/rtxdi_constants.slang, with sizeof / offsetof of its C++ mirror. A Slang struct without a mirror, a field missing on either side, or a size or offset that differs
+// Compares the scalar layout Slang reflects for every struct in shaders/types.slang, for GpuRtxdiConstants in
+// shaders/lighting/rtxdi_constants.slang and for GpuNrcConstants in shaders/gi/nrc_constants.slang, with sizeof /
+// offsetof of its C++ mirror. A Slang struct without a mirror, a field missing on either side, or a size or offset that differs
 // fails the test. A field the C++ side renames fails to compile (offsetof). Also checks the storage-image format
 // constants of shaders/core/binding.slang against SlangImageFormat.
 // --dump prints the reflected layouts instead of checking them.
@@ -7,6 +8,7 @@
 
 #include "core/types.hpp"
 #include "render/push_data.hpp"
+#include "render/vk_nrc.hpp"
 #include "render/vk_rtxdi.hpp"
 #include "test_support.hpp"
 
@@ -542,6 +544,23 @@ namespace
         LAYOUT_FIELD(GpuRtxdiConstants, giReservoirCount),
         LAYOUT_FIELD(GpuRtxdiConstants, pad0),
     }};
+
+    // textual mirror next to the NRC SDK's NrcConstants
+    const StructLayout kNrcConstants = {"GpuNrcConstants", sizeof(GpuNrcConstants), {
+        LAYOUT_FIELD(GpuNrcConstants, nrc),
+        LAYOUT_FIELD(GpuNrcConstants, queryPathInfo),
+        LAYOUT_FIELD(GpuNrcConstants, trainingPathInfo),
+        LAYOUT_FIELD(GpuNrcConstants, trainingPathVertices),
+        LAYOUT_FIELD(GpuNrcConstants, queryRadianceParams),
+        LAYOUT_FIELD(GpuNrcConstants, queryRadiance),
+        LAYOUT_FIELD(GpuNrcConstants, counters),
+        LAYOUT_FIELD(GpuNrcConstants, queryPathInfoCount),
+        LAYOUT_FIELD(GpuNrcConstants, trainingPathInfoCount),
+        LAYOUT_FIELD(GpuNrcConstants, trainingPathVertexCount),
+        LAYOUT_FIELD(GpuNrcConstants, queryRadianceCount),
+        LAYOUT_FIELD(GpuNrcConstants, flags),
+        LAYOUT_FIELD(GpuNrcConstants, trainingLaunch),
+    }};
     // clang-format on
 
 #undef LAYOUT_FIELD_AS
@@ -588,12 +607,12 @@ namespace
             target.profile = globalSession->findProfile("sm_6_9");
             target.forceGLSLScalarBufferLayout = true;
 
-            const char* searchPaths[] = {ENGINE_SHADER_SOURCE_DIR, ENGINE_RTXDI_INCLUDE_DIR};
+            const char* searchPaths[] = {ENGINE_SHADER_SOURCE_DIR, ENGINE_RTXDI_INCLUDE_DIR, ENGINE_NRC_INCLUDE_DIR};
             slang::SessionDesc sessionDesc{};
             sessionDesc.targets = &target;
             sessionDesc.targetCount = 1;
             sessionDesc.searchPaths = searchPaths;
-            sessionDesc.searchPathCount = 2;
+            sessionDesc.searchPathCount = static_cast<SlangInt>(std::size(searchPaths));
             sessionDesc.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_COLUMN_MAJOR;
             return check(SLANG_SUCCEEDED(globalSession->createSession(sessionDesc, session.writeRef())),
                          "slang session created");
@@ -739,6 +758,13 @@ int main(int argc, char** argv)
         const auto constants = std::ranges::find(rtxdiTypes, kRtxdiConstants.name, &Reflected::name);
         if (check(constants != rtxdiTypes.end(), "rtxdi_constants.slang declares GpuRtxdiConstants")) {
             verify(*constants, kRtxdiConstants);
+        }
+    }
+    if (slang::IModule* nrcModule = slang.loadText("nrc_constants_layout", "gi/nrc_constants.slang")) {
+        const std::vector<Reflected> nrcTypes = reflectTypes(*nrcModule);
+        const auto constants = std::ranges::find(nrcTypes, kNrcConstants.name, &Reflected::name);
+        if (check(constants != nrcTypes.end(), "nrc_constants.slang declares GpuNrcConstants")) {
+            verify(*constants, kNrcConstants);
         }
     }
     if (slang::IModule* bindingModule = slang.load("core/binding")) {

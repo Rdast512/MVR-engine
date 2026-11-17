@@ -12,6 +12,7 @@ import lighting.lights;
 #include "lighting/rtxdi_bridge.slang"
 #include "Rtxdi/DI/ReservoirStorage.hlsli"
 #include "Rtxdi/GI/Reservoir.hlsli"
+#include "gi/nrc_bridge.slang"
 
 // the display image until lighting (M3): the albedo guide, or the selected debug view (src/render/debug_view.hpp)
 
@@ -259,6 +260,9 @@ float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCamer
         return rtxdiReservoir(root, pixel);
     case kDebugViewIndirectSamples:
         return indirectSample(root, pixel);
+    case kDebugViewNrcCache:
+        // the query pass queried at the primary this frame (kNrcFlagCacheView)
+        return nrcQueryResult(loadNrcConstants(root), pixel);
     case kDebugViewLightingOnly:
         // what the combine pass will add (M4); converges to Shadowed lights
         return tex2D(targets.directRadianceSampled).Load(int3(pixel, 0)).rgb + loadGuide(set, kGuideEmissive, pixel).rgb;

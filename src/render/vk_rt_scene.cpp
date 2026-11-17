@@ -120,6 +120,8 @@ void RayTracingScene::buildTemplates()
     templates.layoutGeneration = frameData.layoutGeneration();
     templates.instancesPerPartition = settings.instancesPerPartition;
     ++templates.version;
+    templates.sceneBounds = BoundingBox{.bboxMin = glm::vec3(std::numeric_limits<float>::max()),
+                                        .bboxMax = glm::vec3(std::numeric_limits<float>::lowest())};
 
     const ObjectStorage& storage = scene.objectStorage;
     const GeometryStore& geometry = scene.geometryStore;
@@ -151,6 +153,14 @@ void RayTracingScene::buildTemplates()
                 const BoundingBox box = primitiveBounds(geometry, geometry.primitiveDraws[p]);
                 const glm::vec4 center = world * glm::vec4(0.5f * (box.bboxMin + box.bboxMax), 1.0f);
                 centers.emplace_back(center.x, center.z);
+                for (uint32_t corner = 0; corner < 8; ++corner) {
+                    const glm::vec3 local{(corner & 1u) != 0 ? box.bboxMax.x : box.bboxMin.x,
+                                          (corner & 2u) != 0 ? box.bboxMax.y : box.bboxMin.y,
+                                          (corner & 4u) != 0 ? box.bboxMax.z : box.bboxMin.z};
+                    const glm::vec3 position = glm::vec3(world * glm::vec4(local, 1.0f));
+                    templates.sceneBounds.bboxMin = glm::min(templates.sceneBounds.bboxMin, position);
+                    templates.sceneBounds.bboxMax = glm::max(templates.sceneBounds.bboxMax, position);
+                }
             }
         }
     }

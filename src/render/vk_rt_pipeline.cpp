@@ -1,3 +1,4 @@
+// SHELVED with SER (considerations C-G1-3): kept in the tree, not built; the frame traces shaded rays with traceClosest
 #include "vk_rt_pipeline.hpp"
 #include "../util/debug.hpp"
 #include "vk_shader_objects.hpp"

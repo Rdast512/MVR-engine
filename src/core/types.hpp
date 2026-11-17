@@ -1067,7 +1067,7 @@ struct GpuFrameRoot
     vk::DeviceAddress rayInstances = 0;
     // RTXDI constants, 0 until M3
     vk::DeviceAddress rtxdiConstants = 0;
-    // SHaRC or NRC constants, 0 until M4
+    // GpuNrcConstants of this frame slot (M4 G3)
     vk::DeviceAddress cacheConstants = 0;
     uint32_t frameIndex = 0;
     // 1: the exposure reaches post and DLSS-RR as an image (considerations C-H2-1)
@@ -1110,14 +1110,6 @@ static_assert(offsetof(GpuFrameRoot, frameIndex) == 168);
 static_assert(offsetof(GpuFrameRoot, exposure) == 172);
 
 
-// radiance cache tier chosen at device creation
-enum class GiCache : uint32_t
-{
-    None = 0,
-    Sharc = 1,
-    Nrc = 2,
-};
-
 struct HardwareCapabilities
 {
     // Core/core-promoted properties
@@ -1158,8 +1150,6 @@ struct HardwareCapabilities
     vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV clusterAccelerationStructure;
     vk::PhysicalDevicePartitionedAccelerationStructurePropertiesNV partitionedAccelerationStructure;
 
-    // NRC when its extensions and features exist, else SHaRC, else none
-    GiCache giCache = GiCache::None;
     // ReorderThread regroups threads; eNone devices (expected: RTX 20/30) run it as a no-op
     bool isSerReordering = false;
 };

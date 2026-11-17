@@ -7,6 +7,7 @@
 #include "engine_guide_capture.hpp"
 #include "engine_motion_test.hpp"
 #include "texture_manager.hpp"
+#include "../render/nrc_library.hpp"
 #include "../render/vk_renderer.hpp"
 #include "../render/vk_shader_objects.hpp"
 #include "../util/vk_tracy.hpp"
@@ -40,6 +41,8 @@ class Engine
     bool isUiOpen = false;
 
     SDL_Window* window = nullptr;
+    // before device: its extension lists feed device creation, and the NRC context outlives nothing it loads
+    std::unique_ptr<NrcLibrary> nrcLibrary;
     std::unique_ptr<Device> device;
     std::unique_ptr<VkAllocator> allocator;
     std::unique_ptr<SwapChain> swapChain;

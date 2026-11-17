@@ -3,33 +3,6 @@ target_include_directories(engine_test_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR
 # Vulkan::Vulkan is imported in ThirdParty scope only; the cppm wrapper is global
 target_link_libraries(engine_test_support PUBLIC Vulkan::cppm)
 
-# --- SHaRC: shader-only library, exercised as update -> resolve -> query on the GPU ---
-set(_sharcShader "${CMAKE_CURRENT_SOURCE_DIR}/shaders/sharc_roundtrip.slang")
-set(_sharcShaderDir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
-set(_sharcSpirv)
-# SHARC_UPDATE / SHARC_QUERY are compile-time modes, so each pass is its own module
-foreach (_pass "updateMain;-DSHARC_UPDATE=1" "resolveMain;" "queryMain;-DSHARC_QUERY=1")
-    list(GET _pass 0 _entry)
-    list(SUBLIST _pass 1 -1 _defines)
-    set(_spv "${_sharcShaderDir}/${_entry}.spv")
-    add_custom_command(
-        OUTPUT ${_spv}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${_sharcShaderDir}
-        COMMAND ${SLANGC_EXECUTABLE} ${_sharcShader} ${ENGINE_SLANG_FLAGS} ${_defines} -entry ${_entry} -o ${_spv}
-        DEPENDS ${_sharcShader} ${ENGINE_SLANG_THIRDPARTY_HEADERS}
-        COMMENT "Compiling SHaRC test shader ${_entry}"
-        VERBATIM
-    )
-    list(APPEND _sharcSpirv ${_spv})
-endforeach ()
-
-add_executable(sharc_test sharc_test.cpp ${_sharcSpirv})
-target_compile_definitions(sharc_test PRIVATE SHARC_TEST_SHADER_DIR="${_sharcShaderDir}")
-target_link_libraries(sharc_test PRIVATE engine_test_support)
-add_test(NAME sharc COMMAND sharc_test)
-# 77: no Vulkan instance or GPU
-set_tests_properties(sharc PROPERTIES SKIP_RETURN_CODE 77)
-
 # --- Hi-Z: screen footprint of known spheres (shaders/core/culling.slang) ---
 set(_hizShader "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hiz_footprint.slang")
 set(_hizShaderDir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
@@ -103,9 +76,14 @@ find_package(slang CONFIG REQUIRED PATHS ${_slangPackageDir} NO_DEFAULT_PATH)
 add_executable(layout_test layout_test.cpp)
 set(_rtxdiIncludeDir ${ENGINE_SLANG_THIRDPARTY_INCLUDE_DIRS})
 list(FILTER _rtxdiIncludeDir INCLUDE REGEX "rtxdi")
+set(_nrcIncludeDir ${ENGINE_SLANG_THIRDPARTY_INCLUDE_DIRS})
+list(FILTER _nrcIncludeDir INCLUDE REGEX "nrc")
 target_compile_definitions(layout_test PRIVATE ENGINE_SHADER_SOURCE_DIR="${ENGINE_SLANG_INCLUDE_DIR}"
-                                               ENGINE_RTXDI_INCLUDE_DIR="${_rtxdiIncludeDir}")
+                                               ENGINE_RTXDI_INCLUDE_DIR="${_rtxdiIncludeDir}"
+                                               ENGINE_NRC_INCLUDE_DIR="${_nrcIncludeDir}")
 target_link_libraries(layout_test PRIVATE engine_build_config ThirdParty::all engine_test_support slang::slang)
+# GpuNrcConstants holds the SDK's NrcConstants
+target_link_libraries(layout_test PRIVATE ThirdParty::nrc)
 target_precompile_headers(layout_test PRIVATE ${CMAKE_SOURCE_DIR}/src/pch.h)
 if (ENGINE_USE_MIMALLOC)
     # engine_build_config wraps malloc

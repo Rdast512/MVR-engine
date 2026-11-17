@@ -14,10 +14,10 @@
 #include "vk_gpu_timer.hpp"
 #include "vk_hiz.hpp"
 #include "vk_indirect.hpp"
+#include "vk_nrc.hpp"
 #include "debug_view.hpp"
 #include "vk_meshlet_culling.hpp"
 #include "vk_render_targets.hpp"
-#include "vk_rt_pipeline.hpp"
 #include "vk_rt_scene.hpp"
 #include "vk_rtxdi.hpp"
 #include "vk_world_lights.hpp"
@@ -36,7 +36,8 @@ class Renderer
 public:
     Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allocator, FrameSync& frameSync,
              const Scene& scene, const AssetBuffers& assets, FrameData& frameData, DescriptorManager& descriptorManager,
-             ShaderObjects& shaderObjects, Camera& camera, VkTracyContext* tracyContext = nullptr);
+             ShaderObjects& shaderObjects, Camera& camera, const NrcLibrary& nrcLibrary,
+             VkTracyContext* tracyContext = nullptr);
     ~Renderer();
 
     Renderer(const Renderer&) = delete;
@@ -62,7 +63,7 @@ public:
 
     [[nodiscard]] MeshletCulling& getCulling() noexcept { return culling; }
     [[nodiscard]] RtxdiContext& getRtxdi() noexcept { return rtxdi; }
-    [[nodiscard]] IndirectPass& getIndirect() noexcept { return indirect; }
+    [[nodiscard]] NrcCache& getNrc() noexcept { return nrc; }
     [[nodiscard]] WorldLights& getWorldLights() noexcept { return worldLights; }
     [[nodiscard]] RayTracingScene& getRayTracingScene() noexcept { return rtScene; }
     [[nodiscard]] Dlss& getDlss() noexcept { return dlss; }
@@ -88,8 +89,6 @@ public:
     void enableRayCheck();
     // the frame recorded last; complete only after its fence, e.g. a waitIdle
     [[nodiscard]] const GpuRayCheckStats& getLastRayCheck() const;
-    // the SER check of the frame recorded last, indexed by isReorderEnabled; same completion rule
-    [[nodiscard]] std::span<const GpuSerCheckStats, 2> getLastSerCheck() const;
 
     // ENGINE_GUIDE_CAPTURE: the next recorded frame copies the presented image (the DLSS-RR output for Lit, else the
     // display image) to host memory after the debug view
@@ -117,13 +116,16 @@ private:
     void recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase);
     void recordResolve(const vk::raii::CommandBuffer& cmd);
     void recordDirectLight(const vk::raii::CommandBuffer& cmd);
+    // NRC begin frame -> update paths -> indirect (query) pass -> QueryAndTrain -> NRC resolve into the GI reservoirs
+    void recordIndirect(const vk::raii::CommandBuffer& cmd);
+    // after a vendor SDK call (NGX, NRC) that bound its own descriptor state
+    void bindHeaps(const vk::raii::CommandBuffer& cmd) const;
     // combine -> noisyColor; DLSS-RR -> exposure -> tonemap into the post target when the Lit view is shown
     void recordReconstruction(const vk::raii::CommandBuffer& cmd);
     void recordDebugView(const vk::raii::CommandBuffer& cmd);
     void recordMotionCheck(const vk::raii::CommandBuffer& cmd);
     void recordRayCheck(const vk::raii::CommandBuffer& cmd);
     // SER pipeline against traceClosest, reorder off then on
-    void recordSerCheck(const vk::raii::CommandBuffer& cmd);
     // grows this slot's readback buffer; the slot's fence has been waited
     void recordDisplayCapture(const vk::raii::CommandBuffer& cmd);
     void recordPresent(vk::raii::CommandBuffer& cmd, uint32_t imageIndex);
@@ -154,8 +156,12 @@ private:
     RayTracingScene rtScene;
     WorldLights worldLights;
     RtxdiContext rtxdi;
-    // writes rtxdi's GI reservoirs
-    IndirectPass indirect;
+    // the radiance cache behind the indirect pass's samples
+    NrcCache nrc;
+    // NRC commands went into this frame's ray command buffer: EndFrame follows its submit
+    bool isNrcRecorded = false;
+    // FrameSync::rayTimeline value of the last ray submit with NRC commands; 0 before the first
+    uint64_t lastNrcRaySubmit = 0;
     Dlss dlss;
     PostProcess post;
     // false after a resize or a frame without the Lit view: the next evaluation resets DLSS history
@@ -173,10 +179,6 @@ private:
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> motionCheckStats;
     // per frame slot; empty unless enableRayCheck
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> rayCheckStats;
-    // per frame slot, GpuSerCheckStats per reorder mode; empty unless enableRayCheck
-    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> serCheckStats;
-    // passes/rt_ser_check.slang, indexed by isReorderEnabled; created by enableRayCheck
-    std::array<std::optional<RtPipeline>, 2> serCheckPipelines;
     uint32_t lastRecordedFrame = 0;
     // per frame slot; grown on the first capture at a larger extent
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> displayCaptures;

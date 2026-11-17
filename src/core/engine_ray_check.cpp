@@ -25,15 +25,6 @@ namespace
                            fromBits(stats.maxPositionErrorBits), fromBits(stats.maxMipErrorBits), stats.mipOutliers,
                            fromBits(stats.maxHitNormalErrorBits), fromBits(stats.maxHitMaterialNormalErrorBits));
     }
-
-    [[nodiscard]] std::string describe(const GpuSerCheckStats& stats, bool isReorderEnabled)
-    {
-        return std::format("SER reorder {}: {} rays, {} hits; {} hit mismatches, {} id mismatches, {} data mismatches; "
-                           "max error barycentric {:.2e}, distance {:.2e} relative",
-                           isReorderEnabled ? "on" : "off", stats.rays, stats.hits, stats.hitMismatches,
-                           stats.idMismatches, stats.dataMismatches, fromBits(stats.maxBarycentricErrorBits),
-                           fromBits(stats.maxDistanceErrorBits));
-    }
 } // namespace
 
 bool EngineRayCheck::isRequested()
@@ -52,13 +43,7 @@ bool EngineRayCheck::isPassing(const GpuRayCheckStats& stats)
         fromBits(stats.maxPositionErrorBits) <= kMaxPositionError;
 }
 
-bool EngineRayCheck::isPassing(const GpuSerCheckStats& stats)
-{
-    return stats.rays > 0 && stats.hitMismatches == 0 && stats.idMismatches == 0 && stats.dataMismatches == 0;
-}
-
-bool EngineRayCheck::endFrame(const GpuRayCheckStats& stats, std::span<const GpuSerCheckStats, 2> serStats,
-                              bool isStandalone)
+bool EngineRayCheck::endFrame(const GpuRayCheckStats& stats, bool isStandalone)
 {
     if (++frame <= kWarmupFrames) {
         return false;
@@ -69,21 +54,6 @@ bool EngineRayCheck::endFrame(const GpuRayCheckStats& stats, std::span<const Gpu
     } else if (loggedFailures < kMaxLoggedFailures) {
         ++loggedFailures;
         logError(std::format("FAIL frame {}: {}", frame, describe(stats)), "RayCheck");
-    }
-    for (size_t mode = 0; mode < serStats.size(); ++mode) {
-        const GpuSerCheckStats& ser = serStats[mode];
-        SerTotals& totals = serTotals[mode];
-        if (isPassing(ser)) {
-            ++totals.passedFrames;
-        } else if (loggedFailures < kMaxLoggedFailures) {
-            ++loggedFailures;
-            logError(std::format("FAIL frame {}: {}", frame, describe(ser, mode == 1)), "RayCheck");
-        }
-        totals.rays += ser.rays;
-        totals.hits += ser.hits;
-        totals.mismatches += ser.hitMismatches + ser.idMismatches + ser.dataMismatches;
-        totals.maxBarycentricError = std::max(totals.maxBarycentricError, fromBits(ser.maxBarycentricErrorBits));
-        totals.maxDistanceError = std::max(totals.maxDistanceError, fromBits(ser.maxDistanceErrorBits));
     }
     interiorPixels += stats.interiorPixels;
     edgeMismatches += stats.edgeMismatches;
@@ -100,8 +70,6 @@ bool EngineRayCheck::endFrame(const GpuRayCheckStats& stats, std::span<const Gpu
     maxHitMaterialNormalError = std::max(maxHitMaterialNormalError, fromBits(stats.maxHitMaterialNormalErrorBits));
     if (checkedFrames == 1) {
         logInfo(std::format("first checked frame: {}", describe(stats)), "RayCheck");
-        logInfo(std::format("first checked frame: {}; {}", describe(serStats[0], false), describe(serStats[1], true)),
-                "RayCheck");
     }
     return isStandalone && checkedFrames >= kStandaloneFrames;
 }
@@ -125,18 +93,5 @@ void EngineRayCheck::logSummary() const
         logInfo(summary, "RayCheck");
     } else {
         logError(summary, "RayCheck");
-    }
-    for (size_t mode = 0; mode < serTotals.size(); ++mode) {
-        const SerTotals& totals = serTotals[mode];
-        const std::string serSummary = std::format(
-            "SER check, reorder {}: {} of {} frames matched traceClosest; {} rays, {} hits, {} mismatches; max error "
-            "barycentric {:.2e}, distance {:.2e} relative",
-            mode == 1 ? "on" : "off", totals.passedFrames, checkedFrames, totals.rays, totals.hits, totals.mismatches,
-            totals.maxBarycentricError, totals.maxDistanceError);
-        if (checkedFrames > 0 && totals.passedFrames == checkedFrames) {
-            logInfo(serSummary, "RayCheck");
-        } else {
-            logError(serSummary, "RayCheck");
-        }
     }
 }

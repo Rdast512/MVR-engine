@@ -50,6 +50,8 @@ enum class DebugView : uint32_t
     RtxdiReservoirs,
     // the indirect pass's initial ReSTIR GI reservoir shaded without reuse: one-bounce indirect light, 1 sample
     IndirectSamples,
+    // NRC's prediction at the primary surface (the SDK's DirectCacheView): smooth, with shadows and sunlit bounce
+    NrcCache,
     Count,
 };
 
@@ -63,6 +65,7 @@ static_assert(std::to_underlying(DebugView::LightingOnly) == 24);
 static_assert(std::to_underlying(DebugView::DlssInput) == 25);
 static_assert(std::to_underlying(DebugView::RtxdiReservoirs) == 26);
 static_assert(std::to_underlying(DebugView::IndirectSamples) == 27);
+static_assert(std::to_underlying(DebugView::NrcCache) == 28);
 
 enum class DebugViewCategory : uint8_t
 {
@@ -133,6 +136,7 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"DLSS input", DebugViewCategory::Upscaling, true},
     {"RTXDI reservoirs", DebugViewCategory::Lighting, true},
     {"Indirect samples", DebugViewCategory::Lighting, true},
+    {"NRC cache", DebugViewCategory::Lighting, true},
 }};
 
 [[nodiscard]] constexpr const DebugViewInfo& debugViewInfo(DebugView view)

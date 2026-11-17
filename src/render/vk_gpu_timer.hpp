@@ -25,8 +25,14 @@ enum class GpuTimerScope : uint32_t
     RtxdiTemporal,
     // spatial resampling and shading
     RtxdiShade,
-    // SER bounce ray into the initial ReSTIR GI reservoirs (spec/m4/g2_indirect_pass.md)
+    // NRC begin frame + training paths (spec/m4/g3_nrc.md)
+    NrcUpdate,
+    // SER bounce ray into the initial ReSTIR GI reservoirs (spec/m4/g2_indirect_pass.md), NRC's query paths
     Indirect,
+    // NRC QueryAndTrain: inference at the queries, one training step
+    NrcTrain,
+    // cache term into the GI reservoirs
+    NrcResolve,
     Combine,
     // zero while a debug view is shown: the DLSS-RR evaluation is skipped
     Dlss,
@@ -35,9 +41,6 @@ enum class GpuTimerScope : uint32_t
     DebugView,
     // ENGINE_MOTION_TEST and ENGINE_RT_CHECK compute passes; zero unless enabled
     SelfTests,
-    // ENGINE_RT_CHECK's SER trace, reorder off then on (spec/m4/g1_ser_rt_pipeline.md §4); zero unless enabled
-    SerCheck,
-    SerCheckReorder,
     // GPU idle until the swapchain image is acquired; not GPU work, so not in the total
     AcquireWait,
     Present,
@@ -74,8 +77,14 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "ReSTIR DI temporal";
     case GpuTimerScope::RtxdiShade:
         return "ReSTIR DI shade";
+    case GpuTimerScope::NrcUpdate:
+        return "NRC update";
     case GpuTimerScope::Indirect:
         return "Indirect";
+    case GpuTimerScope::NrcTrain:
+        return "NRC train";
+    case GpuTimerScope::NrcResolve:
+        return "NRC resolve";
     case GpuTimerScope::Combine:
         return "Combine";
     case GpuTimerScope::Dlss:
@@ -86,10 +95,6 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "Debug view";
     case GpuTimerScope::SelfTests:
         return "Self-tests";
-    case GpuTimerScope::SerCheck:
-        return "SER check";
-    case GpuTimerScope::SerCheckReorder:
-        return "SER check, reorder";
     case GpuTimerScope::AcquireWait:
         return "Acquire wait";
     case GpuTimerScope::Present:

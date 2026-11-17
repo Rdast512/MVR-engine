@@ -1,6 +1,7 @@
 #pragma once
 #include "core/vk_device.hpp"
 #include "core/vk_frame_sync.hpp"
+#include "vk_driver_heap.hpp"
 
 #include <cstdint>
 
@@ -100,11 +101,8 @@ private:
 
     const Device& device;
     FrameSync& frameSync;
-    // empty legacy descriptor state: binding it returns the driver to its own descriptor heap for NGX (evaluate)
-    vk::raii::DescriptorSetLayout emptySetLayout = nullptr;
-    vk::raii::PipelineLayout emptyPipelineLayout = nullptr;
-    vk::raii::DescriptorPool emptySetPool = nullptr;
-    vk::raii::DescriptorSet emptySet = nullptr;
+    // bound before evaluate: NGX's kernels use the driver's descriptor heap
+    DriverDescriptorHeap driverHeap;
     NVSDK_NGX_Parameter* parameters = nullptr;
     NVSDK_NGX_Handle* feature = nullptr;
     vk::Extent2D renderExtent{};

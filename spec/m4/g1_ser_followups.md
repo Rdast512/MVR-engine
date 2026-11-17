@@ -1,6 +1,6 @@
 # M4 · G1 follow-ups: SER aligned with NVIDIA's code
 
-**Started:** 2026-11-16 · **Status:** built 2026-11-17 (S1, S2 shipped; S3–S5 measured, no change; S6 default stays off) · **Milestone:** M4
+**Started:** 2026-11-16 · **Status:** built 2026-11-17 (S1, S2 shipped; S3–S5 measured, no change; S6 default stays off); shelved with G1 on 2026-11-17 (C-G1-3) · **Milestone:** M4
 **Implements:** review of [G1](./g1_ser_rt_pipeline.md) and [G2](./g2_indirect_pass.md) against NVIDIA's SER code and the SER docs
 **Depends on:** G1 (`traceShaded`, `RtPipeline`, SER check), G2 (`IndirectPass`, `Indirect` timer scope)
 **Used by:** [G3](./g3_nrc.md) update paths, M7 material bins (hint)

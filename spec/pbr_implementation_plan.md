@@ -129,8 +129,8 @@ Resource details: [resource_architecture.md](./resource_architecture.md). Vis-bu
 | Lights | `GpuLight` 64 B per entity in model space, point and spot rows before directional, `type` a `GpuLightType`; `light_world` writes this frame's world rows (E2), which `loadWorldLight` reads |
 | Clusters | `clusterlod.h` level 0 (Flex builder, cone weight 0, `optimizeMeshletLevel` 1), groups via `partitionClusters` |
 | Device | AS, ray query, RT pipeline, SER, OMM enabled. Cluster AS and position fetch required (C1); partitioned AS required (C4). OMM, SER and cluster AS properties cached in `HardwareCapabilities`, SER hint and cluster AS limits logged. Cooperative vectors **not enabled**. Fragment barycentrics removed |
-| Slang modules | done (A2): library files are `module x;`, passes `import` what they use. `gi/sharc.slang` is a textual include left over from SHaRC, to be removed (considerations C-G3-1) |
-| `ThirdParty/` | meshoptimizer v1.3, `rtxdi`, `sharc` (to be removed, C-G3-1), `nrc`, `dlss` fetched; linkage tests in `tests/`. NVIDIA OMM SDK 1.9.2 fetched and built as `omm-lib` (CPU baker), no caller until D1 |
+| Slang modules | done (A2): library files are `module x;`, passes `import` what they use. The SHaRC include was removed in G3 (considerations C-G3-1) |
+| `ThirdParty/` | meshoptimizer v1.3, `rtxdi`, `nrc`, `dlss` fetched; linkage tests in `tests/`. NVIDIA OMM SDK 1.9.2 fetched and built as `omm-lib` (CPU baker), no caller until D1 |
 | Shader stubs | none: deleted 2026-11-12 (spec §20.2 AU7); each file returns with the task that fills it. `raytracing/trace` exists since F2. The guide layout is `GuideImage` in `types.slang` |
 
 Toolchain facts (re-probed 2026-11-08 on Slang v2026.20, task A2):
@@ -843,9 +843,9 @@ Spec §11.1, §11.3–11.6. Started 2026-11-16. Each step has its own spec under
 
 | Step | Spec | Summary | Status |
 |---|---|---|---|
-| G1 | [g1_ser_rt_pipeline.md](./m4/g1_ser_rt_pipeline.md) | `VkPipeline` + SBT per shaded-ray pass, `HitObject` trace → reorder → minimal closest-hit → shade in raygen; checked against the C3 ray-query path | built 2026-11-16; 2060 Super numbers open; follow-ups built 2026-11-17 ([g1_ser_followups.md](./m4/g1_ser_followups.md)) |
-| G2 | [g2_indirect_pass.md](./m4/g2_indirect_pass.md) | 1 ray/px from the primary surface, direct light at X₂, cache query, ReSTIR GI initial samples | built 2026-11-16 (cache term with G3); 2060 Super numbers open |
-| G3 | [g3_nrc.md](./m4/g3_nrc.md) | NRC context, update paths in the SER pipeline, `QueryAndTrain`, custom resolve | not started |
+| G1 | [g1_ser_rt_pipeline.md](./m4/g1_ser_rt_pipeline.md) | `VkPipeline` + SBT per shaded-ray pass, `HitObject` trace → reorder → minimal closest-hit → shade in raygen; checked against the C3 ray-query path | built 2026-11-16; follow-ups built 2026-11-17 ([g1_ser_followups.md](./m4/g1_ser_followups.md)); **shelved 2026-11-17** (Slang's EXT SER, considerations C-G1-3): shaded rays use ray queries in compute |
+| G2 | [g2_indirect_pass.md](./m4/g2_indirect_pass.md) | 1 ray/px from the primary surface, direct light at X₂, cache query, ReSTIR GI initial samples | built 2026-11-16 (cache term with G3); compute + ray query since 2026-11-17 (C-G1-3); 2060 Super numbers open |
+| G3 | [g3_nrc.md](./m4/g3_nrc.md) | NRC context, update paths in the SER pipeline, `QueryAndTrain`, custom resolve | built 2026-11-17 (cache 0.62 ms on the 5070); 2060 Super numbers open |
 | G5 | [g5_restir_gi.md](./m4/g5_restir_gi.md) | RTXDI ReSTIR GI → `indirectRadiance` | not started |
 | G6 | [g6_combine.md](./m4/g6_combine.md) | `noisyColor = direct + indirect + emissive` | direct + emissive built (H1) |
 

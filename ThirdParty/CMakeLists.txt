@@ -272,13 +272,6 @@ engine_fetch_declare(rtxdi
         GIT_TAG b67f61cd0bfa6792acbf5429bb29a68ee5cdd808 # 3.2
 )
 
-# 16. SHaRC (header-only shader lib)
-engine_fetch_declare(sharc
-        GIT_REPOSITORY https://github.com/NVIDIA-RTX/SHARC.git
-        GIT_TAG 4e21b585c33c83d723ca9a1e11bbb1090d145793
-        SOURCE_SUBDIR skip-add-subdirectory
-)
-
 # 17. OMM SDK. Root CMake pulls donut/ShaderMake/its own glm; only omm-lib deps are fetched
 engine_fetch_declare(omm
         GIT_REPOSITORY https://github.com/NVIDIA-RTX/OMM.git
@@ -287,7 +280,7 @@ engine_fetch_declare(omm
         SOURCE_SUBDIR skip-add-subdirectory
 )
 
-set(_tp_rtx_names rtxdi sharc omm)
+set(_tp_rtx_names rtxdi omm)
 
 # 18. NRC: prebuilt x64 Windows binaries only (git-lfs, ~230 MB)
 if (WIN32)
@@ -485,7 +478,7 @@ if (WIN32)
 endif ()
 
 # --- Shader-side headers (HLSL, slangc only) ---
-set(_slangIncludeDirs "${sharc_SOURCE_DIR}/include" "${rtxdi_SOURCE_DIR}/Include")
+set(_slangIncludeDirs "${rtxdi_SOURCE_DIR}/Include")
 if (WIN32)
         list(APPEND _slangIncludeDirs "${nrc_SOURCE_DIR}/Include")
 endif ()

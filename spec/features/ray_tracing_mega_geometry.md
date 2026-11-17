@@ -2,6 +2,7 @@
 
 **Date:** 2026-11-13 · **Status:** C1 built (CLAS + cluster BLAS per primitive), RT1–RT3 done (C2 built), RT4–RT5 done (C3 built); PTLAS required since 2026-11-14 and built (C4, RT9 done); the RT pipeline not started · **Milestone:** M2 (C2, C3, C4), M4 (RT pipeline, SER), M6 (OMM), post-1.0 (LOD, §16.3)
 **Implements:** engine spec §10 (RT scene), §11.1 (ray model); plan C2, C3, D4, G1 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
+**Re-check 2026-11-17:** [reference/mega_geometry_comparison.md](../../reference/mega_geometry_comparison.md) (updated samples: ray queries vs pipeline, static CLAS vs triangle BLAS, RT clustering, truncation in raster, PTLAS layout)
 **Related:** [g1_ser_rt_pipeline.md](../m4/g1_ser_rt_pipeline.md), [visibility_buffer.md](./visibility_buffer.md), sample [README](../../reference/vk_lod_clusters/README.md) and [docs/](../../reference/vk_lod_clusters/docs/); secondary references in §1.1
 
 This document maps the NVIDIA sample `reference/vk_lod_clusters` onto the engine: what it does for ray tracing, which parts the engine takes as they are, which parts it changes, and in what order to build them. Sample paths are relative to `reference/vk_lod_clusters/` unless a section names another reference. Line numbers are from the vendored copy and are given for orientation only.

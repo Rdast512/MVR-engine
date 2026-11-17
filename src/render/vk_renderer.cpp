@@ -23,7 +23,7 @@ namespace
 Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allocator, FrameSync& frameSync,
                    const Scene& scene, const AssetBuffers& assets, FrameData& frameData,
                    DescriptorManager& descriptorManager, ShaderObjects& shaderObjects, Camera& camera,
-                   VkTracyContext* tracyContext) :
+                   const NrcLibrary& nrcLibrary, VkTracyContext* tracyContext) :
     device(device), swapChain(swapChain), allocator(allocator), frameSync(frameSync), frameData(frameData),
     descriptorManager(descriptorManager), camera(camera), shaderObjects(shaderObjects),
     dgc(device, allocator, descriptorManager, shaderObjects),
@@ -32,7 +32,8 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
     targets(device, allocator, frameSync, descriptorManager),
     rtScene(device, allocator, frameSync, scene, assets, frameData, shaderObjects),
     worldLights(device, allocator, frameSync, assets, frameData, shaderObjects), rtxdi(device, allocator, worldLights),
-    indirect(device, allocator), dlss(device, frameSync), post(device, allocator, shaderObjects), gpuTimer(device), tracyContext(tracyContext)
+    nrc(device, allocator, nrcLibrary), dlss(device, frameSync),
+    post(device, allocator, shaderObjects), gpuTimer(device), tracyContext(tracyContext)
 {
     const vk::DeviceSize maxPushData = device.capabilities.descriptorHeap.maxPushDataSize;
     if (kMaxPushDataBytes > maxPushData) {
@@ -48,9 +49,6 @@ Renderer::~Renderer()
         destroyHostBuffer(allocator.allocator, stats, nullptr);
     }
     for (HostBuffer& stats : rayCheckStats) {
-        destroyHostBuffer(allocator.allocator, stats, nullptr);
-    }
-    for (HostBuffer& stats : serCheckStats) {
         destroyHostBuffer(allocator.allocator, stats, nullptr);
     }
     for (HostBuffer& capture : displayCaptures) {
@@ -76,31 +74,8 @@ void Renderer::enableRayCheck()
             rayCheckStats[slot] = createHostBuffer(sizeof(GpuRayCheckStats), allocator.allocator, device.vkdevice,
                                                    device.queueFamilyIndices, std::format("RayCheckStats_{}", slot),
                                                    nullptr);
-            serCheckStats[slot] = createHostBuffer(sizeof(std::array<GpuSerCheckStats, 2>), allocator.allocator,
-                                                   device.vkdevice, device.queueFamilyIndices,
-                                                   std::format("SerCheckStats_{}", slot), nullptr);
         }
     }
-    for (const bool isReorderEnabled : {false, true}) {
-        std::optional<RtPipeline>& pipeline = serCheckPipelines[isReorderEnabled ? 1 : 0];
-        if (!pipeline) {
-            pipeline.emplace(device, allocator,
-                             RtPipeline::Source{.file = "rt_ser_check.spv",
-                                                .raygenEntry = "serCheckRaygen",
-                                                .missEntry = "serCheckMiss",
-                                                .closestHitEntry = "serCheckClosestHit",
-                                                .debugName = isReorderEnabled ? "SerCheckReorder" : "SerCheck",
-                                                .isReorderEnabled = isReorderEnabled});
-        }
-    }
-}
-
-std::span<const GpuSerCheckStats, 2> Renderer::getLastSerCheck() const
-{
-    if (serCheckStats[lastRecordedFrame].mapped == nullptr) {
-        throw std::logic_error("SER check read without enableRayCheck");
-    }
-    return std::span<const GpuSerCheckStats, 2>(static_cast<const GpuSerCheckStats*>(serCheckStats[lastRecordedFrame].mapped), 2);
 }
 
 const GpuRayCheckStats& Renderer::getLastRayCheck() const
@@ -141,6 +116,7 @@ void Renderer::rebuildSwapchainResources()
     targets.recreate(renderExtent, displayExtent);
     hiz.recreate(targets);
     rtxdi.recreate(renderExtent);
+    nrc.recreate(renderExtent);
     camera.setRenderExtent(renderExtent);
     isDlssHistoryValid = false;
     // the exposure image starts at 1 again
@@ -196,6 +172,8 @@ void Renderer::drawFrame()
     camera.updateCameraData(currentFrame, frameNumber, isDlssPresented());
     targets.prepareFrame(currentFrame, frameNumber, isDlssPresented());
     rtScene.prepareFrame(currentFrame, frameNumber - 1);
+    // after the RT scene followed a new layout: its bounds are NRC's
+    nrc.prepareFrame(currentFrame, rtScene.getSceneBounds());
     worldLights.prepareFrame(currentFrame, frameNumber - 1);
     isLightSetChanged = worldLights.lightCount() != lastLightCount;
     lastLightCount = worldLights.lightCount();
@@ -208,9 +186,6 @@ void Renderer::drawFrame()
     }
     if (void* stats = rayCheckStats[currentFrame].mapped) {
         *static_cast<GpuRayCheckStats*>(stats) = {};
-    }
-    if (void* stats = serCheckStats[currentFrame].mapped) {
-        *static_cast<std::array<GpuSerCheckStats, 2>*>(stats) = {};
     }
 
     // the fence covers both submits of this slot; every path below ends in a submit that signals it
@@ -242,6 +217,7 @@ void Renderer::drawFrame()
                             // a light set change resets history, so both frames share their rows
                             .prevWorldLights = isHistoryReset ? 0 : worldLights.address(previousFrameSlot()),
                             .rtxdiConstants = rtxdi.constantsAddress(currentFrame),
+                            .cacheConstants = nrc.constantsAddress(currentFrame),
                             .lateVisibleBase = culling.lateVisibleBase(currentFrame),
                             .triangleCullFlags = culling.triangleCullFlags(currentFrame),
                             .subpixelSnap = culling.getSubpixelSnap(),
@@ -278,7 +254,19 @@ void Renderer::drawFrame()
                             .signalSemaphoreInfoCount = 1,
                             .pSignalSemaphoreInfos = &raySignal},
         };
+        // a submit while the previous frame's NRC kernels run loses the device after a few hundred frames; GPU-side
+        // waits do not prevent it, only a host wait does (considerations C-G3-6)
+        if (lastNrcRaySubmit != 0) {
+            ZoneScopedN("NrcSubmitWait");
+            const vk::SemaphoreWaitInfo nrcWait{
+                .semaphoreCount = 1, .pSemaphores = &*frameSync.rayTimeline, .pValues = &lastNrcRaySubmit};
+            (void)deviceRef.waitSemaphores(nrcWait, UINT64_MAX);
+        }
         graphicsQueue.submit2(submits);
+        if (isNrcRecorded) {
+            nrc.endFrame(graphicsQueue);
+            lastNrcRaySubmit = frameNumber;
+        }
     }
 
     vk::Result result{};
@@ -435,8 +423,7 @@ void Renderer::recordRayCommands(vk::raii::CommandBuffer& cmd)
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneIndirect, *cmd, "GPU_Indirect", gpuTrace);
 #endif
-        indirect.record(cmd, currentFrame, frameData.frameRootAddress(currentFrame), targets.getExtent());
-        gpuTimer.end(cmd, GpuTimerScope::Indirect);
+        recordIndirect(cmd);
     }
     {
         ZoneScopedN("Reconstruction");
@@ -459,16 +446,6 @@ void Renderer::recordRayCommands(vk::raii::CommandBuffer& cmd)
         recordRayCheck(cmd);
     }
     gpuTimer.end(cmd, GpuTimerScope::SelfTests);
-    if (serCheckStats[currentFrame].mapped != nullptr) {
-        ZoneScopedN("SerCheck");
-#ifdef TRACY_ENABLE
-        TracyVkNamedZone(gpuCtx, gpuZoneSerCheck, *cmd, "GPU_SerCheck", gpuTrace);
-#endif
-        recordSerCheck(cmd);
-    } else {
-        gpuTimer.end(cmd, GpuTimerScope::SerCheck);
-        gpuTimer.end(cmd, GpuTimerScope::SerCheckReorder);
-    }
     displayCaptureExtents[currentFrame].reset();
     if (isDisplayCapturePending) {
         recordDisplayCapture(cmd);
@@ -723,6 +700,67 @@ void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
     gpuTimer.end(cmd, GpuTimerScope::RtxdiShade);
 }
 
+void Renderer::recordIndirect(const vk::raii::CommandBuffer& cmd)
+{
+#ifdef TRACY_ENABLE
+    const bool gpuTrace = tracyContext != nullptr && tracyContext->isActive();
+    TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
+#endif
+    const vk::DeviceAddress frameRoot = frameData.frameRootAddress(currentFrame);
+    isNrcRecorded = nrc.isActive();
+    const bool isCacheView = debugView.view == DebugView::NrcCache;
+    if (isNrcRecorded) {
+        ZoneScopedN("NrcUpdate");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneNrcUpdate, *cmd, "GPU_NrcUpdate", gpuTrace);
+#endif
+        nrc.recordBeginFrame(cmd, currentFrame, isCacheView);
+        bindHeaps(cmd);
+        nrc.recordUpdate(cmd, frameRoot, shaderObjects.frameShaders.nrcUpdate);
+    }
+    gpuTimer.end(cmd, GpuTimerScope::NrcUpdate);
+    {
+        ZoneScopedN("IndirectQuery");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneIndirectQuery, *cmd, "GPU_IndirectQuery", gpuTrace);
+#endif
+        recordIndirectPass(cmd, shaderObjects.frameShaders.indirect, frameRoot, targets.getExtent());
+    }
+    gpuTimer.end(cmd, GpuTimerScope::Indirect);
+    if (isNrcRecorded) {
+        ZoneScopedN("NrcTrain");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneNrcTrain, *cmd, "GPU_NrcTrain", gpuTrace);
+#endif
+        nrc.recordTrain(cmd);
+        bindHeaps(cmd);
+    }
+    gpuTimer.end(cmd, GpuTimerScope::NrcTrain);
+    // the cache view shows the query at the primary instead; the reservoirs keep G2's radiance
+    if (isNrcRecorded && !isCacheView) {
+        ZoneScopedN("NrcResolve");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneNrcResolve, *cmd, "GPU_NrcResolve", gpuTrace);
+#endif
+        dispatchFullscreen(cmd, shaderObjects.frameShaders.nrcResolve);
+        // GI reservoir stores -> the compute passes that read them (debug view; G5 resampling)
+        const vk::MemoryBarrier2 resolveBarrier{
+            .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+            .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
+        };
+        cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &resolveBarrier});
+    }
+    gpuTimer.end(cmd, GpuTimerScope::NrcResolve);
+}
+
+void Renderer::bindHeaps(const vk::raii::CommandBuffer& cmd) const
+{
+    cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
+    cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
+}
+
 void Renderer::recordReconstruction(const vk::raii::CommandBuffer& cmd)
 {
     // directRadiance and guide writes -> the combine's reads
@@ -787,8 +825,7 @@ void Renderer::recordReconstruction(const vk::raii::CommandBuffer& cmd)
                        });
     isDlssHistoryValid = true;
     // NGX binds its own pipelines and descriptor sets, which invalidate the heap bindings
-    cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
-    cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
+    bindHeaps(cmd);
     gpuTimer.end(cmd, GpuTimerScope::Dlss);
     post.record(cmd, currentFrame, frameData.frameRootAddress(currentFrame), targets.getDisplayExtent(),
                 frameDeltaMs * 1e-3f);
@@ -825,32 +862,6 @@ void Renderer::recordMotionCheck(const vk::raii::CommandBuffer& cmd)
     // a fence wait alone does not make device writes visible to the host
     const vk::MemoryBarrier2 readbackBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
-        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
-    };
-    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &readbackBarrier});
-}
-
-// reads the frame root, camera and TLAS only; writes only its stats buffer
-void Renderer::recordSerCheck(const vk::raii::CommandBuffer& cmd)
-{
-    const vk::Extent2D extent = targets.getExtent();
-    for (const bool isReorderEnabled : {false, true}) {
-        const size_t mode = isReorderEnabled ? 1 : 0;
-        const SerCheckPushData push{
-            .frameRoot = frameData.frameRootAddress(currentFrame),
-            .stats = serCheckStats[currentFrame].address + sizeof(GpuSerCheckStats) * mode,
-        };
-        const RtPipeline& pipeline = *serCheckPipelines[mode];
-        pipeline.bind(cmd);
-        cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
-        pipeline.traceRays(cmd, currentFrame, extent);
-        gpuTimer.end(cmd, isReorderEnabled ? GpuTimerScope::SerCheckReorder : GpuTimerScope::SerCheck);
-    }
-    // a fence wait alone does not make device writes visible to the host
-    const vk::MemoryBarrier2 readbackBarrier{
-        .srcStageMask = vk::PipelineStageFlagBits2::eRayTracingShaderKHR,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
         .dstStageMask = vk::PipelineStageFlagBits2::eHost,
         .dstAccessMask = vk::AccessFlagBits2::eHostRead,

@@ -81,6 +81,12 @@ public:
         vk::raii::ShaderEXT rtxdiInitial = nullptr;
         vk::raii::ShaderEXT rtxdiTemporal = nullptr;
         vk::raii::ShaderEXT rtxdiShade = nullptr;
+        // passes/indirect.slang: the bounce ray query, NRC's query paths
+        vk::raii::ShaderEXT indirect = nullptr;
+        // passes/nrc_update.slang: NRC's training paths
+        vk::raii::ShaderEXT nrcUpdate = nullptr;
+        // passes/nrc_resolve.slang: NRC's cache term into the GI reservoirs
+        vk::raii::ShaderEXT nrcResolve = nullptr;
         // passes/combine.slang: noisyColor, the DLSS-RR color input
         vk::raii::ShaderEXT combine = nullptr;
         // passes/exposure.slang: luminance histogram of the DLSS-RR output, then the adapted exposure

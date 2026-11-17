@@ -284,8 +284,14 @@ engine_add_slang_pass(passes/hiz_view.slang ENTRIES hizViewMesh hizViewFrag)
 engine_add_slang_pass(passes/hiz_build.slang ENTRIES hizBuild)
 engine_add_slang_pass(passes/rt_instances.slang ENTRIES rtInstancesMain)
 engine_add_slang_pass(passes/rt_check.slang ENTRIES rayCheckMain)
-engine_add_slang_pass(passes/rt_ser_check.slang ENTRIES serCheckRaygen serCheckClosestHit serCheckMiss)
-engine_add_slang_pass(passes/indirect.slang ENTRIES indirectRaygen indirectClosestHit indirectMiss FLAGS ${RTXDI_SLANG_FLAGS})
+# shelved with SER (considerations C-G1-3): raytracing/ser.slang and this pass stay in the tree, unbuilt
+# engine_add_slang_pass(passes/rt_ser_check.slang ENTRIES serCheckRaygen serCheckClosestHit serCheckMiss)
+# NRC's path mode is a compile-time macro (Nrc.hlsli): the indirect pass is the query pass
+engine_add_slang_pass(passes/indirect.slang ENTRIES indirectMain
+    FLAGS ${RTXDI_SLANG_FLAGS} -DNRC_QUERY=1)
+engine_add_slang_pass(passes/nrc_update.slang ENTRIES nrcUpdateMain
+    FLAGS ${RTXDI_SLANG_FLAGS} -DNRC_UPDATE=1)
+engine_add_slang_pass(passes/nrc_resolve.slang ENTRIES nrcResolveMain FLAGS ${RTXDI_SLANG_FLAGS})
 engine_add_slang_pass(passes/light_world.slang ENTRIES lightWorldMain)
 engine_add_slang_pass(passes/rtxdi_initial.slang ENTRIES rtxdiInitialMain FLAGS ${RTXDI_SLANG_FLAGS})
 engine_add_slang_pass(passes/rtxdi_temporal.slang ENTRIES rtxdiTemporalMain FLAGS ${RTXDI_SLANG_FLAGS})

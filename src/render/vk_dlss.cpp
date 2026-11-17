@@ -1,6 +1,5 @@
 #include "vk_dlss.hpp"
 #include "static_headers/logger.hpp"
-#include "util/debug.hpp"
 #include "util/vk_utils.hpp"
 
 // clang-format off: the dlssd helpers use types from helpers_vk without including it
@@ -161,27 +160,9 @@ SdkExtensions Dlss::requiredExtensions()
     };
 }
 
-Dlss::Dlss(const Device& device, FrameSync& frameSync) : device(device), frameSync(frameSync)
+Dlss::Dlss(const Device& device, FrameSync& frameSync) :
+    device(device), frameSync(frameSync), driverHeap(device, "Dlss")
 {
-    emptySetLayout = vk::raii::DescriptorSetLayout(device.vkdevice, vk::DescriptorSetLayoutCreateInfo{});
-    const vk::DescriptorSetLayout setLayout = *emptySetLayout;
-    emptyPipelineLayout = vk::raii::PipelineLayout(
-        device.vkdevice, vk::PipelineLayoutCreateInfo{.setLayoutCount = 1, .pSetLayouts = &setLayout});
-    // a pool needs at least one size entry even though the set holds no descriptors
-    constexpr vk::DescriptorPoolSize kPoolSize{.type = vk::DescriptorType::eSampler, .descriptorCount = 1};
-    emptySetPool = vk::raii::DescriptorPool(
-        device.vkdevice, vk::DescriptorPoolCreateInfo{.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
-                                                      .maxSets = 1,
-                                                      .poolSizeCount = 1,
-                                                      .pPoolSizes = &kPoolSize});
-    emptySet = std::move(vk::raii::DescriptorSets(
-        device.vkdevice,
-        vk::DescriptorSetAllocateInfo{.descriptorPool = *emptySetPool, .descriptorSetCount = 1, .pSetLayouts = &setLayout})
-                             .front());
-    setDebugName(device.vkdevice, emptySetLayout, "DlssEmptySetLayout");
-    setDebugName(device.vkdevice, emptySetPool, "DlssEmptySetPool");
-    setDebugName(device.vkdevice, emptySet, "DlssEmptySet");
-
     const NVSDK_NGX_FeatureCommonInfo common = ngxCommonInfo();
     const std::wstring path = ngxApplicationPath();
     checkNgx(NVSDK_NGX_VULKAN_Init_with_ProjectID(kNgxProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, kNgxEngineVersion, path.c_str(),
@@ -321,15 +302,7 @@ void Dlss::evaluate(const vk::raii::CommandBuffer& cmd, const Frame& frame) cons
     eval.pInWorldToViewMatrix = &worldToView[0][0];
     eval.pInViewToClipMatrix = &viewToClip[0][0];
     eval.InFrameTimeDeltaInMsec = frame.frameDeltaMs;
-    // NGX's kernels address images by VK_NVX_image_view_handle handles into the driver-managed descriptor heap. While
-    // an application heap is bound they index it instead and read and write the engine's slots, even from a new
-    // command buffer. Binding legacy descriptor state is the only way back to the driver heap (DXVK's
-    // DxvkContext::launchCuKernelNVX does the same with an empty bind, which crashes this driver without a layout;
-    // spec/considerations.md C-H1-1)
-    const vk::DescriptorSet set = *emptySet;
-    cmd.bindDescriptorSets2(vk::BindDescriptorSetsInfo{.stageFlags = vk::ShaderStageFlagBits::eCompute,
-                                                       .layout = *emptyPipelineLayout,
-                                                       .descriptorSetCount = 1,
-                                                       .pDescriptorSets = &set});
+    // NGX's kernels read and write the engine's heap slots otherwise (C-H1-1)
+    driverHeap.bind(cmd);
     checkNgx(NGX_VULKAN_EVALUATE_DLSSD_EXT(*cmd, feature, parameters, &eval), "DLSSD evaluate");
 }

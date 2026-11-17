@@ -24,4 +24,5 @@ renderDoc.cap
 /.codegraph
 reasonix.toml
 rendering_engine_idef0.md
-/reference
+/reference/*
+!/reference/update-repos.ps1

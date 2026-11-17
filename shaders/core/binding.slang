@@ -36,3 +36,31 @@ public T* bdaPtr<T>(uint64_t address)
 {
     return reinterpret<T*>(address);
 }
+
+// a BDA array read like a structured buffer under robust buffer access: zeros out of range, stores dropped. For vendor
+// HLSL that relies on robustness (RTXDI, NRC bridges)
+public struct CheckedBuffer<T>
+{
+    public uint64_t address;
+    public uint count;
+
+    public __subscript(uint index) -> T
+    {
+        get
+        {
+            if (index >= count)
+            {
+                T empty = {};
+                return empty;
+            }
+            return bdaPtr<T>(address)[index];
+        }
+        set
+        {
+            if (index < count)
+            {
+                bdaPtr<T>(address)[index] = newValue;
+            }
+        }
+    }
+};
