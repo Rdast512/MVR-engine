@@ -21,7 +21,8 @@ public:
     FrameSync(FrameSync&&) = delete;
     FrameSync& operator=(FrameSync&&) = delete;
 
-    // device idle: recreates every fence (signaled) and semaphore; one present signal per swapchain image
+    // device idle: recreates every binary semaphore; one present signal per swapchain image. Fences live as long as
+    // FrameSync
     void recreate(uint32_t swapChainImageCount);
     // load-time copies: the transfer pool when a transfer family exists, frame slot 0's buffer otherwise
     [[nodiscard]] OneTimeCommands oneTimeCommands();

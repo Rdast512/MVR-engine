@@ -22,12 +22,21 @@ struct GpuRtxdiConstants
     uint64_t neighborOffsets; // float2[neighborOffsetMask + 1]
     uint resamplingMode;      // rtxdi::ReSTIRDI_ResamplingMode: bit 0 temporal, bit 1 spatial; 0 is the reference
     uint reservoirCount;      // rows behind reservoirs
-    // ReSTIR GI: initial reservoirs from passes/indirect.slang (M4 G2)
+    // ReSTIR GI: initial reservoirs from passes/indirect.slang (M4 G2), resampled by passes/rtxdi_gi_*.slang (G5)
     RTXDI_ReservoirBufferParameters giReservoirBuffer;
     RTXDI_GIBufferIndices giBufferIndices;
-    uint64_t giReservoirs;    // RTXDI_PackedGIReservoir[c_NumReSTIRGIReservoirBuffers * reservoirArrayPitch]
+    uint64_t giReservoirs;    // RTXDI_PackedGIReservoir[kGiReservoirArrays * reservoirArrayPitch]
     uint giReservoirCount;    // rows behind giReservoirs
+    uint giResamplingMode;    // rtxdi::ReSTIRGI_ResamplingMode: bit 0 temporal, bit 1 spatial; 0 is the reference
+    RTXDI_GITemporalResamplingParameters giTemporalResampling;
+    RTXDI_BoilingFilterParameters giBoilingFilter;
+    RTXDI_GISpatialResamplingParameters giSpatialResampling;
+    RTXDI_GIFinalShadingParameters giFinalShading;
+    uint giReferenceBounces;  // bounces traced after X2 instead of the NRC cache term; 0: the cache term
     uint pad0;
 };
+
+// RtxdiContext::kGiInitialReservoirArray: the indirect pass's initial samples, after RTXDI's two arrays
+static const uint kGiInitialReservoirArray = 2;
 
 #endif

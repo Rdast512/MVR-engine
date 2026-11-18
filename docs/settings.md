@@ -149,6 +149,7 @@ CLAS and cluster BLAS are built once at load, with fast trace. They have no runt
 |---|---|---|
 | Cost | `ENGINE_BENCH_FRAMES=6000 VK_LOADER_LAYERS_DISABLE='*validation*' VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false ./engine.exe` → `[Bench]` lines in `logs/engine.log` | compare spans; noise is ±5%, so alternate variants over 2 rounds |
 | ReSTIR port correctness | `ENGINE_GUIDE_CAPTURE=1 ./engine.exe` → `Convergence check: passed` | runs the Converged set, not the current settings |
+| ReSTIR GI against the ground truth | `ENGINE_GI_CHECK=1 VK_LOADER_LAYERS_DISABLE='*validation*' VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false ./engine.exe` (~5 min) → `[GiCheck]` lines | `ReSTIR GI convergence: 4 of 4 passed`; the `MEASURED` lines give the bias of NRC and of the NVIDIA GI defaults ([g5_restir_gi.md](../spec/m4/g5_restir_gi.md) §3) |
 | Bias of a setting | `Lighting only` view with the setting, then with Reference on (`ENGINE_RTXDI_REFERENCE=1` or the checkbox) | same brightness after a few seconds |
 | Validation | `VK_LOADER_LAYERS_ENABLE='*validation' VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true VK_KHRONOS_VALIDATION_VALIDATE_BEST_PRACTICES=true VK_KHRONOS_VALIDATION_VALIDATE_BEST_PRACTICES_NVIDIA=true VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false VK_KHRONOS_VALIDATION_LOG_FILENAME=<file>` | only NGX's known messages (considerations C-H1-2) |
 
@@ -156,6 +157,23 @@ When judging stability by eye, hold the camera still for a few seconds and watch
 
 ---
 
-## 7. Components not built yet
+## 7. ReSTIR GI
 
-NRC, ReSTIR GI, OMM and SER have no settings yet. Their defaults will come from NVIDIA as well: NRC from `reference/NrcGuide.md` and NVIDIA's NRC sample, ReSTIR GI from the RTXDI sample's `Medium` preset, OMM from the OMM SDK's own defaults.
+The `ReSTIR GI` section of the `Indirect (M4)` panel. Defaults: the library's, which the RTXDI sample uses unchanged in every preset (`RtxdiContext::defaultGiSettings`).
+
+| Setting | Default | Converged | Effect |
+|---|---|---|---|
+| Max history length | 8 | 8 | frames of temporal reuse |
+| Max sample age | 30 | 1024 (never) | discards a reused sample this old; reacts to light changes, biases a still frame bright (+5.6% in the gallery, considerations C-G5-1) |
+| Temporal / spatial bias correction | Basic | Ray traced | Basic darkens occluded places (−15.9% with NRC in the gallery, C-G5-2); Ray traced adds a ray per merged sample |
+| Fallback sampling | on | off | reuse last frame's sample at the same pixel when no history matches |
+| Spatial samples, radius | 2, 32 px | 2, 32 px | |
+| Boiling filter | on, 0.2 | off | suppresses reservoirs far brighter than their 8×8 group |
+| Final visibility, final MIS | on, on | on, on | reconnection ray; blend with the pixel's own sample on glossy lobes |
+
+- **Ground-truth paths:** trace 8 bounces after X2 instead of querying NRC, which pauses. With `Reference (no reuse)` on as well, the `Indirect radiance` view is the ground truth, one sample per frame.
+- **Cost** (gallery, 1280×720 render, defaults): temporal 0.11 ms, shade 0.38 ms.
+
+## 8. Components not built yet
+
+NRC, OMM and SER have no settings yet. Their defaults will come from NVIDIA as well: NRC from `reference/NrcGuide.md` and NVIDIA's NRC sample, OMM from the OMM SDK's own defaults.

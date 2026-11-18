@@ -3,6 +3,7 @@
 #include "assets_loader.hpp"
 #include "engine_bench.hpp"
 #include "engine_cull_check.hpp"
+#include "engine_gi_check.hpp"
 #include "engine_ray_check.hpp"
 #include "engine_guide_capture.hpp"
 #include "engine_motion_test.hpp"
@@ -69,6 +70,7 @@ class Engine
     std::optional<EngineGuideCapture> guideCapture;
     // set from the environment: culling image check on the startup scene, quits after logging the results
     std::optional<EngineCullCheck> cullCheck;
+    std::optional<EngineGiCheck> giCheck;
     // set from the environment: primary rays against the vis buffer every frame, alongside another runner or alone
     std::optional<EngineRayCheck> rayCheck;
     bool initialized = false;

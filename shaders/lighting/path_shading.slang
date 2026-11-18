@@ -6,6 +6,10 @@
 // lighting/rtxdi_bridge.slang
 #include "Rtxdi/DI/InitialSampling.hlsli"
 
+// a miss stays a sample with zero radiance this far along the ray: M counts it for ReSTIR GI's normalization. No
+// environment light before M7
+static const float kMissDistance = 1.0e5;
+
 // where a vertex's rays start: the traced triangle or the raster pixel
 interface IRayOrigin
 {
@@ -75,6 +79,67 @@ PathHit shadeRayHit(GpuFrameRoot root, RayHit hit, RayDesc ray, float coneDistan
     result.surface = rayHitSurface(decoded, material, ray.Direction, hit.t);
     result.emissive = material.emissive;
     return result;
+}
+
+// the next segment from a lit vertex along a full-BRDF sample; false: absorbed. pdf: the sample's solid-angle pdf
+bool scatterBrdf<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, inout RTXDI_RandomSamplerState rng,
+                                       inout float3 throughput, inout RayDesc ray, out float pdf)
+{
+    pdf = 0.0;
+    if (!surface.isLit)
+    {
+        return false;
+    }
+    const float3 u = float3(RTXDI_GetNextRandom(rng), RTXDI_GetNextRandom(rng), RTXDI_GetNextRandom(rng));
+    const BrdfSample brdf =
+        sampleBrdf(surface.normal, surface.diffuseAlbedo, surface.specularF0, surface.roughness, surface.viewDir, u);
+    if (brdf.pdf <= 0.0)
+    {
+        return false;
+    }
+    throughput *= brdf.weight;
+    pdf = brdf.pdf;
+    ray.Origin = origin.spawn(brdf.l);
+    ray.Direction = brdf.l;
+    return true;
+}
+
+// engine spec §14 ground truth: the radiance leaving vertex toward the previous one from `bounces` further vertices,
+// each adding its emission and one sampled light, with no radiance cache and no roulette. pathLength: camera to vertex
+float3 referencePathRadiance(GpuFrameRoot root, RAB_Surface start, HitOrigin startOrigin, uint bounces,
+                             float startPathLength, GpuRtxdiConstants constants,
+                             inout RTXDI_RandomSamplerState pathRng, inout RTXDI_RandomSamplerState lightRng,
+                             inout RTXDI_RandomSamplerState coherentRng)
+{
+    RAB_Surface vertex = start;
+    HitOrigin origin = startOrigin;
+    float pathLength = startPathLength;
+    float3 radiance = float3(0.0, 0.0, 0.0);
+    float3 throughput = float3(1.0, 1.0, 1.0);
+    RayDesc ray;
+    ray.Origin = float3(0.0, 0.0, 0.0);
+    ray.Direction = float3(0.0, 0.0, 1.0);
+    ray.TMin = 0.0;
+    ray.TMax = kMissDistance;
+    for (uint bounce = 0; bounce < bounces; ++bounce)
+    {
+        float pdf;
+        if (!scatterBrdf(vertex, origin, pathRng, throughput, ray, pdf))
+        {
+            break;
+        }
+        RayHit hit;
+        if (!traceClosest(root, ray, hit))
+        {
+            break;
+        }
+        pathLength += hit.t;
+        const PathHit next = shadeRayHit(root, hit, ray, pathLength);
+        origin.hit = hit;
+        radiance += throughput * (next.emissive + directLightAt(next.surface, origin, constants, lightRng, coherentRng));
+        vertex = next.surface;
+    }
+    return radiance;
 }
 
 #endif

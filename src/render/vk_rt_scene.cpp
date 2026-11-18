@@ -62,8 +62,8 @@ RayTracingScene::RayTracingScene(const Device& device, const VkAllocator& alloca
     static_assert(sizeof(vk::PartitionedAccelerationStructureWriteInstanceDataNV) == 104);
     static_assert(sizeof(vk::BuildPartitionedAccelerationStructureIndirectCommandNV) == 24);
     const vk::PhysicalDeviceLimits& limits = device.capabilities.properties2.properties.limits;
-    const auto queueFamilies = device.physicalDevice.getQueueFamilyProperties();
-    if (limits.timestampPeriod > 0.0f && queueFamilies[device.computeIndex].timestampValidBits != 0) {
+    const auto queueFamilies = device.physicalDevice.getQueueFamilyProperties2();
+    if (limits.timestampPeriod > 0.0f && queueFamilies[device.computeIndex].queueFamilyProperties.timestampValidBits != 0) {
         timestampPeriodNs = limits.timestampPeriod;
         timestamps = vk::raii::QueryPool(device.vkdevice, vk::QueryPoolCreateInfo{
                                                               .queryType = vk::QueryType::eTimestamp,

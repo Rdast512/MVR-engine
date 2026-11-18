@@ -125,6 +125,9 @@ void Renderer::rebuildSwapchainResources()
 
 void Renderer::recreateSwapchain()
 {
+    // the pending present uses the old swapchain and a present semaphore the rebuild destroys; an out-of-date result
+    // requests the recreate already running
+    finishPreviousFrame();
     isSwapchainRecreatePending = false;
     swapChain.recreateSwapChain();
     rebuildSwapchainResources();
@@ -135,7 +138,6 @@ void Renderer::drawFrame()
     ZoneScopedN("Renderer::drawFrame");
     auto& deviceRef = device.vkdevice;
     auto& graphicsQueue = device.graphicsQueue;
-    auto& presentQueue = device.presentQueue;
     auto& swapChainKHR = swapChain.swapChain;
     auto& fence = *frameSync.inFlightFences[currentFrame];
     auto& acquireSemaphore = *frameSync.presentCompleteSemaphore[currentFrame];
@@ -145,6 +147,7 @@ void Renderer::drawFrame()
 
     if (dlss.isRecreateNeeded()) {
         // a new DLSS mode or preset may change the render resolution: every frame in flight reads the old targets
+        finishPreviousFrame();
         deviceRef.waitIdle();
         rebuildSwapchainResources();
     }
@@ -195,6 +198,8 @@ void Renderer::drawFrame()
     {
         ZoneScopedN("RecordFrameCommands");
         recordFrameCommands(frameCmd);
+        // frame commands overlap the previous frame's NRC and DLSS-RR; the ray commands call both SDKs
+        finishPreviousFrame();
         recordRayCommands(rayCmd);
     }
     {
@@ -234,6 +239,32 @@ void Renderer::drawFrame()
         ZoneScopedN("QueueSubmitFrame");
         // no wait: cull, raster and compute run while the CPU acquires the image, and overlap the TLAS build
         const vk::CommandBufferSubmitInfo frameCmdInfo{.commandBuffer = *frameCmd};
+        graphicsQueue.submit2(vk::SubmitInfo2{.commandBufferInfoCount = 1, .pCommandBufferInfos = &frameCmdInfo});
+    }
+
+    vk::Result result{};
+    uint32_t imageIndex{0};
+    {
+        ZoneScopedN("AcquireImage");
+        auto acquired = swapChainKHR.acquireNextImage(UINT64_MAX, acquireSemaphore, nullptr);
+        result = acquired.result;
+        imageIndex = acquired.value;
+    }
+    // out of date: no present this frame; the ray submits alone signal the fence, so the slot stays usable
+    const bool isImageAcquired = result != vk::Result::eErrorOutOfDateKHR;
+    if (isImageAcquired && result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
+        throw std::runtime_error("failed to acquire swap chain image!");
+    }
+    if (isImageAcquired) {
+        ZoneScopedN("RecordPresentCommands");
+        presentCmd.reset();
+        recordPresentCommands(presentCmd, imageIndex);
+    }
+
+    const vk::Semaphore renderSemaphore =
+        isImageAcquired ? *frameSync.renderFinishedSemaphore[imageIndex] : vk::Semaphore{};
+    {
+        ZoneScopedN("QueueSubmitRayPresent");
         // the first stage that traces waits for this frame's TLAS (spec/features/ray_tracing_mega_geometry.md §3.5);
         // the compute submit is already queued, so the wait never precedes its signal
         const vk::CommandBufferSubmitInfo rayCmdInfo{.commandBuffer = *rayCmd};
@@ -245,92 +276,70 @@ void Renderer::drawFrame()
         const vk::SemaphoreSubmitInfo raySignal{.semaphore = *frameSync.rayTimeline,
                                                 .value = frameNumber,
                                                 .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
+        // only the present pass waits for the image; the swapchain barrier chains with this stage
+        const vk::SemaphoreSubmitInfo acquireWait{.semaphore = acquireSemaphore,
+                                                  .stageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput};
+        const vk::CommandBufferSubmitInfo presentCmdInfo{.commandBuffer = *presentCmd};
+        const vk::SemaphoreSubmitInfo renderSignal{.semaphore = renderSemaphore,
+                                                   .stageMask = vk::PipelineStageFlagBits2::eBottomOfPipe};
         const std::array submits{
-            vk::SubmitInfo2{.commandBufferInfoCount = 1, .pCommandBufferInfos = &frameCmdInfo},
             vk::SubmitInfo2{.waitSemaphoreInfoCount = 1,
                             .pWaitSemaphoreInfos = &tlasWait,
                             .commandBufferInfoCount = 1,
                             .pCommandBufferInfos = &rayCmdInfo,
                             .signalSemaphoreInfoCount = 1,
                             .pSignalSemaphoreInfos = &raySignal},
+            vk::SubmitInfo2{.waitSemaphoreInfoCount = 1,
+                            .pWaitSemaphoreInfos = &acquireWait,
+                            .commandBufferInfoCount = 1,
+                            .pCommandBufferInfos = &presentCmdInfo,
+                            .signalSemaphoreInfoCount = 1,
+                            .pSignalSemaphoreInfos = &renderSignal},
         };
-        // a submit while the previous frame's NRC kernels run loses the device after a few hundred frames; GPU-side
-        // waits do not prevent it, only a host wait does (considerations C-G3-6)
-        if (lastNrcRaySubmit != 0) {
-            ZoneScopedN("NrcSubmitWait");
-            const vk::SemaphoreWaitInfo nrcWait{
-                .semaphoreCount = 1, .pSemaphores = &*frameSync.rayTimeline, .pValues = &lastNrcRaySubmit};
-            (void)deviceRef.waitSemaphores(nrcWait, UINT64_MAX);
-        }
-        graphicsQueue.submit2(submits);
-        if (isNrcRecorded) {
-            nrc.endFrame(graphicsQueue);
-            lastNrcRaySubmit = frameNumber;
-        }
+        // the ray work (NRC) shares one submit call with the present pass: no separate submit while NRC runs
+        const uint32_t submitCount = isImageAcquired ? 2 : 1;
+        graphicsQueue.submit2(vk::ArrayProxy<const vk::SubmitInfo2>(submitCount, submits.data()), fence);
     }
-
-    vk::Result result{};
-    uint32_t imageIndex{0};
-    {
-        ZoneScopedN("AcquireImage");
-        auto acquired = swapChainKHR.acquireNextImage(UINT64_MAX, acquireSemaphore, nullptr);
-        result = acquired.result;
-        imageIndex = acquired.value;
+    if (isNrcRecorded) {
+        nrc.endFrame(graphicsQueue);
+        lastNrcRaySubmit = frameNumber;
     }
-
-    if (result == vk::Result::eErrorOutOfDateKHR) {
-        // no present this frame: an empty submit signals the fence after the frame work, so the slot stays usable
-        graphicsQueue.submit2(vk::ArrayProxy<const vk::SubmitInfo2>{}, fence);
+    if (!isImageAcquired) {
         requestSwapchainRecreate();
         return;
     }
+    pendingPresent = PendingPresent{.imageIndex = imageIndex, .renderSemaphore = renderSemaphore};
+    currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+}
 
-    if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
-        throw std::runtime_error("failed to acquire swap chain image!");
+void Renderer::finishPreviousFrame()
+{
+    if (lastNrcRaySubmit != 0) {
+        ZoneScopedN("NrcWait");
+        const vk::SemaphoreWaitInfo nrcWait{
+            .semaphoreCount = 1, .pSemaphores = &*frameSync.rayTimeline, .pValues = &lastNrcRaySubmit};
+        (void)device.vkdevice.waitSemaphores(nrcWait, UINT64_MAX);
     }
-
-    presentCmd.reset();
-    {
-        ZoneScopedN("RecordPresentCommands");
-        recordPresentCommands(presentCmd, imageIndex);
+    if (!pendingPresent) {
+        return;
     }
-
-    // only the present pass waits for the image; the swapchain barrier chains with this stage
-    const vk::SemaphoreSubmitInfo waitSemaphoreInfo = {.semaphore = acquireSemaphore,
-                                                       .stageMask =
-                                                           vk::PipelineStageFlagBits2::eColorAttachmentOutput};
-    const vk::CommandBufferSubmitInfo presentCmdInfo = {.commandBuffer = *presentCmd};
-    auto& renderSemaphore = *frameSync.renderFinishedSemaphore[imageIndex];
-    const vk::SemaphoreSubmitInfo signalSemaphoreInfo = {.semaphore = renderSemaphore,
-                                                         .stageMask = vk::PipelineStageFlagBits2::eBottomOfPipe};
-    const vk::SubmitInfo2 submitInfo{.waitSemaphoreInfoCount = 1,
-                                     .pWaitSemaphoreInfos = &waitSemaphoreInfo,
-                                     .commandBufferInfoCount = 1,
-                                     .pCommandBufferInfos = &presentCmdInfo,
-                                     .signalSemaphoreInfoCount = 1,
-                                     .pSignalSemaphoreInfos = &signalSemaphoreInfo};
-    {
-        ZoneScopedN("QueueSubmitPresent");
-        graphicsQueue.submit2(submitInfo, fence);
-    }
-
-    const vk::PresentInfoKHR presentInfoKHR{.waitSemaphoreCount = 1,
-                                            .pWaitSemaphores = &renderSemaphore,
-                                            .swapchainCount = 1,
-                                            .pSwapchains = &*swapChainKHR,
-                                            .pImageIndices = &imageIndex};
+    const PendingPresent present = *pendingPresent;
+    pendingPresent.reset();
+    const vk::PresentInfoKHR presentInfo{.waitSemaphoreCount = 1,
+                                         .pWaitSemaphores = &present.renderSemaphore,
+                                         .swapchainCount = 1,
+                                         .pSwapchains = &*swapChain.swapChain,
+                                         .pImageIndices = &present.imageIndex};
+    vk::Result result{};
     {
         ZoneScopedN("Present");
-        result = presentQueue.presentKHR(presentInfoKHR);
+        result = device.presentQueue.presentKHR(presentInfo);
     }
-
     if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
         requestSwapchainRecreate();
     } else if (result != vk::Result::eSuccess) {
         throw std::runtime_error("failed to present swap chain image!");
     }
-
-    currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 // everything up to the display image; independent of the swapchain image
@@ -707,7 +716,11 @@ void Renderer::recordIndirect(const vk::raii::CommandBuffer& cmd)
     TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
 #endif
     const vk::DeviceAddress frameRoot = frameData.frameRootAddress(currentFrame);
-    isNrcRecorded = nrc.isActive();
+    // the ground truth traces the bounces the cache would answer (engine spec §14): NRC pauses, its weights kept
+    isNrcRecorded = nrc.isActive() && rtxdi.giReferenceBounces == 0;
+    if (nrc.isActive() && !isNrcRecorded) {
+        nrc.pauseFrame(currentFrame);
+    }
     const bool isCacheView = debugView.view == DebugView::NrcCache;
     if (isNrcRecorded) {
         ZoneScopedN("NrcUpdate");
@@ -743,16 +756,37 @@ void Renderer::recordIndirect(const vk::raii::CommandBuffer& cmd)
         TracyVkNamedZone(gpuCtx, gpuZoneNrcResolve, *cmd, "GPU_NrcResolve", gpuTrace);
 #endif
         dispatchFullscreen(cmd, shaderObjects.frameShaders.nrcResolve);
-        // GI reservoir stores -> the compute passes that read them (debug view; G5 resampling)
-        const vk::MemoryBarrier2 resolveBarrier{
-            .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-            .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-            .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
-        };
-        cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &resolveBarrier});
     }
     gpuTimer.end(cmd, GpuTimerScope::NrcResolve);
+    recordIndirectResampling(cmd);
+}
+
+void Renderer::recordIndirectResampling(const vk::raii::CommandBuffer& cmd)
+{
+    ZoneScopedN("RestirGi");
+#ifdef TRACY_ENABLE
+    const bool gpuTrace = tracyContext != nullptr && tracyContext->isActive();
+    TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
+    TracyVkNamedZone(gpuCtx, gpuZoneRestirGi, *cmd, "GPU_RestirGi", gpuTrace);
+#endif
+    // GI reservoir stores (indirect pass, NRC resolve, temporal pass) -> the next pass's loads and stores and the
+    // debug view. Last frame's GI writes are ordered by recordDirectLight's first barrier
+    const vk::MemoryBarrier2 reservoirBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
+    };
+    const vk::DependencyInfo dependency{.memoryBarrierCount = 1, .pMemoryBarriers = &reservoirBarrier};
+    cmd.pipelineBarrier2(dependency);
+    // the reference shades the initial samples without reuse
+    if (!rtxdi.isGiReference) {
+        dispatchFullscreen(cmd, shaderObjects.frameShaders.giTemporal);
+        cmd.pipelineBarrier2(dependency);
+    }
+    gpuTimer.end(cmd, GpuTimerScope::GiTemporal);
+    dispatchFullscreen(cmd, shaderObjects.frameShaders.giShade);
+    gpuTimer.end(cmd, GpuTimerScope::GiShade);
 }
 
 void Renderer::bindHeaps(const vk::raii::CommandBuffer& cmd) const

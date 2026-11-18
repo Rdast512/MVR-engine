@@ -5,7 +5,7 @@
 
 class SwapChain
 {
-    static vk::SurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR> &availableFormats);
+    static vk::SurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormat2KHR> &availableFormats);
     [[nodiscard]] vk::PresentModeKHR chooseSwapPresentMode(
         const std::vector<vk::PresentModeKHR> &availablePresentModes) const;
     vk::Extent2D chooseSwapExtent(const vk::SurfaceCapabilitiesKHR &capabilities) const;

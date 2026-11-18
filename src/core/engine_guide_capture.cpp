@@ -2,6 +2,7 @@
 #include "../Constants.h"
 #include "../static_headers/logger.hpp"
 #include "assets_loader.hpp"
+#include "convergence_metrics.hpp"
 
 #include <SDL3/SDL_filesystem.h>
 #include <glm/gtc/packing.hpp>
@@ -73,19 +74,6 @@ namespace
     }
 
     // debug_view writes n * 0.5 + 0.5; empty pixels decode to a zero or non-unit vector
-    // shaders/core/math.slang luminance
-    std::vector<float> decodeLuminance(const Renderer::DisplayCapture& capture)
-    {
-        const size_t texelCount = static_cast<size_t>(capture.extent.width) * capture.extent.height;
-        std::vector<float> luminance(texelCount);
-        for (size_t texel = 0; texel < texelCount; ++texel) {
-            const uint16_t* rgb = &capture.rgba16f[texel * 4];
-            luminance[texel] = 0.2126f * glm::unpackHalf1x16(rgb[0]) + 0.7152f * glm::unpackHalf1x16(rgb[1]) +
-                0.0722f * glm::unpackHalf1x16(rgb[2]);
-        }
-        return luminance;
-    }
-
     glm::vec3 decodeNormal(std::span<const uint16_t> rgba16f, size_t texel)
     {
         const glm::vec3 encoded(glm::unpackHalf1x16(rgba16f[texel * 4]), glm::unpackHalf1x16(rgba16f[texel * 4 + 1]),
@@ -348,49 +336,28 @@ bool EngineGuideCapture::evaluateConvergence() const
 {
     const ConvergenceRun& run = *convergence;
     const double frames = run.capturedFrames;
-    const auto meanAt = [&](size_t texel) { return run.sum[texel] / frames; };
+    std::vector<double> mean(run.sum.size());
+    const std::vector<double> reference(run.reference.begin(), run.reference.end());
     double referenceTotal = 0.0;
     double meanTotal = 0.0;
-    for (size_t texel = 0; texel < run.reference.size(); ++texel) {
-        referenceTotal += run.reference[texel];
-        meanTotal += meanAt(texel);
+    for (size_t texel = 0; texel < reference.size(); ++texel) {
+        mean[texel] = run.sum[texel] / frames;
+        referenceTotal += reference[texel];
+        meanTotal += mean[texel];
     }
     if (referenceTotal <= 0.0) {
         logError("FAIL ReSTIR DI convergence: the reference is black", "GuideCapture");
         return false;
     }
 
-    // signed per tile: the noise cancels within a tile, a local bias does not
-    std::vector<double> tileShares;
-    const uint32_t width = run.extent.width;
-    const uint32_t height = run.extent.height;
-    for (uint32_t tileY = 0; tileY < height; tileY += kConvergenceTileSize) {
-        for (uint32_t tileX = 0; tileX < width; tileX += kConvergenceTileSize) {
-            double reference = 0.0;
-            double difference = 0.0;
-            for (uint32_t y = tileY; y < std::min(tileY + kConvergenceTileSize, height); ++y) {
-                for (uint32_t x = tileX; x < std::min(tileX + kConvergenceTileSize, width); ++x) {
-                    const size_t texel = static_cast<size_t>(y) * width + x;
-                    reference += run.reference[texel];
-                    difference += meanAt(texel) - run.reference[texel];
-                }
-            }
-            if (reference > 0.0) {
-                tileShares.push_back(std::abs(difference) / reference);
-            }
-        }
-    }
-    std::ranges::sort(tileShares);
-    const auto tileQuantile = [&](double quantile)
-    { return tileShares[static_cast<size_t>(quantile * static_cast<double>(tileShares.size() - 1))]; };
+    const TileErrors tiles = compareTiles(mean, reference, run.extent, kConvergenceTileSize);
     const double bias = (meanTotal - referenceTotal) / referenceTotal;
-    const double tileP90 = tileQuantile(0.9);
-    const bool isPassed = std::abs(bias) <= kMaxConvergenceBias && tileP90 <= kMaxConvergenceTileP90;
+    const bool isPassed = std::abs(bias) <= kMaxConvergenceBias && tiles.p90 <= kMaxConvergenceTileP90;
     const std::string detail = std::format(
         "{}, {} frames after {}: bias {:+.3f}%, {}x{} tiles median {:.2f}% / p90 {:.2f}% / max {:.2f}% ({} tiles), "
         "per-frame error {:.2f}%, frame-to-frame change {:.2f}%",
         kShots[kConvergenceShot].name, run.capturedFrames, kConvergenceWarmupFrames, bias * 100.0, kConvergenceTileSize,
-        kConvergenceTileSize, tileQuantile(0.5) * 100.0, tileP90 * 100.0, tileShares.back() * 100.0, tileShares.size(),
+        kConvergenceTileSize, tiles.median * 100.0, tiles.p90 * 100.0, tiles.max * 100.0, tiles.count,
         run.absoluteErrorSum / frames / referenceTotal * 100.0,
         run.changeSum / (frames - 1.0) / referenceTotal * 100.0);
     if (isPassed) {

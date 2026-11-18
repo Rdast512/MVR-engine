@@ -7,8 +7,8 @@
 GpuTimer::GpuTimer(const Device& device)
 {
     const vk::PhysicalDeviceLimits& limits = device.capabilities.properties2.properties.limits;
-    const auto queueFamilies = device.physicalDevice.getQueueFamilyProperties();
-    if (limits.timestampPeriod <= 0.0f || queueFamilies[device.graphicsIndex].timestampValidBits == 0) {
+    const auto queueFamilies = device.physicalDevice.getQueueFamilyProperties2();
+    if (limits.timestampPeriod <= 0.0f || queueFamilies[device.graphicsIndex].queueFamilyProperties.timestampValidBits == 0) {
         return;
     }
     timestampPeriodNs = limits.timestampPeriod;

@@ -74,6 +74,7 @@ RenderTargets::~RenderTargets()
     destroy(visBuffer);
     destroy(display);
     destroy(directRadiance);
+    destroy(indirectRadiance);
     destroy(noisyColorTarget);
     destroy(upscaledTarget);
     destroy(postTarget);
@@ -163,6 +164,7 @@ void RenderTargets::checkFormatSupport() const
     }
     check(kDisplayFormat, kStorageFeatures | vk::FormatFeatureFlagBits2::eSampledImageFilterLinear);
     check(kDirectRadianceFormat, kStorageFeatures);
+    check(kIndirectRadianceFormat, kStorageFeatures);
     check(kNoisyColorFormat, kStorageFeatures);
     check(kUpscaledFormat, kStorageFeatures | vk::FormatFeatureFlagBits2::eSampledImageFilterLinear);
     check(kPostFormat, kStorageFeatures | vk::FormatFeatureFlagBits2::eSampledImageFilterLinear);
@@ -204,6 +206,7 @@ void RenderTargets::destroyTargets()
     destroy(visBuffer);
     destroy(display);
     destroy(directRadiance);
+    destroy(indirectRadiance);
     destroy(noisyColorTarget);
     destroy(upscaledTarget);
     destroy(postTarget);
@@ -237,6 +240,8 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
                  vk::ImageLayout::eGeneral, "DisplayColor", extent);
     createTarget(directRadiance, kDirectRadianceFormat, kStorageUsage, vk::ImageLayout::eGeneral, "DirectRadiance",
                  extent);
+    createTarget(indirectRadiance, kIndirectRadianceFormat, kStorageUsage, vk::ImageLayout::eGeneral,
+                 "IndirectRadiance", extent);
     createTarget(noisyColorTarget, kNoisyColorFormat, kStorageUsage, vk::ImageLayout::eGeneral, "NoisyColor", extent);
     createTarget(upscaledTarget, kUpscaledFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferSrc,
                  vk::ImageLayout::eGeneral, "DlssOutput", displayExtent);
@@ -275,6 +280,7 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
     // the vis buffer is transitioned from eUndefined every frame (Renderer::recordFrameCommands)
     initialize(*display.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*directRadiance.image, vk::ImageLayout::eGeneral, kStorageAccess);
+    initialize(*indirectRadiance.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*noisyColorTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*upscaledTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*postTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
@@ -331,6 +337,8 @@ void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool 
         .previous = guideSet((current + 1) % kGuideSetCount),
         .directRadianceStorage = directRadiance.storageIndex,
         .directRadianceSampled = directRadiance.sampledIndex,
+        .indirectRadianceStorage = indirectRadiance.storageIndex,
+        .indirectRadianceSampled = indirectRadiance.sampledIndex,
         .noisyColorStorage = noisyColorTarget.storageIndex,
         .noisyColorSampled = noisyColorTarget.sampledIndex,
         .presentSampled = isPostPresented ? postTarget.sampledIndex : display.sampledIndex,

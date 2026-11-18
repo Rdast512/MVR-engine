@@ -14,6 +14,11 @@ FrameSync::FrameSync(const Device& device) : device(device)
     setDebugName(device.vkdevice, computeTimeline, "ComputeTimeline");
     rayTimeline = vk::raii::Semaphore(device.vkdevice, vk::SemaphoreCreateInfo{.pNext = &timelineInfo});
     setDebugName(device.vkdevice, rayTimeline, "RayTimeline");
+    // every frame path ends in a submit that signals its slot's fence, so a resize never needs new ones
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        inFlightFences.emplace_back(device.vkdevice, vk::FenceCreateInfo{.flags = vk::FenceCreateFlagBits::eSignaled});
+        setDebugName(device.vkdevice, inFlightFences.back(), std::format("InFlightFence_{}", i));
+    }
 }
 
 void FrameSync::recreate(uint32_t swapChainImageCount)
@@ -22,12 +27,10 @@ void FrameSync::recreate(uint32_t swapChainImageCount)
     const vk::raii::Device& vkDevice = device.vkdevice;
     presentCompleteSemaphore.clear();
     renderFinishedSemaphore.clear();
-    inFlightFences.clear();
 
-    // acquire semaphore and fence per frame-in-flight
+    // acquire semaphore per frame-in-flight
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         presentCompleteSemaphore.emplace_back(vkDevice, vk::SemaphoreCreateInfo());
-        inFlightFences.emplace_back(vkDevice, vk::FenceCreateInfo{.flags = vk::FenceCreateFlagBits::eSignaled});
     }
     // present signal per swapchain image
     for (size_t i = 0; i < swapChainImageCount; i++) {

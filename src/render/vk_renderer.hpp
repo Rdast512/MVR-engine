@@ -105,11 +105,15 @@ public:
 private:
     // submitted before the image is acquired: cull, raster, Hi-Z, resolve
     void recordFrameCommands(vk::raii::CommandBuffer& cmd);
-    // submitted with the frame commands, waiting for this frame's TLAS build: the passes that may trace rays (ReSTIR
-    // DI, debug view, self-tests, display capture)
+    // submitted after the acquire with the present commands, waiting for this frame's TLAS build: the passes that may
+    // trace rays (ReSTIR DI, indirect + NRC), reconstruction, debug view, self-tests, display capture
     void recordRayCommands(vk::raii::CommandBuffer& cmd);
     // submitted after the acquire, waiting on its semaphore: present pass and UI
     void recordPresentCommands(vk::raii::CommandBuffer& cmd, uint32_t imageIndex);
+    // before the next queue operation or NRC / NGX call: one issued while NRC's kernels or the DLSS-RR after them run
+    // loses the device, and GPU-side waits do not prevent it (considerations C-G3-6). Waits on the host for the last
+    // NRC ray submit, then presents the pending frame
+    void finishPreviousFrame();
     // async compute: RT instances + PTLAS update; waits for the previous frame's rays on FrameSync::rayTimeline,
     // signals frameNumber on FrameSync::computeTimeline
     void submitComputeCommands();
@@ -117,7 +121,10 @@ private:
     void recordResolve(const vk::raii::CommandBuffer& cmd);
     void recordDirectLight(const vk::raii::CommandBuffer& cmd);
     // NRC begin frame -> update paths -> indirect (query) pass -> QueryAndTrain -> NRC resolve into the GI reservoirs
+    // -> ReSTIR GI
     void recordIndirect(const vk::raii::CommandBuffer& cmd);
+    // ReSTIR GI temporal (skipped by the reference) -> spatial + final shading into indirectRadiance
+    void recordIndirectResampling(const vk::raii::CommandBuffer& cmd);
     // after a vendor SDK call (NGX, NRC) that bound its own descriptor state
     void bindHeaps(const vk::raii::CommandBuffer& cmd) const;
     // combine -> noisyColor; DLSS-RR -> exposure -> tonemap into the post target when the Lit view is shown
@@ -162,6 +169,13 @@ private:
     bool isNrcRecorded = false;
     // FrameSync::rayTimeline value of the last ray submit with NRC commands; 0 before the first
     uint64_t lastNrcRaySubmit = 0;
+    // a frame's present, issued once the next frame's frame commands are recorded (finishPreviousFrame)
+    struct PendingPresent
+    {
+        uint32_t imageIndex = 0;
+        vk::Semaphore renderSemaphore;
+    };
+    std::optional<PendingPresent> pendingPresent;
     Dlss dlss;
     PostProcess post;
     // false after a resize or a frame without the Lit view: the next evaluation resets DLSS history

@@ -65,7 +65,8 @@ public:
     NrcCache(NrcCache&&) = delete;
     NrcCache& operator=(NrcCache&&) = delete;
 
-    // device idle: the frame dimensions; configures once scene bounds exist
+    // device idle: the render extent. Reconfigures only when it outgrows the configured frame (and scene bounds
+    // exist): every Configure reloads the SDK's network and leaks its kernels (considerations C-G3-3)
     void recreate(vk::Extent2D renderExtent);
     // the slot is not in flight. New scene bounds wait for the device and reconfigure. Without a configured cache the
     // slot's constants are zero: the query pass then makes no queries
@@ -84,6 +85,9 @@ public:
     void recordTrain(const vk::raii::CommandBuffer& cmd);
     // after the submit that ran this frame's NRC commands, on the same queue
     void endFrame(const vk::raii::Queue& queue);
+    // instead of recordBeginFrame on a frame without NRC work; the slot is not in flight. Zero constants: the query
+    // pass makes no queries. Context, buffers and weights stay
+    void pauseFrame(uint32_t frameSlot);
 
     [[nodiscard]] vk::DeviceAddress constantsAddress(uint32_t frameSlot) const noexcept
     {
@@ -94,7 +98,18 @@ public:
     Settings settings;
 
 private:
+    // one SDK buffer (nrc::BufferIdx), allocated by the engine: named, suballocated, prioritized, freed by us
+    struct SdkBuffer
+    {
+        vk::raii::Buffer buffer = nullptr;
+        VmaAllocation memory = nullptr;
+        vk::DeviceSize size = 0;
+    };
+
     void configure();
+    // device idle: (re)allocates the SDK buffers whose size changed and fills sdkBufferInfo
+    void allocateSdkBuffers();
+    void destroySdkBuffers();
     [[nodiscard]] nrc::FrameSettings frameSettings() const;
 
     const Device& device;
@@ -103,6 +118,9 @@ private:
     nrc::vulkan::Context* context = nullptr;
     DriverDescriptorHeap driverHeap;
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> constants;
+    std::array<SdkBuffer, static_cast<size_t>(nrc::BufferIdx::Count)> sdkBuffers;
+    nrc::vulkan::Buffers sdkBufferInfo{};
+    // render extent of the current swapchain; the SDK frame (contextSettings.frameDimensions) only grows past it
     vk::Extent2D renderExtent{};
     BoundingBox configuredBounds{};
     nrc::ContextSettings contextSettings{};

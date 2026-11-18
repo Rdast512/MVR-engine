@@ -466,6 +466,8 @@ namespace
             LAYOUT_FIELD(GpuTargets, previous),
             LAYOUT_FIELD(GpuTargets, directRadianceStorage),
             LAYOUT_FIELD(GpuTargets, directRadianceSampled),
+            LAYOUT_FIELD(GpuTargets, indirectRadianceStorage),
+            LAYOUT_FIELD(GpuTargets, indirectRadianceSampled),
             LAYOUT_FIELD(GpuTargets, noisyColorStorage),
             LAYOUT_FIELD(GpuTargets, noisyColorSampled),
             LAYOUT_FIELD(GpuTargets, presentSampled),
@@ -542,6 +544,12 @@ namespace
         LAYOUT_FIELD(GpuRtxdiConstants, giBufferIndices),
         LAYOUT_FIELD(GpuRtxdiConstants, giReservoirs),
         LAYOUT_FIELD(GpuRtxdiConstants, giReservoirCount),
+        LAYOUT_FIELD(GpuRtxdiConstants, giResamplingMode),
+        LAYOUT_FIELD(GpuRtxdiConstants, giTemporalResampling),
+        LAYOUT_FIELD(GpuRtxdiConstants, giBoilingFilter),
+        LAYOUT_FIELD(GpuRtxdiConstants, giSpatialResampling),
+        LAYOUT_FIELD(GpuRtxdiConstants, giFinalShading),
+        LAYOUT_FIELD(GpuRtxdiConstants, giReferenceBounces),
         LAYOUT_FIELD(GpuRtxdiConstants, pad0),
     }};
 

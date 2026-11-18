@@ -1,8 +1,8 @@
 #ifndef ENGINE_LIGHTING_RTXDI_BRIDGE_SLANG
 #define ENGINE_LIGHTING_RTXDI_BRIDGE_SLANG
 
-// RTXDI application bridge (PBR plan F2): the resource macros and the RAB_* set the pinned RTXDI 3.2 DI headers call,
-// plus the GI reservoir buffer the indirect pass writes (M4 G2).
+// RTXDI application bridge (PBR plan F2): the resource macros and the RAB_* set the pinned RTXDI 3.2 DI and GI headers
+// call (GI: M4 G2, G5).
 // Textual, once per compile unit, before any Rtxdi/DI header; call rtxdiBridgeInit before the first RAB_* or RTXDI_*
 // call. Light and BRDF math stays in lighting.lights and material.brdf: the bridge only composes them.
 //
@@ -394,6 +394,78 @@ bool RAB_TraceRayForLocalLight(float3 origin, float3 direction, float tMin, floa
     lightIndex = RTXDI_InvalidLightIndex;
     randXY = float2(0.0, 0.0);
     return !traceVisibility(gRtxdiBridge.tlas, origin, direction, tMin, tMax);
+}
+
+//
+// ReSTIR GI (spec/m4/g5_restir_gi.md): a sample is a secondary surface X2 with its outgoing radiance toward the
+// surface that traced it
+//
+
+// evalBrdf · Lo(X2) · NdotL toward the sample: the GI target function's color, and the final shading
+float3 shadeGiSample(RAB_Surface surface, float3 samplePosition, float3 sampleRadiance)
+{
+    if (!RAB_IsSurfaceValid(surface) || !surface.isLit)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    const float3 l = normalize(samplePosition - surface.position);
+    const float nDotL = dot(surface.normal, l);
+    if (nDotL <= 0.0)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    return evalBrdf(surface.normal, surface.diffuseAlbedo, surface.specularF0, surface.roughness, surface.viewDir, l) *
+           sampleRadiance * nDotL;
+}
+
+float RAB_GetGISampleTargetPdfForSurface(float3 samplePosition, float3 sampleRadiance, RAB_Surface surface)
+{
+    return luminance(shadeGiSample(surface, samplePosition, sampleRadiance));
+}
+
+// the RTXDI sample's bridge (RAB_SpatialHelpers.hlsli): a solid-angle ratio past 10x rejects the reuse, past 3x it is
+// clamped. The clamp is a bias the GI check measures
+bool RAB_ValidateGISampleWithJacobian(inout float jacobian)
+{
+    if (jacobian > 10.0 || jacobian < 0.1)
+    {
+        return false;
+    }
+    jacobian = clamp(jacobian, 1.0 / 3.0, 3.0);
+    return true;
+}
+
+// the ray ends this share of the distance short of X2, which lies on the triangle that traced it
+static const float kReconnectionShortening = 1.0e-3;
+
+// from a guide surface to a sample point
+bool isReconnectionVisible(RAB_Surface surface, float3 samplePosition)
+{
+    if (!RAB_IsSurfaceValid(surface))
+    {
+        return false;
+    }
+    const float3 toSample = samplePosition - surface.position;
+    const float distance = length(toSample);
+    if (distance <= 0.0)
+    {
+        return false;
+    }
+    const float3 l = toSample / distance;
+    return traceVisibility(gRtxdiBridge.tlas, rasterRayOrigin(surface, l), l, 0.0,
+                           distance * (1.0 - kReconnectionShortening));
+}
+
+bool RAB_GetConservativeVisibility(RAB_Surface surface, float3 samplePosition)
+{
+    return isReconnectionVisible(surface, samplePosition);
+}
+
+// no previous TLAS: the current surface through this frame's TLAS, as the RTXDI sample without enablePrevTLAS
+bool RAB_GetTemporalConservativeVisibility(RAB_Surface currentSurface, RAB_Surface previousSurface,
+                                           float3 samplePosition)
+{
+    return isReconnectionVisible(currentSurface, samplePosition);
 }
 
 #endif

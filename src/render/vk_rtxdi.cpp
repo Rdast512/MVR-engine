@@ -18,6 +18,11 @@ static_assert(std::to_underlying(rtxdi::ReSTIRDI_ResamplingMode::None) == 0);
 static_assert(std::to_underlying(rtxdi::ReSTIRDI_ResamplingMode::Temporal) == 1);
 static_assert(std::to_underlying(rtxdi::ReSTIRDI_ResamplingMode::Spatial) == 2);
 static_assert(std::to_underlying(rtxdi::ReSTIRDI_ResamplingMode::TemporalAndSpatial) == 3);
+static_assert(std::to_underlying(rtxdi::ReSTIRGI_ResamplingMode::None) == 0);
+static_assert(std::to_underlying(rtxdi::ReSTIRGI_ResamplingMode::TemporalAndSpatial) == 3);
+// the initial samples follow RTXDI's arrays
+static_assert(RtxdiContext::kGiInitialReservoirArray == rtxdi::c_NumReSTIRGIReservoirBuffers);
+static_assert(RtxdiContext::kGiReservoirArrays == rtxdi::c_NumReSTIRGIReservoirBuffers + 1);
 
 namespace
 {
@@ -84,15 +89,15 @@ void RtxdiContext::destroyReservoirs()
 void RtxdiContext::createGiReservoirs()
 {
     const RTXDI_ReservoirBufferParameters params = giContext->GetReservoirBufferParameters();
-    giReservoirCount = params.reservoirArrayPitch * rtxdi::c_NumReSTIRGIReservoirBuffers;
+    giReservoirCount = params.reservoirArrayPitch * kGiReservoirArrays;
     const vk::DeviceSize bytes = static_cast<vk::DeviceSize>(giReservoirCount) * sizeof(RTXDI_PackedGIReservoir);
     createBuffer(bytes, vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                  vk::MemoryPropertyFlagBits::eDeviceLocal, giReservoirs, giReservoirMemory, allocator.allocator,
                  device.vkdevice, device.queueFamilyIndices, "RtxdiGiReservoirs");
     giReservoirAddress = device.vkdevice.getBufferAddress({.buffer = *giReservoirs});
-    logInfo(std::format("ReSTIR GI: {} reservoir buffers of {} ({:.1f} MiB), initial samples only until G5",
-                        rtxdi::c_NumReSTIRGIReservoirBuffers, params.reservoirArrayPitch,
-                        static_cast<double>(bytes) / (1024.0 * 1024.0)),
+    logInfo(std::format("ReSTIR GI: {} reservoir buffers of {} ({:.1f} MiB), {}", kGiReservoirArrays,
+                        params.reservoirArrayPitch, static_cast<double>(bytes) / (1024.0 * 1024.0),
+                        isGiReference ? "reference (no reuse)" : "temporal and spatial"),
             "Rtxdi");
 }
 
@@ -120,6 +125,7 @@ void RtxdiContext::recreate(vk::Extent2D renderExtent)
         .RenderHeight = renderExtent.height,
         .CheckerboardSamplingMode = rtxdi::CheckerboardMode::Off,
     });
+    configureGi();
     createGiReservoirs();
 
     logInfo(
@@ -176,6 +182,46 @@ RtxdiContext::Settings RtxdiContext::convergedSettings()
     converged.disocclusionHistoryLength = converged.maxHistoryLength;
     converged.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Pairwise;
     converged.isFinalVisibilityReused = false;
+    return converged;
+}
+
+RtxdiContext::GiSettings RtxdiContext::defaultGiSettings()
+{
+    const RTXDI_GITemporalResamplingParameters temporal = rtxdi::GetDefaultReSTIRGITemporalResamplingParams();
+    const RTXDI_GISpatialResamplingParameters spatial = rtxdi::GetDefaultReSTIRGISpatialResamplingParams();
+    const RTXDI_BoilingFilterParameters boiling = rtxdi::GetDefaultReSTIRGIBoilingFilterParams();
+    const RTXDI_GIFinalShadingParameters shading = rtxdi::GetDefaultReSTIRGIFinalShadingParams();
+    // RTXDI Samples/FullSample UserInterface.cpp: the library defaults, which no preset changes
+    return GiSettings{
+        .maxHistoryLength = temporal.maxHistoryLength,
+        .maxReservoirAge = temporal.maxReservoirAge,
+        .temporalBiasCorrection = temporal.biasCorrectionMode,
+        .isFallbackSamplingEnabled = temporal.enableFallbackSampling != 0,
+        .isPermutationSamplingEnabled = temporal.enablePermutationSampling != 0,
+        .spatialSamples = spatial.numSamples,
+        .samplingRadius = spatial.samplingRadius,
+        .spatialBiasCorrection = spatial.biasCorrectionMode,
+        .depthThreshold = spatial.depthThreshold,
+        .normalThreshold = spatial.normalThreshold,
+        .isBoilingFilterEnabled = boiling.enableBoilingFilter != 0,
+        .boilingFilterStrength = boiling.boilingFilterStrength,
+        .isFinalVisibilityEnabled = shading.enableFinalVisibility != 0,
+        .isFinalMisEnabled = shading.enableFinalMIS != 0,
+    };
+}
+
+RtxdiContext::GiSettings RtxdiContext::convergedGiSettings()
+{
+    GiSettings converged = defaultGiSettings();
+    converged.temporalBiasCorrection = RTXDI_GIBiasCorrectionMode::Raytraced;
+    converged.spatialBiasCorrection = RTXDI_GIBiasCorrectionMode::Raytraced;
+    // keeping only reservoirs whose sample is young keeps the ones a bright candidate won recently: +5.6% on the
+    // gallery at RTXDI's 30 frames (considerations C-G5-1)
+    converged.maxReservoirAge = kGiUnlimitedSampleAge;
+    // a zero-motion sample without the surface tests: locally biased, usually darker (ReSTIRGIParameters.h)
+    converged.isFallbackSamplingEnabled = false;
+    converged.isPermutationSamplingEnabled = false;
+    converged.isBoilingFilterEnabled = false;
     return converged;
 }
 
@@ -236,6 +282,44 @@ void RtxdiContext::configure()
     appliedSettings = settings;
 }
 
+void RtxdiContext::configureGi()
+{
+    giContext->SetResamplingMode(isGiReference ? rtxdi::ReSTIRGI_ResamplingMode::None
+                                               : rtxdi::ReSTIRGI_ResamplingMode::TemporalAndSpatial);
+    RTXDI_GITemporalResamplingParameters temporal = giContext->GetTemporalResamplingParameters();
+    temporal.maxHistoryLength = giSettings.maxHistoryLength;
+    temporal.maxReservoirAge = giSettings.maxReservoirAge;
+    temporal.biasCorrectionMode = giSettings.temporalBiasCorrection;
+    temporal.enableFallbackSampling = giSettings.isFallbackSamplingEnabled ? 1u : 0u;
+    temporal.enablePermutationSampling = giSettings.isPermutationSamplingEnabled ? 1u : 0u;
+    temporal.depthThreshold = giSettings.depthThreshold;
+    temporal.normalThreshold = giSettings.normalThreshold;
+    giContext->SetTemporalResamplingParameters(temporal);
+
+    RTXDI_GISpatialResamplingParameters spatial = giContext->GetSpatialResamplingParameters();
+    spatial.numSamples = giSettings.spatialSamples;
+    spatial.samplingRadius = giSettings.samplingRadius;
+    spatial.biasCorrectionMode = giSettings.spatialBiasCorrection;
+    spatial.depthThreshold = giSettings.depthThreshold;
+    spatial.normalThreshold = giSettings.normalThreshold;
+    giContext->SetSpatialResamplingParameters(spatial);
+
+    giContext->SetBoilingFilterParameters(RTXDI_BoilingFilterParameters{
+        .enableBoilingFilter = giSettings.isBoilingFilterEnabled ? 1u : 0u,
+        .boilingFilterStrength = giSettings.boilingFilterStrength,
+        .pad1 = 0,
+        .pad2 = 0,
+    });
+    giContext->SetFinalShadingParameters(RTXDI_GIFinalShadingParameters{
+        .enableFinalVisibility = giSettings.isFinalVisibilityEnabled ? 1u : 0u,
+        .enableFinalMIS = giSettings.isFinalMisEnabled ? 1u : 0u,
+        .pad1 = 0,
+        .pad2 = 0,
+    });
+    isGiReferenceApplied = isGiReference;
+    appliedGiSettings = giSettings;
+}
+
 void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex)
 {
     if (isReference != isReferenceApplied) {
@@ -244,9 +328,22 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex)
     } else if (settings != appliedSettings) {
         configure();
     }
+    if (isGiReference != isGiReferenceApplied) {
+        configureGi();
+        logInfo(std::format("ReSTIR GI: {}", isGiReference ? "reference (no reuse)" : "temporal and spatial"),
+                "Rtxdi");
+    } else if (giSettings != appliedGiSettings) {
+        configureGi();
+    }
     // rotates the reservoir buffer indices and the frame's random number
     context->SetFrameIndex(frameIndex);
     giContext->SetFrameIndex(frameIndex);
+    const RTXDI_GIBufferIndices giBufferIndices = giContext->GetBufferIndices();
+    // rtxdi_gi_shade reads neighbors from the temporal output and writes next frame's temporal input
+    assert(giContext->GetResamplingMode() == rtxdi::ReSTIRGI_ResamplingMode::None ||
+           (giBufferIndices.spatialResamplingInputBufferIndex == giBufferIndices.temporalResamplingOutputBufferIndex &&
+            giBufferIndices.spatialResamplingOutputBufferIndex == giBufferIndices.temporalResamplingInputBufferIndex &&
+            giBufferIndices.finalShadingInputBufferIndex == giBufferIndices.spatialResamplingOutputBufferIndex));
     const RTXDI_DIBufferIndices bufferIndices = context->GetBufferIndices();
     // rtxdi_temporal writes over its own pixel's initial reservoir, and its early-out leaves that as the output
     assert(bufferIndices.temporalResamplingOutputBufferIndex == bufferIndices.initialSamplingOutputBufferIndex);
@@ -282,9 +379,15 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex)
         .resamplingMode = std::to_underlying(context->GetResamplingMode()),
         .reservoirCount = reservoirCount,
         .giReservoirBuffer = giContext->GetReservoirBufferParameters(),
-        .giBufferIndices = giContext->GetBufferIndices(),
+        .giBufferIndices = giBufferIndices,
         .giReservoirs = giReservoirAddress,
         .giReservoirCount = giReservoirCount,
+        .giResamplingMode = std::to_underlying(giContext->GetResamplingMode()),
+        .giTemporalResampling = giContext->GetTemporalResamplingParameters(),
+        .giBoilingFilter = giContext->GetBoilingFilterParameters(),
+        .giSpatialResampling = giContext->GetSpatialResamplingParameters(),
+        .giFinalShading = giContext->GetFinalShadingParameters(),
+        .giReferenceBounces = giReferenceBounces,
         .pad0 = 0,
     };
     std::memcpy(constants[frameSlot].mapped, &data, sizeof(data));

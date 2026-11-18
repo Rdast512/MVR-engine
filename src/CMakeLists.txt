@@ -74,6 +74,8 @@ add_library(engine_runtime SHARED core/vk_engine.cpp core/vk_engine.hpp core/eng
     core/engine_guide_capture.cpp core/engine_guide_capture.hpp
     core/engine_cull_check.cpp core/engine_cull_check.hpp
     core/engine_ray_check.cpp core/engine_ray_check.hpp
+    core/engine_gi_check.cpp core/engine_gi_check.hpp
+    core/convergence_metrics.cpp core/convergence_metrics.hpp
     ui/engine_ui.cpp ui/engine_ui.hpp)
 target_compile_definitions(engine_runtime PRIVATE ENGINE_LOG_DLL=\"runtime\")
 target_link_libraries(engine_runtime

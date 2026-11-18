@@ -33,12 +33,12 @@ void nrcResolveMain(uint3 id : SV_DispatchThreadID)
     const float ao = tex2D(gRtxdiBridge.current.sampled[kGuideDiffuseAlbedo]).Load(int3(int2(id.xy), 0)).a;
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
     const uint2 reservoirPos = RTXDI_PixelPosToReservoirPos(id.xy, constants.runtime.activeCheckerboardField);
-    const uint arrayIndex = constants.giBufferIndices.secondarySurfaceReSTIRDIOutputBufferIndex;
-    RTXDI_GIReservoir reservoir = RTXDI_LoadGIReservoir(constants.giReservoirBuffer, reservoirPos, arrayIndex);
+    RTXDI_GIReservoir reservoir =
+        RTXDI_LoadGIReservoir(constants.giReservoirBuffer, reservoirPos, kGiInitialReservoirArray);
     if (!RTXDI_IsValidGIReservoir(reservoir))
     {
         return;
     }
     reservoir.radiance += cached * ao;
-    RTXDI_StoreGIReservoir(reservoir, constants.giReservoirBuffer, reservoirPos, arrayIndex);
+    RTXDI_StoreGIReservoir(reservoir, constants.giReservoirBuffer, reservoirPos, kGiInitialReservoirArray);
 }

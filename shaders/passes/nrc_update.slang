@@ -25,8 +25,6 @@ static const uint kUpdateTile = 8;
 static const uint kNrcUpdatePathSeed = 41;
 static const uint kNrcUpdateLightSeed = 42;
 
-static const float kMissDistance = 1.0e5;
-
 // the sample's SelectSparseGBufferPixel: launch cell + a random offset, scaled to the render size
 uint2 selectTrainingPixel(uint2 launch, uint2 launchSize, uint2 renderSize, inout RTXDI_RandomSamplerState rng)
 {
@@ -45,24 +43,14 @@ NrcSurfaceAttributes attributesOf(NrcConstants constants, RAB_Surface surface)
 bool scatter<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, inout RTXDI_RandomSamplerState rng,
                                    inout float3 throughput, inout NrcPathState path, inout RayDesc ray)
 {
-    if (!surface.isLit)
+    float pdf;
+    if (!scatterBrdf(surface, origin, rng, throughput, ray, pdf))
     {
         NrcSetDebugPathTerminationReason(path, NrcDebugPathTerminationReason::BRDFAbsorption);
         return false;
     }
-    const float3 u = float3(RTXDI_GetNextRandom(rng), RTXDI_GetNextRandom(rng), RTXDI_GetNextRandom(rng));
-    const BrdfSample brdf =
-        sampleBrdf(surface.normal, surface.diffuseAlbedo, surface.specularF0, surface.roughness, surface.viewDir, u);
-    if (brdf.pdf <= 0.0)
-    {
-        NrcSetDebugPathTerminationReason(path, NrcDebugPathTerminationReason::BRDFAbsorption);
-        return false;
-    }
-    throughput *= brdf.weight;
     // the heuristic grows the path spread at the next hit from this pdf
-    NrcSetBrdfPdf(path, brdf.pdf);
-    ray.Origin = origin.spawn(brdf.l);
-    ray.Direction = brdf.l;
+    NrcSetBrdfPdf(path, pdf);
     return true;
 }
 

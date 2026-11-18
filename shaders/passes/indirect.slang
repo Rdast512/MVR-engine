@@ -16,21 +16,23 @@ import raytracing.trace;
 // indirect pass (spec/m4/g2_indirect_pass.md): one BRDF-sampled ray query per pixel from the primary guide surface,
 // shaded at its hit X2 with emission and one RIS-sampled light, stored as the pixel's initial ReSTIR GI reservoir. It
 // is also NRC's query pass (spec/m4/g3_nrc.md): X2 is the path's first cache vertex, and passes/nrc_resolve.slang adds
-// the cache's bounces 2..inf to the reservoir. Compute with traceClosest while SER is shelved (considerations C-G1-3)
+// the cache's bounces 2..inf to the reservoir. With giReferenceBounces the pass traces those bounces itself instead
+// and NRC is paused (the engine spec §14 ground truth, spec/m4/g5_restir_gi.md). Compute with traceClosest while SER
+// is shelved (considerations C-G1-3)
 
 static const uint kIndirectTile = 8; // matches src/render/vk_renderer.cpp kFullscreenTile
 
 [[vk::push_constant]] ConstantBuffer<FramePushData> push;
 
-// a miss stays a sample with zero radiance this far along the ray: M counts it for G5's normalization. No environment
-// light before M7
-static const float kMissDistance = 1.0e5;
+// RTXDI's per-pass seeds stop at 31; NRC's update pass takes 41 and 42
+static const uint kReferencePathSeed = 43;
 
-// the primary surface's BRDF ray; isActive false when there is nothing to shade from
+// the primary surface's BRDF ray. isSampled: a lit primary drew a direction; isActive: it is traced (pdf > 0)
 struct PrimaryBounce
 {
     RayDesc ray;
     float pdf;
+    bool isSampled;
     bool isActive;
 };
 
@@ -44,8 +46,9 @@ PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
     bounce.ray.TMax = kMissDistance;
     // unlit primaries take no light, as in ReSTIR DI
     const RAB_Surface primary = RAB_GetGBufferSurface(int2(pixel), false);
-    bounce.isActive = RAB_IsSurfaceValid(primary) && primary.isLit;
-    if (bounce.isActive)
+    bounce.isSampled = RAB_IsSurfaceValid(primary) && primary.isLit;
+    bounce.isActive = false;
+    if (bounce.isSampled)
     {
         const uint frameIndex = bdaPtr<GpuRtxdiConstants>(root.rtxdiConstants)[0].runtime.frameIndex;
         RTXDI_RandomSamplerState rng =
@@ -108,8 +111,15 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
             RTXDI_SECONDARY_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
         HitOrigin origin;
         origin.hit = hit;
-        const float3 radiance =
-            secondary.emissive + directLightAt(secondary.surface, origin, constants, rng, coherentRng);
+        float3 radiance = secondary.emissive + directLightAt(secondary.surface, origin, constants, rng, coherentRng);
+        if (constants.giReferenceBounces > 0)
+        {
+            RTXDI_RandomSamplerState pathRng =
+                RTXDI_InitRandomSampler(pixel, constants.runtime.frameIndex, kReferencePathSeed);
+            radiance += referencePathRadiance(root, secondary.surface, origin, constants.giReferenceBounces,
+                                              length(ray.Origin - gRtxdiBridge.cameraPos) + hit.t, constants, pathRng,
+                                              rng, coherentRng);
+        }
         reservoir = RTXDI_MakeGIReservoir(secondary.surface.position, secondary.surface.geoNormal, radiance, pdf);
         // an unlit X2 reflects no light, so the cache has nothing to add
         if (!isCacheView && secondary.surface.isLit && gNrcBridge.isActive)
@@ -121,11 +131,17 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
                            hit.t, 1, nrcThroughput, nrcRadiance);
         }
     }
-    else if (isActive)
+    else if (bounce.isSampled)
     {
+        // a miss, or a direction the BRDF cannot reflect into: still a sample, of zero radiance. M counts it, else
+        // temporal reuse keeps an older sample at full weight where the 1-sample estimate reads 0 (+15% on the
+        // gallery, spec/m4/g5_restir_gi.md §3; the RTXDI sample stores an empty reservoir here)
         reservoir = RTXDI_MakeGIReservoir(ray.Origin + ray.Direction * kMissDistance, -ray.Direction,
                                           float3(0.0, 0.0, 0.0), pdf);
-        NrcUpdateOnMiss(nrcPath);
+        if (isActive)
+        {
+            NrcUpdateOnMiss(nrcPath);
+        }
     }
     // NRC cache view: the cache at vertex zero, the SDK's DirectCacheView through the custom path
     if (isCacheView)
@@ -139,9 +155,10 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
                            length(primary.position - gRtxdiBridge.cameraPos), 0, nrcThroughput, nrcRadiance);
         }
     }
-    // every pixel: G5 and the debug view load each pixel's reservoir, the NRC resolve each pixel's query path
+    // every pixel: the GI passes and the debug view load each pixel's reservoir, the NRC resolve each pixel's query
+    // path
     RTXDI_StoreGIReservoir(reservoir, constants.giReservoirBuffer,
                            RTXDI_PixelPosToReservoirPos(pixel, constants.runtime.activeCheckerboardField),
-                           constants.giBufferIndices.secondarySurfaceReSTIRDIOutputBufferIndex);
+                           kGiInitialReservoirArray);
     NrcWriteFinalPathInfo(nrc, nrcPath, nrcThroughput, nrcRadiance);
 }

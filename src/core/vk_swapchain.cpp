@@ -29,14 +29,14 @@ void SwapChain::init() {
 }
 
 vk::SurfaceFormatKHR SwapChain::chooseSwapSurfaceFormat(
-    const std::vector<vk::SurfaceFormatKHR> &availableFormats) {
+    const std::vector<vk::SurfaceFormat2KHR> &availableFormats) {
     for (const auto &availableFormat : availableFormats) {
-        if (availableFormat.format == vk::Format::eB8G8R8A8Srgb &&
-            availableFormat.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
-            return availableFormat;
+        if (availableFormat.surfaceFormat.format == vk::Format::eB8G8R8A8Srgb &&
+            availableFormat.surfaceFormat.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+            return availableFormat.surfaceFormat;
         }
     }
-    return availableFormats[0];
+    return availableFormats[0].surfaceFormat;
 }
 
 vk::PresentModeKHR SwapChain::chooseSwapPresentMode(
@@ -72,12 +72,12 @@ vk::Extent2D SwapChain::chooseSwapExtent(
 
 void SwapChain::createSwapChain(vk::SwapchainKHR oldSwapChain) {
 
-    // caps2 avoids the legacy-gpdsc2 validation warning
+    // caps2 / formats2 avoid the legacy-gpdsc2 validation warning
     const vk::PhysicalDeviceSurfaceInfo2KHR surfaceInfo{.surface = *surface};
     const vk::SurfaceCapabilitiesKHR surfaceCapabilities =
         physicalDevice.getSurfaceCapabilities2KHR(surfaceInfo).surfaceCapabilities;
     swapChainSurfaceFormat =
-        chooseSwapSurfaceFormat(physicalDevice.getSurfaceFormatsKHR(surface));
+        chooseSwapSurfaceFormat(physicalDevice.getSurfaceFormats2KHR(surfaceInfo));
     swapChainImageFormat = swapChainSurfaceFormat.format;
     swapChainExtent = chooseSwapExtent(surfaceCapabilities);
     uint32_t minImageCount = std::max(kPreferredImageCount, surfaceCapabilities.minImageCount);

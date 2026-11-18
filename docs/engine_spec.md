@@ -48,7 +48,7 @@ The engine is a **GPU-driven, bindless, hybrid visibility + real-time path traci
 
 | # | Principle | Consequence |
 |---|---|---|
-| P1 | **One path, scaled by quality knobs, not by fallbacks** | Tiers change resolution, ray counts, NRC settings and LOD error. They never swap algorithms |
+| P1 | **One path, scaled by quality knobs, not by fallbacks** | Tiers change resolution, ray counts, NRC settings and LOD error. They never swap algorithms. Runtime toggles that keep every path built (the indirect modes of §11.7, the ray paths of §16.5) are for A/B measurement and debugging; each tier still ships one default |
 | P2 | **GPU owns the scene per frame** | Persistent GPU scene + delta uploads; the CPU never loops over instances, clusters or lights per frame |
 | P3 | **Two access mechanisms** | Buffers through BDA, images and samplers through descriptor-heap indices ([resource_architecture.md §1](../spec/resource_architecture.md#1-overview)) |
 | P4 | **One root pointer** | Every pass reaches all scene data from `GpuFrameRoot`; push data carries the root address plus pass-local values |
@@ -191,6 +191,7 @@ GRAPHICS QUEUE                                          ASYNC COMPUTE QUEUE
    update paths + indirect 1 ray/px (ray query; SER post-1.0) as query → QueryAndTrain → custom resolve
    (writes X₂ radiance into the GI samples)
 12 ReSTIR GI      temporal + spatial on indirect samples         → indirect
+   (§11.7 indirect modes: "NRC" skips 12, "ReSTIR GI" skips the NRC work of 11; default runs both)
 13 combine        direct + indirect + emissive                   → noisy HDR
 14 DLSS-RR        noisy HDR + guides                             → display-res HDR
 15 post           auto exposure → tonemap → swapchain, ImGui
@@ -491,7 +492,19 @@ NRC is the only radiance cache (decided 2026-11-14: the target is NVIDIA only). 
 
 ### 11.5 Indirect resampling: ReSTIR GI
 
-RTXDI ReSTIR GI on the §11.3 samples: temporal then spatial reuse, with the boiling filter on. Output: `indirectRadiance` (RGBA16F). ReSTIR PT is a later quality option (§15).
+RTXDI ReSTIR GI on the §11.3 samples: temporal then spatial reuse, with the boiling filter on, then the final shading with a reconnection ray and the glossy MIS against the pixel's initial sample. Output: `indirectRadiance` (RGBA16F). A failed BRDF sample is a zero-radiance sample (M = 1), not an empty reservoir. The GI check (`ENGINE_GI_CHECK`) holds it to the §14 ground truth ([g5_restir_gi.md](../spec/m4/g5_restir_gi.md)). ReSTIR PT is a later quality option (§15).
+
+### 11.7 Indirect modes
+
+A runtime toggle picks how `indirectRadiance` is made; NRC stays initialized in every mode (plan G7, [g7_indirect_modes.md](../spec/m4/g7_indirect_modes.md)):
+
+| Mode | Sample radiance at X₂ | Passes | Reference |
+|---|---|---|---|
+| **NRC → ReSTIR GI** (default, both tiers) | direct + emission + cache query (§11.3–11.4) | NRC, then ReSTIR GI (§11.5) | this spec |
+| **NRC** | the same | NRC; the resolved sample shaded at the primary surface, no ReSTIR GI | RTXGI IndirectDiffuse `Nrc` mode |
+| **ReSTIR GI** | direct + emission only (one bounce) | ReSTIR GI; NRC paused (no update paths, `QueryAndTrain`, resolve or `EndFrame`; weights kept) | RTXDI sample |
+
+Rules: a switch happens at a frame boundary without a reload or a reconfigure, and resets ReSTIR GI and DLSS-RR history for one frame. The NRC context is never destroyed on a switch (SDK leaks, considerations C-G3-3). The self-test runners cover every mode. Defaults change only by a spec decision backed by the G7 timings and convergence numbers (P1).
 
 ### 11.6 Combine
 
@@ -572,7 +585,7 @@ NRC passes stay on the graphics queue in frame order (table above); they are not
 | Nsight Graphics / Systems | per-milestone capture; occupancy and RT traversal checks |
 | Validation | layers via vkconfig, best-practices NVIDIA preset; clean before merge |
 | Debug views | `DebugView` table: geometry (clusters, LOD level, triangles, instances), vis buffer ids, every §9.3 guide, RTXDI reservoirs, cache debug resolve, DLSS input vs output. Geometry views are derived from the vis buffer in compute; overdraw is not planned (it would need a raster debug variant) |
-| Ground truth | accumulation mode of the same path tracer (many frames, cache off, high bounce count) on static frames; no second renderer (PBR plan §8) |
+| Ground truth | accumulation mode of the same path tracer (many frames, cache off, high bounce count) on static frames; no second renderer (PBR plan §8). Built in G5: `RtxdiContext::giReferenceBounces` traces 8 bounces after X2 with NRC paused, the GI reference shades the samples without reuse, and `ENGINE_GI_CHECK` averages it against ReSTIR GI |
 | Benchmarks | fixed camera paths per scene, recorded per tier, compared with §2.3 |
 
 Benchmark scenes: Sponza (+ Intel Sponza curtains/ivy for alpha), **Bistro** (the final-goal scene: many lights, emissive), Khronos validation assets (PBR plan "Validation assets"). After 1.0 (§16.3): Bistro on cluster LOD with the M9 benchmark paths (L3), and a dense scan or Zorah-class scene for cluster LOD (as used by `vk_lod_clusters`).
@@ -627,7 +640,7 @@ Each milestone renders something testable and is measured against §2.3 before t
 | M1 | Vis buffer | reverse-Z with the `nvhiz` Hi-Z port (§8.1 A9), vis buffer raster, opaque bin with winding-flip two-sided (A6), resolve with analytic derivatives as **one tiled compute dispatch** (one PBR shader until M7: no classification, no DGC), PBR B1 `sampleMaterial` brought forward from M3, §9.3 guides, motion; plan: [visibility_buffer.md](../spec/features/visibility_buffer.md) | debug views of every guide; same geometry as today; culling lossless under reverse Z: the image with every cull test on equals the image with all off (`ENGINE_CULL_CHECK`). Reverse Z is the reference; the old forward-Z build is not compared (2026-11-13) |
 | M2 | Cluster RT bring-up | CLAS per meshlet, one static cluster BLAS per primitive, GPU-written instance ops + PTLAS updated in place on the async compute queue overlapping graphics (§13.1 X2), position fetch, `decodeHit` with cluster ids, ray-query debug pass (§10.3, last paragraph) | debug CS colors by cluster; unload keeps other models traceable; a still frame writes no PTLAS ops |
 | M3 | First lit frame | BRDF + lights (PBR B2–B3), RTXDI DI (PBR F), DLSS-RR + post (PBR H), culling jitter rule (§12.2) | stable direct light on `LightsPunctualLamp`, Sponza + sun |
-| M4 | Indirect | indirect pass and NRC paths with ray queries (§11.1; SER shelved to §16.5 V1), NRC (§11.4, PBR G3), ReSTIR GI, combine | bounce light under Sponza arches, stable after RR; NRC cache converges after load (the loss cannot be read on Vulkan, considerations C-G3-4) |
+| M4 | Indirect | indirect pass and NRC paths with ray queries (§11.1; SER shelved to §16.5 V1), NRC (§11.4, PBR G3), ReSTIR GI, combine, indirect mode toggle NRC → ReSTIR GI / NRC / ReSTIR GI (§11.7, PBR G7) | bounce light under Sponza arches, stable after RR; NRC cache converges after load (the loss cannot be read on Vulkan, considerations C-G3-4); all three indirect modes switch at runtime and converge to their references, timings of each recorded on both tiers |
 | M5 | — | merged into M4 (2026-11-14): NRC is the only cache | — |
 | M6 | Alpha | OMM bake per primitive, attach per cluster, build (§10.5), alpha-tested raster bucket | foliage cut-outs in raster and shadows; zero ray candidates |
 | M7 | Material binning | tile classification + bin-id image (§9.1), DGC compute execution set with the overlap guard (§9.2), emissive-triangle lights, `Power_RIS` | per-bin timings; Bistro emissives lit |
@@ -858,6 +871,8 @@ Root cause of the drift: the same facts (vis-buffer format, the §9.3 guide tabl
 
 | Date | Change |
 |---|---|
+| 2026-11-18 | ReSTIR GI built (§11.5, PBR G5) with the §14 ground truth and its check; a failed BRDF sample counts as a zero sample. RTXDI's GI defaults are biased on static frames (considerations C-G5-1, C-G5-2), NRC reads ~10% bright (C-G5-3) |
+| 2026-11-18 | Indirect mode toggle before 1.0 (§11.7, M4, plan G7): NRC → ReSTIR GI (default), NRC alone, ReSTIR GI alone; NRC stays initialized and is paused, never destroyed. P1 notes that runtime toggles keeping every path built are for A/B measurement, while each tier ships one default |
 | 2026-11-17 | SER shelved for 1.0 (Slang's EXT `HitObject` support, considerations C-G1-3): every shaded-ray pass is compute with ray queries. Post-1.0 V1 (§16.5) inverted: the SER RT pipeline returns as a toggle beside the ray-query passes, gated on the Slang fixes, and is expected to become the default; §1.1, §2.2, §2.3, §3, S8, §11.1, §16.1, §16.2 M4 follow |
 | 2026-11-17 | Post-1.0 target switchable ray paths (§1.1, §16.5): V1 ray queries instead of the RT pipeline, V2 triangle BLAS for static geometry, each behind a toggle with both ways kept; pointers in §10.1 and §11.1. From the re-check of NVIDIA's samples ([mega_geometry_comparison.md](../reference/mega_geometry_comparison.md)) |
 | 2026-11-15 | Backlog through M3: AU8 (third-party code in `engine_util` only, coverage off by default) and AU10 (one swapchain recreate path) done; RTXDI previous-frame light rows (`GpuFrameRoot.prevWorldLights`, 192 B) and the `RTXDI reservoirs` debug view (§14); DGC preprocess buffers suballocated; §16.1 state rows corrected. AU1 and AU4 stay optional (§16.2) |

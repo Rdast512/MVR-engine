@@ -971,6 +971,9 @@ struct GpuTargets
     // RGBA16F linear HDR written by passes/rtxdi_shade.slang; no emissive
     uint32_t directRadianceStorage = 0;
     uint32_t directRadianceSampled = 0;
+    // RGBA16F linear HDR written by passes/rtxdi_gi_shade.slang: ReSTIR GI's one-bounce + cache term
+    uint32_t indirectRadianceStorage = 0;
+    uint32_t indirectRadianceSampled = 0;
     // RGBA16F linear HDR written by passes/combine.slang: direct + emissive, the DLSS-RR color input
     uint32_t noisyColorStorage = 0;
     uint32_t noisyColorSampled = 0;
@@ -985,7 +988,7 @@ struct GpuTargets
     uint32_t exposureStorage = 0;
     glm::uvec2 displaySize{0};
 };
-static_assert(sizeof(GpuTargets) == 200);
+static_assert(sizeof(GpuTargets) == 208);
 static_assert(offsetof(GpuTargets, current) == 32);
 
 // GpuFrameRoot::frameFlags, matches shaders/types.slang kFrameFlag*

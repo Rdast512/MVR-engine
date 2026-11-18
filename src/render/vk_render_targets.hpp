@@ -23,6 +23,8 @@ public:
     static constexpr vk::Format kDisplayFormat = vk::Format::eR16G16B16A16Sfloat;
     // linear HDR, written by passes/rtxdi_shade.slang
     static constexpr vk::Format kDirectRadianceFormat = vk::Format::eR16G16B16A16Sfloat;
+    // linear HDR, written by passes/rtxdi_gi_shade.slang
+    static constexpr vk::Format kIndirectRadianceFormat = vk::Format::eR16G16B16A16Sfloat;
     // linear HDR: passes/combine.slang's output and the DLSS-RR input and output
     static constexpr vk::Format kNoisyColorFormat = vk::Format::eR16G16B16A16Sfloat;
     static constexpr vk::Format kUpscaledFormat = vk::Format::eR16G16B16A16Sfloat;
@@ -136,6 +138,7 @@ private:
     vk::raii::ImageView visBufferView = nullptr;
     Target display;
     Target directRadiance;
+    Target indirectRadiance;
     Target noisyColorTarget;
     Target upscaledTarget;
     Target postTarget;

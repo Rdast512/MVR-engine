@@ -40,19 +40,30 @@ struct GpuRtxdiConstants {
     uint32_t resamplingMode;
     // RTXDI_PackedDIReservoir rows behind reservoirs; the bridge drops accesses past it
     uint32_t reservoirCount;
-    // ReSTIR GI (spec/m4/g2_indirect_pass.md): the indirect pass writes initial reservoirs, G5 resamples them
+    // ReSTIR GI (spec/m4/g2_indirect_pass.md, g5_restir_gi.md): the indirect pass writes initial reservoirs, the GI
+    // passes resample them
     RTXDI_ReservoirBufferParameters giReservoirBuffer;
     RTXDI_GIBufferIndices giBufferIndices;
-    // RTXDI_PackedGIReservoir[c_NumReSTIRGIReservoirBuffers * reservoirArrayPitch]
+    // RTXDI_PackedGIReservoir[kGiReservoirArrays * reservoirArrayPitch]: RTXDI's two arrays, then the initial samples
     vk::DeviceAddress giReservoirs;
     // RTXDI_PackedGIReservoir rows behind giReservoirs; the bridge drops accesses past it
     uint32_t giReservoirCount;
+    // rtxdi::ReSTIRGI_ResamplingMode: TemporalAndSpatial (3) or None (0, the reference); bit 0 temporal, bit 1 spatial
+    uint32_t giResamplingMode;
+    RTXDI_GITemporalResamplingParameters giTemporalResampling;
+    RTXDI_BoilingFilterParameters giBoilingFilter;
+    RTXDI_GISpatialResamplingParameters giSpatialResampling;
+    RTXDI_GIFinalShadingParameters giFinalShading;
+    // bounces traced after X2 instead of the NRC cache term; 0: the cache term (spec §14 ground truth)
+    uint32_t giReferenceBounces;
     uint32_t pad0;
 };
-static_assert(sizeof(GpuRtxdiConstants) == 392);
+static_assert(sizeof(GpuRtxdiConstants) == 496);
 static_assert(offsetof(GpuRtxdiConstants, reservoirs) == 304);
 static_assert(offsetof(GpuRtxdiConstants, giReservoirBuffer) == 328);
 static_assert(offsetof(GpuRtxdiConstants, giReservoirs) == 376);
+static_assert(offsetof(GpuRtxdiConstants, giTemporalResampling) == 392);
+static_assert(offsetof(GpuRtxdiConstants, giFinalShading) == 472);
 
 // RTXDI host side of ReSTIR DI (PBR plan F1) and ReSTIR GI (M4 G2, G5): the ReSTIRDIContext and ReSTIRGIContext at
 // render resolution, their reservoir buffers, the neighbor offsets and one constants block per frame slot. Lights come
@@ -60,6 +71,16 @@ static_assert(offsetof(GpuRtxdiConstants, giReservoirs) == 376);
 class RtxdiContext
 {
 public:
+    // GI reservoir arrays: RTXDI's two, then the indirect pass's initial samples, which the temporal pass would
+    // overwrite in place and the final MIS still reads (spec/m4/g5_restir_gi.md §1)
+    static constexpr uint32_t kGiReservoirArrays = 3;
+    static constexpr uint32_t kGiInitialReservoirArray = 2;
+    // the ground truth's bounce count after X2 (engine spec §14); 0.5^8 of the energy is left on Sponza's albedo
+    static constexpr uint32_t kGiGroundTruthBounces = 8;
+    // GiSettings::maxReservoirAge that never discards: the packed age saturates at 255 and the temporal pass scales
+    // the limit by [0.5, 1)
+    static constexpr uint32_t kGiUnlimitedSampleAge = 1024;
+
     // runtime ReSTIR DI parameters, applied by the next prepareFrame. The reference mode overrides the candidate
     // counts and turns reuse off
     struct Settings
@@ -100,8 +121,40 @@ public:
 
         bool operator==(const Settings&) const = default;
     };
+    // runtime ReSTIR GI parameters, applied by the next prepareFrame; isGiReference overrides the resampling mode
+    struct GiSettings
+    {
+        uint32_t maxHistoryLength = 0;
+        // samples older than this are not reused; the temporal pass scales it per pixel by [0.5, 1)
+        uint32_t maxReservoirAge = 0;
+        RTXDI_GIBiasCorrectionMode temporalBiasCorrection = RTXDI_GIBiasCorrectionMode::Basic;
+        bool isFallbackSamplingEnabled = false;
+        bool isPermutationSamplingEnabled = false;
+
+        uint32_t spatialSamples = 0;
+        float samplingRadius = 0.0f;
+        RTXDI_GIBiasCorrectionMode spatialBiasCorrection = RTXDI_GIBiasCorrectionMode::Basic;
+
+        // shared by the temporal and spatial surface tests
+        float depthThreshold = 0.0f;
+        float normalThreshold = 0.0f;
+        bool isBoilingFilterEnabled = false;
+        float boilingFilterStrength = 0.0f;
+        // a reconnection ray from the primary to the final sample
+        bool isFinalVisibilityEnabled = false;
+        // the final sample and the pixel's initial sample, weighted by how glossy their BRDF lobes are
+        bool isFinalMisEnabled = false;
+
+        bool operator==(const GiSettings&) const = default;
+    };
+
     // the RTXDI sample's default Medium preset (spec/features/rtxdi_3_2_update.md §3.3)
     [[nodiscard]] static Settings defaultSettings();
+    // the RTXDI sample's ReSTIR GI settings: the library defaults, temporal and spatial (spec/m4/g5_restir_gi.md §1)
+    [[nodiscard]] static GiSettings defaultGiSettings();
+    // the GI check's ReSTIR GI configuration (spec/m4/g5_restir_gi.md §3): bias correction with rays; no sample age
+    // limit, fallback, permutation or boiling filter
+    [[nodiscard]] static GiSettings convergedGiSettings();
     // the configuration the guide capture's convergence check holds to its bounds (§6.1): reuse that stays unbiased
     // on a static camera, no neighbors past the disocclusion boost
     [[nodiscard]] static Settings convergedSettings();
@@ -134,6 +187,11 @@ public:
     // reuse with the library's counts; read by the next prepareFrame
     bool isReference = false;
     Settings settings = defaultSettings();
+    // ReSTIR GI without reuse: the pixel's initial sample is shaded alone, the unbiased 1-sample estimate
+    bool isGiReference = false;
+    GiSettings giSettings = defaultGiSettings();
+    // > 0: the indirect pass traces this many bounces after X2 instead of querying NRC, which the renderer pauses
+    uint32_t giReferenceBounces = 0;
 
 private:
     static constexpr uint32_t kReferenceLocalLightSamples = 32;
@@ -141,6 +199,8 @@ private:
 
     // resampling mode of isReference and every parameter block of settings
     void configure();
+    // resampling mode of isGiReference and every parameter block of giSettings
+    void configureGi();
     void destroyReservoirs();
     void createGiReservoirs();
 
@@ -148,10 +208,11 @@ private:
     const VkAllocator& allocator;
     const WorldLights& worldLights;
     std::unique_ptr<rtxdi::ReSTIRDIContext> context;
-    // resampling mode None until G5: the indirect pass's initial reservoirs only
     std::unique_ptr<rtxdi::ReSTIRGIContext> giContext;
     bool isReferenceApplied = false;
     Settings appliedSettings;
+    bool isGiReferenceApplied = false;
+    GiSettings appliedGiSettings;
     vk::raii::Buffer reservoirs = nullptr;
     VmaAllocation reservoirMemory = nullptr;
     vk::DeviceAddress reservoirAddress = 0;

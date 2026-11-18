@@ -959,6 +959,9 @@ void EngineUi::drawRayTracingPanel()
         ptlas = {};
         rtxdi.isReference = false;
         di = RtxdiContext::defaultSettings();
+        rtxdi.isGiReference = false;
+        rtxdi.giSettings = RtxdiContext::defaultGiSettings();
+        rtxdi.giReferenceBounces = 0;
         dlss.settings = {};
         context.renderer.getNrc().settings = {};
     }
@@ -977,7 +980,64 @@ void EngineUi::drawRayTracingPanel()
     const vk::Extent2D training = nrcCache.getTrainingExtent();
     ImGui::TextDisabled("%s, training paths %ux%u", nrcCache.isActive() ? "active" : "no scene", training.width,
                         training.height);
-    ImGui::TextDisabled("one bounce + NRC; ReSTIR GI comes with G5");
+
+    // spec/m4/g5_restir_gi.md
+    ImGui::SeparatorText("ReSTIR GI");
+    RtxdiContext::GiSettings& gi = rtxdi.giSettings;
+    bool isGroundTruth = rtxdi.giReferenceBounces > 0;
+    if (ImGui::Checkbox("Ground-truth paths", &isGroundTruth)) {
+        rtxdi.giReferenceBounces = isGroundTruth ? RtxdiContext::kGiGroundTruthBounces : 0u;
+    }
+    ImGui::SetItemTooltip("trace the bounces after X2 instead of querying NRC, which pauses: with Reference, the "
+                          "ground truth of engine spec section 14 when accumulated");
+    ImGui::BeginDisabled(!isGroundTruth);
+    sliderU32("Bounces after X2", rtxdi.giReferenceBounces, 1, 16);
+    ImGui::EndDisabled();
+    ImGui::Checkbox("Reference (no reuse)##gi", &rtxdi.isGiReference);
+    ImGui::SetItemTooltip("shade each pixel's initial sample alone: the unbiased estimate the reuse converges to");
+    ImGui::BeginDisabled(rtxdi.isGiReference);
+    sliderU32("Max history length##gi", gi.maxHistoryLength, 1, 64);
+    sliderU32("Max sample age", gi.maxReservoirAge, 1, RtxdiContext::kGiUnlimitedSampleAge);
+    ImGui::SetItemTooltip("frames a sample is reused at most; each pixel draws its own limit in [0.5, 1) of this. "
+                          "Reacts to lighting changes, biases a static frame bright (considerations C-G5-1); %u "
+                          "never discards",
+                          RtxdiContext::kGiUnlimitedSampleAge);
+    constexpr std::array kGiBiasNames{"Off", "Basic", "Ray traced"};
+    constexpr std::array kGiBiasModes{RTXDI_GIBiasCorrectionMode::Off, RTXDI_GIBiasCorrectionMode::Basic,
+                                      RTXDI_GIBiasCorrectionMode::Raytraced};
+    comboEnum("Temporal bias correction##gi", gi.temporalBiasCorrection, kGiBiasNames, kGiBiasModes);
+    ImGui::SetItemTooltip("Ray traced adds a reconnection ray from last frame's surface");
+    ImGui::Checkbox("Fallback sampling##gi", &gi.isFallbackSamplingEnabled);
+    ImGui::SetItemTooltip("when no history pixel matches, reuse last frame's sample at the same pixel");
+    ImGui::SameLine();
+    ImGui::Checkbox("Permutation sampling##gi", &gi.isPermutationSamplingEnabled);
+    sliderU32("Spatial samples##gi", gi.spatialSamples, 0, 8);
+    ImGui::SliderFloat("Sampling radius##gi", &gi.samplingRadius, 1.0f, 64.0f, "%.0f px", ImGuiSliderFlags_AlwaysClamp);
+    comboEnum("Spatial bias correction##gi", gi.spatialBiasCorrection, kGiBiasNames, kGiBiasModes);
+    ImGui::SetItemTooltip("Ray traced adds a reconnection ray per merged neighbor");
+    ImGui::SliderFloat("Depth threshold##gi", &gi.depthThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderFloat("Normal threshold##gi", &gi.normalThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::Checkbox("Boiling filter##gi", &gi.isBoilingFilterEnabled);
+    ImGui::BeginDisabled(!gi.isBoilingFilterEnabled);
+    ImGui::SliderFloat("Boiling strength##gi", &gi.boilingFilterStrength, 0.0f, 1.0f, "%.2f",
+                       ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
+    ImGui::Checkbox("Final visibility", &gi.isFinalVisibilityEnabled);
+    ImGui::SetItemTooltip("a reconnection ray from the pixel to its final sample, which may be a neighbor's");
+    ImGui::SameLine();
+    ImGui::Checkbox("Final MIS", &gi.isFinalMisEnabled);
+    ImGui::SetItemTooltip("blend in the pixel's own initial sample where its BRDF lobe is glossy");
+    if (ImGui::Button("NVIDIA defaults##gi")) {
+        gi = RtxdiContext::defaultGiSettings();
+    }
+    ImGui::SetItemTooltip("the RTXDI sample's ReSTIR GI settings (the library defaults)");
+    ImGui::SameLine();
+    if (ImGui::Button("Converged##gi")) {
+        gi = RtxdiContext::convergedGiSettings();
+    }
+    ImGui::SetItemTooltip("the GI check's configuration: ray-traced bias correction, no fallback, permutation or "
+                          "boiling filter");
+    ImGui::EndDisabled();
 }
 
 // the engine's directional light after the asset lights (PBR plan E3)

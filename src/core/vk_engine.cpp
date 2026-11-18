@@ -62,6 +62,9 @@ void Engine::initialize()
     if (EngineCullCheck::isRequested()) {
         cullCheck.emplace();
     }
+    if (EngineGiCheck::isRequested()) {
+        giCheck.emplace();
+    }
     if (EngineRayCheck::isRequested()) {
         rayCheck.emplace();
     }
@@ -72,8 +75,8 @@ void Engine::initialize()
 
     camera = std::make_unique<Camera>(*swapChain);
     // the motion test and the guide normal checks compare frames pixel by pixel, which jitter changes by design
-    camera->isJitterEnabled = Camera::jitterRequest().value_or(!EngineMotionTest::isRequested() &&
-                                                               !EngineGuideCapture::isRequested());
+    camera->isJitterEnabled = Camera::jitterRequest().value_or(
+        !EngineMotionTest::isRequested() && !EngineGuideCapture::isRequested() && !EngineGiCheck::isRequested());
     camera->isJitterForced = Camera::jitterRequest().value_or(false);
     textureManager = std::make_unique<TextureManager>(*device, *allocator, *descriptorManager);
     textureManager->init();
@@ -171,9 +174,9 @@ void Engine::run()
     constexpr float kCameraSpeed = 5.0f;
     auto& deviceRef = device->vkdevice;
     // the bench, motion-test, guide-capture and cull-check views move only as they script it
-    const bool isCameraInputEnabled = !bench && !motionTest && !guideCapture && !cullCheck && !rayCheck;
+    const bool isCameraInputEnabled = !bench && !motionTest && !guideCapture && !cullCheck && !rayCheck && !giCheck;
     // no other runner drives the camera or the scene: the ray check holds the startup view and ends the run
-    const bool isRayCheckStandalone = !bench && !motionTest && !guideCapture && !cullCheck;
+    const bool isRayCheckStandalone = !bench && !motionTest && !guideCapture && !cullCheck && !giCheck;
 
     // game focus captures the mouse and hides the cursor; UI focus (I key) frees both
     const auto setGameFocus = [this](bool gameFocused)
@@ -308,6 +311,9 @@ void Engine::run()
                 cullCheck->beginFrame(*camera, renderer->getCulling().settings, renderer->debugView).shouldCapture) {
                 renderer->requestDisplayCapture();
             }
+            if (giCheck && giCheck->beginFrame(*camera, renderer->getRtxdi(), renderer->debugView).shouldCapture) {
+                renderer->requestDisplayCapture();
+            }
             {
                 ZoneScopedN("DrawFrame");
                 renderer->drawFrame();
@@ -325,6 +331,10 @@ void Engine::run()
             if (cullCheck) {
                 deviceRef.waitIdle();
                 quit = cullCheck->endFrame(renderer->getLastDisplayCapture()) || quit;
+            }
+            if (giCheck) {
+                deviceRef.waitIdle();
+                quit = giCheck->endFrame(renderer->getLastDisplayCapture()) || quit;
             }
             if (rayCheck) {
                 deviceRef.waitIdle();

@@ -33,6 +33,10 @@ enum class GpuTimerScope : uint32_t
     NrcTrain,
     // cache term into the GI reservoirs
     NrcResolve,
+    // ReSTIR GI temporal resampling + boiling filter (spec/m4/g5_restir_gi.md)
+    GiTemporal,
+    // ReSTIR GI spatial resampling and final shading into indirectRadiance
+    GiShade,
     Combine,
     // zero while a debug view is shown: the DLSS-RR evaluation is skipped
     Dlss,
@@ -85,6 +89,10 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "NRC train";
     case GpuTimerScope::NrcResolve:
         return "NRC resolve";
+    case GpuTimerScope::GiTemporal:
+        return "ReSTIR GI temporal";
+    case GpuTimerScope::GiShade:
+        return "ReSTIR GI shade";
     case GpuTimerScope::Combine:
         return "Combine";
     case GpuTimerScope::Dlss:

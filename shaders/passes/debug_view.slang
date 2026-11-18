@@ -200,32 +200,21 @@ float3 rtxdiReservoir(GpuFrameRoot root, uint2 pixel)
     return idColor(RTXDI_GetDIReservoirLightIndex(reservoir)) * (0.15 + 0.85 * saturate(reservoir.M / historyCap));
 }
 
-// the indirect pass's initial reservoir at this pixel, shaded without reuse: evalBrdf · NdotL · Lo(X2) / pdf, the
-// one-sample estimate of one-bounce indirect light (no radiance cache before G3)
+// the indirect pass's initial reservoir at this pixel, shaded without reuse: evalBrdf · Lo(X2) · NdotL / pdf, the
+// one-sample estimate ReSTIR GI's output converges to (cache term included after the NRC resolve)
 float3 indirectSample(GpuFrameRoot root, uint2 pixel)
 {
     rtxdiBridgeInit(root);
     const RAB_Surface surface = RAB_GetGBufferSurface(int2(pixel), false);
-    if (!RAB_IsSurfaceValid(surface) || !surface.isLit)
-    {
-        return float3(0.0, 0.0, 0.0);
-    }
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
     const RTXDI_GIReservoir reservoir = RTXDI_LoadGIReservoir(
         constants.giReservoirBuffer, RTXDI_PixelPosToReservoirPos(pixel, constants.runtime.activeCheckerboardField),
-        constants.giBufferIndices.secondarySurfaceReSTIRDIOutputBufferIndex);
+        kGiInitialReservoirArray);
     if (!RTXDI_IsValidGIReservoir(reservoir))
     {
         return float3(0.0, 0.0, 0.0);
     }
-    const float3 l = normalize(reservoir.position - surface.position);
-    const float nDotL = dot(surface.normal, l);
-    if (nDotL <= 0.0)
-    {
-        return float3(0.0, 0.0, 0.0);
-    }
-    return evalBrdf(surface.normal, surface.diffuseAlbedo, surface.specularF0, surface.roughness, surface.viewDir, l) *
-           reservoir.radiance * (nDotL * reservoir.weightSum);
+    return shadeGiSample(surface, reservoir.position, reservoir.radiance) * reservoir.weightSum;
 }
 
 float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCameraData camera, uint2 pixel, float depth)
@@ -260,6 +249,8 @@ float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCamer
         return rtxdiReservoir(root, pixel);
     case kDebugViewIndirectSamples:
         return indirectSample(root, pixel);
+    case kDebugViewIndirectRadiance:
+        return tex2D(targets.indirectRadianceSampled).Load(int3(pixel, 0)).rgb;
     case kDebugViewNrcCache:
         // the query pass queried at the primary this frame (kNrcFlagCacheView)
         return nrcQueryResult(loadNrcConstants(root), pixel);

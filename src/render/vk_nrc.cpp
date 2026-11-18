@@ -76,8 +76,9 @@ NrcCache::NrcCache(const Device& device, const VkAllocator& allocator, const Nrc
 {
     nrc::GlobalSettings globalSettings{};
     globalSettings.loggerFn = logNrc;
-    // the SDK owns its buffers; the engine reads their addresses after each configure
-    globalSettings.enableGPUMemoryAllocation = true;
+    // the engine allocates the SDK's buffers: SDK-allocated ones are unnamed dedicated blocks without a priority, and
+    // Configure / Destroy leak them (considerations C-G3-3)
+    globalSettings.enableGPUMemoryAllocation = false;
     globalSettings.enableDebugBuffers = false;
     globalSettings.maxNumFramesInFlight = MAX_FRAMES_IN_FLIGHT;
     checkNrc(api.initialize(globalSettings), "Initialize");
@@ -98,12 +99,15 @@ NrcCache::~NrcCache()
         api.destroyContext(*context);
     }
     api.shutdown();
+    destroySdkBuffers();
 }
 
 void NrcCache::recreate(vk::Extent2D extent)
 {
     renderExtent = extent;
-    if (isValid(configuredBounds)) {
+    const bool isFrameLargeEnough = extent.width <= contextSettings.frameDimensions.x &&
+                                    extent.height <= contextSettings.frameDimensions.y;
+    if (isValid(configuredBounds) && !(isConfigured && isFrameLargeEnough)) {
         configure();
     }
 }
@@ -138,16 +142,19 @@ void NrcCache::configure()
     contextSettings.sceneBoundsMin = {boundsMin.x, boundsMin.y, boundsMin.z};
     contextSettings.sceneBoundsMax = {boundsMax.x, boundsMax.y, boundsMax.z};
     contextSettings.smallestResolvableFeatureSize = kSmallestResolvableFeatureSize;
-    contextSettings.frameDimensions = {renderExtent.width, renderExtent.height};
+    // grow-only: a smaller render extent queries inside the configured frame, so shrinking never reconfigures
+    contextSettings.frameDimensions = {std::max(renderExtent.width, contextSettings.frameDimensions.x),
+                                       std::max(renderExtent.height, contextSettings.frameDimensions.y)};
     // sized for the SDK's default iteration count, so the UI can raise the per-frame budget without a reconfigure
     contextSettings.trainingDimensions = api.computeIdealTrainingDimensions(contextSettings.frameDimensions, 0, 0.0f);
     contextSettings.samplesPerPixel = 1;
     contextSettings.maxPathVertices = kMaxPathVertices;
-    checkNrc(api.configure(context, contextSettings, nullptr, nullptr), "Configure");
+    allocateSdkBuffers();
+    checkNrc(api.configure(context, contextSettings, &sdkBufferInfo, nullptr), "Configure");
 
     nrc::BuffersAllocationInfo allocation{};
     checkNrc(api.getBuffersAllocationInfo(contextSettings, allocation), "GetBuffersAllocationInfo");
-    const nrc::vulkan::Buffers& buffers = *api.getBuffers(context);
+    const nrc::vulkan::Buffers& buffers = sdkBufferInfo;
     const auto rows = [&](nrc::BufferIdx index, size_t elementSize)
     {
         const nrc::AllocationInfo& info = allocation[index];
@@ -182,12 +189,55 @@ void NrcCache::configure()
     for (const nrc::vulkan::BufferInfo& buffer : buffers.buffers) {
         bytes += buffer.allocatedSize;
     }
-    logInfo(std::format("configured {}x{}, training {}x{}, bounds ({:.1f}, {:.1f}, {:.1f})-({:.1f}, {:.1f}, {:.1f}), "
+    logInfo(std::format("configured frame {}x{}, training {}x{}, bounds ({:.1f}, {:.1f}, {:.1f})-({:.1f}, {:.1f}, {:.1f}), "
                         "{:.1f} MiB",
-                        renderExtent.width, renderExtent.height, contextSettings.trainingDimensions.x,
+                        contextSettings.frameDimensions.x, contextSettings.frameDimensions.y,
+                        contextSettings.trainingDimensions.x,
                         contextSettings.trainingDimensions.y, boundsMin.x, boundsMin.y, boundsMin.z, boundsMax.x,
                         boundsMax.y, boundsMax.z, static_cast<double>(bytes) / (1024.0 * 1024.0)),
             kSubsystem);
+}
+
+void NrcCache::allocateSdkBuffers()
+{
+    nrc::BuffersAllocationInfo allocation{};
+    checkNrc(api.getBuffersAllocationInfo(contextSettings, allocation), "GetBuffersAllocationInfo");
+    for (size_t index = 0; index < sdkBuffers.size(); ++index) {
+        const nrc::AllocationInfo& info = allocation.allocationInfo[index];
+        SdkBuffer& target = sdkBuffers[index];
+        const vk::DeviceSize size = static_cast<vk::DeviceSize>(info.elementCount) * info.elementSize;
+        if (size == target.size) {
+            continue;
+        }
+        destroyVmaBuffer(allocator.allocator, target.buffer, target.memory);
+        target.size = size;
+        sdkBufferInfo.buffers[index] = {};
+        // DebugTrainingPathInfo without enableDebugBuffers
+        if (size == 0) {
+            continue;
+        }
+        const auto usage = static_cast<vk::BufferUsageFlags2>(api.getBufferUsageFlags(context, info)) |
+                           vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress;
+        createBuffer(size, usage, vk::MemoryPropertyFlagBits::eDeviceLocal, target.buffer, target.memory,
+                     allocator.allocator, device.vkdevice, device.queueFamilyIndices,
+                     std::format("Nrc{}", info.debugName != nullptr ? std::string(info.debugName) : std::to_string(index)));
+        sdkBufferInfo.buffers[index] = nrc::vulkan::BufferInfo{
+            .resource = *target.buffer,
+            .allocatedSize = size,
+            .allocatedOffset = 0,
+            .memory = VK_NULL_HANDLE,
+            .deviceAddress = device.vkdevice.getBufferAddress({.buffer = *target.buffer}),
+        };
+    }
+}
+
+void NrcCache::destroySdkBuffers()
+{
+    for (SdkBuffer& target : sdkBuffers) {
+        destroyVmaBuffer(allocator.allocator, target.buffer, target.memory);
+        target.size = 0;
+    }
+    sdkBufferInfo = {};
 }
 
 nrc::FrameSettings NrcCache::frameSettings() const
@@ -200,8 +250,9 @@ nrc::FrameSettings NrcCache::frameSettings() const
     frame.proportionPrimarySegmentsToTrainOn = kPrimarySegmentsToTrainOn;
     frame.skipDeltaVertices = true;
     frame.numTrainingIterations = std::max(settings.trainingIterations, 1u);
-    const nrc_uint2 used =
-        api.computeIdealTrainingDimensions(contextSettings.frameDimensions, frame.numTrainingIterations, 0.0f);
+    // from the render extent: a grown-only frame must not train more paths than the image has
+    const nrc_uint2 used = api.computeIdealTrainingDimensions({renderExtent.width, renderExtent.height},
+                                                              frame.numTrainingIterations, 0.0f);
     frame.usedTrainingDimensions = {std::min(used.x, contextSettings.trainingDimensions.x),
                                     std::min(used.y, contextSettings.trainingDimensions.y)};
     return frame;
@@ -253,4 +304,9 @@ void NrcCache::recordTrain(const vk::raii::CommandBuffer& cmd)
 void NrcCache::endFrame(const vk::raii::Queue& queue)
 {
     checkNrc(api.endFrame(context, *queue), "EndFrame");
+}
+
+void NrcCache::pauseFrame(uint32_t frameSlot)
+{
+    std::memset(constants[frameSlot].mapped, 0, sizeof(GpuNrcConstants));
 }

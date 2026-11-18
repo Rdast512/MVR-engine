@@ -111,6 +111,7 @@ public static const uint kDebugViewDlssInput = 25u;
 public static const uint kDebugViewRtxdiReservoirs = 26u;
 public static const uint kDebugViewIndirectSamples = 27u;
 public static const uint kDebugViewNrcCache = 28u;
+public static const uint kDebugViewIndirectRadiance = 29u;
 public static const uint kDebugViewModeMask = 0xffu;
 public static const uint kDebugViewFlagEdges = 1u << 8;
 
@@ -665,6 +666,8 @@ public struct GpuTargets
     public GpuGuideSet previous;
     public uint directRadianceStorage; // RGBA16F, rtxdi_shade; no emissive
     public uint directRadianceSampled;
+    public uint indirectRadianceStorage; // RGBA16F, rtxdi_gi_shade: ReSTIR GI's indirect light
+    public uint indirectRadianceSampled;
     public uint noisyColorStorage; // RGBA16F, combine: direct + emissive, the DLSS-RR color input
     public uint noisyColorSampled;
     public uint presentSampled; // present's source: the post target for Lit, else the display image

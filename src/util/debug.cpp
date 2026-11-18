@@ -123,6 +123,10 @@ void setDebugName(const vk::raii::Device &device, const vk::raii::Semaphore &sem
 	setDebugNameImpl(device, semaphore, name, vk::ObjectType::eSemaphore);
 }
 
+void setDebugName(const vk::raii::Device &device, const vk::raii::Fence &fence, std::string_view name) {
+	setDebugNameImpl(device, fence, name, vk::ObjectType::eFence);
+}
+
 void setDebugName(const vk::raii::Device &device, const vk::raii::AccelerationStructureKHR &structure, std::string_view name) {
 	setDebugNameImpl(device, structure, name, vk::ObjectType::eAccelerationStructureKHR);
 }
