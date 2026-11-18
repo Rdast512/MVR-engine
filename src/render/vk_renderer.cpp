@@ -142,7 +142,6 @@ void Renderer::drawFrame()
     auto& fence = *frameSync.inFlightFences[currentFrame];
     auto& acquireSemaphore = *frameSync.presentCompleteSemaphore[currentFrame];
     auto& frameCmd = frameSync.commandBuffers[currentFrame];
-    auto& rayCmd = frameSync.rayCommandBuffers[currentFrame];
     auto& presentCmd = frameSync.presentCommandBuffers[currentFrame];
 
     if (dlss.isRecreateNeeded()) {
@@ -194,13 +193,12 @@ void Renderer::drawFrame()
     // the fence covers both submits of this slot; every path below ends in a submit that signals it
     deviceRef.resetFences(fence);
     frameCmd.reset();
-    rayCmd.reset();
     {
         ZoneScopedN("RecordFrameCommands");
         recordFrameCommands(frameCmd);
         // frame commands overlap the previous frame's NRC and DLSS-RR; the ray commands call both SDKs
         finishPreviousFrame();
-        recordRayCommands(rayCmd);
+        recordRayCommands();
     }
     {
         ZoneScopedN("UpdateUBO");
@@ -267,7 +265,10 @@ void Renderer::drawFrame()
         ZoneScopedN("QueueSubmitRayPresent");
         // the first stage that traces waits for this frame's TLAS (spec/features/ray_tracing_mega_geometry.md §3.5);
         // the compute submit is already queued, so the wait never precedes its signal
-        const vk::CommandBufferSubmitInfo rayCmdInfo{.commandBuffer = *rayCmd};
+        std::array<vk::CommandBufferSubmitInfo, FrameSync::kRaySegmentsPerFrame> rayCmdInfos{};
+        for (uint32_t i = 0; i < raySegmentCount; ++i) {
+            rayCmdInfos[i].commandBuffer = *raySegments[i];
+        }
         const vk::SemaphoreSubmitInfo tlasWait{.semaphore = *frameSync.computeTimeline,
                                                .value = computeTimelineValues[currentFrame],
                                                .stageMask = vk::PipelineStageFlagBits2::eComputeShader |
@@ -285,8 +286,8 @@ void Renderer::drawFrame()
         const std::array submits{
             vk::SubmitInfo2{.waitSemaphoreInfoCount = 1,
                             .pWaitSemaphoreInfos = &tlasWait,
-                            .commandBufferInfoCount = 1,
-                            .pCommandBufferInfos = &rayCmdInfo,
+                            .commandBufferInfoCount = raySegmentCount,
+                            .pCommandBufferInfos = rayCmdInfos.data(),
                             .signalSemaphoreInfoCount = 1,
                             .pSignalSemaphoreInfos = &raySignal},
             vk::SubmitInfo2{.waitSemaphoreInfoCount = 1,
@@ -408,7 +409,7 @@ void Renderer::recordFrameCommands(vk::raii::CommandBuffer& cmd)
     cmd.end();
 }
 
-void Renderer::recordRayCommands(vk::raii::CommandBuffer& cmd)
+void Renderer::recordRayCommands()
 {
     ZoneScoped;
 #ifdef TRACY_ENABLE
@@ -416,53 +417,74 @@ void Renderer::recordRayCommands(vk::raii::CommandBuffer& cmd)
     TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
 #endif
 
-    cmd.begin({});
-    // heap bindings do not carry over from the frame command buffer
-    cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
-    cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
+    raySegments = frameSync.raySegments(currentFrame);
+    raySegmentCount = 0;
+    // moves on when an SDK call opens a new segment
+    const vk::raii::CommandBuffer* cmd = &beginRaySegment();
     {
         ZoneScopedN("DirectLight");
 #ifdef TRACY_ENABLE
-        TracyVkNamedZone(gpuCtx, gpuZoneDirectLight, *cmd, "GPU_DirectLight", gpuTrace);
+        TracyVkNamedZone(gpuCtx, gpuZoneDirectLight, **cmd, "GPU_DirectLight", gpuTrace);
 #endif
-        recordDirectLight(cmd);
+        recordDirectLight(*cmd);
     }
     {
+        // no GPU zone: a Tracy zone cannot span segments
         ZoneScopedN("Indirect");
-#ifdef TRACY_ENABLE
-        TracyVkNamedZone(gpuCtx, gpuZoneIndirect, *cmd, "GPU_Indirect", gpuTrace);
-#endif
-        recordIndirect(cmd);
+        cmd = &recordIndirect(*cmd);
     }
     {
         ZoneScopedN("Reconstruction");
-#ifdef TRACY_ENABLE
-        TracyVkNamedZone(gpuCtx, gpuZoneReconstruction, *cmd, "GPU_Reconstruction", gpuTrace);
-#endif
-        recordReconstruction(cmd);
+        cmd = &recordReconstruction(*cmd);
     }
     {
         ZoneScopedN("DebugView");
 #ifdef TRACY_ENABLE
-        TracyVkNamedZone(gpuCtx, gpuZoneDebugView, *cmd, "GPU_DebugView", gpuTrace);
+        TracyVkNamedZone(gpuCtx, gpuZoneDebugView, **cmd, "GPU_DebugView", gpuTrace);
 #endif
-        recordDebugView(cmd);
+        recordDebugView(*cmd);
     }
     if (motionCheckStats[currentFrame].mapped != nullptr) {
-        recordMotionCheck(cmd);
+        recordMotionCheck(*cmd);
     }
     if (rayCheckStats[currentFrame].mapped != nullptr) {
-        recordRayCheck(cmd);
+        recordRayCheck(*cmd);
     }
-    gpuTimer.end(cmd, GpuTimerScope::SelfTests);
+    gpuTimer.end(*cmd, GpuTimerScope::SelfTests);
     displayCaptureExtents[currentFrame].reset();
     if (isDisplayCapturePending) {
-        recordDisplayCapture(cmd);
+        recordDisplayCapture(*cmd);
         isDisplayCapturePending = false;
     }
     lastRecordedFrame = currentFrame;
 
+    cmd->end();
+}
+
+const vk::raii::CommandBuffer& Renderer::beginRaySegment()
+{
+    if (raySegmentCount == raySegments.size()) {
+        throw std::logic_error("ray segments exhausted");
+    }
+    vk::raii::CommandBuffer& cmd = raySegments[raySegmentCount++];
+    cmd.reset();
+    cmd.begin({});
+    // heap bindings do not carry over between command buffers
+    bindHeaps(cmd);
+    return cmd;
+}
+
+// NRC's and NGX's CUDA launches get a command buffer of their own: no engine state recorded before them reaches them,
+// and none they leave reaches the engine passes after them
+template <typename RecordSdk>
+const vk::raii::CommandBuffer& Renderer::recordIsolated(const vk::raii::CommandBuffer& cmd, RecordSdk&& recordSdk)
+{
     cmd.end();
+    const vk::raii::CommandBuffer& sdkCmd = beginRaySegment();
+    std::forward<RecordSdk>(recordSdk)(sdkCmd);
+    bindHeaps(sdkCmd);
+    sdkCmd.end();
+    return beginRaySegment();
 }
 
 // present pass + UI into the acquired image; earlier submits on this queue are ordered by the barriers inside
@@ -709,8 +731,9 @@ void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
     gpuTimer.end(cmd, GpuTimerScope::RtxdiShade);
 }
 
-void Renderer::recordIndirect(const vk::raii::CommandBuffer& cmd)
+const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandBuffer& firstCmd)
 {
+    const vk::raii::CommandBuffer* cmd = &firstCmd;
 #ifdef TRACY_ENABLE
     const bool gpuTrace = tracyContext != nullptr && tracyContext->isActive();
     TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
@@ -724,41 +747,47 @@ void Renderer::recordIndirect(const vk::raii::CommandBuffer& cmd)
     const bool isCacheView = debugView.view == DebugView::NrcCache;
     if (isNrcRecorded) {
         ZoneScopedN("NrcUpdate");
+        cmd = &recordIsolated(*cmd, [&](const vk::raii::CommandBuffer& sdkCmd) {
 #ifdef TRACY_ENABLE
-        TracyVkNamedZone(gpuCtx, gpuZoneNrcUpdate, *cmd, "GPU_NrcUpdate", gpuTrace);
+            TracyVkNamedZone(gpuCtx, gpuZoneNrcBeginFrame, *sdkCmd, "GPU_NrcBeginFrame", gpuTrace);
 #endif
-        nrc.recordBeginFrame(cmd, currentFrame, isCacheView);
-        bindHeaps(cmd);
-        nrc.recordUpdate(cmd, frameRoot, shaderObjects.frameShaders.nrcUpdate);
+            nrc.recordBeginFrame(sdkCmd, currentFrame, isCacheView);
+        });
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneNrcUpdate, **cmd, "GPU_NrcUpdate", gpuTrace);
+#endif
+        nrc.recordUpdate(*cmd, frameRoot, shaderObjects.frameShaders.nrcUpdate);
     }
-    gpuTimer.end(cmd, GpuTimerScope::NrcUpdate);
+    gpuTimer.end(*cmd, GpuTimerScope::NrcUpdate);
     {
         ZoneScopedN("IndirectQuery");
 #ifdef TRACY_ENABLE
-        TracyVkNamedZone(gpuCtx, gpuZoneIndirectQuery, *cmd, "GPU_IndirectQuery", gpuTrace);
+        TracyVkNamedZone(gpuCtx, gpuZoneIndirectQuery, **cmd, "GPU_IndirectQuery", gpuTrace);
 #endif
-        recordIndirectPass(cmd, shaderObjects.frameShaders.indirect, frameRoot, targets.getExtent());
+        recordIndirectPass(*cmd, shaderObjects.frameShaders.indirect, frameRoot, targets.getExtent());
     }
-    gpuTimer.end(cmd, GpuTimerScope::Indirect);
+    gpuTimer.end(*cmd, GpuTimerScope::Indirect);
     if (isNrcRecorded) {
         ZoneScopedN("NrcTrain");
+        cmd = &recordIsolated(*cmd, [&](const vk::raii::CommandBuffer& sdkCmd) {
 #ifdef TRACY_ENABLE
-        TracyVkNamedZone(gpuCtx, gpuZoneNrcTrain, *cmd, "GPU_NrcTrain", gpuTrace);
+            TracyVkNamedZone(gpuCtx, gpuZoneNrcTrain, *sdkCmd, "GPU_NrcTrain", gpuTrace);
 #endif
-        nrc.recordTrain(cmd);
-        bindHeaps(cmd);
+            nrc.recordTrain(sdkCmd);
+        });
     }
-    gpuTimer.end(cmd, GpuTimerScope::NrcTrain);
+    gpuTimer.end(*cmd, GpuTimerScope::NrcTrain);
     // the cache view shows the query at the primary instead; the reservoirs keep G2's radiance
     if (isNrcRecorded && !isCacheView) {
         ZoneScopedN("NrcResolve");
 #ifdef TRACY_ENABLE
-        TracyVkNamedZone(gpuCtx, gpuZoneNrcResolve, *cmd, "GPU_NrcResolve", gpuTrace);
+        TracyVkNamedZone(gpuCtx, gpuZoneNrcResolve, **cmd, "GPU_NrcResolve", gpuTrace);
 #endif
-        dispatchFullscreen(cmd, shaderObjects.frameShaders.nrcResolve);
+        dispatchFullscreen(*cmd, shaderObjects.frameShaders.nrcResolve);
     }
-    gpuTimer.end(cmd, GpuTimerScope::NrcResolve);
-    recordIndirectResampling(cmd);
+    gpuTimer.end(*cmd, GpuTimerScope::NrcResolve);
+    recordIndirectResampling(*cmd);
+    return *cmd;
 }
 
 void Renderer::recordIndirectResampling(const vk::raii::CommandBuffer& cmd)
@@ -795,7 +824,7 @@ void Renderer::bindHeaps(const vk::raii::CommandBuffer& cmd) const
     cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
 }
 
-void Renderer::recordReconstruction(const vk::raii::CommandBuffer& cmd)
+const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::CommandBuffer& cmd)
 {
     // directRadiance and guide writes -> the combine's reads
     const vk::MemoryBarrier2 combineBarrier{
@@ -818,7 +847,7 @@ void Renderer::recordReconstruction(const vk::raii::CommandBuffer& cmd)
         isDlssHistoryValid = false;
         gpuTimer.end(cmd, GpuTimerScope::Dlss);
         gpuTimer.end(cmd, GpuTimerScope::Post);
-        return;
+        return cmd;
     }
     // noisyColor and guide writes -> NGX's reads. NGX opens each evaluation with clears and fills of its own resources
     // without a barrier against the previous evaluation's writes (SYNC-HAZARD-WRITE-AFTER-WRITE), so this orders those too
@@ -840,30 +869,39 @@ void Renderer::recordReconstruction(const vk::raii::CommandBuffer& cmd)
     // history resets with the frame's (camera cut, resize, layout change) and after frames without the Lit view
     const bool isHistoryReset =
         !isDlssHistoryValid || camera.isCut() || culling.isSceneLayoutChanged() || isLightSetChanged;
-    dlss.evaluate(cmd, Dlss::Frame{
-                           .color = toDlss(targets.noisyColor()),
-                           .depth = toDlss(targets.depth(), vk::ImageAspectFlagBits::eDepth),
-                           .motion = toDlss(targets.guide(frameNumber, GuideImage::Motion)),
-                           .diffuseAlbedo = toDlss(targets.guide(frameNumber, GuideImage::DiffuseAlbedo)),
-                           .specularAlbedo = toDlss(targets.guide(frameNumber, GuideImage::SpecAlbedo)),
-                           .normalRoughness = toDlss(targets.guide(frameNumber, GuideImage::NormalRoughness)),
-                           .output = toDlss(targets.upscaled()),
-                           .exposure = toDlss(targets.exposure()),
-                           // NDC units, y down like pixels
-                           .jitterPixels = cameraData.jitterOffset * 0.5f *
-                               glm::vec2(renderExtent.width, renderExtent.height),
-                           .view = cameraData.view,
-                           .proj = cameraData.proj,
-                           .frameDeltaMs = frameDeltaMs,
-                           .isReset = isHistoryReset,
-                       });
-    isDlssHistoryValid = true;
+    const Dlss::Frame frame{
+        .color = toDlss(targets.noisyColor()),
+        .depth = toDlss(targets.depth(), vk::ImageAspectFlagBits::eDepth),
+        .motion = toDlss(targets.guide(frameNumber, GuideImage::Motion)),
+        .diffuseAlbedo = toDlss(targets.guide(frameNumber, GuideImage::DiffuseAlbedo)),
+        .specularAlbedo = toDlss(targets.guide(frameNumber, GuideImage::SpecAlbedo)),
+        .normalRoughness = toDlss(targets.guide(frameNumber, GuideImage::NormalRoughness)),
+        .output = toDlss(targets.upscaled()),
+        .exposure = toDlss(targets.exposure()),
+        // NDC units, y down like pixels
+        .jitterPixels = cameraData.jitterOffset * 0.5f * glm::vec2(renderExtent.width, renderExtent.height),
+        .view = cameraData.view,
+        .proj = cameraData.proj,
+        .frameDeltaMs = frameDeltaMs,
+        .isReset = isHistoryReset,
+    };
+#ifdef TRACY_ENABLE
+    const bool gpuTrace = tracyContext != nullptr && tracyContext->isActive();
+    TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
+#endif
     // NGX binds its own pipelines and descriptor sets, which invalidate the heap bindings
-    bindHeaps(cmd);
-    gpuTimer.end(cmd, GpuTimerScope::Dlss);
-    post.record(cmd, currentFrame, frameData.frameRootAddress(currentFrame), targets.getDisplayExtent(),
+    const vk::raii::CommandBuffer& postCmd = recordIsolated(cmd, [&](const vk::raii::CommandBuffer& sdkCmd) {
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneDlss, *sdkCmd, "GPU_Dlss", gpuTrace);
+#endif
+        dlss.evaluate(sdkCmd, frame);
+    });
+    isDlssHistoryValid = true;
+    gpuTimer.end(postCmd, GpuTimerScope::Dlss);
+    post.record(postCmd, currentFrame, frameData.frameRootAddress(currentFrame), targets.getDisplayExtent(),
                 frameDeltaMs * 1e-3f);
-    gpuTimer.end(cmd, GpuTimerScope::Post);
+    gpuTimer.end(postCmd, GpuTimerScope::Post);
+    return postCmd;
 }
 
 void Renderer::recordDebugView(const vk::raii::CommandBuffer& cmd)

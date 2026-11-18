@@ -106,8 +106,16 @@ private:
     // submitted before the image is acquired: cull, raster, Hi-Z, resolve
     void recordFrameCommands(vk::raii::CommandBuffer& cmd);
     // submitted after the acquire with the present commands, waiting for this frame's TLAS build: the passes that may
-    // trace rays (ReSTIR DI, indirect + NRC), reconstruction, debug view, self-tests, display capture
-    void recordRayCommands(vk::raii::CommandBuffer& cmd);
+    // trace rays (ReSTIR DI, indirect + NRC), reconstruction, debug view, self-tests, display capture. Records into
+    // raySegments
+    void recordRayCommands();
+    // resets, begins and binds the heaps of the next ray segment
+    [[nodiscard]] const vk::raii::CommandBuffer& beginRaySegment();
+    // ends cmd and records one NRC / NGX call alone in the next segment, between heap binds; returns the segment opened
+    // after it
+    template <typename RecordSdk>
+    [[nodiscard]] const vk::raii::CommandBuffer& recordIsolated(const vk::raii::CommandBuffer& cmd,
+                                                                RecordSdk&& recordSdk);
     // submitted after the acquire, waiting on its semaphore: present pass and UI
     void recordPresentCommands(vk::raii::CommandBuffer& cmd, uint32_t imageIndex);
     // before the next queue operation or NRC / NGX call: one issued while NRC's kernels or the DLSS-RR after them run
@@ -121,14 +129,15 @@ private:
     void recordResolve(const vk::raii::CommandBuffer& cmd);
     void recordDirectLight(const vk::raii::CommandBuffer& cmd);
     // NRC begin frame -> update paths -> indirect (query) pass -> QueryAndTrain -> NRC resolve into the GI reservoirs
-    // -> ReSTIR GI
-    void recordIndirect(const vk::raii::CommandBuffer& cmd);
+    // -> ReSTIR GI; returns the ray segment open after it
+    [[nodiscard]] const vk::raii::CommandBuffer& recordIndirect(const vk::raii::CommandBuffer& cmd);
     // ReSTIR GI temporal (skipped by the reference) -> spatial + final shading into indirectRadiance
     void recordIndirectResampling(const vk::raii::CommandBuffer& cmd);
     // after a vendor SDK call (NGX, NRC) that bound its own descriptor state
     void bindHeaps(const vk::raii::CommandBuffer& cmd) const;
-    // combine -> noisyColor; DLSS-RR -> exposure -> tonemap into the post target when the Lit view is shown
-    void recordReconstruction(const vk::raii::CommandBuffer& cmd);
+    // combine -> noisyColor; DLSS-RR -> exposure -> tonemap into the post target when the Lit view is shown; returns
+    // the ray segment open after it
+    [[nodiscard]] const vk::raii::CommandBuffer& recordReconstruction(const vk::raii::CommandBuffer& cmd);
     void recordDebugView(const vk::raii::CommandBuffer& cmd);
     void recordMotionCheck(const vk::raii::CommandBuffer& cmd);
     void recordRayCheck(const vk::raii::CommandBuffer& cmd);
@@ -165,8 +174,11 @@ private:
     RtxdiContext rtxdi;
     // the radiance cache behind the indirect pass's samples
     NrcCache nrc;
-    // NRC commands went into this frame's ray command buffer: EndFrame follows its submit
+    // NRC commands went into this frame's ray segments: EndFrame follows their submit
     bool isNrcRecorded = false;
+    // this frame's ray command buffers; the first raySegmentCount are recorded, in submission order
+    std::span<vk::raii::CommandBuffer> raySegments;
+    uint32_t raySegmentCount = 0;
     // FrameSync::rayTimeline value of the last ray submit with NRC commands; 0 before the first
     uint64_t lastNrcRaySubmit = 0;
     // a frame's present, issued once the next frame's frame commands are recorded (finishPreviousFrame)

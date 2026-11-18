@@ -51,6 +51,11 @@ FrameSync::OneTimeCommands FrameSync::computeCommands()
     return {.cmd = commandBuffers[0], .queue = device.graphicsQueue};
 }
 
+std::span<vk::raii::CommandBuffer> FrameSync::raySegments(uint32_t frameSlot)
+{
+    return std::span(rayCommandBuffers).subspan(size_t{frameSlot} * kRaySegmentsPerFrame, kRaySegmentsPerFrame);
+}
+
 void FrameSync::createCommandPool()
 {
     logInfo("createCommandPool() started", "FrameSync");
@@ -85,9 +90,13 @@ void FrameSync::createCommandBuffers()
         setDebugName(vkDevice, commandBuffers[i], std::format("GraphicsCommandBuffer_{}", i));
     }
     rayCommandBuffers.clear();
-    rayCommandBuffers = vk::raii::CommandBuffers(vkDevice, allocInfo);
+    rayCommandBuffers = vk::raii::CommandBuffers(
+        vkDevice, vk::CommandBufferAllocateInfo{.commandPool = commandPool,
+                                                .level = vk::CommandBufferLevel::ePrimary,
+                                                .commandBufferCount = MAX_FRAMES_IN_FLIGHT * kRaySegmentsPerFrame});
     for (size_t i = 0; i < rayCommandBuffers.size(); ++i) {
-        setDebugName(vkDevice, rayCommandBuffers[i], std::format("RayCommandBuffer_{}", i));
+        setDebugName(vkDevice, rayCommandBuffers[i],
+                     std::format("RayCommandBuffer_{}_{}", i / kRaySegmentsPerFrame, i % kRaySegmentsPerFrame));
     }
     presentCommandBuffers.clear();
     presentCommandBuffers = vk::raii::CommandBuffers(vkDevice, allocInfo);

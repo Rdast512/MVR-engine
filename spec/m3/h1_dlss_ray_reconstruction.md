@@ -28,7 +28,9 @@ albedo path use the render-resolution display image. Returning to Lit
 resets RR history. Cuts, layout or light-set changes and resource
 recreation also reset it. Before evaluate, an empty legacy set selects
 the driver heap for NGX's image view handles (C-H1-1). The renderer
-rebinds its heaps after evaluate. C-H1-2 tracks validation messages inside
+rebinds its heaps after evaluate. Since 2026-11-18 the evaluation
+records into a command buffer of its own within the ray submit, with the
+heaps bound before and after it (C-G3-6). C-H1-2 tracks validation messages inside
 NGX, and C-H1-3 tracks the allocator link workaround.
 [Combine](../../shaders/passes/combine.slang) · [Render targets](../../src/render/vk_render_targets.cpp) · [M4 G6](../m4/g6_combine.md)
 

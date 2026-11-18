@@ -2,12 +2,16 @@
 #include "vk_device.hpp"
 
 #include <cstdint>
+#include <span>
 #include <vector>
 #include <vulkan/vulkan_raii.hpp>
 
 // fences, semaphores and command buffers of the frame slots, plus the command buffer for load-time work
 class FrameSync {
 public:
+    // ray segments per frame slot: four engine segments around NRC BeginFrame, NRC QueryAndTrain and DLSS-RR
+    static constexpr uint32_t kRaySegmentsPerFrame = 7;
+
     // command buffer and the queue it is submitted to
     struct OneTimeCommands {
         vk::raii::CommandBuffer& cmd;
@@ -28,6 +32,7 @@ public:
     [[nodiscard]] OneTimeCommands oneTimeCommands();
     // load-time acceleration-structure builds: frame slot 0's buffer on the graphics queue (transfer cannot build)
     [[nodiscard]] OneTimeCommands computeCommands();
+    [[nodiscard]] std::span<vk::raii::CommandBuffer> raySegments(uint32_t frameSlot);
 
     // Acquire: one per frame-in-flight. Present signal: one per swapchain image.
     std::vector<vk::raii::Semaphore> presentCompleteSemaphore;
@@ -43,8 +48,8 @@ public:
     vk::raii::CommandPool computeCommandPool = nullptr;
     // per frame slot: the frame's work, submitted before the swapchain image is acquired
     std::vector<vk::raii::CommandBuffer> commandBuffers;
-    // per frame slot: the passes that trace rays, submitted after commandBuffers with a wait on this frame's
-    // computeTimeline value (the TLAS build)
+    // kRaySegmentsPerFrame per frame slot, slot-major: the passes that trace rays, submitted in order after
+    // commandBuffers with a wait on this frame's computeTimeline value (the TLAS build)
     std::vector<vk::raii::CommandBuffer> rayCommandBuffers;
     // per frame slot: present pass + UI, the only work that waits for the acquired image
     std::vector<vk::raii::CommandBuffer> presentCommandBuffers;

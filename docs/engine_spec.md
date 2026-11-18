@@ -518,7 +518,7 @@ Rules: a switch happens at a frame boundary without a reload or a reconfigure, a
 
 NGX directly (not Streamline), `DLSSD` feature, HW depth, packed roughness, HDR input, pre-exposure. Inputs: `noisyColor`, depth, motion, diffuse/specular albedo, normal+roughness, jitter (PBR plan H1); `specHitDistance` only as the optional input of §9.3. Output: display-resolution RGBA16F. Required: missing RR throws at init.
 
-**As built (PBR H1, 2026-11-14):** `Dlss` creates the feature at the Quality render resolution (853×480 for a 1280×720 window) and evaluates it in the ray command buffer for the Lit view. The exposure comes from post (§12.3) as a 1×1 exposure texture; the color is not pre-exposed (considerations C-H2-1). NGX's kernels need the driver-managed descriptor heap, so an empty legacy descriptor set is bound before each evaluation (considerations C-H1-1). 1.14 ms on the RTX 5070 at that size.
+**As built (PBR H1, 2026-11-14):** `Dlss` creates the feature at the Quality render resolution (853×480 for a 1280×720 window) and evaluates it in the ray submit for the Lit view, in a command buffer of its own since 2026-11-18 (considerations C-G3-6). The exposure comes from post (§12.3) as a 1×1 exposure texture; the color is not pre-exposed (considerations C-H2-1). NGX's kernels need the driver-managed descriptor heap, so an empty legacy descriptor set is bound before each evaluation (considerations C-H1-1). 1.14 ms on the RTX 5070 at that size.
 
 ### 12.2 Jitter and resolution
 
@@ -871,6 +871,7 @@ Root cause of the drift: the same facts (vis-buffer format, the §9.3 guide tabl
 
 | Date | Change |
 |---|---|
+| 2026-11-18 | The NRC calls and the DLSS-RR evaluation record into command buffers of their own within the ray submit, with the engine heaps bound before and after each; it fixed the device loss the user still hit (considerations C-G3-6). Costs +0.5% GPU time at a 2560×1369 window, nothing measurable at 1280×720 |
 | 2026-11-18 | ReSTIR GI built (§11.5, PBR G5) with the §14 ground truth and its check; a failed BRDF sample counts as a zero sample. RTXDI's GI defaults are biased on static frames (considerations C-G5-1, C-G5-2), NRC reads ~10% bright (C-G5-3) |
 | 2026-11-18 | Indirect mode toggle before 1.0 (§11.7, M4, plan G7): NRC → ReSTIR GI (default), NRC alone, ReSTIR GI alone; NRC stays initialized and is paused, never destroyed. P1 notes that runtime toggles keeping every path built are for A/B measurement, while each tier ships one default |
 | 2026-11-17 | SER shelved for 1.0 (Slang's EXT `HitObject` support, considerations C-G1-3): every shaded-ray pass is compute with ray queries. Post-1.0 V1 (§16.5) inverted: the SER RT pipeline returns as a toggle beside the ray-query passes, gated on the Slang fixes, and is expected to become the default; §1.1, §2.2, §2.3, §3, S8, §11.1, §16.1, §16.2 M4 follow |
