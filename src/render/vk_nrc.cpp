@@ -112,8 +112,12 @@ void NrcCache::recreate(vk::Extent2D extent)
     }
 }
 
-void NrcCache::prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds)
+void NrcCache::prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, bool isPaused)
 {
+    if (isPaused) {
+        std::memset(constants[frameSlot].mapped, 0, sizeof(GpuNrcConstants));
+        return;
+    }
     const bool isNewScene = isValid(sceneBounds) &&
                             (sceneBounds.bboxMin != configuredBounds.bboxMin ||
                              sceneBounds.bboxMax != configuredBounds.bboxMax);
@@ -304,9 +308,4 @@ void NrcCache::recordTrain(const vk::raii::CommandBuffer& cmd)
 void NrcCache::endFrame(const vk::raii::Queue& queue)
 {
     checkNrc(api.endFrame(context, *queue), "EndFrame");
-}
-
-void NrcCache::pauseFrame(uint32_t frameSlot)
-{
-    std::memset(constants[frameSlot].mapped, 0, sizeof(GpuNrcConstants));
 }

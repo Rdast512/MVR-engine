@@ -106,7 +106,7 @@ public static const uint kDebugViewRayShadingNormal = 20u;
 public static const uint kDebugViewAmbientOcclusion = 21u;
 public static const uint kDebugViewUnshadowedLights = 22u;
 public static const uint kDebugViewShadowedLights = 23u;
-public static const uint kDebugViewLightingOnly = 24u;
+public static const uint kDebugViewDirectLighting = 24u;
 public static const uint kDebugViewDlssInput = 25u;
 public static const uint kDebugViewRtxdiReservoirs = 26u;
 public static const uint kDebugViewIndirectSamples = 27u;
@@ -708,6 +708,7 @@ public struct GpuRayInstanceBuild
 
 // GpuFrameRoot.frameFlags, matches FrameFlag in src/core/types.hpp
 public static const uint kFrameFlagHistoryReset = 1u << 0;
+public static const uint kFrameFlagIndirectHistoryReset = 1u << 1;
 
 // per-frame root, matches GpuFrameRoot in src/core/types.hpp
 public struct GpuFrameRoot

@@ -121,7 +121,8 @@ public:
 
         bool operator==(const Settings&) const = default;
     };
-    // runtime ReSTIR GI parameters, applied by the next prepareFrame; isGiReference overrides the resampling mode
+    // runtime ReSTIR GI parameters, applied by the next prepareFrame; no reuse (isGiReference, NRC mode) overrides the
+    // resampling mode
     struct GiSettings
     {
         uint32_t maxHistoryLength = 0;
@@ -174,8 +175,10 @@ public:
     // first frame after it must reset history (resize arrives as a camera cut)
     void recreate(vk::Extent2D renderExtent);
     // the slot is not in flight: applies isReference, advances the context to frameIndex and writes the slot's
-    // constants
-    void prepareFrame(uint32_t frameSlot, uint32_t frameIndex);
+    // constants. isGiReuseAllowed: false in the NRC indirect mode, which shades the initial samples as isGiReference
+    void prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool isGiReuseAllowed);
+    // ReSTIR GI temporal and spatial reuse as applied by the last prepareFrame
+    [[nodiscard]] bool isGiReuseEnabled() const noexcept { return isGiReuseApplied; }
 
     // GpuRtxdiConstants of the slot
     [[nodiscard]] vk::DeviceAddress constantsAddress(uint32_t frameSlot) const noexcept
@@ -199,8 +202,8 @@ private:
 
     // resampling mode of isReference and every parameter block of settings
     void configure();
-    // resampling mode of isGiReference and every parameter block of giSettings
-    void configureGi();
+    // resampling mode and every parameter block of giSettings
+    void configureGi(bool isGiReuse);
     void destroyReservoirs();
     void createGiReservoirs();
 
@@ -211,7 +214,7 @@ private:
     std::unique_ptr<rtxdi::ReSTIRGIContext> giContext;
     bool isReferenceApplied = false;
     Settings appliedSettings;
-    bool isGiReferenceApplied = false;
+    bool isGiReuseApplied = true;
     GiSettings appliedGiSettings;
     vk::raii::Buffer reservoirs = nullptr;
     VmaAllocation reservoirMemory = nullptr;

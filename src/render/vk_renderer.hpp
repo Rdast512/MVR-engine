@@ -16,6 +16,7 @@
 #include "vk_indirect.hpp"
 #include "vk_nrc.hpp"
 #include "debug_view.hpp"
+#include "indirect_mode.hpp"
 #include "vk_meshlet_culling.hpp"
 #include "vk_render_targets.hpp"
 #include "vk_rt_scene.hpp"
@@ -60,6 +61,13 @@ public:
     uint32_t frameNumber = 0;
     // read once per recorded frame; the UI changes it between frames
     DebugViewSettings debugView;
+    // read once per recorded frame; a change resets ReSTIR GI and DLSS-RR history for one frame
+    IndirectMode indirectMode = IndirectMode::NrcRestirGi;
+    // no NRC work this frame: ReSTIR GI mode, or ground-truth paths tracing the bounces the cache would answer
+    [[nodiscard]] bool isNrcPaused() const noexcept
+    {
+        return indirectMode == IndirectMode::RestirGi || rtxdi.giReferenceBounces != 0;
+    }
 
     [[nodiscard]] MeshletCulling& getCulling() noexcept { return culling; }
     [[nodiscard]] RtxdiContext& getRtxdi() noexcept { return rtxdi; }
@@ -176,6 +184,17 @@ private:
     NrcCache nrc;
     // NRC commands went into this frame's ray segments: EndFrame follows their submit
     bool isNrcRecorded = false;
+    // what decides the meaning of the indirect samples; a change between frames resets their history
+    struct IndirectState
+    {
+        IndirectMode mode = IndirectMode::NrcRestirGi;
+        bool isGiReference = false;
+        bool isGroundTruthPaths = false;
+
+        bool operator==(const IndirectState&) const = default;
+    };
+    IndirectState appliedIndirect;
+    bool isIndirectHistoryReset = false;
     // this frame's ray command buffers; the first raySegmentCount are recorded, in submission order
     std::span<vk::raii::CommandBuffer> raySegments;
     uint32_t raySegmentCount = 0;

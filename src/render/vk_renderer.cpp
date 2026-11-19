@@ -3,6 +3,7 @@
 #include "../util/vk_tracy.hpp"
 #include "../util/vk_utils.hpp"
 #include "push_data.hpp"
+#include "static_headers/logger.hpp"
 #if ENGINE_ENABLE_IMGUI
     #include "imgui.h"
     #include "imgui_impl_vulkan.h"
@@ -174,12 +175,28 @@ void Renderer::drawFrame()
     camera.updateCameraData(currentFrame, frameNumber, isDlssPresented());
     targets.prepareFrame(currentFrame, frameNumber, isDlssPresented());
     rtScene.prepareFrame(currentFrame, frameNumber - 1);
+    {
+        const IndirectState indirect{.mode = indirectMode,
+                                     .isGiReference = rtxdi.isGiReference,
+                                     .isGroundTruthPaths = rtxdi.giReferenceBounces != 0};
+        // the samples change meaning (spec/m4/g7_indirect_modes.md): ReSTIR GI and DLSS-RR start over, ReSTIR DI keeps
+        isIndirectHistoryReset = indirect != appliedIndirect;
+        if (isIndirectHistoryReset) {
+            TracyMessageL("Indirect history reset");
+            logInfo(std::format("indirect: {}{}{}", indirectModeInfo(indirect.mode).label,
+                                indirect.isGiReference ? ", no reuse" : "",
+                                indirect.isGroundTruthPaths ? ", ground-truth paths" : ""),
+                    "Renderer");
+            isDlssHistoryValid = false;
+        }
+        appliedIndirect = indirect;
+    }
     // after the RT scene followed a new layout: its bounds are NRC's
-    nrc.prepareFrame(currentFrame, rtScene.getSceneBounds());
+    nrc.prepareFrame(currentFrame, rtScene.getSceneBounds(), isNrcPaused());
     worldLights.prepareFrame(currentFrame, frameNumber - 1);
     isLightSetChanged = worldLights.lightCount() != lastLightCount;
     lastLightCount = worldLights.lightCount();
-    rtxdi.prepareFrame(currentFrame, frameNumber);
+    rtxdi.prepareFrame(currentFrame, frameNumber, indirectMode != IndirectMode::Nrc);
     gpuTimer.collect(currentFrame);
     post.readBack(currentFrame);
     if (void* stats = motionCheckStats[currentFrame].mapped) {
@@ -225,7 +242,8 @@ void Renderer::drawFrame()
                             .triangleCullFlags = culling.triangleCullFlags(currentFrame),
                             .subpixelSnap = culling.getSubpixelSnap(),
                             .debugView = debugView.packed(),
-                            .frameFlags = isHistoryReset ? FrameFlag::HistoryReset : 0u,
+                            .frameFlags = (isHistoryReset ? FrameFlag::HistoryReset : 0u) |
+                                (isIndirectHistoryReset ? FrameFlag::IndirectHistoryReset : 0u),
                             .frameIndex = frameNumber,
                             .lightCount = worldLights.lightCount(),
                             .localLightCount = worldLights.localLightCount(),
@@ -739,11 +757,8 @@ const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandB
     TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
 #endif
     const vk::DeviceAddress frameRoot = frameData.frameRootAddress(currentFrame);
-    // the ground truth traces the bounces the cache would answer (engine spec §14): NRC pauses, its weights kept
-    isNrcRecorded = nrc.isActive() && rtxdi.giReferenceBounces == 0;
-    if (nrc.isActive() && !isNrcRecorded) {
-        nrc.pauseFrame(currentFrame);
-    }
+    // a paused cache keeps its weights; prepareFrame zeroed the slot's constants, so the query pass makes no queries
+    isNrcRecorded = nrc.isActive() && !isNrcPaused();
     const bool isCacheView = debugView.view == DebugView::NrcCache;
     if (isNrcRecorded) {
         ZoneScopedN("NrcUpdate");
@@ -809,7 +824,7 @@ void Renderer::recordIndirectResampling(const vk::raii::CommandBuffer& cmd)
     const vk::DependencyInfo dependency{.memoryBarrierCount = 1, .pMemoryBarriers = &reservoirBarrier};
     cmd.pipelineBarrier2(dependency);
     // the reference shades the initial samples without reuse
-    if (!rtxdi.isGiReference) {
+    if (rtxdi.isGiReuseEnabled()) {
         dispatchFullscreen(cmd, shaderObjects.frameShaders.giTemporal);
         cmd.pipelineBarrier2(dependency);
     }
@@ -826,7 +841,7 @@ void Renderer::bindHeaps(const vk::raii::CommandBuffer& cmd) const
 
 const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::CommandBuffer& cmd)
 {
-    // directRadiance and guide writes -> the combine's reads
+    // directRadiance, indirectRadiance and guide writes -> the combine's reads
     const vk::MemoryBarrier2 combineBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,

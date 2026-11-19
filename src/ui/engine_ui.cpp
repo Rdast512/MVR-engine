@@ -519,13 +519,17 @@ void EngineUi::drawDebugViewPanel()
                 ImGui::SeparatorText(debugViewCategoryName(info.category));
             }
             const bool isSelected = view == settings.view;
-            ImGui::BeginDisabled(!info.isImplemented);
+            // a paused cache answers no queries
+            const bool isPausedCache = view == DebugView::NrcCache && context.renderer.isNrcPaused();
+            ImGui::BeginDisabled(!info.isImplemented || isPausedCache);
             if (ImGui::Selectable(info.name, isSelected)) {
                 settings.view = view;
             }
             ImGui::EndDisabled();
             if (!info.isImplemented) {
                 ImGui::SetItemTooltip("reserved, not implemented yet");
+            } else if (isPausedCache) {
+                ImGui::SetItemTooltip("NRC is paused: ReSTIR GI mode or ground-truth paths");
             }
             if (isSelected) {
                 ImGui::SetItemDefaultFocus();
@@ -572,10 +576,12 @@ void EngineUi::drawDebugViewPanel()
         ImGui::TextDisabled("primary rays through the TLAS: match the raster view away from edges");
         break;
     case DebugViewCategory::Lighting:
-        if (settings.view == DebugView::LightingOnly) {
+        if (settings.view == DebugView::DirectLighting) {
             ImGui::Checkbox("ReSTIR DI reference", &context.renderer.getRtxdi().isReference);
             ImGui::SetItemTooltip("no reuse, more initial candidates: the unbiased ground truth of the reuse passes");
             ImGui::TextDisabled("converges to Shadowed lights");
+        } else if (settings.view == DebugView::NrcCache && context.renderer.isNrcPaused()) {
+            ImGui::TextDisabled("NRC is paused: black, not the cache");
         }
         break;
     case DebugViewCategory::Upscaling:
@@ -964,9 +970,24 @@ void EngineUi::drawRayTracingPanel()
         rtxdi.giReferenceBounces = 0;
         dlss.settings = {};
         context.renderer.getNrc().settings = {};
+        context.renderer.indirectMode = IndirectMode::NrcRestirGi;
     }
 
     ImGui::SeparatorText("Indirect (M4)");
+    // spec/m4/g7_indirect_modes.md
+    IndirectMode& indirectMode = context.renderer.indirectMode;
+    if (ImGui::BeginCombo("Indirect mode", indirectModeInfo(indirectMode).label)) {
+        for (size_t i = 0; i < kIndirectModes.size(); ++i) {
+            const auto mode = static_cast<IndirectMode>(i);
+            if (ImGui::Selectable(kIndirectModes[i].label, mode == indirectMode)) {
+                indirectMode = mode;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("NRC + ReSTIR GI ships on both tiers, the others are for A/B measurement. NRC: the cache "
+                          "samples without reuse. ReSTIR GI: one bounce, NRC paused. A switch resets ReSTIR GI and "
+                          "DLSS-RR history");
     // spec/m4/g3_nrc.md
     NrcCache& nrcCache = context.renderer.getNrc();
     NrcCache::Settings& nrc = nrcCache.settings;
@@ -978,8 +999,10 @@ void EngineUi::drawRayTracingPanel()
     }
     ImGui::SetItemTooltip("16K training records each; the training paths grow with it");
     const vk::Extent2D training = nrcCache.getTrainingExtent();
-    ImGui::TextDisabled("%s, training paths %ux%u", nrcCache.isActive() ? "active" : "no scene", training.width,
-                        training.height);
+    const char* nrcState = !nrcCache.isActive()          ? "no scene"
+                           : context.renderer.isNrcPaused() ? "paused"
+                                                            : "active";
+    ImGui::TextDisabled("%s, training paths %ux%u", nrcState, training.width, training.height);
 
     // spec/m4/g5_restir_gi.md
     ImGui::SeparatorText("ReSTIR GI");

@@ -68,9 +68,10 @@ public:
     // device idle: the render extent. Reconfigures only when it outgrows the configured frame (and scene bounds
     // exist): every Configure reloads the SDK's network and leaks its kernels (considerations C-G3-3)
     void recreate(vk::Extent2D renderExtent);
-    // the slot is not in flight. New scene bounds wait for the device and reconfigure. Without a configured cache the
-    // slot's constants are zero: the query pass then makes no queries
-    void prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds);
+    // the slot is not in flight. New scene bounds wait for the device and reconfigure. Without a configured cache, or
+    // paused (no NRC work this frame), the slot's constants are zero: the query pass then makes no queries. A pause
+    // keeps context, buffers and weights, and defers new bounds to the resume (one Configure)
+    void prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, bool isPaused);
     // false until a scene with ray instances is configured: the NRC passes are skipped
     [[nodiscard]] bool isActive() const noexcept { return isConfigured; }
 
@@ -85,9 +86,6 @@ public:
     void recordTrain(const vk::raii::CommandBuffer& cmd);
     // after the submit that ran this frame's NRC commands, on the same queue
     void endFrame(const vk::raii::Queue& queue);
-    // instead of recordBeginFrame on a frame without NRC work; the slot is not in flight. Zero constants: the query
-    // pass makes no queries. Context, buffers and weights stay
-    void pauseFrame(uint32_t frameSlot);
 
     [[nodiscard]] vk::DeviceAddress constantsAddress(uint32_t frameSlot) const noexcept
     {

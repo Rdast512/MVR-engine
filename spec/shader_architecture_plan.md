@@ -151,7 +151,7 @@ Normative in spec §8.3 and §9.3. Two sets of the surface and guides ping-pong 
 | `motion` | RGBA16F, render-res pixels, no jitter; z = view depth change | `resolve` | DLSS, ReSTIR temporal |
 | `position` | RGBA32F: world position, w = view depth | `resolve` | RTXDI surfaces and ray origins (both sets) |
 | `specHitDistance` | R16F, optional, full render resolution after ReSTIR GI | `restir_gi` | DLSS (only if measured useful) |
-| `directRadiance` | RGBA16F | `rtxdi_shade` (zeros with no lights) | `combine`; `debug_view` (`Lighting only`) until then |
+| `directRadiance` | RGBA16F | `rtxdi_shade` (zeros with no lights) | `combine`; `debug_view` (`Direct lighting`) |
 | `indirectRadiance` | RGBA16F | `restir_gi` | `combine` |
 | `noisyColor` | RGBA16F HDR | `combine` | DLSS-RR |
 | Output color | RGBA16F, display resolution | DLSS-RR | `exposure`, `post` |
@@ -190,7 +190,7 @@ Buffers (BDA, [resource_architecture.md](./resource_architecture.md) §12):
 | NRC `QueryAndTrain` | host SDK | — | NRC buffers | inference + one training step | M4 |
 | `nrc_resolve` | [new] | compute | NRC query results | `throughput × cached radiance` into the ReSTIR GI samples | M4 |
 | `restir_gi` | [new] | compute + ray query | GI samples, guides, motion | `indirectRadiance`, optional `specHitDistance` | M4 |
-| `combine` | [new] | compute | `directRadiance`, `indirectRadiance`, `emissive` | `noisyColor` | M4 |
+| `combine` | [exists] (H1 direct + emissive; G6 adds indirect) | compute | `directRadiance`, `indirectRadiance`, `emissive` | `noisyColor` | M4 |
 | DLSS-RR | host NGX | — | `noisyColor` + guides | output color | M3 |
 | `exposure` | [exists] (H2) | compute: `exposureHistogramMain`, `exposureAdaptMain` | output color | luminance histogram, exposure image, readback | M3 |
 | `post` | [exists] (H2; planned as `composite`) | compute | output color, exposure | post target (ACES fitted, tonemap once); `present` draws it into the swapchain | M3 |

@@ -28,8 +28,9 @@ void rtxdiGiTemporalMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_Grou
     const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
     rtxdiBridgeInit(root);
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
-    // uniform: after a reset the previous guides and reservoirs do not apply (undefined after a resize)
-    const bool isHistoryValid = hasHistory(root);
+    // uniform: after a reset the previous guides and reservoirs do not apply (undefined after a resize), after an
+    // indirect mode change the reservoirs hold other samples
+    const bool isHistoryValid = hasIndirectHistory(root);
     // no early return before the boiling filter: it synchronizes the whole group. Out of bounds the surface is empty
     const RAB_Surface surface = RAB_GetGBufferSurface(int2(id.xy), false);
     const uint2 reservoirPosition = RTXDI_PixelPosToReservoirPos(id.xy, constants.runtime.activeCheckerboardField);

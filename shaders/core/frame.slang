@@ -51,6 +51,12 @@ public bool hasHistory(GpuFrameRoot root)
     return (root.frameFlags & kFrameFlagHistoryReset) == 0;
 }
 
+// also false after an indirect mode or reference change: last frame's GI reservoirs hold other samples
+public bool hasIndirectHistory(GpuFrameRoot root)
+{
+    return (root.frameFlags & (kFrameFlagHistoryReset | kFrameFlagIndirectHistoryReset)) == 0;
+}
+
 public GpuTargets loadTargets(GpuFrameRoot root)
 {
     return bdaPtr<GpuTargets>(root.targets)[0];

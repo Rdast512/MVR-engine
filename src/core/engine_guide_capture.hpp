@@ -29,6 +29,7 @@ public:
         // replaces every entity with this model at the origin
         std::optional<std::filesystem::path> model;
         bool shouldCapture = false;
+        IndirectMode indirectMode = IndirectMode::NrcRestirGi;
     };
 
     // modelBounds: entity 0's model-space bounding sphere, once the scene has an entity. rtxdi holds
@@ -101,14 +102,38 @@ private:
         {"A4 flat normals without NORMAL (MetalRoughSpheres shading normal against the geometric normal)",
          kFlatNormalsShot, DebugView::ShadingNormal, kFlatNormalsShot, DebugView::GeometricNormal},
     }};
-    static constexpr std::array<DebugView, 14> kViews = {
-        DebugView::DiffuseAlbedo,    DebugView::SpecularF0,       DebugView::Roughness,
-        DebugView::ShadingNormal,    DebugView::GeometricNormal,  DebugView::Emissive,
-        DebugView::AmbientOcclusion, DebugView::UnshadowedLights, DebugView::ShadowedLights,
-        DebugView::LightingOnly,     DebugView::RtxdiReservoirs,  DebugView::IndirectSamples,
-        DebugView::NrcCache,         DebugView::IndirectRadiance,
+    // a view in the default indirect mode, or a lighting view in another mode (spec/m4/g7_indirect_modes.md); the
+    // mode switches on the captured frame, so ReSTIR GI shows its first frame without history
+    struct ShotView
+    {
+        DebugView view;
+        IndirectMode mode;
     };
-    // ReSTIR DI (Lighting only) averaged over frames against Shadowed lights on the lamp shot, after its views
+    static constexpr std::array<ShotView, 21> kViews = {{
+        {DebugView::DiffuseAlbedo, IndirectMode::NrcRestirGi},
+        {DebugView::SpecularF0, IndirectMode::NrcRestirGi},
+        {DebugView::Roughness, IndirectMode::NrcRestirGi},
+        {DebugView::ShadingNormal, IndirectMode::NrcRestirGi},
+        {DebugView::GeometricNormal, IndirectMode::NrcRestirGi},
+        {DebugView::Emissive, IndirectMode::NrcRestirGi},
+        {DebugView::AmbientOcclusion, IndirectMode::NrcRestirGi},
+        {DebugView::UnshadowedLights, IndirectMode::NrcRestirGi},
+        {DebugView::ShadowedLights, IndirectMode::NrcRestirGi},
+        {DebugView::DirectLighting, IndirectMode::NrcRestirGi},
+        {DebugView::RtxdiReservoirs, IndirectMode::NrcRestirGi},
+        {DebugView::IndirectSamples, IndirectMode::NrcRestirGi},
+        {DebugView::NrcCache, IndirectMode::NrcRestirGi},
+        {DebugView::IndirectRadiance, IndirectMode::NrcRestirGi},
+        {DebugView::DlssInput, IndirectMode::NrcRestirGi},
+        {DebugView::IndirectSamples, IndirectMode::Nrc},
+        {DebugView::IndirectRadiance, IndirectMode::Nrc},
+        {DebugView::DlssInput, IndirectMode::Nrc},
+        // no NRC cache view: the cache is paused in this mode
+        {DebugView::IndirectSamples, IndirectMode::RestirGi},
+        {DebugView::IndirectRadiance, IndirectMode::RestirGi},
+        {DebugView::DlssInput, IndirectMode::RestirGi},
+    }};
+    // ReSTIR DI (Direct lighting) averaged over frames against Shadowed lights on the lamp shot, after its views
     static constexpr size_t kConvergenceShot = 10;
     static constexpr uint32_t kConvergenceWarmupFrames = 16;
     static constexpr uint32_t kConvergenceFrames = 64;

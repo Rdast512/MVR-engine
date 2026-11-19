@@ -4,14 +4,24 @@
 #include "../util/debug.hpp"
 #include "../util/vk_tracy.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <numbers>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
+
+namespace
+{
+    // ENGINE_INDIRECT_MODE=cycle: the scripted mode switch of spec/m4/g7_indirect_modes.md
+    constexpr uint32_t kIndirectModeCycleFrames = 64;
+    constexpr std::string_view kIndirectModeCycle = "cycle";
+} // namespace
 
 Engine::~Engine() { cleanup(); }
 
@@ -118,6 +128,18 @@ void Engine::initialize()
                                           *frameData, *descriptorManager, *shaderObjects,
                                           *camera, *nrcLibrary, tracyContext.get());
     renderer->getRtxdi().isReference = RtxdiContext::isReferenceRequested();
+    // ENGINE_INDIRECT_MODE: a kIndirectModes id pins the mode, cycle switches it every kIndirectModeCycleFrames
+    if (const char* text = std::getenv("ENGINE_INDIRECT_MODE")) {
+        const std::string_view request(text);
+        isIndirectModeCycling = request == kIndirectModeCycle;
+        const auto mode = std::ranges::find_if(
+            kIndirectModes, [request](const IndirectModeInfo& info) { return request == info.id; });
+        if (mode != kIndirectModes.end()) {
+            renderer->indirectMode = static_cast<IndirectMode>(std::distance(kIndirectModes.begin(), mode));
+        } else if (!isIndirectModeCycling) {
+            logError(std::format("ENGINE_INDIRECT_MODE='{}' is not a mode; ignored", request), "Engine");
+        }
+    }
     // the guide shots show the glTF samples' own lights, as Khronos renders them
     renderer->getWorldLights().sun.isEnabled = !EngineGuideCapture::isRequested();
     renderer->rebuildSwapchainResources();
@@ -311,8 +333,13 @@ void Engine::run()
                 cullCheck->beginFrame(*camera, renderer->getCulling().settings, renderer->debugView).shouldCapture) {
                 renderer->requestDisplayCapture();
             }
-            if (giCheck && giCheck->beginFrame(*camera, renderer->getRtxdi(), renderer->debugView).shouldCapture) {
+            if (giCheck && giCheck->beginFrame(*camera, renderer->getRtxdi(), renderer->indirectMode, renderer->debugView)
+                               .shouldCapture) {
                 renderer->requestDisplayCapture();
+            }
+            if (isIndirectModeCycling) {
+                renderer->indirectMode = static_cast<IndirectMode>(renderer->frameNumber / kIndirectModeCycleFrames %
+                                                                   std::to_underlying(IndirectMode::Count));
             }
             {
                 ZoneScopedN("DrawFrame");
@@ -429,6 +456,7 @@ void Engine::applyGuideCaptureRequest(const EngineGuideCapture::Request& request
             unloadModel(0);
         }
     }
+    renderer->indirectMode = request.indirectMode;
     if (request.shouldCapture) {
         renderer->requestDisplayCapture();
     }

@@ -84,7 +84,7 @@ The result is noisy by design. DLSS-RR turns it into the final image, and RR is 
 | Shadows boil, worst on small geometry (plants, railings) | No spatial reuse each frame: RR gets too little to work with | Spatial samples 2 |
 | Light leaks past hard shadow edges; thin shadows (poles) fade | Reuse final visibility: a neighbor's visibility up to 16 render px away is reused for this pixel | Reuse final visibility off (+1 ray/px) |
 | Fine flicker everywhere in lit areas, even on a still camera | Permutation sampling | Permutation sampling off |
-| Dark or blotchy patches in `Lighting only` | Basic spatial or temporal correction across shadow edges, or spatial samples feeding back through history | Pairwise; compare against Reference |
+| Dark or blotchy patches in `Direct lighting` | Basic spatial or temporal correction across shadow edges, or spatial samples feeding back through history | Pairwise; compare against Reference |
 | Lighting appears late in areas entering from screen edges | No history there | Disocclusion boost history length > 0 (e.g. 20); considerations C-M4-1 |
 | ReSTIR DI too slow | Rays per pixel | Fewer spatial samples, BRDF candidates 0, Reuse final visibility on, temporal `Basic` |
 
@@ -93,7 +93,7 @@ The result is noisy by design. DLSS-RR turns it into the final image, and RR is 
 Setup:
 - **Scene:** sunlit Sponza courtyard (camera `lookAt({6, 2.5, 1.5}, {-10, 1, -1})`, default sun), static camera, 1280×720, DLSS-RR Quality.
 - **Capture:** 120 frames after 300 warm-up frames.
-- **Raw ReSTIR change:** the `Lighting only` view (no jitter), mean frame-to-frame change as a share of the signal.
+- **Raw ReSTIR change:** the `Direct lighting` view (no jitter), mean frame-to-frame change as a share of the signal.
 - **RR columns:** the `Lit` view (DLSS-RR output, jittered). "Temporal std" is each pixel's standard deviation over the frames, as a share of the signal. "Flickering px" is the share of lit pixels whose deviation exceeds 10% of their mean, for the whole frame and the center third.
 
 | Settings | Raw ReSTIR change | RR temporal std | RR flickering px (frame / center) |
@@ -127,7 +127,7 @@ Re-measure after M4 (GI) and M6 (OMM). With soft indirect light the NVIDIA defau
 | Reset history | The next Lit frame starts without accumulated history | Use it to see how fast the image converges |
 
 - RR is evaluated only in the `Lit` view, and only when the scene has lights. Debug views bypass RR and are not jittered.
-- RR expects ReSTIR-style noise. It flickers more on a noise-free input (§3.4), so judge RTXDI settings on the `Lit` view, not only on `Lighting only`.
+- RR expects ReSTIR-style noise. It flickers more on a noise-free input (§3.4), so judge RTXDI settings on the `Lit` view, not only on `Direct lighting`.
 - RR reads the last post pass's exposure as an input; its color input is not pre-exposed. Very high sun illuminance can overflow that RGBA16F input (considerations C-H2-1).
 
 ---
@@ -149,8 +149,9 @@ CLAS and cluster BLAS are built once at load, with fast trace. They have no runt
 |---|---|---|
 | Cost | `ENGINE_BENCH_FRAMES=6000 VK_LOADER_LAYERS_DISABLE='*validation*' VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false ./engine.exe` → `[Bench]` lines in `logs/engine.log` | compare spans; noise is ±5%, so alternate variants over 2 rounds |
 | ReSTIR port correctness | `ENGINE_GUIDE_CAPTURE=1 ./engine.exe` → `Convergence check: passed` | runs the Converged set, not the current settings |
-| ReSTIR GI against the ground truth | `ENGINE_GI_CHECK=1 VK_LOADER_LAYERS_DISABLE='*validation*' VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false ./engine.exe` (~5 min) → `[GiCheck]` lines | `ReSTIR GI convergence: 4 of 4 passed`; the `MEASURED` lines give the bias of NRC and of the NVIDIA GI defaults ([g5_restir_gi.md](../spec/m4/g5_restir_gi.md) §3) |
-| Bias of a setting | `Lighting only` view with the setting, then with Reference on (`ENGINE_RTXDI_REFERENCE=1` or the checkbox) | same brightness after a few seconds |
+| ReSTIR GI against the ground truth | `ENGINE_GI_CHECK=1 VK_LOADER_LAYERS_DISABLE='*validation*' VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false ./engine.exe` (~10 min) → `[GiCheck]` lines | `ReSTIR GI convergence: 8 of 8 passed` (G5's phases and ReSTIR GI mode against a one-bounce ground truth); the `MEASURED` lines give the bias of NRC, NRC mode and the NVIDIA GI defaults ([g5_restir_gi.md](../spec/m4/g5_restir_gi.md) §3, [g7_indirect_modes.md](../spec/m4/g7_indirect_modes.md) §3) |
+| Indirect modes under switching | `ENGINE_INDIRECT_MODE=cycle ENGINE_BENCH_FRAMES=3000` at a 2560×1369 window | no device loss; a mode id instead of `cycle` pins one mode for per-mode timings |
+| Bias of a setting | `Direct lighting` view with the setting, then with Reference on (`ENGINE_RTXDI_REFERENCE=1` or the checkbox) | same brightness after a few seconds |
 | Validation | `VK_LOADER_LAYERS_ENABLE='*validation' VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true VK_KHRONOS_VALIDATION_VALIDATE_BEST_PRACTICES=true VK_KHRONOS_VALIDATION_VALIDATE_BEST_PRACTICES_NVIDIA=true VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false VK_KHRONOS_VALIDATION_LOG_FILENAME=<file>` | only NGX's known messages (considerations C-H1-2) |
 
 When judging stability by eye, hold the camera still for a few seconds and watch the `Lit` view at 100% scale. Windows Auto HDR brightens the window in screen captures; the swapchain itself is correct.
@@ -158,6 +159,8 @@ When judging stability by eye, hold the camera still for a few seconds and watch
 ---
 
 ## 7. ReSTIR GI
+
+`Indirect mode` at the top of the `Indirect (M4)` panel ([g7_indirect_modes.md](../spec/m4/g7_indirect_modes.md)): `NRC + ReSTIR GI` (default, both tiers), `NRC` (the cache samples without reuse), `ReSTIR GI` (one bounce, NRC paused; GPU total 2.72 ms vs 3.27–3.30 ms at 1280×720, no C-G3-6 host wait). A switch resets ReSTIR GI and DLSS-RR history; `ENGINE_INDIRECT_MODE` sets it from the environment.
 
 The `ReSTIR GI` section of the `Indirect (M4)` panel. Defaults: the library's, which the RTXDI sample uses unchanged in every preset (`RtxdiContext::defaultGiSettings`).
 

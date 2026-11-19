@@ -15,36 +15,18 @@ bool EngineGiCheck::isRequested()
     return text != nullptr && std::string_view(text) == "1";
 }
 
-void EngineGiCheck::applyPhase(RtxdiContext& rtxdi) const
+void EngineGiCheck::applyPhase(RtxdiContext& rtxdi, IndirectMode& indirectMode) const
 {
-    switch (phase) {
-    case Phase::GroundTruth:
-    case Phase::NoiseFloor:
-        rtxdi.giReferenceBounces = RtxdiContext::kGiGroundTruthBounces;
-        rtxdi.isGiReference = true;
-        rtxdi.giSettings = RtxdiContext::convergedGiSettings();
-        break;
-    case Phase::Reuse:
-        rtxdi.giReferenceBounces = RtxdiContext::kGiGroundTruthBounces;
-        rtxdi.isGiReference = false;
-        rtxdi.giSettings = RtxdiContext::convergedGiSettings();
-        break;
-    case Phase::Pipeline:
-        rtxdi.giReferenceBounces = 0;
-        rtxdi.isGiReference = false;
-        rtxdi.giSettings = RtxdiContext::convergedGiSettings();
-        break;
-    case Phase::Defaults:
-        rtxdi.giReferenceBounces = 0;
-        rtxdi.isGiReference = false;
-        rtxdi.giSettings = RtxdiContext::defaultGiSettings();
-        break;
-    case Phase::Count:
-        break;
-    }
+    const PhaseInfo& info = kPhases[std::to_underlying(phase)];
+    indirectMode = info.mode;
+    rtxdi.giReferenceBounces = info.referenceBounces;
+    rtxdi.isGiReference = info.isGiReference;
+    rtxdi.giSettings =
+        info.isNvidiaDefaults ? RtxdiContext::defaultGiSettings() : RtxdiContext::convergedGiSettings();
 }
 
-EngineGiCheck::Request EngineGiCheck::beginFrame(Camera& camera, RtxdiContext& rtxdi, DebugViewSettings& debugView)
+EngineGiCheck::Request EngineGiCheck::beginFrame(Camera& camera, RtxdiContext& rtxdi, IndirectMode& indirectMode,
+                                                 DebugViewSettings& debugView)
 {
     Request request;
     if (isFinished || frame < kStartupFrames) {
@@ -56,7 +38,7 @@ EngineGiCheck::Request EngineGiCheck::beginFrame(Camera& camera, RtxdiContext& r
         if (phase == Phase::GroundTruth && !pose.isStartup) {
             camera.lookAt(pose.position, pose.target);
         }
-        applyPhase(rtxdi);
+        applyPhase(rtxdi, indirectMode);
     }
     isCaptureRequested = phaseFrame >= kPhases[std::to_underlying(phase)].warmupFrames;
     request.shouldCapture = isCaptureRequested;
@@ -83,7 +65,7 @@ bool EngineGiCheck::endFrame(const std::optional<Renderer::DisplayCapture>& capt
                 sum.assign(luminance.size(), 0.0);
                 squaredSum.assign(luminance.size(), 0.0);
             }
-            const bool isGroundTruth = phase == Phase::GroundTruth;
+            const bool isGroundTruth = kPhases[std::to_underlying(phase)].role == Role::GroundTruth;
             for (size_t texel = 0; texel < luminance.size(); ++texel) {
                 const double value = luminance[texel];
                 const double error = isGroundTruth ? value : value - groundTruth[texel];
@@ -100,7 +82,7 @@ bool EngineGiCheck::endFrame(const std::optional<Renderer::DisplayCapture>& capt
     return finishPhase();
 }
 
-bool EngineGiCheck::evaluatePhase() const
+bool EngineGiCheck::evaluatePhase()
 {
     const PhaseInfo& info = kPhases[std::to_underlying(phase)];
     const std::string label = std::format("ReSTIR GI convergence, {}, {}", kPoses[poseIndex].name, info.name);
@@ -135,22 +117,28 @@ bool EngineGiCheck::evaluatePhase() const
         logInfo(std::format("MEASURED {} ({})", label, detail), "GiCheck");
         return true;
     }
-    const bool isPassed = std::abs(bias) <= info.maxBias && tiles.p90 <= info.maxTileP90;
+    if (info.role == Role::NoiseFloor) {
+        noiseFloorTileP90 = tiles.p90;
+    }
+    const double tileLimit = info.role == Role::Compared
+        ? std::max(info.maxTileP90, kNoiseFloorTileFactor * noiseFloorTileP90)
+        : info.maxTileP90;
+    const bool isPassed = std::abs(bias) <= info.maxBias && (tileLimit <= 0.0 || tiles.p90 <= tileLimit);
+    const std::string limits = tileLimit > 0.0
+        ? std::format("limits {:.1f}% / {:.1f}%", info.maxBias * 100.0, tileLimit * 100.0)
+        : std::format("limit {:.1f}%, tiles not gated", info.maxBias * 100.0);
     if (isPassed) {
-        logInfo(std::format("PASS {} ({}; limits {:.1f}% / {:.1f}%)", label, detail, info.maxBias * 100.0,
-                            info.maxTileP90 * 100.0),
-                "GiCheck");
+        logInfo(std::format("PASS {} ({}; {})", label, detail, limits), "GiCheck");
     } else {
-        logError(std::format("FAIL {} ({}; limits {:.1f}% / {:.1f}%)", label, detail, info.maxBias * 100.0,
-                             info.maxTileP90 * 100.0),
-                 "GiCheck");
+        logError(std::format("FAIL {} ({}; {})", label, detail, limits), "GiCheck");
     }
     return isPassed;
 }
 
 bool EngineGiCheck::finishPhase()
 {
-    if (phase == Phase::GroundTruth) {
+    const PhaseInfo& info = kPhases[std::to_underlying(phase)];
+    if (info.role == Role::GroundTruth) {
         const double frames = capturedFrames;
         groundTruth.assign(sum.size(), 0.0);
         double total = 0.0;
@@ -162,9 +150,10 @@ bool EngineGiCheck::finishPhase()
             noise += std::sqrt(std::max(squaredSum[texel] / frames - mean * mean, 0.0));
         }
         groundTruthNoise = total > 0.0 ? noise / total : 0.0;
-        logInfo(std::format("ReSTIR GI ground truth, {}: {} frames, {} bounces after X2, summed luminance {:.4g}, "
-                            "1-sample noise {:.1f}%",
-                            kPoses[poseIndex].name, capturedFrames, RtxdiContext::kGiGroundTruthBounces, total,
+        noiseFloorTileP90 = 0.0;
+        logInfo(std::format("ReSTIR GI {}, {}: {} frames, {} bounces after X2, summed luminance {:.4g}, 1-sample "
+                            "noise {:.1f}%",
+                            info.name, kPoses[poseIndex].name, capturedFrames, info.referenceBounces, total,
                             groundTruthNoise * 100.0),
                 "GiCheck");
     } else {

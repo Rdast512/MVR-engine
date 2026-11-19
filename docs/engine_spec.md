@@ -506,9 +506,11 @@ A runtime toggle picks how `indirectRadiance` is made; NRC stays initialized in 
 
 Rules: a switch happens at a frame boundary without a reload or a reconfigure, and resets ReSTIR GI and DLSS-RR history for one frame. The NRC context is never destroyed on a switch (SDK leaks, considerations C-G3-3). The self-test runners cover every mode. Defaults change only by a spec decision backed by the G7 timings and convergence numbers (P1).
 
+Built in G7 (2026-11-19): `Renderer::indirectMode`, `ENGINE_INDIRECT_MODE` (a mode id, or `cycle`). A paused cache has zeroed constants; NRC mode is RTXDI's resampling mode `None`; a change sets `FrameFlag::IndirectHistoryReset`. ReSTIR GI mode converges to the one-bounce ground truth (GI check); the NRC modes keep NRC's bias (considerations C-G5-3). On the RTX 5070 at 1280×720: GPU total 3.3 / 2.9 / 2.7 ms for NRC → ReSTIR GI / NRC / ReSTIR GI.
+
 ### 11.6 Combine
 
-`noisyColor = directRadiance + indirectRadiance + emissive` (RGBA16F), the only place the terms meet. AO is never applied to direct light (PBR plan §2 #10); with path-traced indirect, material AO applies only to the cache query term.
+`noisyColor = directRadiance + indirectRadiance + emissive` (RGBA16F), the only place the terms meet. AO is never applied to direct light (PBR plan §2 #10); with path-traced indirect, material AO applies only to the cache query term. Built in G6 ([g6_combine.md](../spec/m4/g6_combine.md)): the `DLSS input` debug view shows the sum, `Direct lighting` the direct term + emissive that the ReSTIR DI checks compare.
 
 ---
 
@@ -871,6 +873,8 @@ Root cause of the drift: the same facts (vis-buffer format, the §9.3 guide tabl
 
 | Date | Change |
 |---|---|
+| 2026-11-19 | Indirect mode toggle built (§11.7, PBR G7); the GI check gates ReSTIR GI mode against a one-bounce ground truth |
+| 2026-11-19 | Combine adds the indirect term (§11.6, PBR G6); the `Lighting only` view is renamed `Direct lighting`, the full sum is `DLSS input` |
 | 2026-11-18 | The NRC calls and the DLSS-RR evaluation record into command buffers of their own within the ray submit, with the engine heaps bound before and after each; it fixed the device loss the user still hit (considerations C-G3-6). Costs +0.5% GPU time at a 2560×1369 window, nothing measurable at 1280×720 |
 | 2026-11-18 | ReSTIR GI built (§11.5, PBR G5) with the §14 ground truth and its check; a failed BRDF sample counts as a zero sample. RTXDI's GI defaults are biased on static frames (considerations C-G5-1, C-G5-2), NRC reads ~10% bright (C-G5-3) |
 | 2026-11-18 | Indirect mode toggle before 1.0 (§11.7, M4, plan G7): NRC → ReSTIR GI (default), NRC alone, ReSTIR GI alone; NRC stays initialized and is paused, never destroyed. P1 notes that runtime toggles keeping every path built are for A/B measurement, while each tier ships one default |

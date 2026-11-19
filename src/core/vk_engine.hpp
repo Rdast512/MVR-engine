@@ -73,6 +73,8 @@ class Engine
     std::optional<EngineGiCheck> giCheck;
     // set from the environment: primary rays against the vis buffer every frame, alongside another runner or alone
     std::optional<EngineRayCheck> rayCheck;
+    // ENGINE_INDIRECT_MODE=cycle: the indirect mode follows the frame number
+    bool isIndirectModeCycling = false;
     bool initialized = false;
     std::chrono::high_resolution_clock::time_point lastTime;
     std::chrono::high_resolution_clock::time_point fpsTime;

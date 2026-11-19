@@ -847,8 +847,8 @@ Spec §11.1, §11.3–11.6. Started 2026-11-16. Each step has its own spec under
 | G2 | [g2_indirect_pass.md](./m4/g2_indirect_pass.md) | 1 ray/px from the primary surface, direct light at X₂, cache query, ReSTIR GI initial samples | built 2026-11-16 (cache term with G3); compute + ray query since 2026-11-17 (C-G1-3); 2060 Super numbers open |
 | G3 | [g3_nrc.md](./m4/g3_nrc.md) | NRC context, update paths in the SER pipeline, `QueryAndTrain`, custom resolve | built 2026-11-17 (cache 0.62 ms on the 5070); 2060 Super numbers open |
 | G5 | [g5_restir_gi.md](./m4/g5_restir_gi.md) | RTXDI ReSTIR GI → `indirectRadiance` | built 2026-11-18; converges to the §14 ground truth (GI check); after-RR check with G6 |
-| G6 | [g6_combine.md](./m4/g6_combine.md) | `noisyColor = direct + indirect + emissive` | direct + emissive built (H1) |
-| G7 | [g7_indirect_modes.md](./m4/g7_indirect_modes.md) | runtime indirect mode toggle: NRC → ReSTIR GI (default), NRC alone, ReSTIR GI alone; NRC paused, never destroyed | not started |
+| G6 | [g6_combine.md](./m4/g6_combine.md) | `noisyColor = direct + indirect + emissive` | built 2026-11-19; `Lighting only` renamed `Direct lighting`, the full sum is `DLSS input` |
+| G7 | [g7_indirect_modes.md](./m4/g7_indirect_modes.md) | runtime indirect mode toggle: NRC → ReSTIR GI (default), NRC alone, ReSTIR GI alone; NRC paused, never destroyed | built 2026-11-19; 2060 Super timings open |
 
 ### Phase H — DLSS Ray Reconstruction + post (M3)
 
@@ -862,7 +862,7 @@ SDK: `NVIDIA/DLSS` (NGX, Vulkan), fetched and pinned. Required: unsupported RR a
 
   | Input | Source |
   |---|---|
-  | color | `noisyColor` (G6; `directRadiance` + emissive until M4), linear, pre-exposure |
+  | color | `noisyColor` (G6: `directRadiance` + `indirectRadiance` + emissive since 2026-11-19), linear, pre-exposure |
   | depth / motion | depth / `Motion` guide (render-res pixels, MV scale 1) |
   | diffuse / specular albedo | `DiffuseAlbedo` / `SpecAlbedo` guides |
   | normals + roughness | `NormalRoughness` guide |

@@ -97,7 +97,7 @@ void RtxdiContext::createGiReservoirs()
     giReservoirAddress = device.vkdevice.getBufferAddress({.buffer = *giReservoirs});
     logInfo(std::format("ReSTIR GI: {} reservoir buffers of {} ({:.1f} MiB), {}", kGiReservoirArrays,
                         params.reservoirArrayPitch, static_cast<double>(bytes) / (1024.0 * 1024.0),
-                        isGiReference ? "reference (no reuse)" : "temporal and spatial"),
+                        isGiReuseApplied ? "temporal and spatial" : "no reuse"),
             "Rtxdi");
 }
 
@@ -125,7 +125,7 @@ void RtxdiContext::recreate(vk::Extent2D renderExtent)
         .RenderHeight = renderExtent.height,
         .CheckerboardSamplingMode = rtxdi::CheckerboardMode::Off,
     });
-    configureGi();
+    configureGi(isGiReuseApplied);
     createGiReservoirs();
 
     logInfo(
@@ -282,10 +282,10 @@ void RtxdiContext::configure()
     appliedSettings = settings;
 }
 
-void RtxdiContext::configureGi()
+void RtxdiContext::configureGi(bool isGiReuse)
 {
-    giContext->SetResamplingMode(isGiReference ? rtxdi::ReSTIRGI_ResamplingMode::None
-                                               : rtxdi::ReSTIRGI_ResamplingMode::TemporalAndSpatial);
+    giContext->SetResamplingMode(isGiReuse ? rtxdi::ReSTIRGI_ResamplingMode::TemporalAndSpatial
+                                           : rtxdi::ReSTIRGI_ResamplingMode::None);
     RTXDI_GITemporalResamplingParameters temporal = giContext->GetTemporalResamplingParameters();
     temporal.maxHistoryLength = giSettings.maxHistoryLength;
     temporal.maxReservoirAge = giSettings.maxReservoirAge;
@@ -316,11 +316,11 @@ void RtxdiContext::configureGi()
         .pad1 = 0,
         .pad2 = 0,
     });
-    isGiReferenceApplied = isGiReference;
+    isGiReuseApplied = isGiReuse;
     appliedGiSettings = giSettings;
 }
 
-void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex)
+void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool isGiReuseAllowed)
 {
     if (isReference != isReferenceApplied) {
         configure();
@@ -328,12 +328,12 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex)
     } else if (settings != appliedSettings) {
         configure();
     }
-    if (isGiReference != isGiReferenceApplied) {
-        configureGi();
-        logInfo(std::format("ReSTIR GI: {}", isGiReference ? "reference (no reuse)" : "temporal and spatial"),
-                "Rtxdi");
+    const bool isGiReuse = isGiReuseAllowed && !isGiReference;
+    if (isGiReuse != isGiReuseApplied) {
+        configureGi(isGiReuse);
+        logInfo(std::format("ReSTIR GI: {}", isGiReuse ? "temporal and spatial" : "no reuse"), "Rtxdi");
     } else if (giSettings != appliedGiSettings) {
-        configureGi();
+        configureGi(isGiReuse);
     }
     // rotates the reservoir buffer indices and the frame's random number
     context->SetFrameIndex(frameIndex);

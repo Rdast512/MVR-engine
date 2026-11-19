@@ -167,7 +167,8 @@ EngineGuideCapture::Request EngineGuideCapture::beginFrame(Camera& camera, Debug
         const float distance = kFramingMargin * modelBounds->w / std::sin(halfFov);
         camera.lookAt(center + distance * glm::normalize(shot.viewDirection), center);
     }
-    debugView.view = isConvergenceRunning ? DebugView::LightingOnly : kViews[viewIndex];
+    debugView.view = isConvergenceRunning ? DebugView::DirectLighting : kViews[viewIndex].view;
+    request.indirectMode = isConvergenceRunning ? IndirectMode::NrcRestirGi : kViews[viewIndex].mode;
     request.shouldCapture = shotFrame >= kSettleFrames && modelBounds.has_value() &&
         (!isConvergenceRunning || convergence->frame >= kConvergenceWarmupFrames);
     return request;
@@ -193,7 +194,7 @@ bool EngineGuideCapture::endFrame(const std::optional<Renderer::DisplayCapture>&
         ++writtenCount;
     }
     keepNormals(*capture);
-    if (shotIndex == kConvergenceShot && kViews[viewIndex] == DebugView::ShadowedLights) {
+    if (shotIndex == kConvergenceShot && kViews[viewIndex].view == DebugView::ShadowedLights) {
         convergence.emplace();
         convergence->extent = capture->extent;
         convergence->reference = decodeLuminance(*capture);
@@ -236,7 +237,10 @@ bool EngineGuideCapture::finishShot()
 
 void EngineGuideCapture::keepNormals(const Renderer::DisplayCapture& capture)
 {
-    const std::pair<size_t, DebugView> key{shotIndex, kViews[viewIndex]};
+    if (kViews[viewIndex].mode != IndirectMode::NrcRestirGi) {
+        return;
+    }
+    const std::pair<size_t, DebugView> key{shotIndex, kViews[viewIndex].view};
     const bool isRead = std::ranges::any_of(kNormalChecks, [&](const NormalCheck& check) {
         return key == std::pair{check.shot, check.view} || key == std::pair{check.referenceShot, check.referenceView};
     });
@@ -383,8 +387,13 @@ bool EngineGuideCapture::writePng(const Renderer::DisplayCapture& capture) const
     const std::filesystem::path directory = outputDirectory();
     std::error_code errorCode;
     std::filesystem::create_directories(directory, errorCode);
+    const ShotView& shotView = kViews[viewIndex];
+    // the default mode keeps the file names of the other runs
+    const std::string modeSuffix = shotView.mode == IndirectMode::NrcRestirGi
+        ? std::string()
+        : std::format("_{}", indirectModeInfo(shotView.mode).id);
     const std::filesystem::path file =
-        directory / std::format("{}_{}.png", shot.name, fileStem(debugViewInfo(kViews[viewIndex]).name));
+        directory / std::format("{}_{}{}.png", shot.name, fileStem(debugViewInfo(shotView.view).name), modeSuffix);
     const int stride = static_cast<int>(capture.extent.width) * 4;
     if (stbi_write_png(file.string().c_str(), static_cast<int>(capture.extent.width),
                        static_cast<int>(capture.extent.height), 4, pixels.data(), stride) == 0) {

@@ -42,9 +42,10 @@ enum class DebugView : uint32_t
     UnshadowedLights,
     // every world light through the RTXDI bridge (RAB_*) with a visibility ray each: the reference ReSTIR DI converges to
     ShadowedLights,
-    // ReSTIR DI directRadiance + the emissive guide: the lighting output until the combine pass (M4)
-    LightingOnly,
-    // passes/combine.slang's noisyColor: what DLSS-RR receives as color, at render resolution
+    // ReSTIR DI directRadiance + the emissive guide, no indirect: the view the ReSTIR DI checks compare
+    DirectLighting,
+    // passes/combine.slang's noisyColor (direct + indirect + emissive): what DLSS-RR receives as color, at render
+    // resolution
     DlssInput,
     // the reservoir rtxdi_shade stored: hue by light, brightness by its sample count M up to the history cap
     RtxdiReservoirs,
@@ -63,7 +64,7 @@ static_assert(std::to_underlying(DebugView::RayMeshlets) == 18);
 static_assert(std::to_underlying(DebugView::AmbientOcclusion) == 21);
 static_assert(std::to_underlying(DebugView::UnshadowedLights) == 22);
 static_assert(std::to_underlying(DebugView::ShadowedLights) == 23);
-static_assert(std::to_underlying(DebugView::LightingOnly) == 24);
+static_assert(std::to_underlying(DebugView::DirectLighting) == 24);
 static_assert(std::to_underlying(DebugView::DlssInput) == 25);
 static_assert(std::to_underlying(DebugView::RtxdiReservoirs) == 26);
 static_assert(std::to_underlying(DebugView::IndirectSamples) == 27);
@@ -135,7 +136,7 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"Ambient occlusion", DebugViewCategory::Guides, true},
     {"Unshadowed lights", DebugViewCategory::Lighting, true},
     {"Shadowed lights", DebugViewCategory::Lighting, true},
-    {"Lighting only", DebugViewCategory::Lighting, true},
+    {"Direct lighting", DebugViewCategory::Lighting, true},
     {"DLSS input", DebugViewCategory::Upscaling, true},
     {"RTXDI reservoirs", DebugViewCategory::Lighting, true},
     {"Indirect samples", DebugViewCategory::Lighting, true},

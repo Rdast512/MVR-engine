@@ -996,6 +996,8 @@ namespace FrameFlag
 {
     // last frame's images and rows do not apply: motion is zero, temporal passes skip reuse
     inline constexpr uint32_t HistoryReset = 1u << 0;
+    // the indirect mode or a ReSTIR GI reference toggle changed: ReSTIR GI skips temporal reuse
+    inline constexpr uint32_t IndirectHistoryReset = 1u << 1;
 } // namespace FrameFlag
 
 // [InstanceIndex()] of a TLAS instance; written by the CPU per scene layout (RayTracingScene)

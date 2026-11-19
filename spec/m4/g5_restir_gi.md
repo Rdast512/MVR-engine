@@ -1,6 +1,6 @@
 # M4 · G5: ReSTIR GI
 
-**Started:** 2026-11-18 · **Status:** built 2026-11-18; ReSTIR GI converges to the ground truth (§3). Open: the after-DLSS-RR stability check waits for G6's combine, 2060 Super numbers · **Milestone:** M4
+**Started:** 2026-11-18 · **Status:** built 2026-11-18; ReSTIR GI converges to the ground truth (§3). Open: 2060 Super numbers. The after-DLSS-RR check passed with G6 (2026-11-19) · **Milestone:** M4
 **Implements:** engine spec §11.5, the §14 ground truth; plan G5 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
 **Depends on:** [G2](./g2_indirect_pass.md) (initial samples), [G3](./g3_nrc.md) (resolved sample radiance), F1 (RTXDI context)
 **Used by:** [G6](./g6_combine.md), [G7](./g7_indirect_modes.md) (runs in the NRC → ReSTIR GI and ReSTIR GI modes; one-bounce samples when NRC is paused)
@@ -106,7 +106,7 @@ The bisect that found the failed-sample bias and C-G5-1 ran on the gallery, with
 | GPU-AV, `ENGINE_MOTION_TEST=1` and `ENGINE_GI_CHECK=1` | clean (`WARNING-Setting-Limit-Adjusted`, 05137); motion 12 of 13 (C-T-1 under GPU-AV), GI check 4 of 4 |
 | Sync validation, `ENGINE_GI_CHECK=1` (NRC pause and resume) | clean apart from the known NGX WAW ×2 on the first DLSS-RR evaluation (C-H1-2), `SpirvDeprecated` ×3 and 05137; GI check 4 of 4 |
 | C-G3-6 (device loss at large render extents): `ENGINE_BENCH_FRAMES=3000` at a 2560×1369 window (render 1707×913), 2 runs | no device loss; ReSTIR GI temporal 0.46 ms, shade 1.35–1.39 ms, GPU total 11.2 ms at that extent |
-| Bounce light under the arches, stable after DLSS-RR | open: `indirectRadiance` reaches DLSS-RR with G6's combine |
+| Bounce light under the arches, stable after DLSS-RR | passed with G6, 2026-11-19 ([g6_combine.md](./g6_combine.md) §3) |
 
 ---
 
