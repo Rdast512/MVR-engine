@@ -217,6 +217,7 @@ private:
     // world light rows of the last frame; a change (load, unload, sun toggle) resets history, since reservoirs hold
     // light indices
     uint32_t lastLightCount = 0;
+    bool wereTriangleLightsSampled = true;
     bool isLightSetChanged = false;
     std::chrono::steady_clock::time_point lastFrameTime{};
     // per frame slot: the timeline value its last async compute submit signals

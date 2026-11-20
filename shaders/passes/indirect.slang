@@ -67,14 +67,14 @@ PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
     return bounce;
 }
 
-// RTXDI sample secondarySurfaceReSTIRDIParams with its Medium preset (radius 1 px, 1 sample made even for the
-// stratified walk, Basic); spec/features/m8_optimization_and_fixes.md O2
+// RTXDI sample secondarySurfaceReSTIRDIParams (2 samples for the stratified walk, Basic); radius 4 px (Ultra preset)
+// because int2(snormOffset * 1.0) truncates all 8192 offsets to (0, 0). Off by default (m8 O2)
 RTXDI_DISpatialResamplingParameters secondaryResamplingParams(GpuRtxdiConstants constants)
 {
     RTXDI_DISpatialResamplingParameters params = constants.spatialResampling;
     params.numSamples = 2;
     params.numDisocclusionBoostSamples = 0;
-    params.samplingRadius = 1.0;
+    params.samplingRadius = 4.0;
     params.biasCorrectionMode = RTXDI_BIAS_CORRECTION_BASIC;
     params.depthThreshold = 0.1;
     params.normalThreshold = 0.9;

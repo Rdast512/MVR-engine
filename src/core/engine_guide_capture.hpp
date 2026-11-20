@@ -16,7 +16,8 @@
 // guide captures for the E1 comparison with the Khronos screenshots and the A4 shading-attribute checks
 // (spec/pbr_implementation_plan.md E1, A4): each model alone at the origin, framed from a fixed direction, every guide
 // view written as a PNG under logs/guides; then the normal checks compare captures pixel by pixel, and the convergence
-// check compares ReSTIR DI's mean against the exact punctual sum (spec/features/rtxdi_3_2_update.md §4).
+// check compares ReSTIR DI's mean against the exact punctual sum (spec/features/rtxdi_3_2_update.md §4), or against
+// RTXDI's no-reuse mode where triangle lights take part (spec/m7/e2_emissive_triangles.md).
 // ENGINE_GUIDE_CAPTURE=1 enables the run; the engine quits once the last shot is written and the checks are logged
 class EngineGuideCapture
 {
@@ -39,6 +40,10 @@ public:
         std::optional<SunAngles> sun;
         bool shouldCapture = false;
         IndirectMode indirectMode = IndirectMode::NrcRestirGi;
+        // RtxdiContext::isReference: RTXDI without reuse, the convergence reference of emissive shots
+        bool isRtxdiReference = false;
+        // WorldLights::areTriangleLightsSampled
+        bool areTriangleLightsSampled = true;
     };
 
     // modelBounds: entity 0's model-space bounding sphere, once the scene has an entity. rtxdi holds
@@ -99,7 +104,7 @@ private:
     static constexpr size_t kMirrorShippedShot = 4;
     static constexpr size_t kMirrorGeneratedShot = 5;
     static constexpr size_t kFlatNormalsShot = 7;
-    static constexpr std::array<Shot, 15> kShots = {{
+    static constexpr std::array<Shot, 17> kShots = {{
         {"gltf/2.0/MetalRoughSpheres/glTF", "MetalRoughSpheres_front", Variant::AsShipped, kFront},
         // the plane lies in xz with its normal +y
         {"gltf/2.0/TwoSidedPlane/glTF", "TwoSidedPlane_top", Variant::AsShipped, {0.0f, 0.8f, 0.6f}},
@@ -132,6 +137,10 @@ private:
         // along the courtyard; the column shafts and arches turn away from it. Shadowed lights is the clean view
         {"models/Sponza", "Sponza_terminator", Variant::AsShipped, kFront,
          CameraPose{{0.0f, 4.0f, 2.5f}, {-4.0f, 7.0f, -4.0f}}, SunAngles{20.0f, 40.0f}},
+        // M7 E2 (spec/m7/e2_emissive_triangles.md): five cubes of emissive strength 1 to 16 over a backdrop they light,
+        // then a textured emitter
+        {"gltf/2.0/EmissiveStrengthTest/glTF", "EmissiveStrengthTest_front", Variant::AsShipped, kFront},
+        {"gltf/2.0/DamagedHelmet/glTF", "DamagedHelmet_front", Variant::AsShipped, kFront},
     }};
     static constexpr std::array<NormalCheck, 2> kNormalChecks = {{
         {"A4 generated tangents match the shipped ones (NormalTangentMirrorTest shading normal)", kMirrorGeneratedShot,
@@ -172,23 +181,56 @@ private:
         {DebugView::IndirectRadiance, IndirectMode::RestirGi},
         {DebugView::DlssInput, IndirectMode::RestirGi},
     }};
-    // ReSTIR DI (Direct lighting) averaged over frames against Shadowed lights on local lights (lamp) and directional
-    // sun + shadows (Sponza_terminator), after each shot's views
-    static constexpr std::array<size_t, 2> kConvergenceShots = {10, 14};
+    // what ReSTIR DI's mean is held against
+    enum class ConvergenceReference : uint8_t
+    {
+        // Shadowed lights: the exact sum over the punctual lights, one frame
+        ShadowedLights,
+        // RTXDI without reuse (32 local + 8 infinite candidates) averaged over kReferenceFrames: the reference of
+        // triangle lights, which Shadowed lights leaves out
+        RtxdiNone,
+    };
+    struct ConvergenceShot
+    {
+        size_t shot;
+        ConvergenceReference reference;
+        // off: the run tests the punctual lights alone, as Shadowed lights sums them
+        bool areTriangleLightsSampled;
+        // over convergedSettings' 0: a BRDF ray names the triangle light it hits (RAB_TraceRayForLocalLight)
+        uint32_t brdfSamples;
+    };
+    // ReSTIR DI (Direct lighting) averaged over frames after each shot's views: point and spot lights (lamp; its
+    // emissive bulb needs power-based light selection, M7 F1, considerations C-E2-1), the directional sun with shadows
+    // (Sponza_terminator), triangle lights alone with one BRDF candidate, NVIDIA's Medium (EmissiveStrengthTest)
+    static constexpr std::array<ConvergenceShot, 3> kConvergenceShots = {{
+        {10, ConvergenceReference::ShadowedLights, false, 0},
+        {14, ConvergenceReference::ShadowedLights, true, 0},
+        {15, ConvergenceReference::RtxdiNone, true, 1},
+    }};
     static constexpr uint32_t kConvergenceWarmupFrames = 16;
     static constexpr uint32_t kConvergenceFrames = 64;
+    static constexpr uint32_t kReferenceFrames = 1024;
     static constexpr uint32_t kConvergenceTileSize = 16;
     // shares of the reference's summed luminance; RTXDI 3.1's fused pass read +0.13% and 2.43%, its Basic bug -35%
     static constexpr double kMaxConvergenceBias = 0.005;
     static constexpr double kMaxConvergenceTileP90 = 0.03;
-    [[nodiscard]] static constexpr bool isConvergenceShot(size_t index) noexcept
+    [[nodiscard]] static constexpr const ConvergenceShot* findConvergenceShot(size_t index) noexcept
     {
-        for (const size_t shot : kConvergenceShots) {
-            if (shot == index) {
-                return true;
+        for (const ConvergenceShot& shot : kConvergenceShots) {
+            if (shot.shot == index) {
+                return &shot;
             }
         }
-        return false;
+        return nullptr;
+    }
+    [[nodiscard]] static constexpr std::optional<ConvergenceReference> convergenceReference(size_t index) noexcept
+    {
+        const ConvergenceShot* shot = findConvergenceShot(index);
+        return shot != nullptr ? std::optional(shot->reference) : std::nullopt;
+    }
+    [[nodiscard]] static constexpr bool isConvergenceShot(size_t index) noexcept
+    {
+        return findConvergenceShot(index) != nullptr;
     }
     // the load frame, then frames with the shot's camera before the first capture
     static constexpr uint32_t kSettleFrames = 3;
@@ -210,6 +252,8 @@ private:
     [[nodiscard]] size_t evaluateNormalChecks() const;
     // one frame of the convergence run; true after its last frame
     [[nodiscard]] bool advanceConvergence(const std::optional<Renderer::DisplayCapture>& capture);
+    // one frame of the RtxdiNone reference phase
+    void accumulateReference(const Renderer::DisplayCapture& capture);
     // logs the metrics; true when within the limits
     [[nodiscard]] bool evaluateConvergence() const;
     // next shot; true after the last one
@@ -228,8 +272,11 @@ private:
     {
         size_t shotIndex = 0;
         vk::Extent2D extent{};
-        // Shadowed lights luminance and RGB sum of the convergence shot
+        // Shadowed lights luminance and RGB sum of the convergence shot, or the RtxdiNone frames' mean
         std::vector<float> reference;
+        // RtxdiNone: frames still accumulate into referenceSum
+        bool isReferencePhase = false;
+        std::vector<double> referenceSum;
         std::array<double, 3> referenceRgb{0.0, 0.0, 0.0};
         uint64_t referenceNonFinite = 0;
         uint64_t referenceNegative = 0;

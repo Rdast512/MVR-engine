@@ -335,6 +335,10 @@ void RtxdiContext::configureGi(bool isGiReuse)
 
 void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool isGiReuseAllowed)
 {
+    // advance before changing resampling mode so SetResamplingMode rotates from last frame's output buffer
+    const uint32_t rtxdiFrame = frameIndexOverride.value_or(frameIndex);
+    context->SetFrameIndex(rtxdiFrame);
+    giContext->SetFrameIndex(rtxdiFrame);
     if (isReference != isReferenceApplied) {
         configure();
         logInfo(std::format("ReSTIR DI: {}", isReference ? "reference (no reuse)" : "temporal and spatial"), "Rtxdi");
@@ -348,10 +352,6 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
     } else if (giSettings != appliedGiSettings) {
         configureGi(isGiReuse);
     }
-    // rotates the reservoir buffer indices and the frame's random number
-    const uint32_t rtxdiFrame = frameIndexOverride.value_or(frameIndex);
-    context->SetFrameIndex(rtxdiFrame);
-    giContext->SetFrameIndex(rtxdiFrame);
     const RTXDI_GIBufferIndices giBufferIndices = giContext->GetBufferIndices();
     // rtxdi_gi_shade reads neighbors from the temporal output and writes next frame's temporal input
     assert(giContext->GetResamplingMode() == rtxdi::ReSTIRGI_ResamplingMode::None ||
@@ -365,14 +365,15 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
     assert(bufferIndices.spatialResamplingInputBufferIndex != bufferIndices.shadingInputBufferIndex ||
            context->GetResamplingMode() == rtxdi::ReSTIRDI_ResamplingMode::None);
 
-    // local lights lead the world light rows (AssetBuffers::uploadLights), the sun ends them;
-    // RAB_TranslateLightIndex is the identity
-    const uint32_t lightCount = worldLights.lightCount();
-    const uint32_t localLightCount = worldLights.localLightCount();
+    // point, spot and triangle lights lead the world light rows (WorldLights), the directional rows and the sun end
+    // them; RAB_TranslateLightIndex is the identity
     const RTXDI_LightBufferParameters lightBuffer{
-        .localLightBufferRegion = {.firstLightIndex = 0, .numLights = localLightCount, .pad1 = 0, .pad2 = 0},
-        .infiniteLightBufferRegion = {.firstLightIndex = localLightCount,
-                                      .numLights = lightCount - localLightCount,
+        .localLightBufferRegion = {.firstLightIndex = 0,
+                                   .numLights = worldLights.localLightCount(),
+                                   .pad1 = 0,
+                                   .pad2 = 0},
+        .infiniteLightBufferRegion = {.firstLightIndex = worldLights.firstInfiniteLight(),
+                                      .numLights = worldLights.infiniteLightCount(),
                                       .pad1 = 0,
                                       .pad2 = 0},
         .environmentLightParams = {.lightPresent = 0, .lightIndex = 0, .pad1 = 0, .pad2 = 0},

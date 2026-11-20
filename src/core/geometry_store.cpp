@@ -358,15 +358,24 @@ MeshletBuild GeometryStore::buildMeshlets(uint32_t firstIndex, uint32_t indexCou
                                              &vertices[firstVertex]));
     }
 
-    // groups take contiguous meshlet runs; only the descriptors move, the vertex and triangle data stay put
+    // groups take contiguous meshlet runs. The triangles follow their meshlets, so the primitive's triangles are dense
+    // in meshlet order and a triangle-light row maps to its meshlet by triangleOffset (spec/m7/e2_emissive_triangles.md);
+    // the vertex data stays put
     const MeshletPartition partition =
         partitionMeshlets(descs, build.vertices, build.triangles, rangePositions, vertexCount);
     build.meshlets.reserve(meshletCount);
     build.bounds.reserve(meshletCount);
+    std::vector<uint8_t> orderedTriangles;
+    orderedTriangles.reserve(build.triangles.size());
     for (const uint32_t meshlet : partition.order) {
-        build.meshlets.push_back(descs[meshlet]);
+        GpuMeshletDesc desc = descs[meshlet];
+        const auto first = build.triangles.begin() + desc.triangleOffset;
+        desc.triangleOffset = static_cast<uint32_t>(orderedTriangles.size());
+        orderedTriangles.insert(orderedTriangles.end(), first, first + desc.triangleCount * 3);
+        build.meshlets.push_back(desc);
         build.bounds.push_back(boxes[meshlet]);
     }
+    build.triangles = std::move(orderedTriangles);
     build.groups.reserve(partition.offsets.size() - 1);
     for (size_t g = 0; g + 1 < partition.offsets.size(); ++g) {
         GpuMeshletGroup group{
@@ -408,6 +417,7 @@ void GeometryStore::appendMeshlets(MeshletBuild&& build, PrimitiveDraw& draw)
     draw.meshlets = MeshletDraw{
         .firstMeshlet = static_cast<uint32_t>(meshlets.size()),
         .meshletCount = static_cast<uint32_t>(build.meshlets.size()),
+        .triangleCount = static_cast<uint32_t>(build.triangles.size() / 3),
     };
     draw.groupCount = static_cast<uint32_t>(build.groups.size());
 

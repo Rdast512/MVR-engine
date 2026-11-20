@@ -9,12 +9,12 @@
 // Surfaces come from the guide sets: current or previous by frame parity, so a previous-frame surface is last frame's
 // resolve output (position guide, normals, albedos, camera position). Lights are E2's world rows, last frame's for
 // previous-frame loads; light index i is row i in both frames (RAB_TranslateLightIndex is the identity), and a load or
-// unload resets history.
+// unload resets history. Point and spot rows are deltas; triangle rows (spec/m7/e2_emissive_triangles.md) take a
+// uniform area sample, and a BRDF ray names the triangle light it hits.
 //
 // Not built yet:
-//   - presampling (Power_RIS / ReGIR, M7): RAB_LoadCompactLightInfo, RAB_StoreCompactLightInfo, RIS buffer
-//   - emissive triangles (M7): RAB_TraceRayForLocalLight never names a light; RAB_EvaluateLocalLightSourcePdf is the
-//     uniform pdf
+//   - presampling (Power_RIS / ReGIR, M7 F1): RAB_LoadCompactLightInfo, RAB_StoreCompactLightInfo, RIS buffer;
+//     RAB_EvaluateLocalLightSourcePdf is the uniform pdf
 //   - environment light: lightPresent stays 0, so its two functions are never reached
 
 import types;
@@ -22,6 +22,7 @@ import core.binding;
 import core.frame;
 import core.math;
 import lighting.lights;
+import lighting.triangle_lights;
 import geometry.hit;
 import material.brdf;
 import material.pbr;
@@ -64,6 +65,7 @@ struct RtxdiBridgeState
     CheckedBuffer<RTXDI_PackedGIReservoir> giReservoirs;
     uint64_t neighborOffsets;
     uint localLightCount;
+    TriangleLightTable triangleLights;
 };
 
 static RtxdiBridgeState gRtxdiBridge;
@@ -88,6 +90,7 @@ void rtxdiBridgeInit(GpuFrameRoot root)
     gRtxdiBridge.giReservoirs.count = constants[0].giReservoirCount;
     gRtxdiBridge.neighborOffsets = constants[0].neighborOffsets;
     gRtxdiBridge.localLightCount = constants[0].lightBuffer.localLightBufferRegion.numLights;
+    gRtxdiBridge.triangleLights = loadTriangleLightTable(root);
 }
 
 GpuRtxdiConstants loadRtxdiConstants(GpuFrameRoot root)
@@ -245,19 +248,26 @@ bool RAB_SurfaceImportanceSampleBrdf(RAB_Surface surface, inout RTXDI_RandomSamp
 }
 
 //
-// lights: E2's world rows, punctual only until M7
+// lights: E2's world rows; point, spot and directional through evalLight, triangles through lighting.triangle_lights
 //
 
 typealias RAB_LightInfo = GpuLight;
 
-// evalLight at the surface it was sampled for; RTXDI always scores a sample against that same surface
+// a light at the surface it was sampled for; RTXDI always scores a sample against that same surface
 struct RAB_LightSample
 {
     float3 l;        // unit, toward the light
     float distance;  // visibility tMax; kInfiniteDistance for directional
-    float3 radiance; // incident, before NdotL
+    // incident, before NdotL; an area sample's is radiance / solidAnglePdf, so the shading and the target function
+    // weigh it as the RTXDI sample's bridge does
+    float3 radiance;
     float3 position; // world position for local lights; unused when distance >= kInfiniteDistance
+    float solidAnglePdf; // area samples; 0 for deltas and for an area sample that carries no light
 };
+
+// an area sample's visibility ray ends this share of the distance short of the light, which lies on a triangle the
+// ray would otherwise hit
+static const float kLightSampleShortening = 1.0e-3;
 
 RAB_LightInfo RAB_EmptyLightInfo()
 {
@@ -290,27 +300,39 @@ int RAB_TranslateLightIndex(uint lightIndex, bool currentToPrevious)
     return int(lightIndex);
 }
 
-// punctual lights are deltas: uv is unused
+// triangles: the uniform area sample uv maps to; punctual lights are deltas, uv is unused
 RAB_LightSample RAB_SamplePolymorphicLight(RAB_LightInfo light, RAB_Surface surface, float2 uv)
 {
-    const LightSample evaluated = evalLight(light, surface.position);
     RAB_LightSample sample;
+    if (light.type == LightType.Triangle)
+    {
+        const TriangleLightSample area = sampleTriangleLight(asTriangleLight(light), surface.position, uv);
+        sample.l = area.l;
+        sample.distance = area.distance * (1.0 - kLightSampleShortening);
+        sample.radiance = area.solidAnglePdf > 0.0 ? area.radiance / area.solidAnglePdf : float3(0.0, 0.0, 0.0);
+        sample.position = area.position;
+        sample.solidAnglePdf = area.solidAnglePdf;
+        return sample;
+    }
+    const LightSample evaluated = evalLight(light, surface.position);
     sample.l = evaluated.l;
     sample.distance = evaluated.distance;
     sample.radiance = evaluated.radiance;
     sample.position = light.position;
+    sample.solidAnglePdf = 0.0;
     return sample;
 }
 
-// no BRDF ray can hit a delta light, so RTXDI skips light/BRDF MIS for these
+// no BRDF ray can hit a delta light, so RTXDI skips light/BRDF MIS for these; an area sample without light has no
+// solid-angle pdf to blend
 bool RAB_IsAnalyticLightSample(RAB_LightSample sample)
 {
-    return true;
+    return sample.solidAnglePdf <= 0.0;
 }
 
 float RAB_LightSampleSolidAnglePdf(RAB_LightSample sample)
 {
-    return 0.0;
+    return sample.solidAnglePdf;
 }
 
 void RAB_GetLightDirDistance(RAB_Surface surface, RAB_LightSample sample, out float3 direction, out float distance)
@@ -403,16 +425,44 @@ bool RAB_GetTemporalConservativeVisibility(RAB_Surface currentSurface, RAB_Surfa
         return true;
     }
     const float3 l = toLight / distance;
-    return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(currentSurface, l), l, 0.0, distance);
+    const float shortening = sample.solidAnglePdf > 0.0 ? kLightSampleShortening : 0.0;
+    return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(currentSurface, l), l, 0.0,
+                           distance * (1.0 - shortening));
 }
 
-// BRDF rays: until emissive triangles (M7) no geometry is a light, so a hit never names one
+// BRDF rays (BrdfRayTracing in the RTXDI sample): the closest hit names its triangle light, and randXY replays the hit
+// point through RAB_SamplePolymorphicLight
 bool RAB_TraceRayForLocalLight(float3 origin, float3 direction, float tMin, float tMax, out uint lightIndex,
                                out float2 randXY)
 {
     lightIndex = RTXDI_InvalidLightIndex;
     randXY = float2(0.0, 0.0);
-    return !traceVisibility(gRtxdiBridge.rays, origin, direction, tMin, tMax);
+    // no hit can name a light: the first hit answers whether anything blocks the ray, at a fraction of the cost
+    if (gRtxdiBridge.triangleLights.lightCount == 0)
+    {
+        return !traceVisibility(gRtxdiBridge.rays, origin, direction, tMin, tMax);
+    }
+    RayDesc ray;
+    ray.Origin = origin;
+    ray.Direction = direction;
+    ray.TMin = tMin;
+    ray.TMax = tMax;
+    RayHit hit;
+    if (!traceClosest(gRtxdiBridge.rays, ray, hit))
+    {
+        return false;
+    }
+    lightIndex = hitLightIndex(gRtxdiBridge.triangleLights, hit);
+    if (lightIndex == kNoneIndex)
+    {
+        lightIndex = RTXDI_InvalidLightIndex;
+    }
+    else
+    {
+        const float2 b = hit.barycentrics;
+        randXY = triangleRandFromBarycentrics(float3(1.0 - b.x - b.y, b.x, b.y));
+    }
+    return true;
 }
 
 //
@@ -427,9 +477,16 @@ float3 shadeGiSample(RAB_Surface surface, float3 samplePosition, float3 sampleRa
     {
         return float3(0.0, 0.0, 0.0);
     }
-    const float3 l = normalize(samplePosition - surface.position);
+    const float3 toSample = samplePosition - surface.position;
+    const float distanceSq = dot(toSample, toSample);
+    if (distanceSq <= 0.0)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    const float3 l = toSample * rsqrt(distanceSq);
     const float nDotL = dot(surface.normal, l);
-    if (nDotL <= 0.0)
+    // match the initial bounce's geometric hemisphere check so reused samples cannot leak from behind normal-mapped triangles
+    if (nDotL <= 0.0 || dot(surface.geoNormal, l) <= 0.0)
     {
         return float3(0.0, 0.0, 0.0);
     }
@@ -471,6 +528,10 @@ bool isReconnectionVisible(RAB_Surface surface, float3 samplePosition)
         return false;
     }
     const float3 l = toSample / distance;
+    if (dot(surface.geoNormal, l) <= 0.0)
+    {
+        return false;
+    }
     return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(surface, l), l, 0.0,
                            distance * (1.0 - kReconnectionShortening));
 }

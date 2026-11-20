@@ -29,8 +29,8 @@ struct RasterOrigin : IRayOrigin
     float3 spawn(float3 direction) { return rasterRayOrigin(surface, direction); }
 };
 
-// one RIS-sampled light at a lit vertex, without reuse. No geometry is a light before emissive triangles (M7): a BRDF
-// candidate would only spend a ray
+// one RIS-sampled light at a lit vertex, without reuse. Light candidates alone reach every light, triangles included;
+// a BRDF candidate would spend one more ray per vertex
 RTXDI_DIReservoir sampleLightsAt(RAB_Surface surface, GpuRtxdiConstants constants, inout RTXDI_RandomSamplerState rng,
                                  inout RTXDI_RandomSamplerState coherentRng, out RAB_LightSample lightSample)
 {
@@ -73,8 +73,15 @@ float3 directLightAt<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, Gp
 struct PathHit
 {
     RAB_Surface surface;
-    float3 emissive;
+    float3 emissive; // after the one emission rule (hitEmission)
 };
+
+// the one emission rule (spec/m7/e2_emissive_triangles.md): a light triangle's light reaches every vertex through
+// light sampling, so its hit adds no emission; other emitters (unlit) add theirs. Counting both would double it
+float3 hitEmission(GpuFrameRoot root, RayHit hit, float3 emissive)
+{
+    return isLightHit(loadTriangleLightTable(root), hit) ? float3(0.0, 0.0, 0.0) : emissive;
+}
 
 // decode + material at a hit. coneDistance is camera to ray.Origin; decodeHit adds cone.spread * hit.t. No DLSS LOD
 // bias: indirect texture detail is never reconstructed at display resolution
@@ -89,7 +96,7 @@ PathHit shadeRayHit(GpuFrameRoot root, RayHit hit, RayDesc ray, float coneDistan
         sampleMaterial(loadMaterial(root, materialRow(decoded.draw.primitive)), decoded.surface, 0.0);
     PathHit result;
     result.surface = rayHitSurface(decoded, material, ray.Direction, hit.t);
-    result.emissive = material.emissive;
+    result.emissive = hitEmission(root, hit, material.emissive);
     return result;
 }
 

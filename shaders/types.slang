@@ -163,7 +163,7 @@ public struct GpuVisibleMeshlet
 
 public enum AlphaMode : uint { Opaque = 0, Mask = 1, Blend = 2 }
 // matches GpuLightType in src/core/types.hpp
-public enum LightType : uint { Directional = 0, Point = 1, Spot = 2 }
+public enum LightType : uint { Directional = 0, Point = 1, Spot = 2, Triangle = 3 }
 
 // GpuMaterial.flags; must match GpuMaterialFlag in src/core/types.hpp
 public static const uint kMaterialAlphaModeMask = 0x3u;
@@ -386,6 +386,23 @@ public struct GpuLight
     public float pad0;
 };
 
+// a world row of type Triangle, the GpuLight row reinterpreted; matches src/core/types.hpp
+public struct GpuTriangleLight
+{
+    public float3 v0;
+    public float3 edge1;
+    public float3 edge2;
+    public uint flags; // kTriangleLightFlag*
+    public float pad0;
+    public LightType type;
+    public float3 radiance;
+    public float pad1;
+};
+
+// GpuTriangleLight.flags; must match GpuTriangleLightFlag in src/core/types.hpp
+public static const uint kTriangleLightFlagDoubleSided = 1u << 0;
+public static const uint kTriangleLightFlagMirrored = 1u << 1;
+
 public struct GpuUvTransform
 {
     public float2 offset;
@@ -535,14 +552,17 @@ public struct FramePushData
     public uint64_t frameRoot;
 };
 
-// 40 B, matches src/render/push_data.hpp
+// 56 B, matches src/render/push_data.hpp
 public struct LightWorldPushData
 {
     public uint64_t frameRoot;
     public float3 sunDirection;   // world space, the direction the light travels
     public float sunIlluminance;  // lux
     public float3 sunColor;
-    public uint assetLightCount;  // asset rows first; the sun, when enabled, follows them
+    public uint assetLightCount;  // asset rows, with the triangle region after their point and spot rows; then the sun
+    public uint64_t triangleLightTasks; // GpuTriangleLightTask[triangleLightTaskCount]
+    public uint triangleLightTaskCount;
+    public uint pad0;
 };
 
 // 16 B, matches src/render/push_data.hpp
@@ -754,6 +774,15 @@ public struct GpuRayInstance
     public uint primitiveRow;      // row in GpuFrameRoot.primitives
 };
 
+// one emissive ray instance's triangle lights, rows [firstLight, +triangleCount) of the triangle region in meshlet
+// order; sorted by firstLight. Matches src/core/types.hpp
+public struct GpuTriangleLightTask
+{
+    public uint firstLight;
+    public uint triangleCount;
+    public uint rayInstance;
+};
+
 // parallel to GpuRayInstance, per scene layout: the PTLAS instance write's inputs beyond the node instance
 public struct GpuRayInstanceBuild
 {
@@ -768,6 +797,7 @@ public static const uint kRayInstanceBuildFlagOpacityMicromap = 1u << 0;
 // GpuFrameRoot.frameFlags, matches FrameFlag in src/core/types.hpp
 public static const uint kFrameFlagHistoryReset = 1u << 0;
 public static const uint kFrameFlagIndirectHistoryReset = 1u << 1;
+public static const uint kFrameFlagTriangleLightsUnsampled = 1u << 2;
 
 // per-frame root, matches GpuFrameRoot in src/core/types.hpp
 public struct GpuFrameRoot
@@ -794,7 +824,7 @@ public struct GpuFrameRoot
     public float subpixelSnap;    // pixels a vertex may move when snapped to the subpixel grid
     public uint64_t targets;      // GpuTargets
     public uint frameFlags;       // kFrameFlag*
-    public uint localLightCount;  // lights [0, localLightCount) are point and spot, the rest directional
+    public uint localLightCount;  // RTXDI's local region: point and spot rows, then the triangle lights
     public uint64_t rayInstances;   // GpuRayInstance[], 0 until the RT scene exists
     public uint64_t rtxdiConstants; // 0 until M3
     public uint64_t cacheConstants; // GpuNrcConstants of this frame slot (M4 G3)
@@ -804,4 +834,7 @@ public struct GpuFrameRoot
     public uint64_t prevWorldLights; // last frame's worldLights, same rows; 0 on a history reset
     public uint64_t rayDebug;        // GpuRayDebugCounters of this frame slot; 0 unless kDebugRays
     public uint64_t materialBins;    // GpuMaterialBins, then the per-bin tile lists
+    public uint64_t rayInstanceLights; // uint[], parallel to rayInstances: first triangle-region row or kNoneIndex
+    public uint firstTriangleLight;    // world row of triangle light 0, after the point and spot rows
+    public uint triangleLightCount;
 };

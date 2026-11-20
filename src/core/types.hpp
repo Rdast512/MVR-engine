@@ -98,6 +98,9 @@ struct MeshletDraw
 {
     uint32_t firstMeshlet = 0;
     uint32_t meshletCount = 0;
+    // the meshlets' triangles, stored in meshlet order: meshlet m starts (triangleOffset - first triangleOffset) / 3
+    // triangles into the primitive
+    uint32_t triangleCount = 0;
 };
 
 inline constexpr uint32_t kNoneIndex = ~0u;
@@ -765,6 +768,8 @@ enum class GpuLightType : uint32_t
     Directional = 0,
     Point = 1,
     Spot = 2,
+    // world rows only (GpuTriangleLight), written by light_world from an emissive primitive's triangles
+    Triangle = 3,
 };
 
 struct LightDef
@@ -812,6 +817,36 @@ static_assert(offsetof(GpuLight, innerCone) == 48);
 static_assert(offsetof(GpuLight, outerCone) == 52);
 static_assert(offsetof(GpuLight, instanceIndex) == 56);
 static_assert(offsetof(GpuLight, pad0) == 60);
+
+// a world light row of type Triangle (spec/m7/e2_emissive_triangles.md), the GpuLight row reinterpreted: type at the
+// same offset. One emitting triangle, radiance constant over it
+struct GpuTriangleLight
+{
+    glm::vec3 v0{0.0f};
+    glm::vec3 edge1{0.0f};
+    glm::vec3 edge2{0.0f};
+    // GpuTriangleLightFlag bits
+    uint32_t flags = 0;
+    float pad0 = 0.0f;
+    GpuLightType type = GpuLightType::Triangle;
+    // emitted radiance, W / (sr m^2) in scene units
+    glm::vec3 radiance{0.0f};
+    float pad1 = 0.0f;
+};
+static_assert(sizeof(GpuTriangleLight) == sizeof(GpuLight));
+static_assert(offsetof(GpuTriangleLight, edge1) == 12);
+static_assert(offsetof(GpuTriangleLight, edge2) == 24);
+static_assert(offsetof(GpuTriangleLight, flags) == 36);
+static_assert(offsetof(GpuTriangleLight, type) == offsetof(GpuLight, type));
+static_assert(offsetof(GpuTriangleLight, radiance) == 48);
+
+namespace GpuTriangleLightFlag
+{
+    // the material is double-sided: both faces emit
+    inline constexpr uint32_t DoubleSided = 1u << 0;
+    // the placement mirrors: cross(edge1, edge2) points out of the back face
+    inline constexpr uint32_t Mirrored = 1u << 1;
+} // namespace GpuTriangleLightFlag
 
 namespace AuxOwnerKind
 {
@@ -1029,6 +1064,9 @@ namespace FrameFlag
     inline constexpr uint32_t HistoryReset = 1u << 0;
     // the indirect mode or a ReSTIR GI reference toggle changed: ReSTIR GI skips temporal reuse
     inline constexpr uint32_t IndirectHistoryReset = 1u << 1;
+    // WorldLights::areTriangleLightsSampled off: RTXDI's local region holds the point and spot rows only, BRDF rays
+    // name no light and hits on light triangles add their emission
+    inline constexpr uint32_t TriangleLightsUnsampled = 1u << 2;
 } // namespace FrameFlag
 
 // [InstanceIndex()] of a TLAS instance; written by the CPU per scene layout (RayTracingScene)
@@ -1062,6 +1100,20 @@ namespace GpuRayInstanceBuildFlag
     inline constexpr uint32_t OpacityMicromap = 1u << 0;
 } // namespace GpuRayInstanceBuildFlag
 static_assert(offsetof(GpuRayInstance, primitiveRow) == 4);
+
+// one emissive ray instance's triangle lights (light_world's task, PrepareLightsTask in the RTXDI sample): rows
+// [firstLight, firstLight + triangleCount) of the triangle region, the primitive's triangles in meshlet order. Sorted by
+// firstLight, contiguous
+struct GpuTriangleLightTask
+{
+    uint32_t firstLight = 0;
+    uint32_t triangleCount = 0;
+    // row of GpuFrameRoot::rayInstances
+    uint32_t rayInstance = 0;
+};
+static_assert(sizeof(GpuTriangleLightTask) == 12);
+static_assert(offsetof(GpuTriangleLightTask, triangleCount) == 4);
+static_assert(offsetof(GpuTriangleLightTask, rayInstance) == 8);
 
 // per-frame entry point for every shader: the only address the push data carries
 struct GpuFrameRoot
@@ -1105,7 +1157,8 @@ struct GpuFrameRoot
     vk::DeviceAddress targets = 0;
     // FrameFlag
     uint32_t frameFlags = 0;
-    // lights [0, localLightCount) are point and spot, the rest directional: RTXDI's local and infinite regions
+    // RTXDI's local region: world rows [0, localLightCount) are point and spot, then the triangle lights; the rest
+    // are directional (RTXDI's infinite region)
     uint32_t localLightCount = 0;
     // GpuRayInstance[], 0 until the RT scene exists
     vk::DeviceAddress rayInstances = 0;
@@ -1124,8 +1177,17 @@ struct GpuFrameRoot
     vk::DeviceAddress rayDebug = 0;
     // GpuMaterialBins, then the per-bin tile lists (RenderTargets); one copy for both frame slots
     vk::DeviceAddress materialBins = 0;
+    // uint[], parallel to rayInstances: the instance's first row in the triangle region, kNoneIndex unless its
+    // material emits (RayTracingScene)
+    vk::DeviceAddress rayInstanceLights = 0;
+    // world row of triangle light 0: the point and spot rows come first
+    uint32_t firstTriangleLight = 0;
+    uint32_t triangleLightCount = 0;
 };
-static_assert(sizeof(GpuFrameRoot) == 208);
+static_assert(sizeof(GpuFrameRoot) == 224);
+static_assert(offsetof(GpuFrameRoot, rayInstanceLights) == 208);
+static_assert(offsetof(GpuFrameRoot, firstTriangleLight) == 216);
+static_assert(offsetof(GpuFrameRoot, triangleLightCount) == 220);
 static_assert(offsetof(GpuFrameRoot, materialBins) == 200);
 static_assert(offsetof(GpuFrameRoot, camera) == 0);
 static_assert(offsetof(GpuFrameRoot, instances) == 8);

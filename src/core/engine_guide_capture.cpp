@@ -147,6 +147,9 @@ EngineGuideCapture::Request EngineGuideCapture::beginFrame(Camera& camera, Debug
         rtxdi = *heldRtxdiSettings;
         heldRtxdiSettings.reset();
     }
+    if (isConverging) {
+        rtxdi.brdfSamples = findConvergenceShot(shotIndex)->brdfSamples;
+    }
     Request request;
     if (shotIndex >= kShots.size()) {
         return request;
@@ -170,6 +173,8 @@ EngineGuideCapture::Request EngineGuideCapture::beginFrame(Camera& camera, Debug
         camera.lookAt(center + distance * glm::normalize(shot.viewDirection), center);
     }
     request.sun = shot.sun;
+    request.isRtxdiReference = isConvergenceRunning && convergence->isReferencePhase;
+    request.areTriangleLightsSampled = !isConvergenceRunning || findConvergenceShot(shotIndex)->areTriangleLightsSampled;
     debugView.view = isConvergenceRunning ? DebugView::DirectLighting : kViews[viewIndex].view;
     request.indirectMode = isConvergenceRunning ? IndirectMode::NrcRestirGi : kViews[viewIndex].mode;
     request.shouldCapture = shotFrame >= kSettleFrames && modelBounds.has_value() &&
@@ -197,7 +202,8 @@ bool EngineGuideCapture::endFrame(const std::optional<Renderer::DisplayCapture>&
         ++writtenCount;
     }
     keepNormals(*capture);
-    if (isConvergenceShot(shotIndex) && kViews[viewIndex].view == DebugView::ShadowedLights) {
+    const std::optional<ConvergenceReference> reference = convergenceReference(shotIndex);
+    if (reference == ConvergenceReference::ShadowedLights && kViews[viewIndex].view == DebugView::ShadowedLights) {
         const DecodedFrame decoded = decodeFrame(*capture);
         convergence.emplace();
         convergence->shotIndex = shotIndex;
@@ -210,7 +216,13 @@ bool EngineGuideCapture::endFrame(const std::optional<Renderer::DisplayCapture>&
     if (++viewIndex < kViews.size()) {
         return false;
     }
-    if (isConvergenceShot(shotIndex) && convergence) {
+    if (reference == ConvergenceReference::RtxdiNone) {
+        convergence.emplace();
+        convergence->shotIndex = shotIndex;
+        convergence->extent = capture->extent;
+        convergence->isReferencePhase = true;
+    }
+    if (reference && convergence) {
         isConvergenceRunning = true;
         return false;
     }
@@ -319,6 +331,10 @@ bool EngineGuideCapture::advanceConvergence(const std::optional<Renderer::Displa
     if (run.frame++ < kConvergenceWarmupFrames) {
         return false;
     }
+    if (capture && capture->extent == run.extent && run.isReferencePhase) {
+        accumulateReference(*capture);
+        return false;
+    }
     if (!capture || capture->extent != run.extent) {
         logError(std::format("FAIL ReSTIR DI convergence ({}): capture missing or resized", kShots[run.shotIndex].name),
                  "GuideCapture");
@@ -356,6 +372,39 @@ bool EngineGuideCapture::advanceConvergence(const std::optional<Renderer::Displa
     return true;
 }
 
+void EngineGuideCapture::accumulateReference(const Renderer::DisplayCapture& capture)
+{
+    ConvergenceRun& run = *convergence;
+    const DecodedFrame decoded = decodeFrame(capture);
+    if (run.referenceSum.empty()) {
+        run.referenceSum.assign(decoded.luminance.size(), 0.0);
+    }
+    for (size_t texel = 0; texel < decoded.luminance.size(); ++texel) {
+        run.referenceSum[texel] += decoded.luminance[texel];
+    }
+    for (size_t channel = 0; channel < 3; ++channel) {
+        run.referenceRgb[channel] += decoded.rgbTotal[channel];
+    }
+    run.referenceNonFinite += decoded.nonFinitePixels;
+    run.referenceNegative += decoded.negativePixels;
+    if (++run.capturedFrames < kReferenceFrames) {
+        return;
+    }
+    // the mean is the reference; ReSTIR DI then warms up again with reuse on
+    const double frames = run.capturedFrames;
+    run.reference.resize(run.referenceSum.size());
+    for (size_t texel = 0; texel < run.referenceSum.size(); ++texel) {
+        run.reference[texel] = static_cast<float>(run.referenceSum[texel] / frames);
+    }
+    for (double& channel : run.referenceRgb) {
+        channel /= frames;
+    }
+    run.referenceSum = {};
+    run.isReferencePhase = false;
+    run.capturedFrames = 0;
+    run.frame = 0;
+}
+
 bool EngineGuideCapture::evaluateConvergence() const
 {
     const ConvergenceRun& run = *convergence;
@@ -386,10 +435,14 @@ bool EngineGuideCapture::evaluateConvergence() const
         maxRgbBias <= kMaxConvergenceBias && tiles.p90 <= kMaxConvergenceTileP90 &&
         tiles.zeroRefLeak <= kMaxConvergenceBias;
     const std::string detail = std::format(
-        "{}, {} frames after {}: bias {:+.3f}% (RGB {:+.3f}/{:+.3f}/{:+.3f}%), {}x{} tiles median {:.2f}% / p90 "
+        "{} against {}, {} frames after {}: bias {:+.3f}% (RGB {:+.3f}/{:+.3f}/{:+.3f}%), {}x{} tiles median {:.2f}% / p90 "
         "{:.2f}% / max {:.2f}% ({} tiles, dark leak {:.3f}% in {} tiles), per-frame error {:.2f}%, frame-to-frame "
         "change {:.2f}%, nonFinite {} neg {}",
-        kShots[run.shotIndex].name, run.capturedFrames, kConvergenceWarmupFrames, bias * 100.0, rgbBias[0] * 100.0,
+        kShots[run.shotIndex].name,
+        convergenceReference(run.shotIndex) == ConvergenceReference::RtxdiNone
+            ? std::format("RTXDI None over {} frames", kReferenceFrames)
+            : std::string("Shadowed lights"),
+        run.capturedFrames, kConvergenceWarmupFrames, bias * 100.0, rgbBias[0] * 100.0,
         rgbBias[1] * 100.0, rgbBias[2] * 100.0, kConvergenceTileSize, kConvergenceTileSize, tiles.median * 100.0,
         tiles.p90 * 100.0, tiles.max * 100.0, tiles.count, tiles.zeroRefLeak * 100.0, tiles.zeroRefLeakTiles,
         run.absoluteErrorSum / frames / referenceTotal * 100.0,

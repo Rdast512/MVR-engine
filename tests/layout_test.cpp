@@ -275,6 +275,16 @@ namespace
             LAYOUT_FIELD(GpuLight, instanceIndex),
             LAYOUT_FIELD(GpuLight, pad0),
         }},
+        {"GpuTriangleLight", sizeof(GpuTriangleLight), {
+            LAYOUT_FIELD(GpuTriangleLight, v0),
+            LAYOUT_FIELD(GpuTriangleLight, edge1),
+            LAYOUT_FIELD(GpuTriangleLight, edge2),
+            LAYOUT_FIELD(GpuTriangleLight, flags),
+            LAYOUT_FIELD(GpuTriangleLight, pad0),
+            LAYOUT_FIELD(GpuTriangleLight, type),
+            LAYOUT_FIELD(GpuTriangleLight, radiance),
+            LAYOUT_FIELD(GpuTriangleLight, pad1),
+        }},
         {"GpuUvTransform", sizeof(GpuUvTransform), {
             LAYOUT_FIELD(GpuUvTransform, offset),
             LAYOUT_FIELD(GpuUvTransform, scale),
@@ -347,6 +357,9 @@ namespace
             LAYOUT_FIELD(LightWorldPushData, sunIlluminance),
             LAYOUT_FIELD(LightWorldPushData, sunColor),
             LAYOUT_FIELD(LightWorldPushData, assetLightCount),
+            LAYOUT_FIELD(LightWorldPushData, triangleLightTasks),
+            LAYOUT_FIELD(LightWorldPushData, triangleLightTaskCount),
+            LAYOUT_FIELD(LightWorldPushData, pad0),
         }},
         {"RtInstancesPushData", sizeof(RtInstancesPushData), {
             LAYOUT_FIELD(RtInstancesPushData, frameRoot),
@@ -508,6 +521,11 @@ namespace
             LAYOUT_FIELD(GpuRayInstance, nodeInstanceIndex),
             LAYOUT_FIELD(GpuRayInstance, primitiveRow),
         }},
+        {"GpuTriangleLightTask", sizeof(GpuTriangleLightTask), {
+            LAYOUT_FIELD(GpuTriangleLightTask, firstLight),
+            LAYOUT_FIELD(GpuTriangleLightTask, triangleCount),
+            LAYOUT_FIELD(GpuTriangleLightTask, rayInstance),
+        }},
         {"GpuRayInstanceBuild", sizeof(GpuRayInstanceBuild), {
             LAYOUT_FIELD(GpuRayInstanceBuild, blas),
             LAYOUT_FIELD(GpuRayInstanceBuild, partition),
@@ -546,6 +564,9 @@ namespace
             LAYOUT_FIELD(GpuFrameRoot, prevWorldLights),
             LAYOUT_FIELD(GpuFrameRoot, rayDebug),
             LAYOUT_FIELD(GpuFrameRoot, materialBins),
+            LAYOUT_FIELD(GpuFrameRoot, rayInstanceLights),
+            LAYOUT_FIELD(GpuFrameRoot, firstTriangleLight),
+            LAYOUT_FIELD(GpuFrameRoot, triangleLightCount),
         }},
     };
 

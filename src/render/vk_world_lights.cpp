@@ -32,15 +32,27 @@ WorldLights::Sun WorldLights::defaultSun()
 
 uint32_t WorldLights::lightCount() const
 {
-    return assets.uploadedCount(AssetBuffer::Lights) + (sun.isEnabled ? 1u : 0u);
+    return assets.uploadedCount(AssetBuffer::Lights) + triangleLightCount() + (sun.isEnabled ? 1u : 0u);
 }
 
-uint32_t WorldLights::localLightCount() const { return assets.localLightCount(); }
+uint32_t WorldLights::localLightCount() const
+{
+    return punctualLocalLightCount() + (areTriangleLightsSampled ? triangleLightCount() : 0u);
+}
+
+uint32_t WorldLights::punctualLocalLightCount() const { return assets.localLightCount(); }
+
+uint32_t WorldLights::triangleLightCount() const { return rtScene.triangleLightCount(); }
+
+uint32_t WorldLights::firstInfiniteLight() const { return punctualLocalLightCount() + triangleLightCount(); }
+
+uint32_t WorldLights::infiniteLightCount() const { return lightCount() - firstInfiniteLight(); }
 
 WorldLights::WorldLights(const Device& device, const VkAllocator& allocator, const FrameSync& frameSync,
-                         const AssetBuffers& assets, const FrameData& frameData, const ShaderObjects& shaderObjects) :
+                         const AssetBuffers& assets, const FrameData& frameData, const RayTracingScene& rtScene,
+                         const ShaderObjects& shaderObjects) :
     device(device), allocator(allocator), frameSync(frameSync), assets(assets), frameData(frameData),
-    shaderObjects(shaderObjects)
+    rtScene(rtScene), shaderObjects(shaderObjects)
 {
 }
 
@@ -102,6 +114,9 @@ void WorldLights::recordUpdate(const vk::raii::CommandBuffer& cmd, uint32_t fram
         .sunIlluminance = sun.illuminance,
         .sunColor = sun.color,
         .assetLightCount = assets.uploadedCount(AssetBuffer::Lights),
+        .triangleLightTasks = rtScene.triangleLightTasksAddress(frameSlot),
+        .triangleLightTaskCount = rtScene.triangleLightTaskCount(),
+        .pad0 = 0,
     };
     ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.lightWorld);
     cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});

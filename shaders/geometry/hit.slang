@@ -75,13 +75,13 @@ public PrimaryRay primaryRay(GpuCameraData camera, uint2 pixel, float2 targetSiz
 
 // closest hit under the ray contract of raytracing/trace.slang: one Proceed(), no candidates, no facing cull. OMM
 // 2-state comes from the ray flag: PTLAS has no instance flag for it
-public bool traceClosest(GpuFrameRoot root, RayDesc ray, out RayHit hit)
+public bool traceClosest(RayScene scene, RayDesc ray, out RayHit hit)
 {
     hit = {};
     requireOmm2StateRayFlag();
     RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OMM_2_STATE> query;
-    query.TraceRayInline(RaytracingAccelerationStructure(root.tlas), RAY_FLAG_NONE, 0xFF, ray);
-    countCandidate(root.rayDebug, query.Proceed());
+    query.TraceRayInline(RaytracingAccelerationStructure(scene.tlas), RAY_FLAG_NONE, 0xFF, ray);
+    countCandidate(scene.rayDebug, query.Proceed());
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
     {
         return false;
@@ -95,6 +95,11 @@ public bool traceClosest(GpuFrameRoot root, RayDesc ray, out RayHit hit)
     hit.objectToWorld = query.CommittedObjectToWorld3x4();
     hit.worldToObject = query.CommittedWorldToObject3x4();
     return true;
+}
+
+public bool traceClosest(GpuFrameRoot root, RayDesc ray, out RayHit hit)
+{
+    return traceClosest(loadRayScene(root), ray, hit);
 }
 
 // the node instance a hit belongs to

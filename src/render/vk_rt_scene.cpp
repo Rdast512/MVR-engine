@@ -1,4 +1,5 @@
 #include "vk_rt_scene.hpp"
+#include "../core/material_store.hpp"
 #include "../util/debug.hpp"
 #include "../util/vk_tracy.hpp"
 #include "push_data.hpp"
@@ -17,6 +18,8 @@ namespace
 {
     constexpr const char* kRayInstancesTracyName = "GPU/RayInstances";
     constexpr const char* kRayBuildsTracyName = "GPU/RayInstanceBuilds";
+    constexpr const char* kRayInstanceLightsTracyName = "GPU/RayInstanceLights";
+    constexpr const char* kTriangleLightTasksTracyName = "GPU/TriangleLightTasks";
     constexpr const char* kPtlasOperationTracyName = "GPU/PtlasOperation";
     // first allocation, in instances
     constexpr uint32_t kMinCapacity = 64;
@@ -117,6 +120,9 @@ void RayTracingScene::buildTemplates()
     ZoneScopedN("RayTracingScene::buildTemplates");
     templates.rows.clear();
     templates.builds.clear();
+    templates.firstLights.clear();
+    templates.lightTasks.clear();
+    templates.triangleLightCount = 0;
     templates.layoutGeneration = frameData.layoutGeneration();
     templates.instancesPerPartition = settings.instancesPerPartition;
     ++templates.version;
@@ -125,6 +131,15 @@ void RayTracingScene::buildTemplates()
 
     const ObjectStorage& storage = scene.objectStorage;
     const GeometryStore& geometry = scene.geometryStore;
+    const MaterialStore& materials = scene.materialStore;
+    // the GPU table holds packed rows; kNoneIndex is the default material, which does not emit
+    const auto isEmissive = [&materials](uint32_t materialId) {
+        if (materialId == kNoneIndex) {
+            return false;
+        }
+        const MaterialStore::MaterialInfo& info = materials.infos[materialId];
+        return isLightEmitter(packMaterial(info.material, info.extension));
+    };
     const uint32_t entityCount = assets.asset(AssetBuffer::Primitives).address == 0 ? 0 : storage.size();
     const std::span<const uint32_t> nodeInstanceFirsts = frameData.entityNodeInstanceFirst();
     std::vector<glm::vec2> centers;
@@ -155,6 +170,18 @@ void RayTracingScene::buildTemplates()
                     .flags = micromapped[p - model.primitives.first] != 0 ? GpuRayInstanceBuildFlag::OpacityMicromap
                                                                           : 0u,
                 });
+                const PrimitiveDraw& primitive = geometry.primitiveDraws[p];
+                if (isEmissive(primitive.materialId)) {
+                    templates.firstLights.push_back(templates.triangleLightCount);
+                    templates.lightTasks.push_back(GpuTriangleLightTask{
+                        .firstLight = templates.triangleLightCount,
+                        .triangleCount = primitive.meshlets.triangleCount,
+                        .rayInstance = static_cast<uint32_t>(templates.rows.size() - 1),
+                    });
+                    templates.triangleLightCount += primitive.meshlets.triangleCount;
+                } else {
+                    templates.firstLights.push_back(kNoneIndex);
+                }
                 const BoundingBox box = primitiveBounds(geometry, geometry.primitiveDraws[p]);
                 const glm::vec4 center = world * glm::vec4(0.5f * (box.bboxMin + box.bboxMax), 1.0f);
                 centers.emplace_back(center.x, center.z);
@@ -213,8 +240,10 @@ void RayTracingScene::buildTemplates()
         .partitions = partitions,
         .maxPerPartition = std::max(*std::ranges::max_element(occupancy), 1u),
     };
-    logInfo(std::format("rt templates: {} instances, {}x{} partitions, at most {} per partition", count, axis, axis,
-                        templates.shape.maxPerPartition),
+    logInfo(std::format("rt templates: {} instances, {}x{} partitions, at most {} per partition; {} triangle lights in "
+                        "{} emissive instances",
+                        count, axis, axis, templates.shape.maxPerPartition, templates.triangleLightCount,
+                        templates.lightTasks.size()),
             "RayTracingScene");
 }
 
@@ -229,6 +258,10 @@ void RayTracingScene::uploadTemplates(uint32_t frameSlot)
     // write-combined memory: whole arrays, never read back
     std::memcpy(buffers.rayInstances.mapped, templates.rows.data(), std::span(templates.rows).size_bytes());
     std::memcpy(buffers.builds.mapped, templates.builds.data(), std::span(templates.builds).size_bytes());
+    std::memcpy(buffers.rayInstanceLights.mapped, templates.firstLights.data(),
+                std::span(templates.firstLights).size_bytes());
+    std::memcpy(buffers.triangleLightTasks.mapped, templates.lightTasks.data(),
+                std::span(templates.lightTasks).size_bytes());
     buffers.count = count;
     buffers.version = templates.version;
     TracyPlot("RT/Instances", static_cast<double>(count));
@@ -308,6 +341,14 @@ void RayTracingScene::createFrameBuffers(uint32_t frameSlot, uint32_t capacity)
     buffers.builds = createHostBuffer(sizeof(GpuRayInstanceBuild) * vk::DeviceSize{capacity}, vma, device.vkdevice,
                                       device.queueFamilyIndices, std::format("RayInstanceBuilds_{}", frameSlot),
                                       kRayBuildsTracyName);
+    buffers.rayInstanceLights = createHostBuffer(sizeof(uint32_t) * vk::DeviceSize{capacity}, vma, device.vkdevice,
+                                                 device.queueFamilyIndices,
+                                                 std::format("RayInstanceLights_{}", frameSlot),
+                                                 kRayInstanceLightsTracyName);
+    buffers.triangleLightTasks = createHostBuffer(sizeof(GpuTriangleLightTask) * vk::DeviceSize{capacity}, vma,
+                                                  device.vkdevice, device.queueFamilyIndices,
+                                                  std::format("TriangleLightTasks_{}", frameSlot),
+                                                  kTriangleLightTasksTracyName);
     // the build reads the op and its count as build input
     buffers.operation = createHostBuffer(kOperationBytes, vma, device.vkdevice, device.queueFamilyIndices,
                                          std::format("PtlasOperation_{}", frameSlot), kPtlasOperationTracyName,
@@ -325,6 +366,8 @@ void RayTracingScene::destroyFrameBuffers(FrameBuffers& buffers)
 {
     destroyHostBuffer(allocator.allocator, buffers.rayInstances, kRayInstancesTracyName);
     destroyHostBuffer(allocator.allocator, buffers.builds, kRayBuildsTracyName);
+    destroyHostBuffer(allocator.allocator, buffers.rayInstanceLights, kRayInstanceLightsTracyName);
+    destroyHostBuffer(allocator.allocator, buffers.triangleLightTasks, kTriangleLightTasksTracyName);
     destroyHostBuffer(allocator.allocator, buffers.operation, kPtlasOperationTracyName);
     destroyAlignedBuffer(buffers.writeInfos);
     buffers.capacity = 0;

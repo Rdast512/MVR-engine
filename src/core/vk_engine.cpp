@@ -499,6 +499,8 @@ void Engine::applyGuideCaptureRequest(const EngineGuideCapture::Request& request
         sun.elevationDegrees = request.sun->elevationDegrees;
     }
     renderer->indirectMode = request.indirectMode;
+    renderer->getRtxdi().isReference = request.isRtxdiReference;
+    renderer->getWorldLights().areTriangleLightsSampled = request.areTriangleLightsSampled;
     if (request.shouldCapture) {
         renderer->requestDisplayCapture();
     }

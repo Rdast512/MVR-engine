@@ -18,7 +18,9 @@
 // instance per (node instance, mesh primitive with meshlets). A single PTLAS is updated in place every frame on the
 // async compute queue from instance writes the GPU appends: every row after a layout change (a full build), otherwise
 // only the rows whose transform changed, each in its grid partition. The ray-instance rows only change with the scene
-// layout, so the CPU writes them per layout, never per frame
+// layout, so the CPU writes them per layout, never per frame. With them go the emissive-triangle tables
+// (spec/m7/e2_emissive_triangles.md): each ray instance's first triangle-light row, and one light_world task per
+// emissive ray instance
 class RayTracingScene
 {
 public:
@@ -67,6 +69,22 @@ public:
     {
         return frames[frameSlot].rayInstances.address;
     }
+    // uint[], parallel to the ray instances: the first triangle-region row, kNoneIndex unless the material emits
+    [[nodiscard]] vk::DeviceAddress rayInstanceLightsAddress(uint32_t frameSlot) const noexcept
+    {
+        return frames[frameSlot].rayInstanceLights.address;
+    }
+    // GpuTriangleLightTask[triangleLightTaskCount()]
+    [[nodiscard]] vk::DeviceAddress triangleLightTasksAddress(uint32_t frameSlot) const noexcept
+    {
+        return frames[frameSlot].triangleLightTasks.address;
+    }
+    [[nodiscard]] uint32_t triangleLightTaskCount() const noexcept
+    {
+        return static_cast<uint32_t>(templates.lightTasks.size());
+    }
+    // triangle lights of the layout as of the last prepareFrame
+    [[nodiscard]] uint32_t triangleLightCount() const noexcept { return templates.triangleLightCount; }
     [[nodiscard]] Stats getStats() const noexcept;
     // world box of every ray instance as of the last prepareFrame: what a ray can hit (NRC scene bounds, M4 G3);
     // empty (bboxMin > bboxMax) without instances
@@ -93,6 +111,11 @@ private:
         std::vector<GpuRayInstance> rows;
         // parallel to rows
         std::vector<GpuRayInstanceBuild> builds;
+        // parallel to rows: first triangle-region row, kNoneIndex unless the primitive's material emits
+        std::vector<uint32_t> firstLights;
+        // one per emissive row, in row order
+        std::vector<GpuTriangleLightTask> lightTasks;
+        uint32_t triangleLightCount = 0;
         PtlasShape shape;
         // FrameData::layoutGeneration and the grid density they were built for
         uint32_t layoutGeneration = ~0u;
@@ -113,9 +136,12 @@ private:
 
     struct FrameBuffers
     {
-        // host-written per layout: GpuRayInstance[capacity] and GpuRayInstanceBuild[capacity]
+        // host-written per layout: GpuRayInstance[capacity], GpuRayInstanceBuild[capacity], uint[capacity] first
+        // lights and GpuTriangleLightTask[capacity] (at most one per instance)
         HostBuffer rayInstances;
         HostBuffer builds;
+        HostBuffer rayInstanceLights;
+        HostBuffer triangleLightTasks;
         // host-reset per frame, GPU-appended: the build's one write-instance op and its op count
         HostBuffer operation;
         // GPU-written VkPartitionedAccelerationStructureWriteInstanceDataNV[capacity]

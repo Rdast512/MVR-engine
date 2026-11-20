@@ -33,7 +33,7 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
     hiz(device, allocator, frameSync, descriptorManager, shaderObjects),
     targets(device, allocator, frameSync, descriptorManager),
     rtScene(device, allocator, frameSync, scene, assets, frameData, shaderObjects),
-    worldLights(device, allocator, frameSync, assets, frameData, shaderObjects), rtxdi(device, allocator, worldLights),
+    worldLights(device, allocator, frameSync, assets, frameData, rtScene, shaderObjects), rtxdi(device, allocator, worldLights),
     nrc(device, allocator, nrcLibrary), dlss(device, frameSync),
     post(device, allocator, shaderObjects), gpuTimer(device), tracyContext(tracyContext)
 {
@@ -216,8 +216,14 @@ void Renderer::drawFrame()
     // after the RT scene followed a new layout: its bounds are NRC's
     nrc.prepareFrame(currentFrame, rtScene.getSceneBounds(), isNrcPaused());
     worldLights.prepareFrame(currentFrame, frameNumber - 1);
-    isLightSetChanged = worldLights.lightCount() != lastLightCount;
+    isLightSetChanged = worldLights.lightCount() != lastLightCount ||
+        worldLights.areTriangleLightsSampled != wereTriangleLightsSampled;
     lastLightCount = worldLights.lightCount();
+    wereTriangleLightsSampled = worldLights.areTriangleLightsSampled;
+    if (rtxdi.isReference != rtxdi.isReferenceEnabled()) {
+        // direct-light noise profile changes abruptly across reference/reuse switches
+        isDlssHistoryValid = false;
+    }
     rtxdi.prepareFrame(currentFrame, frameNumber, indirectMode != IndirectMode::Nrc);
     gpuTimer.collect(currentFrame);
     post.readBack(currentFrame);
@@ -278,10 +284,14 @@ void Renderer::drawFrame()
                             .subpixelSnap = culling.getSubpixelSnap(),
                             .debugView = debugView.packed(),
                             .frameFlags = (isHistoryReset ? FrameFlag::HistoryReset : 0u) |
-                                (isIndirectHistoryReset ? FrameFlag::IndirectHistoryReset : 0u),
+                                (isIndirectHistoryReset ? FrameFlag::IndirectHistoryReset : 0u) |
+                                (worldLights.areTriangleLightsSampled ? 0u : FrameFlag::TriangleLightsUnsampled),
                             .frameIndex = frameNumber,
                             .lightCount = worldLights.lightCount(),
                             .localLightCount = worldLights.localLightCount(),
+                            .rayInstanceLights = rtScene.rayInstanceLightsAddress(currentFrame),
+                            .firstTriangleLight = worldLights.punctualLocalLightCount(),
+                            .triangleLightCount = worldLights.triangleLightCount(),
                             .rayDebug = rayDebugCounters[currentFrame].address,
                             .materialBins = targets.materialBinsAddress(),
                         });

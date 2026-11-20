@@ -136,13 +136,19 @@ struct LightWorldPushData {
     // lux
     float sunIlluminance;
     glm::vec3 sunColor;
-    // rows [0, assetLightCount) come from the light asset buffer; the sun, when enabled, follows them
+    // rows of the light asset buffer, with the triangle region after their point and spot rows; the sun, when
+    // enabled, follows them
     uint32_t assetLightCount;
+    // GpuTriangleLightTask[triangleLightTaskCount] (RayTracingScene)
+    vk::DeviceAddress triangleLightTasks;
+    uint32_t triangleLightTaskCount;
+    uint32_t pad0;
 };
 
-static_assert(sizeof(LightWorldPushData) == 40);
+static_assert(sizeof(LightWorldPushData) == 56);
 static_assert(offsetof(LightWorldPushData, sunDirection) == 8);
 static_assert(offsetof(LightWorldPushData, assetLightCount) == 36);
+static_assert(offsetof(LightWorldPushData, triangleLightTasks) == 40);
 
 // motion_check pass; must match shaders/types.slang MotionCheckPushData
 struct MotionCheckPushData {

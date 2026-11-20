@@ -122,8 +122,20 @@ float3 reprojectionError(GpuTargets targets, uint2 pixel)
     return saturate(abs(loadGuide(targets.current, kGuideDiffuseAlbedo, pixel).rgb - previous) * 4.0);
 }
 
-// every world light, no visibility, on the guides as the RTXDI surface bridge reads them (plan F2). Unlit surfaces
-// (specular weight 0) take no light; ao is for indirect light only
+// the point, spot and directional rows, around the triangle region: the per-light views loop over these only, since
+// triangle lights are area lights that only ReSTIR DI samples (spec/m7/e2_emissive_triangles.md)
+uint punctualLightCount(GpuFrameRoot root)
+{
+    return root.lightCount - root.triangleLightCount;
+}
+
+uint punctualLightRow(GpuFrameRoot root, uint index)
+{
+    return index < root.firstTriangleLight ? index : index + root.triangleLightCount;
+}
+
+// every punctual world light, no visibility, on the guides as the RTXDI surface bridge reads them (plan F2). Unlit
+// surfaces (specular weight 0) take no light; ao is for indirect light only
 float3 unshadowedLights(GpuFrameRoot root, GpuGuideSet set, GpuCameraData camera, uint2 pixel, float depth,
                         float2 targetSize)
 {
@@ -142,9 +154,9 @@ float3 unshadowedLights(GpuFrameRoot root, GpuGuideSet set, GpuCameraData camera
     const float3 view = normalize(camera.cameraPos - position);
 
     float3 color = emissive;
-    for (uint i = 0; i < root.lightCount; ++i)
+    for (uint i = 0; i < punctualLightCount(root); ++i)
     {
-        const LightSample sample = evalLight(loadWorldLight(root, i), position);
+        const LightSample sample = evalLight(loadWorldLight(root, punctualLightRow(root, i)), position);
         const float nDotL = dot(normalRoughness.xyz, sample.l);
         if (nDotL > 0.0)
         {
@@ -155,8 +167,8 @@ float3 unshadowedLights(GpuFrameRoot root, GpuGuideSet set, GpuCameraData camera
     return color;
 }
 
-// every world light through the RTXDI bridge with one visibility ray each: the RAB_* surfaces, samples, shading and
-// rays ReSTIR DI uses, and the noise-free reference of its punctual direct light
+// every punctual world light through the RTXDI bridge with one visibility ray each: the RAB_* surfaces, samples,
+// shading and rays ReSTIR DI uses, and the noise-free reference of its punctual direct light
 float3 shadowedLights(GpuFrameRoot root, GpuGuideSet set, uint2 pixel)
 {
     rtxdiBridgeInit(root);
@@ -166,9 +178,10 @@ float3 shadowedLights(GpuFrameRoot root, GpuGuideSet set, uint2 pixel)
     {
         return color;
     }
-    for (uint i = 0; i < root.lightCount; ++i)
+    for (uint i = 0; i < punctualLightCount(root); ++i)
     {
-        const RAB_LightSample sample = RAB_SamplePolymorphicLight(RAB_LoadLightInfo(i, false), surface, float2(0.5, 0.5));
+        const RAB_LightSample sample =
+            RAB_SamplePolymorphicLight(RAB_LoadLightInfo(punctualLightRow(root, i), false), surface, float2(0.5, 0.5));
         const float3 shade = shadeLightSample(surface, sample);
         if (any(shade > 0.0) && RAB_GetConservativeVisibility(surface, sample))
         {

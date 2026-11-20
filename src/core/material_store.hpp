@@ -69,6 +69,14 @@ inline constexpr float kBlendAlphaCutoff = 0.5f;
     return (material.flags & GpuMaterialFlag::Unlit) != 0 ? MaterialBin::Unlit : MaterialBin::Standard;
 }
 
+// spec/m7/e2_emissive_triangles.md: every triangle of a primitive with this packed row is a light. An unlit color is
+// a display rule, not emission into the scene
+[[nodiscard]] inline bool isLightEmitter(const GpuMaterial& packed)
+{
+    return (packed.flags & GpuMaterialFlag::Unlit) == 0 &&
+        (packed.emissiveFactor.r > 0.0f || packed.emissiveFactor.g > 0.0f || packed.emissiveFactor.b > 0.0f);
+}
+
 // Shared material table. Rows are deduplicated by value across every loaded model and refcounted by the models that
 // reference them. Ids are absolute GPU rows and never shift: a freed row's slot is reused by the next new material.
 // Row 0 is the default material, permanent and not refcounted.

@@ -105,6 +105,9 @@ void FrameData::writeFrameRoot(uint32_t frameSlot, const FrameRootInputs& inputs
         .prevWorldLights = inputs.prevWorldLights,
         .rayDebug = inputs.rayDebug,
         .materialBins = inputs.materialBins,
+        .rayInstanceLights = inputs.rayInstanceLights,
+        .firstTriangleLight = inputs.firstTriangleLight,
+        .triangleLightCount = inputs.triangleLightCount,
     };
 }
 

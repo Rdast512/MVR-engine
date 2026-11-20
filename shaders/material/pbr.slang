@@ -136,6 +136,14 @@ void transformTangentFrame(GpuUvMatrix transform, inout float3 t, inout float3 b
     b = bitangent;
 }
 
+// emissiveFactor x the emissive texture; also a triangle light's radiance at its uv centroid (passes/light_world.slang)
+public float3 sampleEmissive(GpuMaterial material, Surface surface, float lodBias)
+{
+    const float4 one = float4(1.0, 1.0, 1.0, 1.0);
+    return material.emissiveFactor * sampleSlot(material, kUvSlotEmissive, material.emissiveTex, material.emissiveSamp,
+                                                material.emissiveUv, surface, lodBias, one).rgb;
+}
+
 // rays hit every material: the unlit body is picked per row
 public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodBias)
 {
@@ -155,9 +163,7 @@ public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, flo
                                          material.metalRoughUv, surface, lodBias, one);
     const float occlusion = sampleSlot(material, kUvSlotOcclusion, material.occlusionTex, material.occlusionSamp,
                                        material.occlusionUv, surface, lodBias, one).r;
-    const float3 emissive = material.emissiveFactor *
-        sampleSlot(material, kUvSlotEmissive, material.emissiveTex, material.emissiveSamp, material.emissiveUv, surface,
-                   lodBias, one).rgb;
+    const float3 emissive = sampleEmissive(material, surface, lodBias);
 
     SampledMaterial result;
     result.baseColor = baseColor.rgb;

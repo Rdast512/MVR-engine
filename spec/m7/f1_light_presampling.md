@@ -48,7 +48,7 @@ Give RTXDI the presampled light tiles it was built around, so local light sampli
 
 | Check | Expected |
 |---|---|
-| Convergence check | passes on `LightsPunctualLamp` and `EmissiveStrengthTest` with each mode (`Uniform`, `Power_RIS`, `ReGIR_RIS`) under `convergedSettings`; the mode it pins is recorded |
+| Convergence check | passes on `LightsPunctualLamp` and `EmissiveStrengthTest` with each mode (`Uniform`, `Power_RIS`, `ReGIR_RIS`) under `convergedSettings`; the mode it pins is recorded. The lamp's shot runs with its triangle lights sampled again (`ConvergenceShot::areTriangleLightsSampled` true) against an `RtxdiNone` reference: E2 had to turn them off, since uniform selection could not converge it (C-E2-1) |
 | Noise | `DamagedHelmet` (many unequal triangle lights): per-frame RMS error against the reference at a fixed frame count, `Uniform` > `Power_RIS` ≥ `ReGIR_RIS`; recorded |
 | `ENGINE_GI_CHECK` | 8 of 8; Sponza's numbers move with the sampling mode (few lights), recorded |
 | Compact light info test | every light type round-trips within f16 precision |

@@ -38,9 +38,14 @@ struct FrameRootInputs {
     uint32_t debugView;
     uint32_t frameFlags;
     uint32_t frameIndex;
-    // WorldLights rows: the asset's lights, then the engine's sun
+    // WorldLights rows: point and spot, triangle lights, directional with the engine's sun
     uint32_t lightCount;
+    // point, spot and triangle rows: RTXDI's local region
     uint32_t localLightCount;
+    // RayTracingScene's first triangle-light row per ray instance, and where the triangle rows start
+    vk::DeviceAddress rayInstanceLights;
+    uint32_t firstTriangleLight;
+    uint32_t triangleLightCount;
     // GpuRayDebugCounters of this slot; 0 unless kDebugRays
     vk::DeviceAddress rayDebug;
     // RenderTargets' GpuMaterialBins, shared by both slots

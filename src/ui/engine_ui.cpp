@@ -870,18 +870,25 @@ void EngineUi::drawRayTracingPanel()
                           "changed-only update");
 
     ImGui::SeparatorText("RTXDI (ReSTIR DI)");
+    const WorldLights& lights = context.renderer.getWorldLights();
+    ImGui::Text("Lights: %u punctual, %u triangle, %u infinite", lights.punctualLocalLightCount(),
+                lights.triangleLightCount(), lights.infiniteLightCount());
+    ImGui::SetItemTooltip("world light rows: point and spot, one per triangle of every emissive primitive instance "
+                          "(RTXDI's local region), then directional and the sun");
+    ImGui::Checkbox("Sample triangle lights", &context.renderer.getWorldLights().areTriangleLightsSampled);
+    ImGui::SetItemTooltip("off: RTXDI samples point, spot and directional lights only, and rays that hit an emissive "
+                          "triangle add its emission instead; resets lighting history");
     RtxdiContext& rtxdi = context.renderer.getRtxdi();
     RtxdiContext::Settings& di = rtxdi.settings;
     ImGui::Checkbox("Reference (no reuse)", &rtxdi.isReference);
     ImGui::SetItemTooltip("no reuse, 32 local + 8 infinite candidates: the unbiased ground truth of the reuse passes");
     ImGui::BeginDisabled(rtxdi.isReference);
     sliderU32("Local light candidates", di.localLightSamples, 0, 64);
-    ImGui::SetItemTooltip("initial RIS candidates per pixel from point and spot lights");
+    ImGui::SetItemTooltip("initial RIS candidates per pixel from point, spot and triangle lights");
     sliderU32("Infinite light candidates", di.infiniteLightSamples, 0, 16);
     ImGui::SetItemTooltip("initial RIS candidates per pixel from directional lights");
     sliderU32("BRDF candidates", di.brdfSamples, 0, 4);
-    ImGui::SetItemTooltip("one ray each along a BRDF sample; until emissive triangles (M7) no hit names a light, so "
-                          "they only cost");
+    ImGui::SetItemTooltip("one ray each along a BRDF sample; a hit on an emissive triangle names its light");
     ImGui::EndDisabled();
     ImGui::Checkbox("Initial visibility", &di.isInitialVisibilityEnabled);
     ImGui::SetItemTooltip("one shadow ray per pixel in the initial pass; occluded samples are dropped before reuse");

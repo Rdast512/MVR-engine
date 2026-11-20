@@ -95,7 +95,7 @@ public:
     {
         uint32_t localLightSamples = 0;
         uint32_t infiniteLightSamples = 0;
-        // one ray each; until emissive triangles (M7) no hit names a light
+        // one ray each; a hit on an emissive triangle names its light
         uint32_t brdfSamples = 0;
         // one shadow ray per pixel in the initial pass; occluded candidates are dropped before reuse
         bool isInitialVisibilityEnabled = false;
@@ -189,9 +189,11 @@ public:
     // device idle: contexts and reservoirs at the new render resolution; reservoir contents are undefined, so the
     // first frame after it must reset history (resize arrives as a camera cut)
     void recreate(vk::Extent2D renderExtent);
-    // the slot is not in flight: applies isReference, advances the context to frameIndex and writes the slot's
+    // the slot is not in flight: advances the context to frameIndex, applies isReference and writes the slot's
     // constants. isGiReuseAllowed: false in the NRC indirect mode, which shades the initial samples as isGiReference
     void prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool isGiReuseAllowed);
+    // ReSTIR DI reference mode as applied by the last prepareFrame
+    [[nodiscard]] bool isReferenceEnabled() const noexcept { return isReferenceApplied; }
     // ReSTIR GI temporal and spatial reuse as applied by the last prepareFrame
     [[nodiscard]] bool isGiReuseEnabled() const noexcept { return isGiReuseApplied; }
 
