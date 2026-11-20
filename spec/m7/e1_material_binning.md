@@ -1,0 +1,73 @@
+# M7 · E1: material binning
+
+**Status:** planned 2026-11-20 · **Milestone:** M7
+**Implements:** engine spec §5 stages 8–9, §9.1, §9.2; plan E1, M7 part ("the resolve per material bin", [pbr_implementation_plan.md](../pbr_implementation_plan.md)); [shader_architecture_plan.md](../shader_architecture_plan.md) rows 8–9 (`classify`, per-bin `resolve`)
+**Depends on:** M1 (the resolve and its per-pixel body), D3 (DGC state per bin), `DeviceGeneratedCommands` (`src/render/vk_dgc.*`)
+**Considerations:** none yet; problems found here go into a new `M7 · E1` section
+**Reference:** [reference/dgc_comparison.md](../../reference/dgc_comparison.md) §7, §9 (material-binned compute: `EXECUTION_SET` of compute shaders + `DISPATCH`, one sequence per bin); `reference/vk_device_generated_cmds-master` (`vk_ext_device_generated_commands.*`, `renderer_vkgen_ext.cpp`: execution sets, token layout, explicit preprocess; graphics only, so the compute layout follows the registry); [visibility_buffer.md](../features/visibility_buffer.md) §7 ("M7 binning"); `validusage.json` of SDK 1.4.363 for `VkIndirectExecutionSetShaderInfoEXT`, the `DISPATCH` token and `VK_SHADER_CREATE_INDIRECT_BINDABLE_BIT_EXT`
+
+Split the resolve's one tiled dispatch into a classification pass and one compute shader per material shader, launched by one DGC execute whose sequences the GPU writes. The per-pixel body does not change, so every guide stays bit-identical.
+
+## Scope
+
+| Item | Today | After E1 |
+|---|---|---|
+| Resolve | one 8×8-tiled dispatch over every pixel; the unlit model is a branch inside `sampleMaterial` | `classify`, then one DGC execute: one sequence per non-empty bin, an execution set of compute shader objects |
+| Bins | — | `Background` (depth 0: zero guides and the motion of a direction at infinity), `Standard` (glTF metallic-roughness), `Unlit` (`KHR_materials_unlit`) |
+| New images and buffers | — | `binIds` (R8_UINT, render resolution), per-bin tile lists and counts, the DGC sequences |
+| Outputs | the §9.3 guides | unchanged, bit-identical |
+
+## Decisions
+
+| Decision | Rule | Why |
+|---|---|---|
+| Bin rule | one bin per material **shader**: `materialBin(const GpuMaterial&)` in `material_store.hpp`, mirrored in `material/pbr.slang` (as `isAlphaTested` is); `kMaterialFlagUnlit` → `Unlit`, else `Standard`. `Background` comes from depth 0, not from a material | engine spec §9.1 ("rows sharing a shader share a bin"). Unlit is the only second shading body today; later KHR extensions add bins (spec §9.4). Empty pixels still need their guides and motion written, and under the overlap guard only a bin may write a pixel |
+| Pixel → bin | `classify` reads the payload chain `visibleRow → meshletRow → primitive → material → bin` | the cull pass writing a bin per visible row is the fallback if `classify` time shows that chain ([visibility_buffer.md](../features/visibility_buffer.md) §7) |
+| Classification | one 8×8 group per resolve tile; each thread writes its pixel's bin to `binIds`; the group ORs the bins it saw (wave ops, then groupshared, without assuming a wave size), and one thread per present bin appends the tile with one atomic | engine spec §9.1. One append per (tile, bin), not per pixel |
+| Capacity | each bin's tile list holds every tile of the render target; no overflow is possible, so no overflow counter | a tile appears at most once per bin; the size follows `renderExtent` on resize |
+| Sequences | a one-group `binArgs` step after `classify` writes one sequence per non-empty bin (`EXECUTION_SET` index = bin, push data, `DISPATCH` {tileCount, 1, 1}) and the sequence count to `sequenceCountAddress` | the GPU decides which shaders run; empty bins cost no sequence. Splitting it from `classify` keeps `classify` free of a last-group handshake |
+| Execution set | `VK_INDIRECT_EXECUTION_SET_INFO_TYPE_SHADER_OBJECTS_EXT` with the bin shaders, created with `VK_SHADER_CREATE_INDIRECT_BINDABLE_BIT_EXT`; one compute indirect-commands layout (tokens `EXECUTION_SET`, `PUSH_DATA`, `DISPATCH`); explicit preprocess before the execute, as the raster bins do | engine spec §9.2; DGC is the engine's command path ([dgc_comparison.md](../../reference/dgc_comparison.md) §9). The 5070 reports compute in `supportedIndirectCommandsShaderStagesShaderBinding` (log: `shaderBind=0xff`); assert it at device creation |
+| Overlap guard | each bin shader is `[numthreads(8, 8, 1)]`, launched with `groupCount = (tileCount[bin], 1, 1)`, maps its group to a tile from its list and returns early when `binIds` at its pixel is not its bin | engine spec §9.2: every pixel is written by exactly one bin |
+| Shader bodies | entries `resolveBackgroundMain`, `resolveStandardMain`, `resolveUnlitMain` in `passes/resolve.slang` over today's per-pixel body; the unlit branch is decided per entry through a generic or a constant parameter, not the preprocessor. `sampleMaterial` keeps its runtime unlit branch for ray hits | plan E1: "the per-pixel body stays this one". Rays hit every material, so they cannot be binned |
+| Push data | `{frameRoot, tileList}` per sequence; the bin's tile list address comes from the root plus the bin | small sequences; 64-bit fields stay 8-byte aligned |
+| Buffers | `binIds`, tile lists, counts and sequences are written and read in the same frame on the graphics queue, so one copy serves both frame slots, behind barriers; counts are reset by a fill at the start of `classify` | resource architecture: GPU lists reset on the GPU each frame |
+| Timing | GPU timer scopes `Classify` and `Resolve` (the preprocess and the execute). The per-bin split is measured once for the log, with the execute limited to one bin at a time in a temporary build | one DGC execute is one timer span |
+
+## 1. Tasks
+
+1. `materialBin` in C++ and Slang; `RasterBin`-style enum `MaterialBin { Background, Standard, Unlit }` with its count asserted on both sides.
+2. `RenderTargets`: `binIds` (R8_UINT, render extent, named), a heap slot in `GpuTargets`; `GpuFrameRoot` gets the bin buffer address. Layout test entries.
+3. `passes/classify.slang` (`classifyMain`, `binArgsMain`), registered in `CMakeLists.txt`.
+4. `passes/resolve.slang`: the three entries and the overlap guard; the tiled dispatch goes away.
+5. `vk_dgc`: the compute layout, the execution set, the preprocess region (the max with the raster layouts' regions, or a separate one), the state command buffer that binds the first bin shader, and `recordExecute` for the resolve. Name every object (`DgcResolveLayout`, `DgcResolveExecutionSet`, …).
+6. `Renderer::recordResolve`: fill counts → `classify` → barrier → `binArgs` → barrier (`DRAW_INDIRECT` / command preprocess read) → preprocess → barrier → execute → the existing barriers to the guide readers.
+7. Debug view `Material bin` (one color per bin, black on empty tiles), written by the guide capture for every shot; Tracy zones `Classify` and `Resolve`.
+
+## 2. Verification
+
+| Check | Expected |
+|---|---|
+| Guide capture, every shot and view, against a capture from the commit before E1 | bit-identical PNGs (the per-pixel body is unchanged); `Material bin` shows `Unlit` on `UnlitTest` and on the Unlit row of `TextureTransformMultiTest`, `Background` on empty pixels |
+| `ENGINE_RT_CHECK`, `ENGINE_CULL_CHECK`, `ENGINE_MOTION_TEST` | unchanged results |
+| `ENGINE_GI_CHECK` | identical numbers to the D4 run (the check is deterministic per frame index and the guides are identical) |
+| Validation (sync, best practices) and GPU-AV | clean, including the DGC preprocess / execute state match, at startup, resize and a scene switch |
+| Timing (release, no layers, 1280×720, RTX 5070) | Sponza bench pose: the old resolve against `Classify` + `Resolve`, and the per-bin split; recorded in the log |
+
+## Done when
+
+- the resolve runs as one DGC execute over GPU-written sequences, with `classify` and the overlap guard;
+- every guide is bit-identical to the single dispatch, and the runners give unchanged results;
+- validation and GPU-AV are clean, and the timings are recorded.
+
+## Must not
+
+- let two bins write the same pixel, or leave a pixel unwritten;
+- read bin counts back on the CPU, or size a launch from the CPU;
+- replace the DGC execute with `vkCmdDispatchIndirect` per bin (engine spec §9.2: DGC is the command path);
+- bin by material row instead of by shader.
+
+## Log
+
+| Date | Change |
+|---|---|
+| 2026-11-20 | Spec written |
