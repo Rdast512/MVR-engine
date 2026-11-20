@@ -20,11 +20,11 @@
 
 ## 1. The frame today
 
-RTX 5070, 1280×720 render, release, no layers. GPU timer means.
+RTX 5070, 1280×720 window (853×480 render, DLSS-RR Quality), release, no layers. GPU timer means.
 
 | Scope | ReSTIR GI mode (default) | NRC + ReSTIR GI mode | Note |
 |---|---|---|---|
-| Cull + raster + resolve + guides | ~0.27 | ~0.27 | M1 table, engine spec §2.3 |
+| Cull + raster + resolve + guides | ~0.27 | ~0.27 | M1 table, engine spec §2.3, measured at 1280×720 render before DLSS-RR; less now |
 | PTLAS update | ~0 (still frame) | ~0 | at least ~0.11 ms once anything moves (C-C4-4) |
 | ReSTIR DI (initial / temporal / shade) | 0.34 (0.18 / 0.07 / 0.09) | 0.34 | initial includes any TLAS wait (C-F3-9) |
 | `Indirect` | 0.52 | 0.66 | the NRC query adds ~0.1 ms |
@@ -111,7 +111,7 @@ Each candidate lands only when three conditions hold:
   - Courtyard pose, static camera, 300 warm-up + 120 captured frames.
   - Reads the `Lit` temporal std (DLSS-RR output) and the share of lit pixels whose per-pixel deviation exceeds 10% of their mean ("flickering px").
   - Reads the `Indirect radiance` mean against `convergedGiSettings` as a quick bias reading.
-- **Cost:** ABBA bench (6 runs × 3000 frames, library swap), 1280×720 render, release, no layers, RTX 5070.
+- **Cost:** ABBA bench (6 runs × 3000 frames, library swap), 1280×720 window (853×480 render, DLSS-RR Quality), release, no layers, RTX 5070.
 
 **Bias and stability** (ReSTIR GI mode):
 
@@ -238,7 +238,7 @@ NRC returns as a default only when the GI check gates its phase (C-G5-3's exit).
 
 ### 3.4 Perf (when NRC runs)
 
-Measured 2026-11-19 in NRC + ReSTIR GI mode (RTX 5070, 1280×720 render, release, no layers):
+Measured 2026-11-19 in NRC + ReSTIR GI mode (RTX 5070, 1280×720 window (853×480 render, DLSS-RR Quality), release, no layers):
 
 - NRC update: 0.021 ms.
 - `Indirect` (query): 0.66 ms, against 0.56 in ReSTIR GI mode, so the query adds ~0.1 ms.

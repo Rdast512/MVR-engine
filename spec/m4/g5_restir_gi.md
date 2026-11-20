@@ -18,7 +18,7 @@ RTXDI ReSTIR GI on the indirect pass's samples: temporal resampling, then spatia
 |---|---|---|
 | Passes | `rtxdi_gi_temporal` (temporal + boiling filter, 8×8, as the sample's `GI/TemporalResampling.hlsl`), then `rtxdi_gi_shade` (spatial + final shading, the sample's `GI/SpatialResampling.hlsl` and `GI/FinalShading.hlsl` fused), each behind a memory barrier, after the NRC resolve in `Renderer::recordIndirectResampling` | the sample runs temporal, spatial and final shading as three passes; fusing spatial and shading saves a dispatch and a reservoir round trip, as `rtxdi_shade` does for DI |
 | Resampling mode | `TemporalAndSpatial`, the sample's default; `None` is the reference (`RtxdiContext::isGiReference`), which skips the temporal pass and shades the initial sample alone | the reference is the 1-sample estimate the reuse must converge to |
-| Reservoir arrays | 3: RTXDI's two plus `kGiInitialReservoirArray` (2), where the indirect pass and the NRC resolve write the initial samples. The temporal pass reads that array and writes `temporalResamplingOutputBufferIndex` (0); the shade pass reads its neighbors from 0 and writes `spatialResamplingOutputBufferIndex` (1), next frame's temporal input. 38.0 MiB at 1280×720 render | the final MIS needs each pixel's initial sample after the temporal pass, and with two arrays the temporal output overwrites it. The sample keeps it in a separate secondary G-buffer instead |
+| Reservoir arrays | 3: RTXDI's two plus `kGiInitialReservoirArray` (2), where the indirect pass and the NRC resolve write the initial samples. The temporal pass reads that array and writes `temporalResamplingOutputBufferIndex` (0); the shade pass reads its neighbors from 0 and writes `spatialResamplingOutputBufferIndex` (1), next frame's temporal input. 38.0 MiB at 853×480 render (1280×720 window) | the final MIS needs each pixel's initial sample after the temporal pass, and with two arrays the temporal output overwrites it. The sample keeps it in a separate secondary G-buffer instead |
 | No history (reset frame) | the temporal pass copies the initial sample to its output instead of early-returning | the spatial pass then always reads this frame's reservoirs |
 | Settings | `RtxdiContext::GiSettings`, applied by `prepareFrame` like DI's. `defaultGiSettings()`: the library defaults, which the sample uses without a preset (history 8, age 30, temporal and spatial bias correction Basic, fallback on, 2 spatial samples in 32 px, boiling filter 0.2, final visibility and final MIS on). `convergedGiSettings()`: ray-traced bias correction, no age limit (`kGiUnlimitedSampleAge`), no fallback, permutation or boiling filter | NVIDIA's defaults for the cost comparison (C-M4-2); the check pins its own (§3) |
 | Target function | `RAB_GetGISampleTargetPdfForSurface` = luminance of `evalBrdf · Lo(X2) · NdotL` toward the sample (`shadeGiSample`, bridge) | the sample's `RAB_GetReflectedBrdfRadianceForSurface` |
@@ -112,7 +112,7 @@ The bisect that found the failed-sample bias and C-G5-1 ran on the gallery, with
 
 ## 4. Measurements
 
-Release, no layers, startup gallery, 1280×720 render, `ENGINE_BENCH_FRAMES=2000`, NVIDIA defaults (2026-11-18):
+Release, no layers, startup gallery, 1280×720 window (853×480 render, DLSS-RR Quality), `ENGINE_BENCH_FRAMES=2000`, NVIDIA defaults (2026-11-18):
 
 | Scope | Mean | Best window |
 |---|---|---|

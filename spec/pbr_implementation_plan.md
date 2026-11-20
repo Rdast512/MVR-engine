@@ -5,7 +5,7 @@ description: Task plan for glTF metallic-roughness PBR on the engine_spec archit
 
 # Plan: PBR on the visibility buffer + RTXDI + ReSTIR GI (+ NRC) + OMM + DLSS-RR
 
-**Date:** 2026-11-07, updated 2026-11-20 · **Verified against:** `feature-pbr` working tree on `1198db3ee`, Slang `v2026.22`, meshoptimizer `v1.3`
+**Date:** 2026-11-07, updated 2026-11-20 · **Verified against:** `feature-pbr` working tree on `bdd86e1bf`, Slang `v2026.22`, meshoptimizer `v1.3`
 **Precedence:** [docs/engine_spec.md](../docs/engine_spec.md) is the architecture. This plan holds the shading tasks and follows it; where they disagree, the spec wins. Milestones are the spec's M0–M10 (§16.2).
 **Status (2026-11-20):** owned by engine spec §16.2 (spec §20.4). M1 and M3 are done; M0, M2 (C1–C4) and M4 (G1 built then shelved 2026-11-17 to post-1.0 V1; G2, G3, G5, G6, G7 built; ReSTIR GI is the 1.0 default since 2026-11-20 with NRC paused as a comparison toggle) are built on the RTX 5070. M6 (OMM) and M8 (optimization and fixes) are planned; 2060 Super timings stay open. See §3.
 
@@ -268,7 +268,7 @@ See the [M0 as-built specs](./m0/README.md) for implementation contracts, verifi
 
 #### A2 · Slang modules + frame root fields — done (2026-11-08)
 
-- **Files:** all `shaders/**`, `CMakeLists.txt`, `src/core/vk_resource_manager.cpp`
+- **Files:** all `shaders/**`, `CMakeLists.txt`, `src/core/vk_resource_manager.cpp` (split by AU2 since; the frame root is written in `src/core/vk_frame_data.cpp`)
 - **Do:** convert library files to modules (§4.1). `ResourceManager::writeFrameRoot` also fills `frameIndex` and `exposure` (1.0 until H2); the new addresses stay 0 until their tasks. Re-probe the §3 toolchain facts on Slang v2026.20 and update the table.
 - **Done when:** `mesh_raster`, `mesh_fragment`, `meshlet_cull`, `hiz_build`, `resolve`, `debug_view` and `present` compile and render unchanged; every guide debug view matches a capture taken before the conversion. Met by a stronger check: the release SPIR-V of all eight passes is byte-identical before and after.
 
@@ -817,7 +817,7 @@ Spec §11.1, §11.3–11.7. Started 2026-11-16. Each step has its own spec under
 | G1 | [g1_ser_rt_pipeline.md](./m4/g1_ser_rt_pipeline.md) | `VkPipeline` + SBT per shaded-ray pass, `HitObject` trace → reorder → minimal closest-hit → shade in raygen; checked against the C3 ray-query path | built 2026-11-16; follow-ups built 2026-11-17 ([g1_ser_followups.md](./m4/g1_ser_followups.md)); **shelved 2026-11-17** (Slang's EXT SER, considerations C-G1-3): shaded rays use ray queries in compute |
 | G2 | [g2_indirect_pass.md](./m4/g2_indirect_pass.md) | 1 ray/px from the primary surface, direct light at X₂, cache query, ReSTIR GI initial samples | built 2026-11-16 (cache term with G3); compute + ray query since 2026-11-17 (C-G1-3); 2060 Super numbers open |
 | G3 | [g3_nrc.md](./m4/g3_nrc.md) | NRC context, compute update paths (SER shelved, C-G1-3), `QueryAndTrain`, custom resolve | built 2026-11-17 (cache 0.62 ms on the 5070); 2060 Super numbers open |
-| G5 | [g5_restir_gi.md](./m4/g5_restir_gi.md) | RTXDI ReSTIR GI → `indirectRadiance` | built 2026-11-18; converges to the §14 ground truth (GI check); after-RR check with G6 |
+| G5 | [g5_restir_gi.md](./m4/g5_restir_gi.md) | RTXDI ReSTIR GI → `indirectRadiance` | built 2026-11-18; converges to the §14 ground truth (GI check); after-RR check done in G6 (2026-11-19) |
 | G6 | [g6_combine.md](./m4/g6_combine.md) | `noisyColor = direct + indirect + emissive` | built 2026-11-19; `Lighting only` renamed `Direct lighting`, the full sum is `DLSS input` |
 | G7 | [g7_indirect_modes.md](./m4/g7_indirect_modes.md) | runtime indirect mode toggle: NRC → ReSTIR GI, NRC alone, ReSTIR GI alone (default since 2026-11-20, NRC bias C-G5-3); NRC paused, never destroyed | built 2026-11-19; 2060 Super timings open |
 

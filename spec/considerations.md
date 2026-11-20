@@ -13,7 +13,7 @@ Kinds:
 
 ## M0 · contracts and the audit's leftovers
 
-Reviewed 2026-11-14 against the code, after M3's H2. The M0 work handed to M1–M3 is done: jitter (E1), `rayInstances` and `tlas` (C2, C4), `frameIndex`, and `exposure`, which stays 1 by design (C-H2-1). The work waiting for M4 and later is on schedule: `cacheConstants` (M4), the logged SER hint (M4), the cached OMM properties (M6), `GpuMaterialExtension` (M7), the logged decompression methods (M9), and exact list sizing (A10, post-1.0 LOD).
+Reviewed 2026-11-20 against the code, after M4. The M0 work handed to M1–M4 is done: jitter (E1), `rayInstances` and `tlas` (C2, C4), `frameIndex`, `exposure` (stays 1 by design, C-H2-1), `cacheConstants` (M4 G3), and the logged SER hint (M0 A1; SER shelved to post-1.0 V1). The work waiting for M6 and later is on schedule: the cached OMM properties (M6), `GpuMaterialExtension` (M7), the logged decompression methods (M9), and exact list sizing (A10, post-1.0 LOD).
 
 - **C-M0-1 · Unverified · M0's checks on the RTX 2060 Super.** Baseline per-stage timings and the culling image exist only for the RTX 5070 (engine spec §2.3, §16.2). The 2060 Super is not in the dev machine. **Exit:** both recorded on the 2060 Super; M0 closes then.
 - **C-M0-7 · Limitation · the Debug `gltf_ktx2` build aborts in libktx.** On `SheenCloth` it fails `pos == private->_levelIndex[level].byteOffset + baseOffset` (`KTXSoftware/lib/writer2.c:563`). UBSan also reports calls through the wrong function-pointer type, `ktxTexture2_Destroy` (`main.cpp:303`) and `ktxTexture2_WriteToNamedFile` (`main.cpp:414`), plus one in `writer2.c:244`. Release converts the same model correctly. Seen 2026-11-15 on HEAD `b1c5843af`; the cause has not been investigated. **Exit:** the Debug tool converts the glTF samples cleanly under the sanitizers.
@@ -28,9 +28,6 @@ Reviewed 2026-11-14 against the code, after M3's H2. The M0 work handed to M1–
 - **C-C4-3 · Workaround · the OMM ray flag's SPIR-V capability is declared by hand.** Slang 2026.20 emits `RAY_FLAG_FORCE_OMM_2_STATE` (`0x400`) without `OpCapability RayTracingOpacityMicromapEXT`, and spirv-val rejects the module. `requireOmm2StateRayFlag()` in `shaders/raytracing/trace.slang` declares `SPV_EXT_opacity_micromap` and the capability through `spirv_asm`; `traceVisibility` and `traceClosest` call it, and every new ray (the G1 SER trace) must too. Upstream: [shader-slang/slang#13438](https://github.com/shader-slang/slang/issues/13438), open, milestone Q4 2026; a contributor's comment of 2026-10-16 reports this exact gap (also for `RAY_FLAG_SKIP_TRIANGLES`), reproduced on master. No maintainer decision on KHR vs EXT or on when the capability is declared, and no PR for it (2026-11-18). The issue's main topic, the `OpacityMicromapIdKHR` execution mode of `VK_KHR_opacity_micromap`, does not apply: the engine enables `VK_EXT_opacity_micromap`. 2026-11-18: the workaround is accepted as is; it works and uses Slang's own OMM ray flag, only the declaration is by hand. **Exit:** #13438's ray-flag part fixed in a Slang release, then spirv-val clean with `requireOmm2StateRayFlag()` removed; if Slang settles on the KHR capability, check that an EXT-only device still gets a valid module. Re-check with spirv-val on every Slang upgrade.
 - **C-C4-4 · Limitation · a non-empty PTLAS update costs at least ~0.11 ms.** With every instance moving it is slower than the full build it replaced: 0.12 ms against 0.101 ms on Sponza, 0.18 ms against 0.150 ms on the side-64 field (RTX 5070). Still frames cost 0.015–0.019 ms. The global partition, other build flags and other grid sizes did not lower it (plan C4, Checked). It runs on async compute and overlaps the frame. **Exit:** re-measure on Bistro (M10, engine spec Q10) and the 2060 Super. Try the sample's near/far mode (global partition for far partitions only) if the update shows up in the frame.
 - **C-C4-5 · Limitation · partitions are fixed per layout.** An instance keeps the grid cell of its position at the last layout change. One that travels far widens its partition's bounds, which may cost trace time; nothing measures it yet. **Exit:** reassign the partition when an instance leaves its cell, if Bistro or a gameplay scene shows a trace cost.
-
-## M3 · E1 guides
-
 
 ## M3 · F1 RTXDI host context
 
@@ -67,7 +64,7 @@ Reviewed 2026-11-14 against the code, after M3's H2. The M0 work handed to M1–
 
 ## M3 · E3 engine sun
 
-- **C-E3-1 · Limitation · the startup view gets no direct sun.** The startup camera looks at the origin from the +Z gallery, under the arcade roof and behind the curtains. A sweep of 18 sun directions lit at most 0.6% of that view, so Lit starts nearly black until M4's indirect light. The camera was left where it is, because the bench and the timing history in engine spec §2.3 use that pose. **Exit:** M4 (G6) lights the gallery by bounce; or a courtyard startup pose, with the bench history re-baselined.
+- **C-E3-1 · Limitation · the startup view gets no direct sun.** The startup camera looks at the origin from the +Z gallery, under the arcade roof and behind the curtains. A sweep of 18 sun directions lit at most 0.6% of that view, so Lit started nearly black before M4. Since M4 G6 (2026-11-19), indirect bounce lights the gallery walls and pillars (dim at EV 0, clearly lit under auto exposure / +3.6 EV, [g6_combine.md](./m4/g6_combine.md) §3). The camera was left where it is, because the bench and the timing history in engine spec §2.3 use that pose. **Exit:** accept the bounce-lit gallery pose, or switch to a courtyard startup pose with the bench history re-baselined.
 - **C-E3-2 · Limitation · DLSS-RR quality depends on jitter and mode.** On the sunlit courtyard with a still camera, the temporal deviation of the Lit output is 0.35% of the mean at Quality and 0.31% at Performance, but 0.88% at DLAA (8 jitter phases), and 8.7% at Quality with the `Jitter` checkbox off: RR needs the jitter. **Exit:** none planned; the checkbox stays a debug control.
 
 ## M3 · H2 post
@@ -127,7 +124,7 @@ Stamped M4, the current milestone; [rtxdi_3_2_update.md](./features/rtxdi_3_2_up
 
 ## M4 · G3 NRC
 
-- **C-G3-2 · Unverified · NRC on the RTX 2060 Super.** The pinned SDK names no minimum GPU but can return `UnsupportedHardware`. The floor tier's 0.6 ms cache budget was set for SHaRC (engine spec §2.3, R4). **Exit:** NRC runs on the 2060 Super and the cache row is measured there in G3.
+- **C-G3-2 · Unverified · NRC on the RTX 2060 Super.** The pinned SDK names no minimum GPU but can return `UnsupportedHardware`. The floor tier's 0.6 ms cache budget was set for SHaRC (engine spec §2.3, R4). **Exit:** NRC runs on the 2060 Super and the cache row is measured there (M8 I8, with C-M0-1).
 - **C-G3-3 · Workaround · the NRC SDK leaks Vulkan objects.** `nrc::vulkan::Context::Destroy` and `Shutdown` leave objects alive, and every `Configure` (it reloads the network: "Loading the default network config data") leaks more. `VUID-vkDestroyDevice-device-05137` breakdown (NRC 0.16, 2026-11-17):
   - per context: 13 `VkCuModuleNVX`, 8 `VkCuFunctionNVX`, 1 descriptor pool, 4 sets, 1 set layout, 1 pipeline layout, ~8 buffers with their memory;
   - per `Configure`: 1 fence, 4 `VkCuFunctionNVX`, ~1 buffer with its memory;

@@ -51,7 +51,7 @@ M8 is done when:
 - every lever in I2's ranked list has either landed with its gain or been closed with its number, and the per-scope table is recorded before and after on the RTX 5070 (and the 2060 Super, I8);
 - every runner passes, the GI check passes on every gated phase, and validation and GPU-AV are clean.
 
-## Baseline (2026-11-20, RTX 5070, 1280×720 render, release, no layers)
+## Baseline (2026-11-20, RTX 5070, 1280×720 window (853×480 render, DLSS-RR Quality), release, no layers)
 
 | Item | Value |
 |---|---|

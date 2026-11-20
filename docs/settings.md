@@ -1,8 +1,8 @@
 # Settings: tuning the NVIDIA tech
 
-How to tune the engine's NVIDIA components: RTXDI (ReSTIR DI), DLSS Ray Reconstruction and RTX Mega Geometry (CLAS, PTLAS). Covers what each setting changes, what it costs, and how to check a change. Every number here was measured on the RTX 5070, release build, validation layers off.
+How to tune the engine's NVIDIA components: RTXDI (ReSTIR DI and ReSTIR GI), NRC, DLSS Ray Reconstruction and RTX Mega Geometry (CLAS, PTLAS). Covers what each setting changes, what it costs, and how to check a change. Every number here was measured on the RTX 5070, release build, validation layers off.
 
-All settings are in the ImGui panels: **Ray tracing** (Mega Geometry, RTXDI, DLSS-RR), **Sun** and **Post**. Settings are not saved; every run starts from the defaults.
+All settings are in the ImGui panels: **Ray tracing** (Mega Geometry, RTXDI, DLSS-RR, and the `Indirect (M4)` section: indirect mode, NRC, ReSTIR GI), **Sun** and **Post**. Settings are not saved; every run starts from the defaults.
 
 ---
 
@@ -13,12 +13,16 @@ The defaults are the ones NVIDIA ships in its own samples, so the engine's cost 
 | Component | Default taken from | Values |
 |---|---|---|
 | RTXDI | RTXDI-Library sample (`Samples/FullSample`), its default `Medium` preset | §3 |
+| ReSTIR GI | RTXDI-Library defaults, which the sample uses in every preset | §7 |
+| NRC | RTXGI `IndirectDiffuse` sample and the SDK defaults | 1 training iteration per frame, training on (§7) |
 | DLSS-RR | `vk_denoise_dlssrr` | Quality mode, preset `Default` |
 | CLAS, cluster BLAS | `vk_lod_clusters` | fast trace, minimum position truncation |
 | PTLAS | `vk_partitioned_tlas` | fast trace |
 
 Deviations, where the engine lacks the feature:
 - **ReGIR.** RTXDI's `Medium` preset uses ReGIR for local-light sampling, which needs light presampling (M7). Until then the engine samples local lights uniformly, with the same candidate count (8).
+- **ReSTIR GI spatial bias correction.** Ray traced instead of NVIDIA's `Basic`, which darkens occluded places (§7, considerations C-G5-2). `NVIDIA defaults` in the ReSTIR GI section restores the library's set.
+- **Indirect mode.** ReSTIR GI mode (one bounce, NRC paused) is the default; NVIDIA's NRC sample corresponds to the `NRC` mode (§7, considerations C-G5-3).
 - **Resolution.** The RTXDI sample renders at native resolution, which is DLSS-RR's DLAA mode in the engine. Set the mode to DLAA before comparing images or costs with that sample.
 
 Buttons:
@@ -30,11 +34,10 @@ Buttons:
 
 ## 2. Why the image is less stable than NVIDIA's demos
 
-NVIDIA's demos render complete lighting. The engine is missing three pieces of it. Each makes noise and flicker easier to see, and none is a setting:
+NVIDIA's demos render complete lighting. The engine is missing two pieces of it. Each makes noise and flicker easier to see, and neither is a setting:
 
 | Missing | Effect now | Fixed in |
 |---|---|---|
-| Indirect light (NRC, ReSTIR GI) | Shadows are pitch black, so every shadow edge has maximum contrast; flicker that GI would hide is fully visible | M4 (G1–G6) |
 | Opacity micromaps for alpha-tested geometry | Rays see the leaf cards of plants as solid quads (every instance is `FORCE_OPAQUE`). The plants' shadows are rectangles, and raster pixels on a leaf get their lighting from the solid quads. Under jitter the leaf edges flip between frames | M6 (D1–D4) |
 | Emissive triangles and an environment light | Sponza is lit by one delta sun, so its shadows are perfectly hard. NVIDIA's scenes use area lights, whose soft shadows hide approximations such as visibility reuse (§3.3) | M7 |
 
@@ -149,7 +152,7 @@ CLAS and cluster BLAS are built once at load, with fast trace. They have no runt
 |---|---|---|
 | Cost | `ENGINE_BENCH_FRAMES=6000 VK_LOADER_LAYERS_DISABLE='*validation*' VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false ./engine.exe` → `[Bench]` lines in `logs/engine.log` | compare spans; noise is ±5%, so alternate variants over 2 rounds |
 | ReSTIR port correctness | `ENGINE_GUIDE_CAPTURE=1 ./engine.exe` → `Convergence check: passed` | runs the Converged set, not the current settings |
-| ReSTIR GI against the ground truth | `ENGINE_GI_CHECK=1 VK_LOADER_LAYERS_DISABLE='*validation*' VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false ./engine.exe` (~10 min) → `[GiCheck]` lines | `ReSTIR GI convergence: 8 of 8 passed` (G5's phases and ReSTIR GI mode against a one-bounce ground truth); the `MEASURED` lines give the bias of NRC, NRC mode and the NVIDIA GI defaults ([g5_restir_gi.md](../spec/m4/g5_restir_gi.md) §3, [g7_indirect_modes.md](../spec/m4/g7_indirect_modes.md) §3) |
+| ReSTIR GI against the ground truth | `ENGINE_GI_CHECK=1 VK_LOADER_LAYERS_DISABLE='*validation*' VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false ./engine.exe` (~25 min) → `[GiCheck]` lines | `ReSTIR GI convergence: 8 of 8 passed` (G5's phases and ReSTIR GI mode against a one-bounce ground truth); the `MEASURED` lines give the bias of NRC, NRC mode and the NVIDIA GI defaults ([g5_restir_gi.md](../spec/m4/g5_restir_gi.md) §3, [g7_indirect_modes.md](../spec/m4/g7_indirect_modes.md) §3) |
 | Indirect modes under switching | `ENGINE_INDIRECT_MODE=cycle ENGINE_BENCH_FRAMES=3000` at a 2560×1369 window | no device loss; a mode id instead of `cycle` pins one mode for per-mode timings |
 | Bias of a setting | `Direct lighting` view with the setting, then with Reference on (`ENGINE_RTXDI_REFERENCE=1` or the checkbox) | same brightness after a few seconds |
 | Validation | `VK_LOADER_LAYERS_ENABLE='*validation' VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true VK_KHRONOS_VALIDATION_VALIDATE_BEST_PRACTICES=true VK_KHRONOS_VALIDATION_VALIDATE_BEST_PRACTICES_NVIDIA=true VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false VK_KHRONOS_VALIDATION_LOG_FILENAME=<file>` | only NGX's known messages (considerations C-H1-2) |
@@ -160,23 +163,37 @@ When judging stability by eye, hold the camera still for a few seconds and watch
 
 ## 7. ReSTIR GI
 
-`Indirect mode` at the top of the `Indirect (M4)` panel ([g7_indirect_modes.md](../spec/m4/g7_indirect_modes.md)): `ReSTIR GI` (default on both tiers since 2026-11-20: one bounce, NRC paused; GPU total 2.72 ms vs 3.27–3.30 ms at 1280×720, no C-G3-6 host wait), `NRC + ReSTIR GI` (both tiers; NRC reads ~10% bright, considerations C-G5-3), `NRC` (the cache samples without reuse). A switch resets ReSTIR GI and DLSS-RR history; `ENGINE_INDIRECT_MODE` sets it from the environment.
+`Indirect mode` at the top of the `Indirect (M4)` section of the Ray tracing panel ([g7_indirect_modes.md](../spec/m4/g7_indirect_modes.md)): `ReSTIR GI` (default on both tiers since 2026-11-20: one bounce, NRC paused; GPU total 2.72 ms vs 3.27–3.30 ms at 1280×720, no C-G3-6 host wait), `NRC + ReSTIR GI` (both tiers; NRC reads ~10% bright, considerations C-G5-3), `NRC` (the cache samples without reuse). A switch resets ReSTIR GI and DLSS-RR history; `ENGINE_INDIRECT_MODE` sets it from the environment.
 
-The `ReSTIR GI` section of the `Indirect (M4)` panel. Defaults (`RtxdiContext::defaultGiSettings`, since 2026-11-20): the library's, which the RTXDI sample uses unchanged in every preset, with ray-traced spatial bias correction. `NVIDIA defaults` (`nvidiaGiSettings`) restores the library's exactly. Why and what it costs: [m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md) §2.5.
+The `ReSTIR GI` part of the `Indirect (M4)` section. Defaults (`RtxdiContext::defaultGiSettings`, since 2026-11-20): the library's, which the RTXDI sample uses unchanged in every preset, with ray-traced spatial bias correction. `NVIDIA defaults` (`nvidiaGiSettings`) restores the library's exactly. Why and what it costs: [m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md) §2.5.
 
 | Setting | Default | Converged | Effect |
 |---|---|---|---|
 | Max history length | 8 | 8 | frames of temporal reuse |
-| Max sample age | 30 | 1024 (never) | discards a reused sample this old; reacts to light changes, biases a still frame bright (+5.6% in the gallery, considerations C-G5-1) |
+| Max sample age | 30 | 1024 (never) | discards a reused sample this old; reacts to light changes, biases a still frame bright (ReSTIR GI mode with the shipped defaults: +8.1% gallery / +1.7% courtyard against one bounce, considerations C-G5-1) |
 | Temporal / spatial bias correction | Basic / Ray traced (NVIDIA: Basic / Basic) | Ray traced | spatial Basic darkens occluded places (ReSTIR GI mode −27% gallery / −9% courtyard, C-G5-2); Ray traced adds a ray per merged sample (spatial +0.15 ms at 1280×720); the temporal pass's Basic does not darken |
 | Fallback sampling | on | off | reuse last frame's sample at the same pixel when no history matches |
 | Spatial samples, radius | 2, 32 px | 2, 32 px | |
 | Boiling filter | on, 0.2 | off | suppresses reservoirs far brighter than their 8×8 group |
 | Final visibility, final MIS | on, on | on, on | reconnection ray; blend with the pixel's own sample on glossy lobes |
+| Secondary DI resampling | off | off | X₂'s light reuses this frame's ReSTIR DI reservoirs where X₂ is on screen (the RTXDI sample's `ShadeSecondarySurfaces`). With one light it only darkens: −23% in the courtyard, as the DI visibility shortcut keeps M for shadowed samples ([m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md) §2.6, O2) |
+| Firefly clamp | off | off | clamps X₂'s radiance to display luminance 10 / exposure (the sample's `c_MaxIndirectRadiance`); biased, no measurable effect on Sponza (§2.6, O6) |
 
 - **Ground-truth paths:** trace 8 bounces after X2 instead of querying NRC, which pauses. With `Reference (no reuse)` on as well, the `Indirect radiance` view is the ground truth, one sample per frame.
-- **Cost** (gallery, 1280×720 render, defaults): temporal 0.11 ms, shade 0.38 ms.
+- **Cost** (gallery, 1280×720 window (853×480 render, DLSS-RR Quality), shipped defaults, 2026-11-20 ABBA): temporal 0.11 ms, shade 0.41–0.42 ms (0.26–0.27 ms with NVIDIA's Basic spatial correction).
+
+### 7.1 NRC
+
+The NRC controls under `Indirect mode` act only in the NRC modes; ReSTIR GI mode pauses the cache. Defaults from the RTXGI `IndirectDiffuse` sample and the SDK ([g3_nrc.md](../spec/m4/g3_nrc.md)).
+
+| Setting | Default | Effect |
+|---|---|---|
+| Train NRC | on | off freezes the cache and skips the training paths |
+| NRC training iterations | 1 (the sample's; the SDK default is 4) | 16K training records each; the training paths grow with it |
+
+- **Cost** (NRC + ReSTIR GI mode, gallery, 1280×720 window (853×480 render, DLSS-RR Quality), 2026-11-19): update 0.021 ms, train 0.42 ms, resolve 0.03 ms, the query ~0.1 ms inside `Indirect`, plus the C-G3-6 host wait (0.57–0.62 ms frame time).
+- **Bias:** NRC reads ~10% bright against the ground truth (considerations C-G5-3); the leads are in [m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md) §3.3.
 
 ## 8. Components not built yet
 
-NRC, OMM and SER have no settings yet. Their defaults will come from NVIDIA as well: NRC from `reference/NrcGuide.md` and NVIDIA's NRC sample, OMM from the OMM SDK's own defaults.
+OMM (M6) has no settings yet; its defaults will come from the OMM SDK. SER is shelved to post-1.0 (engine spec §16.5 V1, considerations C-G1-3) and has no runtime switch in 1.0.

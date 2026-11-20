@@ -105,7 +105,7 @@ Maximum barycentric and distance error: 0. Validation: core + sync + best practi
 
 ## 5. Measurement
 
-Release, validation off, bench mode (`ENGINE_RT_CHECK=1 ENGINE_BENCH_FRAMES=2000`), startup view, 1280×720 render, RTX 5070. Each span is the whole check pass: SER trace + `traceClosest` + per-lane atomics.
+Release, validation off, bench mode (`ENGINE_RT_CHECK=1 ENGINE_BENCH_FRAMES=2000`), startup view, 1280×720 window (853×480 render, DLSS-RR Quality), RTX 5070. Each span is the whole check pass: SER trace + `traceClosest` + per-lane atomics.
 
 | Variant | SER check span |
 |---|---|

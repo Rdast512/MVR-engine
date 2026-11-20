@@ -1,15 +1,15 @@
 # Shader architecture plan
 
-**Date:** 2026-10-01, updated 2026-11-13
-**Status:** plan, aligned with [engine_spec.md](../docs/engine_spec.md) (normative; its §4 rules S1–S11 and §5 frame order win over this doc). M1 is built: culling, Hi-Z, the vis-buffer raster, the resolve, the debug view and the present pass exist; the BRDF exists, no light loop yet. This doc maps the spec onto shader files and passes. Append changes to [Changelog](#changelog).
+**Date:** 2026-10-01, updated 2026-11-20
+**Status:** plan, aligned with [engine_spec.md](../docs/engine_spec.md) (normative; its §4 rules S1–S11 and §5 frame order win over this doc). M1–M4 are built on the RTX 5070: culling, Hi-Z, vis-buffer raster, resolve, cluster RT + PTLAS, ReSTIR DI 3.2, compute indirect bounce, NRC, ReSTIR GI, combine, indirect modes, DLSS-RR and post exist; SER RT pipelines were shelved to post-1.0 V1. This doc maps the spec onto shader files and passes. Append changes to [Changelog](#changelog).
 **Related:** [resource_architecture.md](./resource_architecture.md) (buffers, model slices, frame root, handle vs BDA), [pbr_implementation_plan.md](./pbr_implementation_plan.md) (shading tasks A–H; the spec's §17 lists which of its decisions are superseded), [culling_comparison.md](../reference/culling_comparison.md) (culling library), [vulkan_extensions_reference.md](../docs/vulkan_extensions_reference.md), [shaders/README.md](../shaders/README.md)
 
 What every shader file is for, which pass runs it, and what it reads and writes. The frame is built around:
 - **Visibility buffer** for primary visibility: GPU culling, mesh shaders through DGC, two-phase Hi-Z occlusion (spec §8)
 - **Compute material resolve** with analytic derivatives, binned by material shader through a DGC compute execution set (spec §9)
 - **Cluster ray tracing** with RTX Mega Geometry: CLAS per cluster, cluster BLAS, PTLAS from GPU-written ops (spec §10)
-- **RT pipelines built around SER** for every pass that shades hits; ray queries for visibility only (spec §11.1)
-- **RTXDI ReSTIR DI**, **NRC** radiance cache, **ReSTIR GI** (spec §11)
+- **Compute ray queries** for all rays in 1.0; **RT pipelines built around SER** shelved to post-1.0 V1 (spec §11.1, §16.5)
+- **RTXDI ReSTIR DI** and **ReSTIR GI** (1.0 default), plus **NRC** radiance cache as a runtime comparison switch (spec §11.7)
 - **Opacity micromaps (OMM)** for alpha-tested rays, no any-hit (spec §10.5)
 - **DLSS Ray Reconstruction** for denoising and upscaling in one step (spec §12)
 
@@ -27,14 +27,14 @@ The spec's S1–S11 apply; shader-side consequences:
 - **Slang modules.** Library code is `module x;` / `import a.b;` (S2). Vendor HLSL (RTXDI, NRC) is `#include`d only from bridge and pass files.
 - **Bindless only.** Buffers through typed BDA pointers (`bdaPtr<T>`), read once into locals; images and samplers through heap handles (S3, S4). No descriptor-set bindings, no `StructuredBuffer` for engine data.
 - **One root pointer.** Every pass reaches scene data from `GpuFrameRoot`; push data carries the root address plus pass-local values, within `maxPushDataSize` (S7). Render-target heap indices live in the per-frame `GpuTargets` block reached from the root (M0).
-- **Shaded rays use RT pipelines with SER.** `HitObject::TraceRay` → `ReorderThread(hit, materialBin)` → minimal closest-hit returning `{instance, cluster, triangle, barycentrics, hitT}` → shade in raygen with the same `decodeHit` and `sampleMaterial` as the vis-buffer resolve (spec §11.1). One raygen, one miss, one closest-hit per SBT; no any-hit, no per-material hit groups. Visibility-only rays are ray queries.
+- **Rays: compute ray queries in 1.0, SER RT pipelines post-1.0 V1.** In 1.0 every pass shades hits from compute ray queries (`traceClosest` → `decodeHit` → `sampleMaterial`, shared with the vis-buffer resolve). The SER RT pipeline shape (`HitObject::TraceRay` → `ReorderThread(hit, materialBin)` → minimal closest-hit → shade in raygen; one raygen, one miss, one closest-hit per SBT) was shelved on 2026-11-17 (considerations C-G1-3) and returns as a toggle in post-1.0 V1 (spec §11.1, §16.5). No any-hit anywhere.
 - **Same ids everywhere.** A vis-buffer pixel and a ray hit both resolve to `(nodeInstance, cluster, triangle)`; the cluster id is the model-slice `meshletRow` (spec §8.3, §10.1).
 - **Texture LOD.** No implicit-LOD `Sample` outside fragment shaders: compute resolve uses analytic gradients (`SampleGrad`), ray hits use ray cones (S10). LOD bias `log2(render / display)`.
 - **Two resolutions.** Everything up to combine runs at render resolution (indirect at half resolution, checkerboard, on the floor tier); DLSS-RR outputs display resolution; post runs there.
 - **Jitter and motion.** The render projection is jittered (Halton 2,3). Culling, Hi-Z and LOD use the unjittered matrix; exact pixel tests use the jittered one or widen by the jitter (spec §12.2). Motion vectors exclude jitter, in render-resolution pixels.
 - **HDR until tonemap.** Tonemap exactly once, in post. Guides are linear, never sRGB-encoded.
 - **Specialization by generics and link-time constants** (S9), not preprocessor variants, except vendor-mandated defines (`NRC_UPDATE`, `NRC_QUERY`). Device-derived sizes (cluster limits, list capacities) are link-time constants (S11).
-- **Handle vs address.** `kNoneIndex` never becomes a handle; non-uniform heap indices go through `sampleOr` (S6, PBR plan §4.4).
+- **Handle vs address.** `kNoneIndex` never becomes a handle; non-uniform heap indices go through `sampleSlot` (S6, PBR plan §4.4).
 - **Every mirrored struct is checked on both sides** (S5): C++ `static_assert`s on size and offsets, Slang mirrors in `types.slang`, scalar layout, column-major.
 
 ### 1.1 Binding model
@@ -51,18 +51,19 @@ GpuFrameRoot (host-visible, one per frame slot, rewritten every frame)
 ├─ primitives      : GpuPrimitive[]                absolute rows, model-relative values
 ├─ materials, pbrExtensions, lights (+ lightCount, localLightCount): model space, point and spot first
 ├─ worldLights     : GpuLight[lightCount]          world space, written by light_world (async compute)
+├─ prevWorldLights : GpuLight[lightCount]          last frame's worldLights; 0 on a history reset (F2)
 ├─ nodeInstances   : GpuNodeInstance[entity × node] world + previous world matrix
 ├─ drawRecords     : GpuDrawRecord[]               cull-internal work items
 ├─ visibleMeshlets : GpuVisibleMeshlet[]           {nodeInstanceIndex, meshletRow}; lateVisibleBase
 ├─ cullCounters, triangleCull, subpixelSnap, debugView, frameFlags
-├─ targets         : GpuTargets*                    heap indices of every render target
+├─ targets         : GpuTargets*                    heap indices of every render target (208 B)
 ├─ frameIndex, exposure
-├─ tlas            : uint64                         0 until M2
-├─ rayInstances    : GpuRayInstance[]               0 until M2
-├─ rtxdiConstants  : GpuRtxdiConstants*            RTXDI blocks + reservoirs, neighbor offsets (F1); read through lighting/rtxdi_bridge
-├─ cacheConstants                                   0 until M4
+├─ tlas            : uint64                         PTLAS address (M2 C4)
+├─ rayInstances    : GpuRayInstance[]               (M2 C2)
+├─ rtxdiConstants  : GpuRtxdiConstants*            DI + GI blocks, reservoirs, neighbor offsets (496 B, F1/G5); read through lighting/rtxdi_bridge
+├─ cacheConstants  : GpuNrcConstants*              NRC constants and buffers (168 B, M4 G3; zeroed when NRC is paused)
 │  planned (spec §6.2):
-└─ jitter (M3), light lists, material bins
+└─ emissive light lists, material bins (M7)
 ```
 
 Lookup chain of every raster shader (`loadDrawContext`): push `{frameRoot, firstVisible, meshletCount}` → visible entry → node instance → model → `meshletPrimitives[meshletRow]` → primitive → material.
@@ -86,13 +87,13 @@ The spec's §5 frame, stage by stage, with the shader that runs it.
 | 8 | Classify: vis buffer → material tiles, bin-id image | `classify` | graphics | [new] | M7 |
 | 9 | Resolve + shade → shading surface + DLSS guides | `resolve` (one tiled dispatch until M7, then one shader per bin through a DGC execution set) | graphics | [exists], one tiled dispatch | M1, M7 |
 | 10 | ReSTIR DI: initial → temporal → spatial → visibility | `rtxdi_presample` (M7), `rtxdi_initial`, `rtxdi_temporal`, `rtxdi_shade` (spatial resampling + shading) | graphics | [exists] except `rtxdi_presample` | M3; split for RTXDI 3.2 |
-| 11 | NRC + indirect | `pathtrace_update` and `pathtrace_query` with `NRC_*` defines → `QueryAndTrain` (host) → `nrc_resolve` | graphics | [new] | M4 |
-| 12 | ReSTIR GI: temporal + spatial | `restir_gi` | graphics | [new] | M4 |
-| 13 | Combine: direct + indirect + emissive | `combine` | graphics | [new] | M4 |
+| 11 | NRC + indirect | `nrc_update` (`NRC_UPDATE=1`), `indirect` (`NRC_QUERY=1`), `QueryAndTrain` (host), `nrc_resolve` (compute + ray query; NRC passes skipped in the 1.0 ReSTIR GI default, spec §11.7) | graphics | [exists] | M4 |
+| 12 | ReSTIR GI: temporal + spatial + final shade | `rtxdi_gi_temporal`, `rtxdi_gi_shade` | graphics | [exists] | M4 |
+| 13 | Combine: direct + indirect + emissive | `combine` | graphics | [exists] | M4 (H1 direct + emissive; G6 adds indirect) |
 | 14 | DLSS-RR | host NGX | graphics | — | M3 |
 | 15 | Post: auto exposure → tonemap → post target; `present` → swapchain, ImGui | `exposure` (histogram, adapt), `post` | graphics | [exists] (H2) | M3 |
 
-Debug passes: `debug_view` [exists] (geometry and culling views from the vis buffer, every guide; later reservoirs, cache debug resolve, DLSS input vs output), `hiz_view` [exists], ray views in `debug_view` [exists, M2] (`Ray meshlets`, `Ray node instances`, `Ray shading normal`; they replace the planned `rt_debug`; primary self-hit distance after L2). `rt_check` [exists] compares primary rays with the vis buffer after the debug view, only under `ENGINE_RT_CHECK`. The ray passes run in a second graphics command buffer that waits for the compute timeline. `mesh_debug` was deleted in M1. `motion_check` [exists] counts motion-vector errors after the debug view, only under `ENGINE_MOTION_TEST` ([motion_vectors.md](./features/motion_vectors.md) §5.1). Output: `present` [exists] samples the display image into the swapchain, then ImGui.
+Debug passes: `debug_view` [exists] (geometry and culling views from the vis buffer, every guide, `Unshadowed lights`, `Shadowed lights`, `Direct lighting`, `DLSS input`, `RTXDI reservoirs`, `Indirect samples`, `NRC cache`, `Indirect radiance`), `hiz_view` [exists], ray views in `debug_view` [exists, M2] (`Ray meshlets`, `Ray node instances`, `Ray shading normal`; they replace the planned `rt_debug`; primary self-hit distance after L2). `rt_check` [exists] compares primary rays with the vis buffer after the debug view, only under `ENGINE_RT_CHECK`. The ray passes run in a second graphics command buffer that waits for the compute timeline. `mesh_debug` was deleted in M1. `motion_check` [exists] counts motion-vector errors after the debug view, only under `ENGINE_MOTION_TEST` ([motion_vectors.md](./features/motion_vectors.md) §5.1). Output: `present` [exists] samples the post target (Lit) or display image (debug views) into the swapchain, then ImGui.
 
 ---
 
@@ -104,7 +105,7 @@ Library files become Slang modules in M0 (PBR A2). Vendor headers are textual in
 |---|---|---|
 | `types.slang` | [exists] | POD mirrors of `src/core/types.hpp` and `push_data.hpp`, checked field by field by `tests/layout_test.cpp`; includes `GpuTargets`, `GpuRayInstance` and the M0 frame root fields. Morph types removed (2026-11-08) |
 | **core/** | | |
-| `core/binding.slang` | [exists] | `tex2D`, `uintTex2D`, `storageTex2D<T, format>` (typed storage images), `samplerOf`, `bdaPtr`. To do: `sampleOr` (S6) |
+| `core/binding.slang` | [exists] | `tex2D`, `uintTex2D`, `storageTex2D<T, format>` (typed storage images), `samplerOf`, `bdaPtr`, `CheckedBuffer<T>` (bounds-checked BDA reads). Non-uniform material fetches go through `sampleSlot` in `material/pbr.slang` (S6) |
 | `core/frame.slang` | [exists] | `loadDrawContext`, `loadCamera`, `loadMaterial`, `loadMaterialExtension`, `toWorldLight`, `loadWorldLight` (this frame's world rows) |
 | `core/culling.slang` | [exists] | modified port of `vk_lod_clusters` `culling.glsl` (Apache-2.0 header kept): `intersectFrustum`, `isHiZOccluded`, `isSubPixel`, `isFrontFacingHW`, `testTrianglePixel`; reverse Z only |
 | `core/math.slang` | [exists] | `objectToClip`, `jitterClip`, `pixelToNdc`, `normalMatrix`, ONB, octahedral encode / decode, `luminance`. To do: PCG RNG, Halton |
@@ -120,15 +121,15 @@ Library files become Slang modules in M0 (PBR A2). Vendor headers are textual in
 | `material/brdf.slang` | [exists] | glTF GGX `evalBrdf`, `sampleBrdf` (VNDF), `pdfBrdf`, `envBrdfApprox` (B2; `tests/brdf_test.cpp`) |
 | **lighting/** | | |
 | `lighting/lights.slang` | [exists] | `LightSample`, `evalLight` for point, spot, directional (B3; `tests/lights_test.cpp`). Emissive triangles (M7) go through RTXDI's triangle-light path, not `evalLight` |
-| `lighting/rtxdi_bridge.slang` | [exists] | RTXDI resource macros + `RAB_*` over the guide sets and world lights, `shadeLightSample`, `rasterRayOrigin`; bounds-checked reservoir and light reads, which RTXDI expects from robust structured buffers (F3); textual include, units compile with `RTXDI_SLANG_FLAGS` (F2) |
-| `lighting/rtxdi_constants.slang` | [exists] | `GpuRtxdiConstants` mirror next to RTXDI's C parameter structs; textual (F2) |
+| `lighting/path_shading.slang` | [exists] | secondary-hit decode and direct-light shading shared by `indirect` and `nrc_update`; textual include (M4 G2) |
+| `lighting/rtxdi_bridge.slang` | [exists] | RTXDI resource macros + `RAB_*` over the guide sets and world lights, `shadeLightSample`, `rasterRayOrigin`, ReSTIR GI reservoir accessors; bounds-checked reservoir and light reads, which RTXDI expects from robust structured buffers (F3, G5); textual include, units compile with `RTXDI_SLANG_FLAGS` (F2) |
+| `lighting/rtxdi_constants.slang` | [exists] | `GpuRtxdiConstants` (496 B) mirror next to RTXDI's C parameter structs (DI + GI); textual (F2, G5) |
 | **gi/** | | |
-| `gi/sharc.slang` | [exists], to delete | SHaRC is dropped (spec §11.4); removal tracked as [considerations.md](./considerations.md) C-G3-1 |
-| `gi/nrc_bridge.slang` | [new] | NRC buffers + `NrcConstants`, matching the SDK's HLSL packing; called directly by the path passes (M4) |
+| `gi/nrc_bridge.slang` | [exists] | NRC buffer accessors + `NrcConstants` bridge over BDA; textual include, called by `indirect`, `nrc_update` and `nrc_resolve` (M4 G3) |
+| `gi/nrc_constants.slang` | [exists] | `GpuNrcConstants` (168 B) mirror matching `src/render/vk_nrc.hpp`; textual (M4 G3) |
 | **raytracing/** | | |
-| `raytracing/payload.slang` | [new] | minimal hit record `{instance, cluster, triangle, barycentrics, hitT}` |
-| `raytracing/hit.slang` | [new] | the one minimal closest-hit (`ClusterID`, needs `allowClusterAccelerationStructure`) and miss; skipped if Slang exposes cluster id on `HitObject` (Q8) |
-| `raytracing/trace.slang` | [partial: `traceVisibility`, F2] | `HitObject::TraceRay` + `ReorderThread` with the material-bin hint; ray-query `traceVisibility` for visibility rays; `FORCE_OPACITY_MICROMAP_2_STATE` / `FORCE_OPAQUE` flags from the instance |
+| `raytracing/ser.slang` | [shelved, C-G1-3] | `traceShaded` (`HitObject::TraceRay` + `ReorderThread`) and minimal closest-hit reading `ClusterIDNV`; kept in tree, not built (returns post-1.0 V1) |
+| `raytracing/trace.slang` | [exists] | ray-query `traceVisibility` and `requireOmm2StateRayFlag()` (`RAY_FLAG_FORCE_OMM_2_STATE`, C-C4-3) |
 | **passes/** | | see §5 |
 
 ---
@@ -150,9 +151,9 @@ Normative in spec §8.3 and §9.3. Two sets of the surface and guides ping-pong 
 | `emissive` | R11G11B10F | `resolve` | `combine` |
 | `motion` | RGBA16F, render-res pixels, no jitter; z = view depth change | `resolve` | DLSS, ReSTIR temporal |
 | `position` | RGBA32F: world position, w = view depth | `resolve` | RTXDI surfaces and ray origins (both sets) |
-| `specHitDistance` | R16F, optional, full render resolution after ReSTIR GI | `restir_gi` | DLSS (only if measured useful) |
+| `specHitDistance` | R16F, optional, full render resolution after ReSTIR GI | `rtxdi_gi_shade` | DLSS (only if measured useful) |
 | `directRadiance` | RGBA16F | `rtxdi_shade` (zeros with no lights) | `combine`; `debug_view` (`Direct lighting`) |
-| `indirectRadiance` | RGBA16F | `restir_gi` | `combine` |
+| `indirectRadiance` | RGBA16F | `rtxdi_gi_shade` | `combine`; `debug_view` (`Indirect radiance`) |
 | `noisyColor` | RGBA16F HDR | `combine` | DLSS-RR |
 | Output color | RGBA16F, display resolution | DLSS-RR | `exposure`, `post` |
 | Exposure | R32F, 1×1 | `exposureAdaptMain` | `post`; next frame's DLSS-RR |
@@ -182,21 +183,21 @@ Buffers (BDA, [resource_architecture.md](./resource_architecture.md) §12):
 | `light_world` | [exists] | compute, async | model-space lights, instance rows | `worldLights` | M3 (E2) |
 | `rt_instances` | [exists] (C4) | compute, async | node instances, `GpuRayInstance`, `GpuRayInstanceBuild`, PTLAS state rows | PTLAS `WRITE_INSTANCE` arguments for changed rows (all rows on a full build), their count in the op entry, updated state rows | M2 |
 | `rt_check` | [exists] | compute + ray query | TLAS, vis buffer, `decodeHit` | `GpuRayCheckStats` (host-visible) | M2, `ENGINE_RT_CHECK` only |
+| `rt_ser_check` | [shelved, C-G1-3] | RT pipeline + SER | TLAS, vis buffer, `raytracing/ser` | `GpuSerCheckStats` (kept in tree, not compiled) | M4 G1 / post-1.0 V1 |
 | `rtxdi_presample` | [new] | compute | light list | PDF texture, RIS buffers | M7 (`Power_RIS`) |
 | `rtxdi_initial`, `rtxdi_temporal`, `rtxdi_shade` | [exists] (F3; `rtxdi_temporal` since RTXDI 3.2, [rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md); `rtxdi_shade` runs the spatial step) | compute + ray query | guides (both sets), motion, lights, TLAS | reservoirs, `directRadiance` | M3 |
-| `pathtrace_update` | [new] | RT pipeline + SER | guides, TLAS, slices, materials, lights, cache | NRC training (`NRC_UPDATE`) | M4 |
-| `pathtrace_query` | [new] | RT pipeline + SER | same | ReSTIR GI initial samples, NRC query records | M4 |
-| `pathtrace` | [new] | — | — | — | shared path code; becomes a module imported by the two above |
-| NRC `QueryAndTrain` | host SDK | — | NRC buffers | inference + one training step | M4 |
-| `nrc_resolve` | [new] | compute | NRC query results | `throughput × cached radiance` into the ReSTIR GI samples | M4 |
-| `restir_gi` | [new] | compute + ray query | GI samples, guides, motion | `indirectRadiance`, optional `specHitDistance` | M4 |
-| `combine` | [exists] (H1 direct + emissive; G6 adds indirect) | compute | `directRadiance`, `indirectRadiance`, `emissive` | `noisyColor` | M4 |
-| DLSS-RR | host NGX | — | `noisyColor` + guides | output color | M3 |
-| `exposure` | [exists] (H2) | compute: `exposureHistogramMain`, `exposureAdaptMain` | output color | luminance histogram, exposure image, readback | M3 |
-| `post` | [exists] (H2; planned as `composite`) | compute | output color, exposure | post target (ACES fitted, tonemap once); `present` draws it into the swapchain | M3 |
+| `nrc_update` | [exists] (`NRC_UPDATE=1`) | compute + ray query | guides, TLAS, slices, materials, lights, NRC constants | NRC training paths (NRC comparison modes only) | M4 (G3) |
+| `indirect` | [exists] (`NRC_QUERY=1`) | compute + ray query | same | ReSTIR GI initial samples; NRC query records (NRC modes only); multi-bounce ground truth when `giReferenceBounces > 0` | M4 (G2, G3, G5) |
+| NRC `QueryAndTrain` | host SDK | — | NRC buffers | inference + one training step (NRC modes only) | M4 (G3) |
+| `nrc_resolve` | [exists] | compute | NRC query results, primary material AO | `ao · throughput · cached radiance` into the ReSTIR GI initial samples (NRC modes only) | M4 (G3) |
+| `rtxdi_gi_temporal`, `rtxdi_gi_shade` | [exists] | compute + ray query | GI samples, guides (both sets), motion, TLAS | `indirectRadiance`, optional `specHitDistance` | M4 (G5) |
+| `combine` | [exists] (H1 direct + emissive; G6 adds indirect) | compute | `directRadiance`, `indirectRadiance`, `emissive` | `noisyColor` | M3/M4 (H1, G6) |
+| DLSS-RR | host NGX | — | `noisyColor` + guides, exposure image | output color | M3 (H1) |
+| `exposure` | [exists] (H2) | compute: `exposureHistogramMain`, `exposureAdaptMain` | output color | luminance histogram, exposure image, readback | M3 (H2) |
+| `post` | [exists] (H2; planned as `composite`) | compute | output color, exposure | post target (ACES fitted, tonemap once); `present` draws it into the swapchain | M3 (H2) |
 | `debug_view` | [exists] | compute (+ ray query for the ray views) | vis buffer, any §4 target, TLAS | `displayColor` | M1 onward |
 
-There is one path loop (`pathtrace`). Direct light at secondary hits calls RTXDI sampling without reuse plus one visibility ray; there is no second light loop. The path code calls the NRC bridge directly.
+Secondary hit decoding and direct-light shading share one helper (`lighting/path_shading.slang`), included by both `indirect` and `nrc_update`. Direct light at secondary hits calls RTXDI sampling without reuse plus one visibility ray; there is no second light loop. Both passes call the NRC bridge directly (skipped when `cacheConstants` is zeroed in ReSTIR GI mode).
 
 ---
 
@@ -209,8 +210,8 @@ The spec's §16. Each step renders something testable and is measured against sp
 | M0 | **Built.** PBR A1, A2 (modules), A4; `GpuTargets`; morph code removed; `base*`, `dlss` deleted (AU7); capacity checks in `meshlet_cull` | same image; structs asserted |
 | M1 | **Built.** Per [visibility_buffer.md](./features/visibility_buffer.md): reverse Z + `nvhiz`; `visbuffer`, `surface`, vis-buffer `mesh_fragment`, opaque bin with winding flip; `resolve` as one tiled dispatch with `sampleMaterial` (B1); `gbuffer` layout; `debug_view`, `present`; `mesh_debug` removed | guide debug views; same geometry as today; culling lossless under reverse Z (`ENGINE_CULL_CHECK`, done 2026-11-13) |
 | M2 | **Built** (C4 2026-11-14). `geometry/hit`, `rt_instances` (PTLAS writes), ray views in `debug_view`, `rt_check`; the OMM 2-state ray flag in `raytracing.trace` and `geometry.hit` | debug colors by cluster; unload keeps other models traceable (`ENGINE_RT_CHECK`, 2026-11-13) |
-| M3 | `sampleMaterial`, BRDF, `evalLight` (PBR B); RTXDI passes; `exposure`, `composite`; culling jitter rule | stable direct light |
-| M4 | `raytracing/*`, `pathtrace_*` with SER, `nrc_bridge`, NRC path defines, `nrc_resolve`, `restir_gi`, `combine` | bounce light, NRC training loss falls, reorder on/off timings |
+| M3 | **Built** (2026-11-14; RTXDI 3.2 on 2026-11-15). `sampleMaterial`, BRDF, `evalLight` (PBR B); `light_world`, `rtxdi_initial`, `rtxdi_temporal`, `rtxdi_shade`, `combine` (direct + emissive), `exposure`, `post`; culling jitter rule | stable direct light |
+| M4 | **Built** on RTX 5070 (2026-11-19). `lighting/path_shading`, `indirect`, `nrc_update`, `gi/nrc_bridge`, `gi/nrc_constants`, `nrc_resolve`, `rtxdi_gi_temporal`, `rtxdi_gi_shade`, `combine` (+ indirect), indirect mode toggle (ReSTIR GI default since 2026-11-20); `raytracing/ser` and `rt_ser_check` built in G1 then shelved 2026-11-17 (C-G1-3) | bounce light under Sponza arches, GI check converges; NRC cache converges (C-G3-4); all three indirect modes switch cleanly |
 | M6 | alpha-tested bin fragment; OMM flags in `trace` | cut-outs in raster and shadows, zero ray candidates |
 | M7 | `classify`, per-bin `resolve` execution set with overlap guard; emissive-triangle lights; `rtxdi_presample` | per-bin timings; Bistro emissives lit |
 | M8 | per-pass tuning from the frame profile; GI temporal reuse merged into `indirect` (O3); packed RTXDI surface guide (O4); NRC query heuristic if I5 confirms it | per-scope table before and after; GI check gated ([spec/m8](./m8/README.md)) |
@@ -239,9 +240,9 @@ From [culling_comparison.md](../reference/culling_comparison.md); detail in spec
 | 1 | `scene_update`: the CPU writes `GpuNodeInstance` for every entity × node each frame, which spec P2 forbids | owned by spec AU4, optional |
 | 2 | Vendor HLSL headers through Slang (spec Q6) | verify per SDK at integration; thin HLSL shim per SDK if needed |
 | 4 | Vis buffer 32 vs 64 bit (spec Q3) | 32-bit chosen; compare on real runtime after M1 (feature step V8) |
-| 5 | `NonUniform` dropped on heap access (spec Q5) | `sampleOr`; re-probe on every Slang upgrade |
+| 5 | `NonUniform` dropped on heap access (spec Q5) | `sampleSlot` (`material/pbr.slang`); re-probe on every Slang upgrade |
 
-Closed by the spec (2026-10-31 to 2026-11-08): `ClusterID` and attributes on `HitObject` (spec Q8: in Slang v2026.20 `GetClusterID` is NV-only, so the minimal closest-hit invoke stays; compile probe at M4); visibility buffer over raster G-buffer; RT pipelines with SER for shaded rays; Mega Geometry clusters for all RT geometry; SHaRC and NRC behind one interface; no any-hit; render targets through `GpuTargets`; culling shaped like `vk_lod_clusters`' leaf level.
+Closed by the spec (2026-10-31 to 2026-11-20): `ClusterID` and attributes on `HitObject` (spec Q8, closed 2026-11-16 on Slang 2026.22: minimal closest-hit reads `ClusterIDNV`); SER shelved for 1.0 on 2026-11-17 (C-G1-3; 1.0 uses compute ray queries, SER returns in post-1.0 V1); visibility buffer over raster G-buffer; Mega Geometry clusters and PTLAS for all RT geometry; SHaRC dropped 2026-11-14 (NRC only, paused as a comparison switch in 1.0 since 2026-11-20); no any-hit; render targets through `GpuTargets`; culling shaped like `vk_lod_clusters`' leaf level.
 
 ---
 
@@ -249,6 +250,7 @@ Closed by the spec (2026-10-31 to 2026-11-08): `ClusterID` and attributes on `Hi
 
 | Date | Change |
 |---|---|
+| 2026-11-20 | Brought up to M3/M4 as built: `indirect`, `nrc_update`, `nrc_resolve`, `rtxdi_gi_temporal`, `rtxdi_gi_shade`, `lighting/path_shading`, `gi/nrc_bridge`, `gi/nrc_constants` exist; `gi/sharc.slang` removed (C-G3-1); `raytracing/ser` and `rt_ser_check` shelved (C-G1-3); 1.0 uses compute ray queries and defaults to ReSTIR GI mode (NRC paused); `GpuFrameRoot` fields and debug views updated |
 | 2026-11-14 | PBR C4 built: `rt_instances` writes PTLAS instances for changed rows; `traceVisibility` and `traceClosest` set `RAY_FLAG_FORCE_OMM_2_STATE` through `requireOmm2StateRayFlag()` |
 | 2026-11-14 | PTLAS required (engine spec §10.3): `rt_instances` writes PTLAS ops from PBR C4 |
 | 2026-11-14 | NVIDIA only, NRC only (engine spec §1.2, §11.4): SHaRC and `IRadianceCache` dropped; M5 merged into M4 |
