@@ -142,13 +142,28 @@ struct LightWorldPushData {
     // GpuTriangleLightTask[triangleLightTaskCount] (RayTracingScene)
     vk::DeviceAddress triangleLightTasks;
     uint32_t triangleLightTaskCount;
+    // resource heap: storage view of the local light PDF's mip 0 (RtxdiContext)
+    uint32_t lightPdf;
+    // texels of lightPdf's mip 0, each written every frame: a local light's power at its Z-curve texel, 0 past them
+    uint32_t lightPdfTexelCount;
     uint32_t pad0;
 };
 
-static_assert(sizeof(LightWorldPushData) == 56);
+static_assert(sizeof(LightWorldPushData) == 64);
 static_assert(offsetof(LightWorldPushData, sunDirection) == 8);
 static_assert(offsetof(LightWorldPushData, assetLightCount) == 36);
 static_assert(offsetof(LightWorldPushData, triangleLightTasks) == 40);
+static_assert(offsetof(LightWorldPushData, lightPdf) == 52);
+
+// light_pdf_mips pass, one dispatch per level; must match shaders/types.slang LightPdfMipsPushData
+struct LightPdfMipsPushData {
+    // resource heap: storage views of the read and the written mip
+    uint32_t srcImage;
+    uint32_t dstImage;
+    vk::Extent2D dstSize;
+};
+
+static_assert(sizeof(LightPdfMipsPushData) == 16);
 
 // motion_check pass; must match shaders/types.slang MotionCheckPushData
 struct MotionCheckPushData {
@@ -254,4 +269,5 @@ static_assert(sizeof(HiZViewPushData) == 24);
 inline constexpr size_t kMaxPushDataBytes =
     std::max({sizeof(MeshPushData), sizeof(CullPushData), sizeof(HiZPushData), sizeof(HiZViewPushData),
               sizeof(FramePushData), sizeof(ResolvePushData), sizeof(PresentPushData), sizeof(RtInstancesPushData),
-              sizeof(ExposurePushData), sizeof(LightWorldPushData), sizeof(SerCheckPushData)});
+              sizeof(ExposurePushData), sizeof(LightWorldPushData), sizeof(LightPdfMipsPushData),
+              sizeof(SerCheckPushData)});

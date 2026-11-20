@@ -97,7 +97,7 @@ Every ray pass reads the TLAS address from `GpuFrameRoot.tlas`: the one PTLAS (C
 | 9 | **Default material:** metallic 1, roughness 1, white. It renders dark without GI, which is correct |
 | 10 | **AO:** sampled in the resolve and stored with the guides. Applied only to the radiance-cache query term at the primary vertex. Never on direct light |
 | 11 | **GI cache:** NRC only, on every tier (M4), with no cache interface: the indirect pass calls the NRC bridge directly. Kept built as a runtime comparison switch since 2026-11-20 (spec §11.7); 1.0 ships ReSTIR GI mode (NRC paused) until C-G5-3 is fixed |
-| 12 | **RTXDI light sampling:** `Uniform` for punctual-only scenes (M3). `Power_RIS` (presample pass + PDF texture) once emissive triangles are lights (M7). Resampling: `TemporalAndSpatial` (RTXDI 3.2 dropped `FusedSpatiotemporal`; [rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md)) |
+| 12 | **RTXDI light sampling:** `Uniform` for punctual-only scenes (M3). Since M7 F1 presampled as the RTXDI sample's `Medium`: `ReGIR_RIS` by default, its cells filled from `Power_RIS` tiles (presample passes + PDF texture); `Power_RIS` and `Uniform` selectable ([m7/f1_light_presampling.md](./m7/f1_light_presampling.md)). Resampling: `TemporalAndSpatial` (RTXDI 3.2 dropped `FusedSpatiotemporal`; [rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md)) |
 | 13 | **Scene data per frame:** the CPU writes `GpuFrameRoot`, the camera and changed transforms. Ray instance ops, the PTLAS update and the RTXDI light buffer are written on the GPU from the persistent tables (spec P2) |
 | 14 | **C++ style** (`cpp-guidelines` skill, `.clang-tidy`): PascalCase types and `enum class` enumerators; camelCase functions, members, locals; class constants `kPascalCase`; getters `getX` / `isX` / `hasX`; no `m_` or trailing `_`. RAII owners of AS, micromaps, RT pipelines and SDK objects are move-only (Rule of Five); everything else follows the Rule of Zero. `const`/`constexpr` by default, `explicit` single-argument constructors, `[[nodiscard]]` on getters, named constants instead of magic numbers. Failures throw `std::runtime_error` with context. `.hpp` + `#pragma once`, no `using namespace` in headers |
 | 15 | **Comments** (`main-guidelines` skill), in C++ and Slang: lowercase, 2–8 words, why or non-obvious behavior only, no trailing period |
@@ -680,7 +680,7 @@ SDK: `NVIDIA-RTX/RTXDI-Library` (host C++ + HLSL headers), pinned in `ThirdParty
 #### F1 · Host context — built (2026-11-14)
 
 - `rtxdi::ReSTIRDIContext` with `ReSTIRDIStaticParameters { renderWidth, renderHeight, CheckerboardMode::Off }`. `SetFrameIndex` each frame; recreate on resize with `RenderTargets::recreate`.
-- Local light sampling `Uniform` until M7, then `Power_RIS` (presample pass + PDF texture). Resampling `TemporalAndSpatial` (§2 #12) since the RTXDI 3.2 update (2026-11-15, [rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md)); F1–F3 below describe the 3.1 build, with `FusedSpatiotemporal`.
+- Local light sampling `Uniform` until M7; since M7 F1 `ReGIR_RIS` over `Power_RIS` tiles (presample passes + PDF texture), with the host context an `rtxdi::ImportanceSamplingContext`. Resampling `TemporalAndSpatial` (§2 #12) since the RTXDI 3.2 update (2026-11-15, [rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md)); F1–F3 below describe the 3.1 build, with `FusedSpatiotemporal`.
 - Buffers: DI reservoirs (`RTXDI_PackedDIReservoir`, sized by the context), neighbor offsets (`rtxdi::FillNeighborOffsetBuffer` once), one host-visible constants block per frame slot reached through `GpuFrameRoot.rtxdiConstants`.
 - **As built:** `RtxdiContext` (`src/render/vk_rtxdi.*`), owned by `Renderer`.
   - **Context:** created in `recreate(renderExtent)`, which `Renderer::rebuildSwapchainResources` calls after `RenderTargets::recreate` with the device idle. It is configured with `FusedSpatiotemporal` (the library default is `TemporalAndSpatial`) and `Uniform` local light sampling; every other parameter keeps the library default. `prepareFrame(slot, frameNumber)` runs after the slot's fence: `SetFrameIndex`, then the slot's constants.
@@ -973,7 +973,7 @@ Open problems, accepted limitations and current workarounds, stamped by mileston
 
 | Choice | Default |
 |---|---|
-| RTXDI local light sampling | `Uniform` for punctual-only scenes; `Power_RIS` once emissive triangles are lights (M7) |
+| RTXDI local light sampling | `ReGIR_RIS` with 8 candidates (`Medium`, M7 F1); `Power_RIS` and `Uniform` selectable |
 | Indirect resolution | full on the reference tier, half + checkerboard on the floor tier |
 | CLAS `positionTruncateBitCount` | 0; raise only with measured memory gain and the §10.2 origin rule. RTXMG ships 7, which measured −22% CLAS on Sponza (4.72 → 3.66 MiB); not worth the origin bound at this scale (feature spec §9.4, R6) |
 | `Blend` | treated as mask (cutoff 0.5) |

@@ -1,6 +1,7 @@
 module lights;
 
 import types;
+import core.math;
 
 // KHR_lights_punctual evaluation; the resolve, rtxdi bridge and indirect pass all call this, none re-derives it
 
@@ -62,4 +63,44 @@ public LightSample evalLight(GpuLight light, float3 p)
     }
     s.radiance = light.color * (light.intensity * attenuation); // candela
     return s;
+}
+
+// RTXDI sample (PolymorphicLight.hlsli GetAverageDistanceToVolume; NVIDIA RTX SDKs license): the mean distance from a
+// point to a random point of a sphere, fitted to a Monte Carlo curve; 0.75 r at the center, d far away
+public float averageDistanceToVolume(float distanceToCenter, float volumeRadius)
+{
+    const float kNonlinearFactor = 1.1547;
+    const float spread = distanceToCenter + volumeRadius * kNonlinearFactor;
+    return distanceToCenter + volumeRadius * volumeRadius * volumeRadius / (spread * spread);
+}
+
+// whether a sphere meets a cone from its apex (TestSphereConeIntersection in the RTXDI sample's LightShaping.hlsli)
+bool sphereMeetsCone(float3 apex, float3 axis, float halfAngle, float3 center, float radius)
+{
+    const float3 toCenter = center - apex;
+    const float distance = length(toCenter);
+    if (distance <= radius)
+    {
+        return true;
+    }
+    const float angleToAxis = acos(clamp(dot(toCenter, axis) / distance, -1.0, 1.0));
+    return angleToAxis <= asin(radius / distance) + halfAngle;
+}
+
+// a punctual light's weight for every surface inside a sphere (PointLight::GetWeightForVolume): I / d^2 at the mean
+// distance. Zero only where no point of the sphere can receive light: past the range, outside a spot's outer cone
+public float punctualLightWeightForVolume(GpuLight light, float3 center, float radius)
+{
+    const float distance = length(center - light.position);
+    if (light.range > 0.0 && distance - radius >= light.range)
+    {
+        return 0.0;
+    }
+    if (light.type == LightType.Spot && !sphereMeetsCone(light.position, light.direction, light.outerCone, center,
+                                                         radius))
+    {
+        return 0.0;
+    }
+    const float meanDistance = averageDistanceToVolume(distance, radius);
+    return luminance(light.color * light.intensity) / (meanDistance * meanDistance);
 }

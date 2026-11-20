@@ -3,6 +3,7 @@
 #include "../util/vk_utils.hpp"
 #include "push_data.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <format>
@@ -95,10 +96,11 @@ void WorldLights::prepareFrame(uint32_t frameSlot, uint64_t lastSubmittedFrame)
     slot.address = device.vkdevice.getBufferAddress({.buffer = *slot.buffer});
 }
 
-void WorldLights::recordUpdate(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot) const
+void WorldLights::recordUpdate(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot,
+                               const LightPdfTarget& lightPdf) const
 {
-    // the frame root carries the same count
-    const uint32_t count = lightCount();
+    // the frame root carries the same count; the PDF's texels past it are cleared by the same threads
+    const uint32_t count = std::max(lightCount(), lightPdf.texelCount);
     if (count == 0) {
         return;
     }
@@ -116,6 +118,8 @@ void WorldLights::recordUpdate(const vk::raii::CommandBuffer& cmd, uint32_t fram
         .assetLightCount = assets.uploadedCount(AssetBuffer::Lights),
         .triangleLightTasks = rtScene.triangleLightTasksAddress(frameSlot),
         .triangleLightTaskCount = rtScene.triangleLightTaskCount(),
+        .lightPdf = lightPdf.mip0,
+        .lightPdfTexelCount = lightPdf.texelCount,
         .pad0 = 0,
     };
     ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.lightWorld);

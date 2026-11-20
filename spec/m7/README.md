@@ -1,6 +1,6 @@
 # M7 · Material binning and emissive lights
 
-**Status** — Spec planned on 2026-11-20. E1 built on 2026-11-20 (open: C-E1-3 GPU-AV, C-E1-4 cost); E2 built on 2026-11-20 (open: C-E2-1 the lamp check waits for F1, C-E2-2); F1 not built.\
+**Status** — Spec planned on 2026-11-20. E1 built on 2026-11-20 (open: C-E1-3 GPU-AV, C-E1-4 cost); E2 built on 2026-11-20 (open: C-E2-2; C-E2-1 closed by F1); F1 built on 2026-11-21 (open: C-F1-2 ReGIR costs ~0.7 ms over `Power_RIS`, C-F1-4 to C-F1-6; the convergence check pins `Power_RIS`).\
 **Scope** — PBR plan's M7 row: the resolve split into per-material-bin shaders (engine spec §9.1–9.2), emissive triangles as RTXDI lights (E2), and local light presampling (F1).
 [Engine spec](../../docs/engine_spec.md) · [PBR plan](../pbr_implementation_plan.md) · [Considerations](../considerations.md)
 

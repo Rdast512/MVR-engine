@@ -1,7 +1,8 @@
 // Checks RTXDI bridge GI math and guards directly on the GPU: LogLuv GI reservoir packing across 8 orders of
 // magnitude, RAB_ValidateGISampleWithJacobian bounds against NVIDIA RAB_SpatialHelpers.hlsli, shadeGiSample /
-// RAB_GetGISampleTargetPdfForSurface against an independent double-precision glTF BRDF reference, and CheckedBuffer
-// out-of-bounds guards (considerations C-F3-1).
+// RAB_GetGISampleTargetPdfForSurface against an independent double-precision glTF BRDF reference, CheckedBuffer
+// out-of-bounds guards (considerations C-F3-1), and the compact light round trip of every light type within f16
+// precision (spec/m7/f1_light_presampling.md).
 #include "test_support.hpp"
 
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -29,8 +31,103 @@ namespace
         VkDeviceAddress guardedBuffer;
         uint32_t radianceCount;
         uint32_t jacobianCount;
+        VkDeviceAddress lightInputs;
+        VkDeviceAddress lightOutputs;
+        VkDeviceAddress compactedFlags;
+        VkDeviceAddress compactRows;
+        uint32_t lightCount;
+        uint32_t pad0;
     };
-    static_assert(sizeof(RtxdiMathPush) == 56);
+    static_assert(sizeof(RtxdiMathPush) == 96);
+
+    // GpuLight / GpuTriangleLight of shaders/types.slang: 16 words, the type at word 11 in both
+    struct LightRow
+    {
+        std::array<float, 16> words{};
+
+        void setVec3(size_t word, float x, float y, float z)
+        {
+            words[word] = x;
+            words[word + 1] = y;
+            words[word + 2] = z;
+        }
+        void setUint(size_t word, uint32_t value) { std::memcpy(&words[word], &value, sizeof(value)); }
+        [[nodiscard]] uint32_t getUint(size_t word) const
+        {
+            uint32_t value = 0;
+            std::memcpy(&value, &words[word], sizeof(value));
+            return value;
+        }
+    };
+    static_assert(sizeof(LightRow) == 64);
+
+    // LightType and GpuTriangleLight words
+    constexpr uint32_t kPointLight = 1;
+    constexpr uint32_t kSpotLight = 2;
+    constexpr uint32_t kTriangleLight = 3;
+    constexpr size_t kTypeWord = 11;
+    constexpr size_t kV0Word = 0;
+    constexpr size_t kEdge1Word = 3;
+    constexpr size_t kEdge2Word = 6;
+    constexpr size_t kFlagsWord = 9;
+    constexpr size_t kRadianceWord = 12;
+    // GpuLight words
+    constexpr size_t kPositionWord = 0;
+    constexpr size_t kRangeWord = 3;
+    constexpr size_t kIntensityWord = 7;
+    constexpr size_t kColorWord = 8;
+    // f16 keeps 11 significant bits; the octahedral unorm16 directions add ~5e-5 rad
+    constexpr float kHalfTolerance = 1.0e-3f;
+
+    LightRow triangleRow(std::array<float, 3> v0, std::array<float, 3> e1, std::array<float, 3> e2,
+                         std::array<float, 3> radiance, uint32_t flags)
+    {
+        LightRow row;
+        row.setVec3(kV0Word, v0[0], v0[1], v0[2]);
+        row.setVec3(kEdge1Word, e1[0], e1[1], e1[2]);
+        row.setVec3(kEdge2Word, e2[0], e2[1], e2[2]);
+        row.setUint(kFlagsWord, flags);
+        row.setUint(kTypeWord, kTriangleLight);
+        row.setVec3(kRadianceWord, radiance[0], radiance[1], radiance[2]);
+        return row;
+    }
+
+    LightRow punctualRow(uint32_t type, std::array<float, 3> position, float range, float intensity,
+                         std::array<float, 3> color)
+    {
+        LightRow row;
+        row.setVec3(kPositionWord, position[0], position[1], position[2]);
+        row.words[kRangeWord] = range;
+        row.setVec3(4, 0.0f, -1.0f, 0.0f);
+        row.words[kIntensityWord] = intensity;
+        row.setVec3(kColorWord, color[0], color[1], color[2]);
+        row.setUint(kTypeWord, type);
+        row.words[12] = 0.2f;
+        row.words[13] = 0.6f;
+        return row;
+    }
+
+    float vec3Length(const LightRow& row, size_t word)
+    {
+        return std::sqrt(row.words[word] * row.words[word] + row.words[word + 1] * row.words[word + 1] +
+                         row.words[word + 2] * row.words[word + 2]);
+    }
+
+    // largest distance between matching corners (v0, v0 + edge1, v0 + edge2)
+    float triangleCornerError(const LightRow& in, const LightRow& out)
+    {
+        float error = 0.0f;
+        for (const size_t edge : {size_t{0}, kEdge1Word, kEdge2Word}) {
+            float squared = 0.0f;
+            for (size_t axis = 0; axis < 3; ++axis) {
+                const float a = in.words[kV0Word + axis] + (edge != 0 ? in.words[edge + axis] : 0.0f);
+                const float b = out.words[kV0Word + axis] + (edge != 0 ? out.words[edge + axis] : 0.0f);
+                squared += (a - b) * (a - b);
+            }
+            error = std::max(error, std::sqrt(squared));
+        }
+        return error;
+    }
 
     struct Vec4
     {
@@ -147,6 +244,38 @@ int main()
         test::HostBuffer shadeOut = test::createHostBuffer(vulkan, 4 * sizeof(Vec4));
         test::HostBuffer guarded = test::createHostBuffer(vulkan, 4 * sizeof(uint32_t));
 
+        struct CompactCase
+        {
+            LightRow row;
+            bool isCompacted;
+        };
+        const std::vector<CompactCase> compactCases{
+            {triangleRow({1.0f, 2.0f, 3.0f}, {0.5f, 0.1f, -0.2f}, {-0.1f, 0.4f, 0.3f}, {12.5f, 3.0f, 0.25f}, 0u),
+             true},
+            // double-sided and mirrored, far from the origin
+            {triangleRow({-40.0f, 5.0f, 120.0f}, {2.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 3.0f}, {1000.0f, 500.0f, 0.001f},
+                         3u),
+             true},
+            // degenerate: a zero-length edge keeps any direction
+            {triangleRow({0.25f, -0.5f, 0.75f}, {0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, 0u), true},
+            {punctualRow(kPointLight, {3.0f, -1.0f, 2.5f}, 7.5f, 150.0f, {1.0f, 0.8f, 0.6f}), true},
+            // range 0: no range window
+            {punctualRow(kPointLight, {-12.0f, 4.0f, 0.5f}, 0.0f, 2.5e5f, {0.3f, 0.6f, 0.9f}), true},
+            // shaped: loaded from the world row, as the RTXDI sample's spot lights
+            {punctualRow(kSpotLight, {0.0f, 3.0f, 0.0f}, 10.0f, 40.0f, {1.0f, 1.0f, 1.0f}), false},
+            // past the f16 range
+            {triangleRow({0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {7.0e4f, 1.0f, 1.0f}, 0u), false},
+        };
+        const auto lightCount = static_cast<uint32_t>(compactCases.size());
+        test::HostBuffer lightIn = test::createHostBuffer(vulkan, lightCount * sizeof(LightRow));
+        test::HostBuffer lightOut = test::createHostBuffer(vulkan, lightCount * sizeof(LightRow));
+        test::HostBuffer compactedOut = test::createHostBuffer(vulkan, lightCount * sizeof(uint32_t));
+        test::HostBuffer compactRows = test::createHostBuffer(vulkan, lightCount * 8 * sizeof(uint32_t));
+        auto* lightInPtr = static_cast<LightRow*>(lightIn.mapped);
+        for (size_t i = 0; i < compactCases.size(); ++i) {
+            lightInPtr[i] = compactCases[i].row;
+        }
+
         auto* radInPtr = static_cast<Vec4*>(radIn.mapped);
         for (size_t i = 0; i < radianceInputs.size(); ++i) {
             radInPtr[i] = radianceInputs[i];
@@ -167,6 +296,12 @@ int main()
             .guardedBuffer = guarded.address,
             .radianceCount = static_cast<uint32_t>(radianceInputs.size()),
             .jacobianCount = static_cast<uint32_t>(jacobianCases.size()),
+            .lightInputs = lightIn.address,
+            .lightOutputs = lightOut.address,
+            .compactedFlags = compactedOut.address,
+            .compactRows = compactRows.address,
+            .lightCount = lightCount,
+            .pad0 = 0,
         };
 
         VkCommandBuffer cmd = vulkan.beginCommands();
@@ -227,6 +362,44 @@ int main()
         check(shadePtr[3].x > 0.5f && shadePtr[3].y > 0.5f && shadePtr[3].z > 0.5f && shadePtr[3].w > 0.5f,
               "  CheckedBuffer in-bounds access works and OOB reads return 0");
 
+        // 5. compact light round trip
+        const auto* lightOutPtr = static_cast<const LightRow*>(lightOut.mapped);
+        const auto* compactedPtr = static_cast<const uint32_t*>(compactedOut.mapped);
+        for (size_t i = 0; i < compactCases.size(); ++i) {
+            const LightRow& in = compactCases[i].row;
+            const LightRow& out = lightOutPtr[i];
+            const bool isCompacted = compactedPtr[i] != 0;
+            if (!check(isCompacted == compactCases[i].isCompacted, "  compact light accepted for its type")) {
+                continue;
+            }
+            if (!isCompacted) {
+                continue;
+            }
+            const uint32_t type = in.getUint(kTypeWord);
+            bool isClose = out.getUint(kTypeWord) == type;
+            for (size_t axis = 0; axis < 3; ++axis) {
+                const size_t colorWord = (type == kTriangleLight ? kRadianceWord : kColorWord) + axis;
+                isClose = isClose && relClose(out.words[colorWord], in.words[colorWord], kHalfTolerance);
+            }
+            if (type == kTriangleLight) {
+                const float size = vec3Length(in, kEdge1Word) + vec3Length(in, kEdge2Word);
+                const float error = triangleCornerError(in, out);
+                std::printf("  compact triangle[%zu]: corner error %.3g of edge sum %.3g\n", i, error, size);
+                isClose = isClose && out.getUint(kFlagsWord) == in.getUint(kFlagsWord) &&
+                    error <= kHalfTolerance * size + 1.0e-6f * (1.0f + vec3Length(in, kV0Word));
+            } else {
+                for (const size_t word : {kPositionWord, kPositionWord + 1, kPositionWord + 2, kRangeWord,
+                                          kIntensityWord}) {
+                    isClose = isClose && out.words[word] == in.words[word];
+                }
+            }
+            check(isClose, "  compact light round trip within f16 precision");
+        }
+
+        test::destroyHostBuffer(vulkan, lightIn);
+        test::destroyHostBuffer(vulkan, lightOut);
+        test::destroyHostBuffer(vulkan, compactedOut);
+        test::destroyHostBuffer(vulkan, compactRows);
         test::destroyHostBuffer(vulkan, radIn);
         test::destroyHostBuffer(vulkan, radOut);
         test::destroyHostBuffer(vulkan, jacIn);

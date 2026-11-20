@@ -186,8 +186,8 @@ private:
     {
         // Shadowed lights: the exact sum over the punctual lights, one frame
         ShadowedLights,
-        // RTXDI without reuse (32 local + 8 infinite candidates) averaged over kReferenceFrames: the reference of
-        // triangle lights, which Shadowed lights leaves out
+        // RTXDI without reuse (32 Power_RIS local + 8 infinite candidates) averaged over kReferenceFrames: the
+        // reference of triangle lights, which Shadowed lights leaves out
         RtxdiNone,
     };
     struct ConvergenceShot
@@ -199,16 +199,19 @@ private:
         // over convergedSettings' 0: a BRDF ray names the triangle light it hits (RAB_TraceRayForLocalLight)
         uint32_t brdfSamples;
     };
-    // ReSTIR DI (Direct lighting) averaged over frames after each shot's views: point and spot lights (lamp; its
-    // emissive bulb needs power-based light selection, M7 F1, considerations C-E2-1), the directional sun with shadows
-    // (Sponza_terminator), triangle lights alone with one BRDF candidate, NVIDIA's Medium (EmissiveStrengthTest)
+    // ReSTIR DI (Direct lighting) averaged over frames after each shot's views: point and spot lights among the
+    // emissive bulb's triangles (lamp; presampled selection, spec/m7/f1_light_presampling.md), the directional sun
+    // with shadows (Sponza_terminator), triangle lights alone with one BRDF candidate, NVIDIA's Medium
+    // (EmissiveStrengthTest)
     static constexpr std::array<ConvergenceShot, 3> kConvergenceShots = {{
-        {10, ConvergenceReference::ShadowedLights, false, 0},
+        {10, ConvergenceReference::RtxdiNone, true, 0},
         {14, ConvergenceReference::ShadowedLights, true, 0},
         {15, ConvergenceReference::RtxdiNone, true, 1},
     }};
     static constexpr uint32_t kConvergenceWarmupFrames = 16;
-    static constexpr uint32_t kConvergenceFrames = 64;
+    // presampled lights correlate error across RTXDI's 16x16 tiles (one RIS tile per screen tile), the check's tile
+    // size: 64 frames leave Power_RIS at p90 4.3%, 512 bring it to 1.9%
+    static constexpr uint32_t kConvergenceFrames = 512;
     static constexpr uint32_t kReferenceFrames = 1024;
     static constexpr uint32_t kConvergenceTileSize = 16;
     // shares of the reference's summed luminance; RTXDI 3.1's fused pass read +0.13% and 2.43%, its Basic bug -35%

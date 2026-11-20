@@ -883,8 +883,15 @@ void EngineUi::drawRayTracingPanel()
     ImGui::Checkbox("Reference (no reuse)", &rtxdi.isReference);
     ImGui::SetItemTooltip("no reuse, 32 local + 8 infinite candidates: the unbiased ground truth of the reuse passes");
     ImGui::BeginDisabled(rtxdi.isReference);
-    sliderU32("Local light candidates", di.localLightSamples, 0, 64);
-    ImGui::SetItemTooltip("initial RIS candidates per pixel from point, spot and triangle lights");
+    comboEnum("Local light sampling", di.localLightSamplingMode, std::array{"Uniform", "Power RIS", "ReGIR RIS"},
+              std::array{ReSTIRDI_LocalLightSamplingMode::Uniform, ReSTIRDI_LocalLightSamplingMode::Power_RIS,
+                         ReSTIRDI_LocalLightSamplingMode::ReGIR_RIS});
+    ImGui::SetItemTooltip("how point, spot and triangle light candidates are picked, at the primary surface and at "
+                          "every path vertex: uniformly, from tiles presampled by power, or from the tiles of the "
+                          "world-space cell around the surface (ReGIR)");
+    sliderU32("Local light candidates", di.activeLocalLightSamples(), 0, 64);
+    ImGui::SetItemTooltip("initial RIS candidates per pixel from point, spot and triangle lights; each sampling mode "
+                          "keeps its own count");
     sliderU32("Infinite light candidates", di.infiniteLightSamples, 0, 16);
     ImGui::SetItemTooltip("initial RIS candidates per pixel from directional lights");
     sliderU32("BRDF candidates", di.brdfSamples, 0, 4);
@@ -943,7 +950,7 @@ void EngineUi::drawRayTracingPanel()
     if (ImGui::Button("NVIDIA defaults")) {
         di = RtxdiContext::defaultSettings();
     }
-    ImGui::SetItemTooltip("the RTXDI sample's Medium preset (uniform local light sampling until ReGIR, M7)");
+    ImGui::SetItemTooltip("the RTXDI sample's Medium preset");
     ImGui::SameLine();
     if (ImGui::Button("Converged")) {
         di = RtxdiContext::convergedSettings();

@@ -1,4 +1,5 @@
-// tests RTXDI bridge GI math, LogLuv reservoir packing, Jacobian validation and CheckedBuffer bounds guards
+// tests RTXDI bridge GI math, LogLuv reservoir packing, Jacobian validation, CheckedBuffer bounds guards and the
+// compact light round trip (RAB_StoreCompactLightInfo / RAB_LoadCompactLightInfo)
 import types;
 import core.binding;
 import core.math;
@@ -18,6 +19,12 @@ struct RtxdiMathPush
     uint* guardedBuffer;      // 4 uints for CheckedBuffer test
     uint radianceCount;
     uint jacobianCount;
+    GpuLight* lightInputs;    // lightCount world rows
+    GpuLight* lightOutputs;   // lightCount rows: the row after the round trip, zeros where it was not compacted
+    uint* compactedFlags;     // lightCount: 1 where RAB_StoreCompactLightInfo accepted the row
+    uint4* compactRows;       // 2 * lightCount, the RIS light data the bridge writes
+    uint lightCount;
+    uint pad0;
 };
 
 [[vk::push_constant]] ConstantBuffer<RtxdiMathPush> push;
@@ -46,6 +53,16 @@ void rtxdiMathMain(uint3 id : SV_DispatchThreadID)
         float j = push.jacobianInputs[id.x];
         const bool ok = RAB_ValidateGISampleWithJacobian(j);
         push.jacobianOutputs[id.x] = float4(ok ? 1.0 : 0.0, j, 0.0, 0.0);
+    }
+
+    if (id.x < push.lightCount)
+    {
+        gRtxdiBridge.risLightData.address = uint64_t(push.compactRows);
+        gRtxdiBridge.risLightData.count = push.lightCount * 2;
+        const bool isCompacted = RAB_StoreCompactLightInfo(id.x, push.lightInputs[id.x]);
+        push.compactedFlags[id.x] = isCompacted ? 1u : 0u;
+        GpuLight empty = {};
+        push.lightOutputs[id.x] = isCompacted ? RAB_LoadCompactLightInfo(id.x) : empty;
     }
 
     if (id.x == 0)

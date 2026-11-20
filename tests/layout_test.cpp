@@ -359,7 +359,14 @@ namespace
             LAYOUT_FIELD(LightWorldPushData, assetLightCount),
             LAYOUT_FIELD(LightWorldPushData, triangleLightTasks),
             LAYOUT_FIELD(LightWorldPushData, triangleLightTaskCount),
+            LAYOUT_FIELD(LightWorldPushData, lightPdf),
+            LAYOUT_FIELD(LightWorldPushData, lightPdfTexelCount),
             LAYOUT_FIELD(LightWorldPushData, pad0),
+        }},
+        {"LightPdfMipsPushData", sizeof(LightPdfMipsPushData), {
+            LAYOUT_FIELD(LightPdfMipsPushData, srcImage),
+            LAYOUT_FIELD(LightPdfMipsPushData, dstImage),
+            LAYOUT_FIELD(LightPdfMipsPushData, dstSize),
         }},
         {"RtInstancesPushData", sizeof(RtInstancesPushData), {
             LAYOUT_FIELD(RtInstancesPushData, frameRoot),
@@ -596,6 +603,14 @@ namespace
         LAYOUT_FIELD(GpuRtxdiConstants, giFinalShading),
         LAYOUT_FIELD(GpuRtxdiConstants, giReferenceBounces),
         LAYOUT_FIELD(GpuRtxdiConstants, giFlags),
+        LAYOUT_FIELD(GpuRtxdiConstants, localLightRisBuffer),
+        LAYOUT_FIELD(GpuRtxdiConstants, environmentLightRisBuffer),
+        LAYOUT_FIELD(GpuRtxdiConstants, regir),
+        LAYOUT_FIELD(GpuRtxdiConstants, risBuffer),
+        LAYOUT_FIELD(GpuRtxdiConstants, risLightData),
+        LAYOUT_FIELD(GpuRtxdiConstants, risEntryCount),
+        LAYOUT_FIELD(GpuRtxdiConstants, lightPdf),
+        LAYOUT_FIELD(GpuRtxdiConstants, lightPdfSize),
     }};
 
     // textual mirror next to the NRC SDK's NrcConstants

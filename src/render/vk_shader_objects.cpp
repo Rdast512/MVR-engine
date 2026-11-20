@@ -92,6 +92,10 @@ void ShaderObjects::createFrameShaders()
     frameShaders.motionCheck = createComputeShader("motion_check.spv", "motionCheckMain", "MotionCheck");
     frameShaders.rayCheck = createComputeShader("rt_check.spv", "rayCheckMain", "RayCheck");
     frameShaders.lightWorld = createComputeShader("light_world.spv", "lightWorldMain", "LightWorld");
+    frameShaders.lightPdfMips = createComputeShader("light_pdf_mips.spv", "lightPdfMipsMain", "LightPdfMips");
+    frameShaders.rtxdiPresample = createComputeShader("rtxdi_presample.spv", "rtxdiPresampleMain", "RtxdiPresample");
+    frameShaders.rtxdiPresampleRegir =
+        createComputeShader("rtxdi_presample.spv", "rtxdiPresampleRegirMain", "RtxdiPresampleRegir");
     frameShaders.rtxdiInitial = createComputeShader("rtxdi_initial.spv", "rtxdiInitialMain", "RtxdiInitial");
     frameShaders.rtxdiTemporal = createComputeShader("rtxdi_temporal.spv", "rtxdiTemporalMain", "RtxdiTemporal");
     frameShaders.rtxdiShade = createComputeShader("rtxdi_shade.spv", "rtxdiShadeMain", "RtxdiShade");

@@ -7,9 +7,9 @@ import core.frame;
 #include "Rtxdi/DI/ReservoirStorage.hlsli"
 #include "Rtxdi/Utils/RandomSamplerPerPassSeeds.hlsli"
 
-// ReSTIR DI initial sampling (PBR plan F3): RIS over local and infinite light candidates for this frame's surface, one
-// visibility ray on the chosen sample, then the reservoir rtxdi_shade reads at the same pixel. BRDF candidates wait for
-// emissive triangles (M7): numBrdfSamples is 0 (src/render/vk_rtxdi.cpp)
+// ReSTIR DI initial sampling (PBR plan F3): RIS over local, infinite and BRDF light candidates for this frame's
+// surface, one visibility ray on the chosen sample, then the reservoir rtxdi_shade reads at the same pixel. Local
+// candidates come from the presampled tiles of the configured mode (spec/m7/f1_light_presampling.md)
 
 static const uint kRtxdiTile = 8; // matches src/render/vk_renderer.cpp
 
@@ -29,7 +29,7 @@ void rtxdiInitialMain(uint3 id : SV_DispatchThreadID)
     const uint frameIndex = constants.runtime.frameIndex;
     RTXDI_RandomSamplerState rng =
         RTXDI_InitRandomSampler(id.xy, frameIndex, RTXDI_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
-    // shared by a tile: RIS tile selection (Power_RIS, M7)
+    // shared by a tile: its RIS tile (Power_RIS) and its ReGIR cell jitter
     RTXDI_RandomSamplerState coherentRng = RTXDI_InitRandomSampler(id.xy / RTXDI_TILE_SIZE_IN_PIXELS, frameIndex,
                                                                    RTXDI_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
 
@@ -40,7 +40,8 @@ void rtxdiInitialMain(uint3 id : SV_DispatchThreadID)
         RAB_LightSample lightSample;
         // RTXDI_SampleLightsForSurface already traces initial visibility when enableInitialVisibility is set
         reservoir = RTXDI_SampleLightsForSurface(rng, coherentRng, surface, constants.initialSampling,
-                                                 constants.lightBuffer, lightSample);
+                                                 constants.lightBuffer, constants.localLightRisBuffer,
+                                                 constants.environmentLightRisBuffer, regirParameters(), lightSample);
     }
     // empty pixels too: rtxdi_shade loads every pixel's reservoir
     RTXDI_StoreDIReservoir(reservoir, constants.reservoirBuffer,

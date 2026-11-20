@@ -93,6 +93,11 @@ public:
         vk::raii::ShaderEXT rayCheck = nullptr;
         // passes/light_world.slang; async compute, before the TLAS build
         vk::raii::ShaderEXT lightWorld = nullptr;
+        // passes/light_pdf_mips.slang (LightPdfMipsPushData) and passes/rtxdi_presample.slang: the local light PDF's
+        // mips, Power_RIS tiles and ReGIR cells, async compute after light_world
+        vk::raii::ShaderEXT lightPdfMips = nullptr;
+        vk::raii::ShaderEXT rtxdiPresample = nullptr;
+        vk::raii::ShaderEXT rtxdiPresampleRegir = nullptr;
         // passes/rtxdi_initial.slang, rtxdi_temporal.slang and rtxdi_shade.slang: ReSTIR DI, after the TLAS wait
         vk::raii::ShaderEXT rtxdiInitial = nullptr;
         vk::raii::ShaderEXT rtxdiTemporal = nullptr;

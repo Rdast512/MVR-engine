@@ -33,7 +33,7 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
     hiz(device, allocator, frameSync, descriptorManager, shaderObjects),
     targets(device, allocator, frameSync, descriptorManager),
     rtScene(device, allocator, frameSync, scene, assets, frameData, shaderObjects),
-    worldLights(device, allocator, frameSync, assets, frameData, rtScene, shaderObjects), rtxdi(device, allocator, worldLights),
+    worldLights(device, allocator, frameSync, assets, frameData, rtScene, shaderObjects), rtxdi(device, allocator, frameSync, descriptorManager, shaderObjects, worldLights),
     nrc(device, allocator, nrcLibrary), dlss(device, frameSync),
     post(device, allocator, shaderObjects), gpuTimer(device), tracyContext(tracyContext)
 {
@@ -224,7 +224,8 @@ void Renderer::drawFrame()
         // direct-light noise profile changes abruptly across reference/reuse switches
         isDlssHistoryValid = false;
     }
-    rtxdi.prepareFrame(currentFrame, frameNumber, indirectMode != IndirectMode::Nrc);
+    rtxdi.prepareFrame(currentFrame, frameNumber, indirectMode != IndirectMode::Nrc, camera.cameraData.cameraPos,
+                       frameNumber - 1);
     gpuTimer.collect(currentFrame);
     post.readBack(currentFrame);
     if (void* stats = motionCheckStats[currentFrame].mapped) {
@@ -609,7 +610,7 @@ void Renderer::submitComputeCommands()
     // the shader objects are created for descriptor heaps
     cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
     cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
-    worldLights.recordUpdate(cmd, currentFrame);
+    rtxdi.recordLightPreparation(cmd, currentFrame, frameData.frameRootAddress(currentFrame));
     rtScene.recordBuild(cmd, currentFrame);
     cmd.end();
 

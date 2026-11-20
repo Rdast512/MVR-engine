@@ -1,22 +1,31 @@
 #pragma once
 #include "../Constants.h"
 #include "core/vk_allocator.hpp"
-#include "vk_world_lights.hpp"
+#include "core/vk_descriptors.hpp"
 #include "core/vk_device.hpp"
+#include "core/vk_frame_sync.hpp"
 #include "util/vk_utils.hpp"
+#include "vk_shader_objects.hpp"
+#include "vk_world_lights.hpp"
 
 #include <Rtxdi/DI/ReSTIRDIParameters.h>
 #include <Rtxdi/GI/ReSTIRGIParameters.h>
+#include <Rtxdi/LightSampling/RISBufferSegmentParameters.h>
+#include <Rtxdi/ReGIR/ReGIRParameters.h>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <glm/vec3.hpp>
 #include <memory>
 #include <optional>
+#include <utility>
+#include <vector>
 #include <vulkan/vulkan_raii.hpp>
 
 namespace rtxdi
 {
+    class ImportanceSamplingContext;
     class ReSTIRDIContext;
     class ReSTIRGIContext;
 }
@@ -59,6 +68,20 @@ struct GpuRtxdiConstants {
     uint32_t giReferenceBounces;
     // GiFlag bits
     uint32_t giFlags;
+    // local light presampling (spec/m7/f1_light_presampling.md): Power_RIS tiles, the environment segment RTXDI's
+    // initial sampling takes (no environment light: never read), ReGIR's cells
+    RTXDI_RISBufferSegmentParameters localLightRisBuffer;
+    RTXDI_RISBufferSegmentParameters environmentLightRisBuffer;
+    ReGIR_Parameters regir;
+    // uint2[risEntryCount], RTXDI_RIS_BUFFER: light index | compact bit, inverse source pdf
+    vk::DeviceAddress risBuffer;
+    // uint4[2 * risEntryCount]: the compact light of each RIS entry (RAB_StoreCompactLightInfo)
+    vk::DeviceAddress risLightData;
+    uint32_t risEntryCount;
+    // resource heap: sampled view of the local light PDF, full mip chain; kNoneIndex without local lights
+    uint32_t lightPdf;
+    // mip 0, square
+    vk::Extent2D lightPdfSize;
 };
 // GpuRtxdiConstants::giFlags; mirrored in shaders/lighting/rtxdi_constants.slang
 namespace GiFlag
@@ -66,19 +89,27 @@ namespace GiFlag
     inline constexpr uint32_t SecondaryResampling = 1u << 0;
     inline constexpr uint32_t FireflyClamp = 1u << 1;
 } // namespace GiFlag
-static_assert(sizeof(GpuRtxdiConstants) == 496);
+static_assert(sizeof(ReGIR_Parameters) == 1296);
+static_assert(sizeof(GpuRtxdiConstants) == 1856);
 static_assert(offsetof(GpuRtxdiConstants, reservoirs) == 304);
 static_assert(offsetof(GpuRtxdiConstants, giReservoirBuffer) == 328);
 static_assert(offsetof(GpuRtxdiConstants, giReservoirs) == 376);
 static_assert(offsetof(GpuRtxdiConstants, giTemporalResampling) == 392);
 static_assert(offsetof(GpuRtxdiConstants, giFinalShading) == 472);
+static_assert(offsetof(GpuRtxdiConstants, regir) == 528);
+static_assert(offsetof(GpuRtxdiConstants, risBuffer) == 1824);
+static_assert(offsetof(GpuRtxdiConstants, lightPdfSize) == 1848);
 
-// RTXDI host side of ReSTIR DI (PBR plan F1) and ReSTIR GI (M4 G2, G5): the ReSTIRDIContext and ReSTIRGIContext at
-// render resolution, their reservoir buffers, the neighbor offsets and one constants block per frame slot. Lights come
-// from WorldLights in RTXDI's region order
+// RTXDI host side of ReSTIR DI (PBR plan F1), ReSTIR GI (M4 G2, G5) and local light presampling (M7 F1): an
+// ImportanceSamplingContext at render resolution, as the RTXDI sample's SceneRenderer, with the reservoir buffers, the
+// neighbor offsets, the RIS buffers its segment allocator sizes, the local light PDF and one constants block per frame
+// slot. Lights come from WorldLights in RTXDI's region order
 class RtxdiContext
 {
 public:
+    // ReSTIRDI_LocalLightSamplingMode values index Settings::localLightSamples
+    static constexpr size_t kLocalLightSamplingModeCount = 3;
+
     // GI reservoir arrays: RTXDI's two, then the indirect pass's initial samples, which the temporal pass would
     // overwrite in place and the final MIS still reads (spec/m4/g5_restir_gi.md §1)
     static constexpr uint32_t kGiReservoirArrays = 3;
@@ -93,7 +124,11 @@ public:
     // counts and turns reuse off
     struct Settings
     {
-        uint32_t localLightSamples = 0;
+        // Uniform, Power_RIS (tiles presampled by power) or ReGIR_RIS (tiles per world-space cell); the primary
+        // surface and every path vertex sample local lights the same way
+        ReSTIRDI_LocalLightSamplingMode localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Uniform;
+        // candidates per mode, as the RTXDI sample keeps them; only the active mode's count is used
+        std::array<uint32_t, kLocalLightSamplingModeCount> localLightSamples{};
         uint32_t infiniteLightSamples = 0;
         // one ray each; a hit on an emissive triangle names its light
         uint32_t brdfSamples = 0;
@@ -126,6 +161,15 @@ public:
         // the shade pass skips its ray for a sample tested at most finalVisibilityMaxAge frames ago, within
         // finalVisibilityMaxDistance px (RTXDI's 4 / 16)
         bool isFinalVisibilityReused = false;
+
+        [[nodiscard]] uint32_t& activeLocalLightSamples()
+        {
+            return localLightSamples[std::to_underlying(localLightSamplingMode)];
+        }
+        [[nodiscard]] uint32_t activeLocalLightSamples() const
+        {
+            return localLightSamples[std::to_underlying(localLightSamplingMode)];
+        }
 
         bool operator==(const Settings&) const = default;
     };
@@ -175,7 +219,9 @@ public:
     // on a static camera, no neighbors past the disocclusion boost
     [[nodiscard]] static Settings convergedSettings();
 
-    RtxdiContext(const Device& device, const VkAllocator& allocator, const WorldLights& worldLights);
+    RtxdiContext(const Device& device, const VkAllocator& allocator, const FrameSync& frameSync,
+                 DescriptorManager& descriptorManager, const ShaderObjects& shaderObjects,
+                 const WorldLights& worldLights);
     ~RtxdiContext();
 
     RtxdiContext(const RtxdiContext&) = delete;
@@ -189,9 +235,16 @@ public:
     // device idle: contexts and reservoirs at the new render resolution; reservoir contents are undefined, so the
     // first frame after it must reset history (resize arrives as a camera cut)
     void recreate(vk::Extent2D renderExtent);
-    // the slot is not in flight: advances the context to frameIndex, applies isReference and writes the slot's
-    // constants. isGiReuseAllowed: false in the NRC indirect mode, which shades the initial samples as isGiReference
-    void prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool isGiReuseAllowed);
+    // the slot is not in flight, after WorldLights::prepareFrame: advances the context to frameIndex, applies
+    // isReference, centers ReGIR on cameraPosition, grows the light PDF to the local light count and writes the slot's
+    // constants. isGiReuseAllowed: false in the NRC indirect mode, which shades the initial samples as isGiReference.
+    // lastSubmittedFrame: the frame number submitted last, whose ray passes read the PDF; growing waits for them
+    void prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool isGiReuseAllowed, const glm::vec3& cameraPosition,
+                      uint64_t lastSubmittedFrame);
+    // async compute, heaps bound, the slot's frame root written: light_world (world rows, PDF mip 0), then the PDF
+    // mips and the presampling passes the applied local light sampling mode reads. The ray passes see every write
+    // through the compute timeline
+    void recordLightPreparation(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot, vk::DeviceAddress frameRoot);
     // ReSTIR DI reference mode as applied by the last prepareFrame
     [[nodiscard]] bool isReferenceEnabled() const noexcept { return isReferenceApplied; }
     // ReSTIR GI temporal and spatial reuse as applied by the last prepareFrame
@@ -219,18 +272,29 @@ private:
     static constexpr uint32_t kReferenceLocalLightSamples = 32;
     static constexpr uint32_t kReferenceInfiniteLightSamples = 8;
 
+    // the ReSTIR DI and GI contexts importanceSampling owns
+    [[nodiscard]] rtxdi::ReSTIRDIContext& restirDi() const;
+    [[nodiscard]] rtxdi::ReSTIRGIContext& restirGi() const;
     // resampling mode of isReference and every parameter block of settings
     void configure();
     // resampling mode and every parameter block of giSettings
     void configureGi(bool isGiReuse);
     void destroyReservoirs();
     void createGiReservoirs();
+    // the segment allocator's total, once: it does not depend on the render size
+    void createRisBuffers();
+    // the square power of two rtxdi::ComputePdfTextureSize gives for localLightCount, full mip chain, a storage view
+    // per mip; no frame may still read the old one
+    void createLightPdf(uint32_t localLightCount);
+    void destroyLightPdf();
 
     const Device& device;
     const VkAllocator& allocator;
+    const FrameSync& frameSync;
+    DescriptorManager& descriptorManager;
+    const ShaderObjects& shaderObjects;
     const WorldLights& worldLights;
-    std::unique_ptr<rtxdi::ReSTIRDIContext> context;
-    std::unique_ptr<rtxdi::ReSTIRGIContext> giContext;
+    std::unique_ptr<rtxdi::ImportanceSamplingContext> importanceSampling;
     bool isReferenceApplied = false;
     Settings appliedSettings;
     bool isGiReuseApplied = true;
@@ -245,4 +309,27 @@ private:
     uint32_t giReservoirCount = 0;
     HostBuffer neighborOffsets;
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> constants;
+
+    // one copy: the compute submit that rewrites them waits for the previous frame's ray passes (C-F2-1)
+    vk::raii::Buffer risBuffer = nullptr;
+    VmaAllocation risMemory = nullptr;
+    vk::DeviceAddress risAddress = 0;
+    vk::raii::Buffer risLightData = nullptr;
+    VmaAllocation risLightDataMemory = nullptr;
+    vk::DeviceAddress risLightDataAddress = 0;
+    uint32_t risEntryCount = 0;
+    // ReGIR's cells as the shaders read them; only the center changes per frame
+    ReGIR_Parameters regirConstants{};
+
+    // R32_SFLOAT, eGeneral, concurrent between the queue families: written on async compute, read by presampling and
+    // by the ray passes (RAB_EvaluateLocalLightSourcePdf). One copy, like the RIS buffers
+    vk::raii::Image lightPdf = nullptr;
+    VmaAllocation lightPdfMemory = nullptr;
+    uint32_t lightPdfSide = 0;
+    // resource heap: the full chain, sampled
+    uint32_t lightPdfIndex = kNoneIndex;
+    // resource heap: a storage view per mip
+    std::vector<uint32_t> lightPdfMipIndices;
+    // created since the last recordLightPreparation, still in eUndefined
+    bool isLightPdfLayoutPending = false;
 };

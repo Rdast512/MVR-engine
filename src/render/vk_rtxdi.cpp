@@ -1,10 +1,15 @@
 #include "vk_rtxdi.hpp"
+#include "push_data.hpp"
 #include "static_headers/logger.hpp"
+#include "util/debug.hpp"
+#include "util/vk_tracy.hpp"
 
-#include <Rtxdi/DI/ReSTIRDI.h>
-#include <Rtxdi/GI/ReSTIRGI.h>
+#include <Rtxdi/ImportanceSamplingContext.h>
+#include <Rtxdi/LightSampling/RISBufferSegmentAllocator.h>
 #include <Rtxdi/RtxdiUtils.h>
 
+#include <algorithm>
+#include <bit>
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
@@ -23,6 +28,11 @@ static_assert(std::to_underlying(rtxdi::ReSTIRGI_ResamplingMode::TemporalAndSpat
 // the initial samples follow RTXDI's arrays
 static_assert(RtxdiContext::kGiInitialReservoirArray == rtxdi::c_NumReSTIRGIReservoirBuffers);
 static_assert(RtxdiContext::kGiReservoirArrays == rtxdi::c_NumReSTIRGIReservoirBuffers + 1);
+// Settings::localLightSamples is indexed by the mode
+static_assert(std::to_underlying(ReSTIRDI_LocalLightSamplingMode::Uniform) == 0);
+static_assert(std::to_underlying(ReSTIRDI_LocalLightSamplingMode::Power_RIS) == 1);
+static_assert(std::to_underlying(ReSTIRDI_LocalLightSamplingMode::ReGIR_RIS) == 2);
+static_assert(RtxdiContext::kLocalLightSamplingModeCount == 3);
 
 namespace
 {
@@ -33,6 +43,19 @@ namespace
         ReSTIRDI_SpatialSamplingMode::StratifiedLowDiscrepancy;
     // FillNeighborOffsetBuffer writes RG8_SNORM pairs; RTXDI_NEIGHBOR_OFFSETS_BUFFER reads them as float2
     constexpr float kSnormScale = 1.0f / 127.0f;
+
+    // R32_FLOAT, as the sample's LocalLightPdf: flux sums need the range
+    constexpr vk::Format kLightPdfFormat = vk::Format::eR32Sfloat;
+    // match passes/light_pdf_mips.slang and passes/rtxdi_presample.slang (RTXDI_PRESAMPLING_GROUP_SIZE and the
+    // ReGIR build group of the RTXDI sample)
+    constexpr uint32_t kLightPdfMipsTile = 8;
+    constexpr uint32_t kPresampleGroupSize = 256;
+    constexpr uint32_t kRegirBuildGroupSize = 256;
+    // RTXDI_RIS_BUFFER entry, and the two uint4 of its compact light
+    constexpr vk::DeviceSize kRisEntryBytes = 2 * sizeof(uint32_t);
+    constexpr vk::DeviceSize kRisLightDataBytes = 8 * sizeof(uint32_t);
+
+    constexpr uint32_t divideRoundUp(uint32_t value, uint32_t divisor) { return (value + divisor - 1) / divisor; }
 
     struct NeighborOffset {
         float x;
@@ -50,10 +73,59 @@ namespace
         }
         return offsets;
     }
+
+    // FillReGIRConstants of the RTXDI sample (LightingPasses.cpp); the center is set per frame
+    ReGIR_Parameters makeRegirConstants(const rtxdi::ReGIRContext& regir)
+    {
+        const rtxdi::ReGIRStaticParameters staticParams = regir.GetReGIRStaticParameters();
+        const rtxdi::ReGIRDynamicParameters dynamicParams = regir.GetReGIRDynamicParameters();
+        const rtxdi::ReGIROnionCalculatedParameters onion = regir.GetReGIROnionCalculatedParameters();
+        ReGIR_Parameters params{};
+        params.gridParams.cellsX = staticParams.gridParameters.gridSize.x;
+        params.gridParams.cellsY = staticParams.gridParameters.gridSize.y;
+        params.gridParams.cellsZ = staticParams.gridParameters.gridSize.z;
+        params.commonParams.numRegirBuildSamples = dynamicParams.regirNumBuildSamples;
+        params.commonParams.risBufferOffset = regir.GetReGIRCellOffset();
+        params.commonParams.lightsPerCell = staticParams.lightsPerCell;
+        // the onion works with radii, the cell size is a diameter
+        params.commonParams.cellSize = staticParams.mode == rtxdi::ReGIRMode::Onion
+            ? dynamicParams.regirCellSize * 0.5f
+            : dynamicParams.regirCellSize;
+        params.commonParams.localLightSamplingFallbackMode = std::to_underlying(dynamicParams.fallbackSamplingMode);
+        params.commonParams.localLightPresamplingMode = std::to_underlying(dynamicParams.presamplingMode);
+        params.commonParams.samplingJitter = std::max(0.0f, dynamicParams.regirSamplingJitter * 2.0f);
+        params.onionParams.cubicRootFactor = onion.regirOnionCubicRootFactor;
+        params.onionParams.linearFactor = onion.regirOnionLinearFactor;
+        params.onionParams.numLayerGroups = static_cast<uint32_t>(onion.regirOnionLayers.size());
+        assert(onion.regirOnionLayers.size() <= RTXDI_ONION_MAX_LAYER_GROUPS);
+        for (size_t group = 0; group < onion.regirOnionLayers.size(); ++group) {
+            params.onionParams.layers[group] = onion.regirOnionLayers[group];
+            params.onionParams.layers[group].innerRadius *= params.commonParams.cellSize;
+            params.onionParams.layers[group].outerRadius *= params.commonParams.cellSize;
+        }
+        assert(onion.regirOnionRings.size() <= RTXDI_ONION_MAX_RINGS);
+        std::ranges::copy(onion.regirOnionRings, params.onionParams.rings);
+        return params;
+    }
+
+    constexpr std::string_view localLightSamplingName(ReSTIRDI_LocalLightSamplingMode mode)
+    {
+        switch (mode) {
+        case ReSTIRDI_LocalLightSamplingMode::Power_RIS:
+            return "Power_RIS";
+        case ReSTIRDI_LocalLightSamplingMode::ReGIR_RIS:
+            return "ReGIR_RIS";
+        default:
+            return "uniform";
+        }
+    }
 } // namespace
 
-RtxdiContext::RtxdiContext(const Device& device, const VkAllocator& allocator, const WorldLights& worldLights)
-    : device(device), allocator(allocator), worldLights(worldLights)
+RtxdiContext::RtxdiContext(const Device& device, const VkAllocator& allocator, const FrameSync& frameSync,
+                           DescriptorManager& descriptorManager, const ShaderObjects& shaderObjects,
+                           const WorldLights& worldLights) :
+    device(device), allocator(allocator), frameSync(frameSync), descriptorManager(descriptorManager),
+    shaderObjects(shaderObjects), worldLights(worldLights)
 {
     const std::vector<NeighborOffset> offsets = makeNeighborOffsets();
     const vk::DeviceSize offsetBytes = offsets.size() * sizeof(NeighborOffset);
@@ -67,14 +139,22 @@ RtxdiContext::RtxdiContext(const Device& device, const VkAllocator& allocator, c
     }
 }
 
+// the descriptor manager may already be gone; only the PDF image is released
 RtxdiContext::~RtxdiContext()
 {
     destroyReservoirs();
+    destroyVmaBuffer(allocator.allocator, risBuffer, risMemory);
+    destroyVmaBuffer(allocator.allocator, risLightData, risLightDataMemory);
+    destroyVmaImage(allocator.allocator, lightPdf, lightPdfMemory);
     destroyHostBuffer(allocator.allocator, neighborOffsets, "RtxdiNeighborOffsets");
     for (HostBuffer& slot : constants) {
         destroyHostBuffer(allocator.allocator, slot, "RtxdiConstants");
     }
 }
+
+rtxdi::ReSTIRDIContext& RtxdiContext::restirDi() const { return importanceSampling->GetReSTIRDIContext(); }
+
+rtxdi::ReSTIRGIContext& RtxdiContext::restirGi() const { return importanceSampling->GetReSTIRGIContext(); }
 
 void RtxdiContext::destroyReservoirs()
 {
@@ -88,7 +168,7 @@ void RtxdiContext::destroyReservoirs()
 
 void RtxdiContext::createGiReservoirs()
 {
-    const RTXDI_ReservoirBufferParameters params = giContext->GetReservoirBufferParameters();
+    const RTXDI_ReservoirBufferParameters params = restirGi().GetReservoirBufferParameters();
     giReservoirCount = params.reservoirArrayPitch * kGiReservoirArrays;
     const vk::DeviceSize bytes = static_cast<vk::DeviceSize>(giReservoirCount) * sizeof(RTXDI_PackedGIReservoir);
     createBuffer(bytes, vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
@@ -101,18 +181,115 @@ void RtxdiContext::createGiReservoirs()
             "Rtxdi");
 }
 
+void RtxdiContext::createRisBuffers()
+{
+    const uint32_t entryCount = importanceSampling->GetRISBufferSegmentAllocator().GetTotalSizeInElements();
+    if (entryCount == risEntryCount) {
+        return;
+    }
+    destroyVmaBuffer(allocator.allocator, risBuffer, risMemory);
+    destroyVmaBuffer(allocator.allocator, risLightData, risLightDataMemory);
+    risEntryCount = entryCount;
+    constexpr vk::BufferUsageFlags2 kUsage =
+        vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress;
+    const vk::DeviceSize risBytes = entryCount * kRisEntryBytes;
+    const vk::DeviceSize lightDataBytes = entryCount * kRisLightDataBytes;
+    createBuffer(risBytes, kUsage, vk::MemoryPropertyFlagBits::eDeviceLocal, risBuffer, risMemory,
+                 allocator.allocator, device.vkdevice, device.queueFamilyIndices, "RtxdiRisBuffer");
+    createBuffer(lightDataBytes, kUsage, vk::MemoryPropertyFlagBits::eDeviceLocal, risLightData,
+                 risLightDataMemory, allocator.allocator, device.vkdevice, device.queueFamilyIndices,
+                 "RtxdiRisLightData");
+    risAddress = device.vkdevice.getBufferAddress({.buffer = *risBuffer});
+    risLightDataAddress = device.vkdevice.getBufferAddress({.buffer = *risLightData});
+    const RTXDI_RISBufferSegmentParameters& localTiles = importanceSampling->GetLocalLightRISBufferSegmentParams();
+    const rtxdi::ReGIRContext& regir = importanceSampling->GetReGIRContext();
+    logInfo(std::format("RIS buffers: {} entries ({:.1f} + {:.1f} MiB): {} local light tiles of {}, ReGIR {} cells "
+                        "of {} at {}",
+                        entryCount, static_cast<double>(risBytes) / (1024.0 * 1024.0),
+                        static_cast<double>(lightDataBytes) / (1024.0 * 1024.0), localTiles.tileCount,
+                        localTiles.tileSize, regir.GetReGIROnionCalculatedParameters().regirOnionCells,
+                        regir.GetReGIRStaticParameters().lightsPerCell, regir.GetReGIRCellOffset()),
+            "Rtxdi");
+}
+
+void RtxdiContext::destroyLightPdf()
+{
+    for (const uint32_t index : lightPdfMipIndices) {
+        descriptorManager.freeImageDescriptor(index);
+    }
+    lightPdfMipIndices.clear();
+    if (lightPdfIndex != kNoneIndex) {
+        descriptorManager.freeImageDescriptor(lightPdfIndex);
+        lightPdfIndex = kNoneIndex;
+    }
+    destroyVmaImage(allocator.allocator, lightPdf, lightPdfMemory);
+    lightPdfSide = 0;
+    isLightPdfLayoutPending = false;
+}
+
+void RtxdiContext::createLightPdf(uint32_t localLightCount)
+{
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t mipCount = 0;
+    // powers of two: a scene that loads lights one model at a time reallocates rarely
+    rtxdi::ComputePdfTextureSize(std::bit_ceil(localLightCount), width, height, mipCount);
+    // square (width >= height): every 2x2 footprint of RTXDI's mip walk and of the mip build lies inside the texture,
+    // and the top mip times the texel count is the total power, as RAB_EvaluateLocalLightSourcePdf assumes
+    lightPdfSide = width;
+    const bool isShared = device.queueFamilyIndices.size() > 1;
+    const vk::ImageCreateInfo imageInfo{
+        .imageType = vk::ImageType::e2D,
+        .format = kLightPdfFormat,
+        .extent = {lightPdfSide, lightPdfSide, 1},
+        .mipLevels = mipCount,
+        .arrayLayers = 1,
+        .samples = vk::SampleCountFlagBits::e1,
+        .tiling = vk::ImageTiling::eOptimal,
+        .usage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled,
+        // written on async compute, read by the graphics queue's ray passes every frame: no ownership transfers
+        .sharingMode = isShared ? vk::SharingMode::eConcurrent : vk::SharingMode::eExclusive,
+        .queueFamilyIndexCount = isShared ? static_cast<uint32_t>(device.queueFamilyIndices.size()) : 0u,
+        .pQueueFamilyIndices = isShared ? device.queueFamilyIndices.data() : nullptr,
+    };
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    allocator.allocateImage(imageInfo, allocInfo, lightPdf, lightPdfMemory, "RtxdiLightPdfMemory");
+    setDebugName(device.vkdevice, lightPdf, "RtxdiLightPdf");
+
+    const auto pdfView = [this](uint32_t baseMip, uint32_t levels) {
+        return vk::ImageViewCreateInfo{.image = *lightPdf,
+                                       .viewType = vk::ImageViewType::e2D,
+                                       .format = kLightPdfFormat,
+                                       .subresourceRange = {vk::ImageAspectFlagBits::eColor, baseMip, levels, 0, 1}};
+    };
+    lightPdfIndex = descriptorManager.writeImageDescriptor(pdfView(0, mipCount), vk::DescriptorType::eSampledImage,
+                                                           vk::ImageLayout::eGeneral);
+    lightPdfMipIndices.reserve(mipCount);
+    for (uint32_t mip = 0; mip < mipCount; ++mip) {
+        lightPdfMipIndices.push_back(descriptorManager.writeImageDescriptor(
+            pdfView(mip, 1), vk::DescriptorType::eStorageImage, vk::ImageLayout::eGeneral));
+    }
+    isLightPdfLayoutPending = true;
+    TracyMessageL("RTXDI light PDF grown");
+    logInfo(std::format("light PDF: {0}x{0}, {1} mips for {2} local lights", lightPdfSide, mipCount, localLightCount),
+            "Rtxdi");
+}
+
 void RtxdiContext::recreate(vk::Extent2D renderExtent)
 {
-    context = std::make_unique<rtxdi::ReSTIRDIContext>(rtxdi::ReSTIRDIStaticParameters{
-        .NeighborOffsetCount = kNeighborOffsetCount,
-        .RenderWidth = renderExtent.width,
-        .RenderHeight = renderExtent.height,
-        .CheckerboardSamplingMode = rtxdi::CheckerboardMode::Off,
-    });
+    importanceSampling = std::make_unique<rtxdi::ImportanceSamplingContext>(
+        rtxdi::ImportanceSamplingContext_StaticParameters{
+            .NeighborOffsetCount = kNeighborOffsetCount,
+            .renderWidth = renderExtent.width,
+            .renderHeight = renderExtent.height,
+            .CheckerboardSamplingMode = rtxdi::CheckerboardMode::Off,
+        });
+    regirConstants = makeRegirConstants(importanceSampling->GetReGIRContext());
     configure();
 
     destroyReservoirs();
-    const RTXDI_ReservoirBufferParameters reservoirParams = context->GetReservoirBufferParameters();
+    const RTXDI_ReservoirBufferParameters reservoirParams = restirDi().GetReservoirBufferParameters();
     reservoirCount = reservoirParams.reservoirArrayPitch * rtxdi::c_NumReSTIRDIReservoirBuffers;
     const vk::DeviceSize reservoirBytes = static_cast<vk::DeviceSize>(reservoirCount) * sizeof(RTXDI_PackedDIReservoir);
     createBuffer(reservoirBytes, vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
@@ -120,21 +297,18 @@ void RtxdiContext::recreate(vk::Extent2D renderExtent)
                  device.vkdevice, device.queueFamilyIndices, "RtxdiReservoirs");
     reservoirAddress = device.vkdevice.getBufferAddress({.buffer = *reservoirs});
 
-    giContext = std::make_unique<rtxdi::ReSTIRGIContext>(rtxdi::ReSTIRGIStaticParameters{
-        .RenderWidth = renderExtent.width,
-        .RenderHeight = renderExtent.height,
-        .CheckerboardSamplingMode = rtxdi::CheckerboardMode::Off,
-    });
     configureGi(isGiReuseApplied);
     createGiReservoirs();
+    createRisBuffers();
 
-    logInfo(
-        std::format("ReSTIR DI {}x{}: {} reservoir buffers of {} ({:.1f} MiB), {}, uniform local light sampling, {} "
-                    "neighbor offsets",
-                    renderExtent.width, renderExtent.height, rtxdi::c_NumReSTIRDIReservoirBuffers,
-                    reservoirParams.reservoirArrayPitch, static_cast<double>(reservoirBytes) / (1024.0 * 1024.0),
-                    isReference ? "reference (no reuse)" : "temporal and spatial", kNeighborOffsetCount),
-        "Rtxdi");
+    logInfo(std::format("ReSTIR DI {}x{}: {} reservoir buffers of {} ({:.1f} MiB), {}, {} local light sampling, {} "
+                        "neighbor offsets",
+                        renderExtent.width, renderExtent.height, rtxdi::c_NumReSTIRDIReservoirBuffers,
+                        reservoirParams.reservoirArrayPitch, static_cast<double>(reservoirBytes) / (1024.0 * 1024.0),
+                        isReference ? "reference (no reuse)" : "temporal and spatial",
+                        localLightSamplingName(restirDi().GetInitialSamplingParameters().localLightSamplingMode),
+                        kNeighborOffsetCount),
+            "Rtxdi");
 }
 
 RtxdiContext::Settings RtxdiContext::defaultSettings()
@@ -144,10 +318,12 @@ RtxdiContext::Settings RtxdiContext::defaultSettings()
     const RTXDI_DISpatialResamplingParameters spatial = rtxdi::GetDefaultReSTIRDISpatialResamplingParams();
     const RTXDI_BoilingFilterParameters boiling = rtxdi::GetDefaultReSTIRDIBoilingFilterParams();
     const RTXDI_ShadingParameters shading = rtxdi::GetDefaultReSTIRDIShadingParams();
-    // RTXDI-Library Samples/FullSample UserInterface.cpp ApplyPreset(Medium) over the library defaults. Its ReGIR_RIS
-    // local sampling needs presampling (M7): uniform, same candidate count
+    // RTXDI-Library Samples/FullSample UserInterface.cpp ApplyPreset(Medium) over the library defaults: ReGIR_RIS, 8
+    // local light candidates in each mode
+    constexpr uint32_t kMediumLocalLightSamples = 8;
     return Settings{
-        .localLightSamples = initial.numLocalLightSamples,
+        .localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::ReGIR_RIS,
+        .localLightSamples = {kMediumLocalLightSamples, kMediumLocalLightSamples, kMediumLocalLightSamples},
         .infiniteLightSamples = initial.numInfiniteLightSamples,
         .brdfSamples = initial.numBrdfSamples,
         .isInitialVisibilityEnabled = initial.enableInitialVisibility != 0,
@@ -175,6 +351,9 @@ RtxdiContext::Settings RtxdiContext::convergedSettings()
 {
     Settings converged = defaultSettings();
     converged.brdfSamples = 0;
+    // ReGIR's cells select by volume weight but BRDF candidates are weighed against the power PDF, as in the RTXDI
+    // sample: a structured +0.19% on EmissiveStrengthTest. Power_RIS weighs both by the same PDF
+    converged.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Power_RIS;
     converged.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Raytraced;
     converged.isVisibilityShortcutEnabled = false;
     converged.isFallbackSamplingEnabled = false;
@@ -246,19 +425,23 @@ bool RtxdiContext::isReferenceRequested()
 
 void RtxdiContext::configure()
 {
-    context->SetResamplingMode(isReference ? rtxdi::ReSTIRDI_ResamplingMode::None
-                                           : rtxdi::ReSTIRDI_ResamplingMode::TemporalAndSpatial);
+    rtxdi::ReSTIRDIContext& context = restirDi();
+    context.SetResamplingMode(isReference ? rtxdi::ReSTIRDI_ResamplingMode::None
+                                          : rtxdi::ReSTIRDI_ResamplingMode::TemporalAndSpatial);
     RTXDI_DIInitialSamplingParameters initialSampling = rtxdi::GetDefaultReSTIRDIInitialSamplingParams();
-    // Power_RIS needs the light PDF texture (M7)
-    initialSampling.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Uniform;
+    // Power_RIS: unbiased, and its 32 candidates converge the lamp's 5,985 bulb triangles in 1,024 frames, which
+    // uniform selection does not (+0.3% residual at 8,192 frames)
+    initialSampling.localLightSamplingMode =
+        isReference ? ReSTIRDI_LocalLightSamplingMode::Power_RIS : settings.localLightSamplingMode;
     initialSampling.numBrdfSamples = isReference ? 0u : settings.brdfSamples;
-    initialSampling.numLocalLightSamples = isReference ? kReferenceLocalLightSamples : settings.localLightSamples;
+    initialSampling.numLocalLightSamples =
+        isReference ? kReferenceLocalLightSamples : settings.activeLocalLightSamples();
     initialSampling.numInfiniteLightSamples =
         isReference ? kReferenceInfiniteLightSamples : settings.infiniteLightSamples;
     initialSampling.enableInitialVisibility = settings.isInitialVisibilityEnabled ? 1u : 0u;
-    context->SetInitialSamplingParameters(initialSampling);
+    context.SetInitialSamplingParameters(initialSampling);
 
-    RTXDI_DITemporalResamplingParameters temporal = context->GetTemporalResamplingParameters();
+    RTXDI_DITemporalResamplingParameters temporal = context.GetTemporalResamplingParameters();
     temporal.maxHistoryLength = settings.maxHistoryLength;
     temporal.biasCorrectionMode = settings.temporalBiasCorrection;
     temporal.depthThreshold = settings.depthThreshold;
@@ -267,9 +450,9 @@ void RtxdiContext::configure()
     temporal.enableFallbackSampling = settings.isFallbackSamplingEnabled ? 1u : 0u;
     // SetFrameIndex rehashes uniformRandomNumber either way: the fallback sample permutes with it
     temporal.enablePermutationSampling = settings.isPermutationSamplingEnabled ? 1u : 0u;
-    context->SetTemporalResamplingParameters(temporal);
+    context.SetTemporalResamplingParameters(temporal);
 
-    RTXDI_DISpatialResamplingParameters spatial = context->GetSpatialResamplingParameters();
+    RTXDI_DISpatialResamplingParameters spatial = context.GetSpatialResamplingParameters();
     spatial.numSamples = settings.spatialSamples;
     spatial.numDisocclusionBoostSamples = settings.disocclusionBoostSamples;
     spatial.samplingRadius = settings.samplingRadius;
@@ -279,27 +462,28 @@ void RtxdiContext::configure()
     spatial.enableMaterialSimilarityTest = settings.isMaterialSimilarityTestEnabled ? 1u : 0u;
     spatial.targetHistoryLength = settings.disocclusionHistoryLength;
     spatial.neighborOffsetSamplingMode = kNeighborSamplingMode;
-    context->SetSpatialResamplingParameters(spatial);
+    context.SetSpatialResamplingParameters(spatial);
 
-    context->SetBoilingFilterParameters(RTXDI_BoilingFilterParameters{
+    context.SetBoilingFilterParameters(RTXDI_BoilingFilterParameters{
         .enableBoilingFilter = settings.isBoilingFilterEnabled ? 1u : 0u,
         .boilingFilterStrength = settings.boilingFilterStrength,
         .pad1 = 0,
         .pad2 = 0,
     });
 
-    RTXDI_ShadingParameters shading = context->GetShadingParameters();
+    RTXDI_ShadingParameters shading = context.GetShadingParameters();
     shading.reuseFinalVisibility = settings.isFinalVisibilityReused ? 1u : 0u;
-    context->SetShadingParameters(shading);
+    context.SetShadingParameters(shading);
     isReferenceApplied = isReference;
     appliedSettings = settings;
 }
 
 void RtxdiContext::configureGi(bool isGiReuse)
 {
-    giContext->SetResamplingMode(isGiReuse ? rtxdi::ReSTIRGI_ResamplingMode::TemporalAndSpatial
-                                           : rtxdi::ReSTIRGI_ResamplingMode::None);
-    RTXDI_GITemporalResamplingParameters temporal = giContext->GetTemporalResamplingParameters();
+    rtxdi::ReSTIRGIContext& giContext = restirGi();
+    giContext.SetResamplingMode(isGiReuse ? rtxdi::ReSTIRGI_ResamplingMode::TemporalAndSpatial
+                                          : rtxdi::ReSTIRGI_ResamplingMode::None);
+    RTXDI_GITemporalResamplingParameters temporal = giContext.GetTemporalResamplingParameters();
     temporal.maxHistoryLength = giSettings.maxHistoryLength;
     temporal.maxReservoirAge = giSettings.maxReservoirAge;
     temporal.biasCorrectionMode = giSettings.temporalBiasCorrection;
@@ -307,23 +491,23 @@ void RtxdiContext::configureGi(bool isGiReuse)
     temporal.enablePermutationSampling = giSettings.isPermutationSamplingEnabled ? 1u : 0u;
     temporal.depthThreshold = giSettings.depthThreshold;
     temporal.normalThreshold = giSettings.normalThreshold;
-    giContext->SetTemporalResamplingParameters(temporal);
+    giContext.SetTemporalResamplingParameters(temporal);
 
-    RTXDI_GISpatialResamplingParameters spatial = giContext->GetSpatialResamplingParameters();
+    RTXDI_GISpatialResamplingParameters spatial = giContext.GetSpatialResamplingParameters();
     spatial.numSamples = giSettings.spatialSamples;
     spatial.samplingRadius = giSettings.samplingRadius;
     spatial.biasCorrectionMode = giSettings.spatialBiasCorrection;
     spatial.depthThreshold = giSettings.depthThreshold;
     spatial.normalThreshold = giSettings.normalThreshold;
-    giContext->SetSpatialResamplingParameters(spatial);
+    giContext.SetSpatialResamplingParameters(spatial);
 
-    giContext->SetBoilingFilterParameters(RTXDI_BoilingFilterParameters{
+    giContext.SetBoilingFilterParameters(RTXDI_BoilingFilterParameters{
         .enableBoilingFilter = giSettings.isBoilingFilterEnabled ? 1u : 0u,
         .boilingFilterStrength = giSettings.boilingFilterStrength,
         .pad1 = 0,
         .pad2 = 0,
     });
-    giContext->SetFinalShadingParameters(RTXDI_GIFinalShadingParameters{
+    giContext.SetFinalShadingParameters(RTXDI_GIFinalShadingParameters{
         .enableFinalVisibility = giSettings.isFinalVisibilityEnabled ? 1u : 0u,
         .enableFinalMIS = giSettings.isFinalMisEnabled ? 1u : 0u,
         .pad1 = 0,
@@ -333,12 +517,15 @@ void RtxdiContext::configureGi(bool isGiReuse)
     appliedGiSettings = giSettings;
 }
 
-void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool isGiReuseAllowed)
+void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool isGiReuseAllowed,
+                                const glm::vec3& cameraPosition, uint64_t lastSubmittedFrame)
 {
+    rtxdi::ReSTIRDIContext& context = restirDi();
+    rtxdi::ReSTIRGIContext& giContext = restirGi();
     // advance before changing resampling mode so SetResamplingMode rotates from last frame's output buffer
     const uint32_t rtxdiFrame = frameIndexOverride.value_or(frameIndex);
-    context->SetFrameIndex(rtxdiFrame);
-    giContext->SetFrameIndex(rtxdiFrame);
+    context.SetFrameIndex(rtxdiFrame);
+    giContext.SetFrameIndex(rtxdiFrame);
     if (isReference != isReferenceApplied) {
         configure();
         logInfo(std::format("ReSTIR DI: {}", isReference ? "reference (no reuse)" : "temporal and spatial"), "Rtxdi");
@@ -352,59 +539,158 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
     } else if (giSettings != appliedGiSettings) {
         configureGi(isGiReuse);
     }
-    const RTXDI_GIBufferIndices giBufferIndices = giContext->GetBufferIndices();
+    const RTXDI_GIBufferIndices giBufferIndices = giContext.GetBufferIndices();
     // rtxdi_gi_shade reads neighbors from the temporal output and writes next frame's temporal input
-    assert(giContext->GetResamplingMode() == rtxdi::ReSTIRGI_ResamplingMode::None ||
+    assert(giContext.GetResamplingMode() == rtxdi::ReSTIRGI_ResamplingMode::None ||
            (giBufferIndices.spatialResamplingInputBufferIndex == giBufferIndices.temporalResamplingOutputBufferIndex &&
             giBufferIndices.spatialResamplingOutputBufferIndex == giBufferIndices.temporalResamplingInputBufferIndex &&
             giBufferIndices.finalShadingInputBufferIndex == giBufferIndices.spatialResamplingOutputBufferIndex));
-    const RTXDI_DIBufferIndices bufferIndices = context->GetBufferIndices();
+    const RTXDI_DIBufferIndices bufferIndices = context.GetBufferIndices();
     // rtxdi_temporal writes over its own pixel's initial reservoir, and its early-out leaves that as the output
     assert(bufferIndices.temporalResamplingOutputBufferIndex == bufferIndices.initialSamplingOutputBufferIndex);
     // rtxdi_shade reads neighbors from one buffer and writes the other
     assert(bufferIndices.spatialResamplingInputBufferIndex != bufferIndices.shadingInputBufferIndex ||
-           context->GetResamplingMode() == rtxdi::ReSTIRDI_ResamplingMode::None);
+           context.GetResamplingMode() == rtxdi::ReSTIRDI_ResamplingMode::None);
+
+    const uint32_t localLightCount = worldLights.localLightCount();
+    if (localLightCount > lightPdfSide * lightPdfSide) {
+        ZoneScopedN("RtxdiContext::growLightPdf");
+        // rare: only a local light count above every earlier one
+        if (lastSubmittedFrame > 0 && lightPdf != nullptr) {
+            const vk::SemaphoreWaitInfo waitInfo{
+                .semaphoreCount = 1, .pSemaphores = &*frameSync.rayTimeline, .pValues = &lastSubmittedFrame};
+            while (vk::Result::eTimeout == device.vkdevice.waitSemaphores(waitInfo, UINT64_MAX))
+                ;
+        }
+        destroyLightPdf();
+        createLightPdf(localLightCount);
+    }
+
+    // the RTXDI sample centers ReGIR on the camera (SceneRenderer::UpdateReGIRContextFromUI)
+    rtxdi::ReGIRContext& regir = importanceSampling->GetReGIRContext();
+    rtxdi::ReGIRDynamicParameters regirDynamic = regir.GetReGIRDynamicParameters();
+    regirDynamic.center = {.x = cameraPosition.x, .y = cameraPosition.y, .z = cameraPosition.z};
+    regir.SetDynamicParameters(regirDynamic);
+    regirConstants.commonParams.centerX = cameraPosition.x;
+    regirConstants.commonParams.centerY = cameraPosition.y;
+    regirConstants.commonParams.centerZ = cameraPosition.z;
 
     // point, spot and triangle lights lead the world light rows (WorldLights), the directional rows and the sun end
     // them; RAB_TranslateLightIndex is the identity
     const RTXDI_LightBufferParameters lightBuffer{
-        .localLightBufferRegion = {.firstLightIndex = 0,
-                                   .numLights = worldLights.localLightCount(),
-                                   .pad1 = 0,
-                                   .pad2 = 0},
+        .localLightBufferRegion = {.firstLightIndex = 0, .numLights = localLightCount, .pad1 = 0, .pad2 = 0},
         .infiniteLightBufferRegion = {.firstLightIndex = worldLights.firstInfiniteLight(),
                                       .numLights = worldLights.infiniteLightCount(),
                                       .pad1 = 0,
                                       .pad2 = 0},
         .environmentLightParams = {.lightPresent = 0, .lightIndex = 0, .pad1 = 0, .pad2 = 0},
     };
+    importanceSampling->SetLightBufferParams(lightBuffer);
 
     const GpuRtxdiConstants data{
-        .runtime = context->GetRuntimeParams(),
+        .runtime = context.GetRuntimeParams(),
         .lightBuffer = lightBuffer,
-        .reservoirBuffer = context->GetReservoirBufferParameters(),
+        .reservoirBuffer = context.GetReservoirBufferParameters(),
         .bufferIndices = bufferIndices,
-        .initialSampling = context->GetInitialSamplingParameters(),
-        .temporalResampling = context->GetTemporalResamplingParameters(),
-        .boilingFilter = context->GetBoilingFilterParameters(),
-        .spatialResampling = context->GetSpatialResamplingParameters(),
-        .shading = context->GetShadingParameters(),
+        .initialSampling = context.GetInitialSamplingParameters(),
+        .temporalResampling = context.GetTemporalResamplingParameters(),
+        .boilingFilter = context.GetBoilingFilterParameters(),
+        .spatialResampling = context.GetSpatialResamplingParameters(),
+        .shading = context.GetShadingParameters(),
         .reservoirs = reservoirAddress,
         .neighborOffsets = neighborOffsets.address,
-        .resamplingMode = std::to_underlying(context->GetResamplingMode()),
+        .resamplingMode = std::to_underlying(context.GetResamplingMode()),
         .reservoirCount = reservoirCount,
-        .giReservoirBuffer = giContext->GetReservoirBufferParameters(),
+        .giReservoirBuffer = giContext.GetReservoirBufferParameters(),
         .giBufferIndices = giBufferIndices,
         .giReservoirs = giReservoirAddress,
         .giReservoirCount = giReservoirCount,
-        .giResamplingMode = std::to_underlying(giContext->GetResamplingMode()),
-        .giTemporalResampling = giContext->GetTemporalResamplingParameters(),
-        .giBoilingFilter = giContext->GetBoilingFilterParameters(),
-        .giSpatialResampling = giContext->GetSpatialResamplingParameters(),
-        .giFinalShading = giContext->GetFinalShadingParameters(),
+        .giResamplingMode = std::to_underlying(giContext.GetResamplingMode()),
+        .giTemporalResampling = giContext.GetTemporalResamplingParameters(),
+        .giBoilingFilter = giContext.GetBoilingFilterParameters(),
+        .giSpatialResampling = giContext.GetSpatialResamplingParameters(),
+        .giFinalShading = giContext.GetFinalShadingParameters(),
         .giReferenceBounces = giReferenceBounces,
         .giFlags = (giSettings.isSecondaryResamplingEnabled ? GiFlag::SecondaryResampling : 0u) |
                    (giSettings.isFireflyClampEnabled ? GiFlag::FireflyClamp : 0u),
+        .localLightRisBuffer = importanceSampling->GetLocalLightRISBufferSegmentParams(),
+        .environmentLightRisBuffer = importanceSampling->GetEnvironmentLightRISBufferSegmentParams(),
+        .regir = regirConstants,
+        .risBuffer = risAddress,
+        .risLightData = risLightDataAddress,
+        .risEntryCount = risEntryCount,
+        .lightPdf = lightPdfIndex,
+        .lightPdfSize = {.width = lightPdfSide, .height = lightPdfSide},
     };
     std::memcpy(constants[frameSlot].mapped, &data, sizeof(data));
+}
+
+void RtxdiContext::recordLightPreparation(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot,
+                                          vk::DeviceAddress frameRoot)
+{
+    ZoneScopedN("RtxdiContext::recordLightPreparation");
+    if (isLightPdfLayoutPending) {
+        // a new PDF holds nothing yet: light_world writes every mip 0 texel, the mips pass every other texel
+        const vk::ImageMemoryBarrier2 layoutBarrier{
+            .srcStageMask = vk::PipelineStageFlagBits2::eNone,
+            .srcAccessMask = vk::AccessFlagBits2::eNone,
+            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = *lightPdf,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, vk::RemainingMipLevels, 0, 1},
+        };
+        cmd.pipelineBarrier2(vk::DependencyInfo{.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &layoutBarrier});
+        isLightPdfLayoutPending = false;
+    }
+    const bool hasLightPdf = !lightPdfMipIndices.empty();
+    worldLights.recordUpdate(cmd, frameSlot,
+                             LightPdfTarget{.mip0 = hasLightPdf ? lightPdfMipIndices.front() : kNoneIndex,
+                                            .texelCount = lightPdfSide * lightPdfSide});
+
+    // Uniform reads neither the PDF nor the tiles (RAB_EvaluateLocalLightSourcePdf is 1 / count then)
+    const bool isUniform = restirDi().GetInitialSamplingParameters().localLightSamplingMode ==
+        ReSTIRDI_LocalLightSamplingMode::Uniform;
+    if (isUniform || worldLights.localLightCount() == 0) {
+        return;
+    }
+    // each pass reads what the one before wrote: PDF levels, world rows, then the local light tiles
+    const vk::MemoryBarrier2 passBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderSampledRead,
+    };
+    const vk::DependencyInfo passDependency{.memoryBarrierCount = 1, .pMemoryBarriers = &passBarrier};
+    cmd.pipelineBarrier2(passDependency);
+
+    ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.lightPdfMips);
+    for (uint32_t mip = 1; mip < lightPdfMipIndices.size(); ++mip) {
+        const uint32_t side = std::max(lightPdfSide >> mip, 1u);
+        const LightPdfMipsPushData push{.srcImage = lightPdfMipIndices[mip - 1],
+                                        .dstImage = lightPdfMipIndices[mip],
+                                        .dstSize = {.width = side, .height = side}};
+        cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
+        cmd.dispatch(divideRoundUp(side, kLightPdfMipsTile), divideRoundUp(side, kLightPdfMipsTile), 1);
+        cmd.pipelineBarrier2(passDependency);
+    }
+
+    const FramePushData push{.frameRoot = frameRoot};
+    if (importanceSampling->IsLocalLightPowerRISEnabled()) {
+        const RTXDI_RISBufferSegmentParameters& tiles = importanceSampling->GetLocalLightRISBufferSegmentParams();
+        ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.rtxdiPresample);
+        cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
+        cmd.dispatch(divideRoundUp(tiles.tileSize, kPresampleGroupSize), tiles.tileCount, 1);
+        cmd.pipelineBarrier2(passDependency);
+    }
+    if (importanceSampling->IsReGIREnabled()) {
+        ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.rtxdiPresampleRegir);
+        cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
+        cmd.dispatch(divideRoundUp(importanceSampling->GetReGIRContext().GetReGIRLightSlotCount(),
+                                   kRegirBuildGroupSize),
+                     1, 1);
+    }
 }

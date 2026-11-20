@@ -1,5 +1,6 @@
 #pragma once
 #include "../Constants.h"
+#include "core/types.hpp"
 #include "core/vk_allocator.hpp"
 #include "core/vk_asset_buffers.hpp"
 #include "core/vk_device.hpp"
@@ -12,6 +13,15 @@
 #include <cstdint>
 #include <glm/vec3.hpp>
 #include <vulkan/vulkan_raii.hpp>
+
+// the local light PDF's mip 0 as light_world writes it (RtxdiContext)
+struct LightPdfTarget
+{
+    // resource heap: storage view of mip 0
+    uint32_t mip0 = kNoneIndex;
+    // 0: no PDF is written
+    uint32_t texelCount = 0;
+};
 
 // World-space light rows of each frame slot (PBR plan E2): every frame, passes/light_world.slang places the
 // model-space rows of the light asset buffer with their entity's matrix, so lights follow their entity with no CPU
@@ -53,8 +63,9 @@ public:
     // lastSubmittedFrame: the frame number submitted last, which reads this slot as its previous frame; growing waits
     // for its ray passes
     void prepareFrame(uint32_t frameSlot, uint64_t lastSubmittedFrame);
-    // compute queue, heaps bound. The slot's frame root must be written before submit
-    void recordUpdate(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot) const;
+    // compute queue, heaps bound. The slot's frame root must be written before submit. Also writes every texel of
+    // the light PDF's mip 0: a local light's power at its Z-curve texel, 0 past the local lights
+    void recordUpdate(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot, const LightPdfTarget& lightPdf) const;
 
     // GpuLight[lightCount()]; 0 while the scene has no light
     [[nodiscard]] vk::DeviceAddress address(uint32_t frameSlot) const noexcept { return slots[frameSlot].address; }

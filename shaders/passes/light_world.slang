@@ -1,14 +1,19 @@
 import types;
 import core.binding;
 import core.frame;
+import core.math;
 import geometry.mesh;
 import geometry.surface;
 import material.pbr;
 
+// RTXDI_LinearIndexToZCurve: the PDF texel of a light must be the one RTXDI's presampling maps back to its index
+#include "Rtxdi/Utils/Math.hlsli"
+
 // model-space light rows -> this frame's world-space rows (PBR plan E2), one thread per light, async compute before
-// the TLAS build. Lights follow their entity without a CPU loop. Row order (WorldLights): the asset's point and spot
-// rows, the triangle lights (spec/m7/e2_emissive_triangles.md), the asset's directional rows, the engine's sun (PBR
-// plan E3). Triangle rows port PrepareLights.hlsl of the RTXDI sample (reference/RTXDI/Samples/FullSample/Shaders;
+// the TLAS build. The same threads write the local light PDF's mip 0 (spec/m7/f1_light_presampling.md): each local
+// light's power at its Z-curve texel, every other texel 0, so no texel keeps an earlier frame's value. Lights follow
+// their entity without a CPU loop. Row order (WorldLights): the asset's point and spot rows, the triangle lights
+// (spec/m7/e2_emissive_triangles.md), the asset's directional rows, the engine's sun (PBR plan E3). Triangle rows port PrepareLights.hlsl of the RTXDI sample (reference/RTXDI/Samples/FullSample/Shaders;
 // NVIDIA RTX SDKs license): the thread's task by binary search, three corners through the node instance's matrix,
 // the emissive texture sampled once at the uv centroid
 
@@ -155,35 +160,61 @@ GpuTriangleLight triangleLight(GpuFrameRoot root, uint index)
     return light;
 }
 
+// world row `index`: a triangle light, or an asset row or the sun around the triangle region
+GpuLight worldLight(GpuFrameRoot root, uint index)
+{
+    const uint triangleIndex = index - root.firstTriangleLight;
+    if (index >= root.firstTriangleLight && triangleIndex < root.triangleLightCount)
+    {
+        return reinterpret<GpuLight>(triangleLight(root, triangleIndex));
+    }
+    const uint assetRow = index < root.firstTriangleLight ? index : index - root.triangleLightCount;
+    if (assetRow < push.assetLightCount)
+    {
+        return toWorldLight(root, bdaPtr<GpuLight>(root.lights)[assetRow]);
+    }
+    GpuLight sun = {};
+    sun.direction = push.sunDirection;
+    sun.intensity = push.sunIlluminance;
+    sun.color = push.sunColor;
+    sun.type = LightType.Directional;
+    return sun;
+}
+
+// emitted flux, the PDF's weight (PolymorphicLight GetPower in the RTXDI sample). Triangles: area · π · L, both faces
+// of a double-sided one. Point and spot: 4π · I; the spot's cone shapes where the flux goes, not how much is sampled
+float lightPower(GpuLight light)
+{
+    if (light.type == LightType.Triangle)
+    {
+        const GpuTriangleLight triangle = reinterpret<GpuTriangleLight>(light);
+        const float area = 0.5 * length(cross(triangle.edge1, triangle.edge2));
+        const float faces = (triangle.flags & kTriangleLightFlagDoubleSided) != 0 ? 2.0 : 1.0;
+        return area * kPi * faces * luminance(triangle.radiance);
+    }
+    return 4.0 * kPi * luminance(light.color * light.intensity);
+}
+
+// one thread per world row and per PDF texel, whichever is more
 [shader("compute")]
 [numthreads(kLightWorldGroupSize, 1, 1)]
 void lightWorldMain(uint3 id : SV_DispatchThreadID)
 {
     const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
-    if (id.x >= root.lightCount)
+    float power = 0.0;
+    if (id.x < root.lightCount)
     {
-        return;
+        const GpuLight light = worldLight(root, id.x);
+        bdaPtr<GpuLight>(root.worldLights)[id.x] = light;
+        // the local region: RTXDI never selects a texel past it
+        if (id.x < root.localLightCount)
+        {
+            power = lightPower(light);
+        }
     }
-    const uint triangleIndex = id.x - root.firstTriangleLight;
-    if (id.x >= root.firstTriangleLight && triangleIndex < root.triangleLightCount)
+    if (id.x < push.lightPdfTexelCount)
     {
-        bdaPtr<GpuTriangleLight>(root.worldLights)[id.x] = triangleLight(root, triangleIndex);
-        return;
+        // RtxdiContext's PDF format
+        storageTex2D<float, kImageFormatR32f>(push.lightPdf)[RTXDI_LinearIndexToZCurve(id.x)] = power;
     }
-    // asset rows keep their order around the triangle region
-    const uint assetRow = id.x < root.firstTriangleLight ? id.x : id.x - root.triangleLightCount;
-    GpuLight light;
-    if (assetRow < push.assetLightCount)
-    {
-        light = toWorldLight(root, bdaPtr<GpuLight>(root.lights)[assetRow]);
-    }
-    else
-    {
-        light = {};
-        light.direction = push.sunDirection;
-        light.intensity = push.sunIlluminance;
-        light.color = push.sunColor;
-        light.type = LightType.Directional;
-    }
-    bdaPtr<GpuLight>(root.worldLights)[id.x] = light;
 }

@@ -12,15 +12,17 @@
 // unload resets history. Point and spot rows are deltas; triangle rows (spec/m7/e2_emissive_triangles.md) take a
 // uniform area sample, and a BRDF ray names the triangle light it hits.
 //
-// Not built yet:
-//   - presampling (Power_RIS / ReGIR, M7 F1): RAB_LoadCompactLightInfo, RAB_StoreCompactLightInfo, RIS buffer;
-//     RAB_EvaluateLocalLightSourcePdf is the uniform pdf
-//   - environment light: lightPresent stays 0, so its two functions are never reached
+// Local lights are presampled (spec/m7/f1_light_presampling.md): RtxdiContext's RIS buffer holds the Power_RIS tiles
+// and ReGIR's cells, each entry with its compact light (lighting.compact_lights), and the local light PDF weighs a BRDF
+// candidate against the light candidates.
+//
+// Not built yet: the environment light. lightPresent stays 0, so its two functions are never reached
 
 import types;
 import core.binding;
 import core.frame;
 import core.math;
+import lighting.compact_lights;
 import lighting.lights;
 import lighting.triangle_lights;
 import geometry.hit;
@@ -28,20 +30,63 @@ import material.brdf;
 import material.pbr;
 import raytracing.trace;
 
-// before any RTXDI header: RtxdiParameters.h defaults it to 1
-#define RTXDI_ENABLE_PRESAMPLING 0
+// before any RTXDI header. ReGIR's layout is chosen by macro (GetRegirMacro in the RTXDI sample); RtxdiContext keeps
+// the SDK's static parameters, whose mode is Onion
+#define RTXDI_ENABLE_PRESAMPLING 1
+#define RTXDI_REGIR_MODE RTXDI_REGIR_ONION
 
 // RTXDI's buffers live in RtxdiContext's allocations (src/render/vk_rtxdi.cpp). Neighbor offsets are always indexed
 // through neighborOffsetMask, so a plain BDA pointer serves
 #define RTXDI_LIGHT_RESERVOIR_BUFFER gRtxdiBridge.reservoirs
 #define RTXDI_GI_RESERVOIR_BUFFER gRtxdiBridge.giReservoirs
 #define RTXDI_NEIGHBOR_OFFSETS_BUFFER bdaPtr<float2>(gRtxdiBridge.neighborOffsets)
+#define RTXDI_RIS_BUFFER gRtxdiBridge.risBuffer
 
 // RTXDI's HLSL converts uint to bool implicitly (E30081): units that include this file compile with
 // RTXDI_SLANG_FLAGS (CMakeLists.txt). #pragma warning cannot scope it, Slang 2026.20 ignores it once a unit imports
 #include "lighting/rtxdi_constants.slang"
 #include "Rtxdi/RtxdiParameters.h"
+#include "Rtxdi/Utils/Math.hlsli"
 #include "Rtxdi/Utils/RandomSamplerState.hlsli"
+
+// RTXDI's ReGIR functions take ReGIR_Parameters by value and index the onion's layers and rings dynamically. Loaded
+// through BDA, the whole 1.3 KB struct is converted to its logical layout and every thread keeps it in local memory:
+// 1.4 ms ReGIR build and 1.2 ms initial sampling at 5,990 local lights (RTX 5070). The view takes its place in RTXDI's
+// signatures and reads each field through the pointer, as the RTXDI sample's constant buffer does
+struct RegirOnionLayersView
+{
+    GpuRtxdiConstants* constants;
+    __subscript(int index)->ReGIR_OnionLayerGroup { get { return constants->regir.onionParams.layers[index]; } }
+    __subscript(uint index)->ReGIR_OnionLayerGroup { get { return constants->regir.onionParams.layers[index]; } }
+};
+
+struct RegirOnionRingsView
+{
+    GpuRtxdiConstants* constants;
+    __subscript(int index)->ReGIR_OnionRing { get { return constants->regir.onionParams.rings[index]; } }
+    __subscript(uint index)->ReGIR_OnionRing { get { return constants->regir.onionParams.rings[index]; } }
+};
+
+struct RegirOnionView
+{
+    GpuRtxdiConstants* constants;
+    property layers : RegirOnionLayersView { get { return RegirOnionLayersView(constants); } }
+    property rings : RegirOnionRingsView { get { return RegirOnionRingsView(constants); } }
+    property numLayerGroups : uint { get { return constants->regir.onionParams.numLayerGroups; } }
+    property cubicRootFactor : float { get { return constants->regir.onionParams.cubicRootFactor; } }
+    property linearFactor : float { get { return constants->regir.onionParams.linearFactor; } }
+};
+
+struct RegirParametersView
+{
+    GpuRtxdiConstants* constants;
+    property commonParams : ReGIR_CommonParameters { get { return constants->regir.commonParams; } }
+    property gridParams : ReGIR_GridParameters { get { return constants->regir.gridParams; } }
+    property onionParams : RegirOnionView { get { return RegirOnionView(constants); } }
+};
+
+// every RTXDI header after this point; ReGIRParameters.h, already included, keeps the real struct for the constants
+#define ReGIR_Parameters RegirParametersView
 
 // RTXDI reads its buffers as structured buffers under robust buffer access, where out-of-range reads return zeros.
 // 3.1's fused pass relied on it: it loaded the reservoir of an off-screen back-projected pixel and light 0 of an empty
@@ -66,6 +111,15 @@ struct RtxdiBridgeState
     uint64_t neighborOffsets;
     uint localLightCount;
     TriangleLightTable triangleLights;
+    ReSTIRDI_LocalLightSamplingMode localLightSamplingMode;
+    CheckedBuffer<uint2> risBuffer;
+    // two rows per RIS entry
+    CheckedBuffer<uint4> risLightData;
+    // resource heap; kNoneIndex while there is no local light
+    uint lightPdf;
+    uint lightPdfSide;
+    // GpuRtxdiConstants, for regirParameters
+    uint64_t rtxdiConstants;
 };
 
 static RtxdiBridgeState gRtxdiBridge;
@@ -91,6 +145,26 @@ void rtxdiBridgeInit(GpuFrameRoot root)
     gRtxdiBridge.neighborOffsets = constants[0].neighborOffsets;
     gRtxdiBridge.localLightCount = constants[0].lightBuffer.localLightBufferRegion.numLights;
     gRtxdiBridge.triangleLights = loadTriangleLightTable(root);
+    gRtxdiBridge.localLightSamplingMode = constants[0].initialSampling.localLightSamplingMode;
+    gRtxdiBridge.risBuffer.address = constants[0].risBuffer;
+    gRtxdiBridge.risBuffer.count = constants[0].risEntryCount;
+    gRtxdiBridge.risLightData.address = constants[0].risLightData;
+    gRtxdiBridge.risLightData.count = constants[0].risEntryCount * 2;
+    gRtxdiBridge.lightPdf = constants[0].lightPdf;
+    gRtxdiBridge.lightPdfSide = constants[0].lightPdfSize.x;
+    gRtxdiBridge.rtxdiConstants = root.rtxdiConstants;
+}
+
+// ReGIR's parameters for RTXDI's sampling functions, read in place
+RegirParametersView regirParameters()
+{
+    return RegirParametersView(bdaPtr<GpuRtxdiConstants>(gRtxdiBridge.rtxdiConstants));
+}
+
+// the local light PDF; only while there is a local light (lightPdf is a heap index then)
+Texture2D lightPdfTexture()
+{
+    return tex2D(gRtxdiBridge.lightPdf);
 }
 
 GpuRtxdiConstants loadRtxdiConstants(GpuFrameRoot root)
@@ -294,6 +368,41 @@ RAB_LightInfo RAB_LoadLightInfo(uint index, bool previousFrame)
     return bdaPtr<GpuLight>(rows)[index];
 }
 
+// a presampled RIS entry's light (lighting.compact_lights); the entry was stored this frame
+RAB_LightInfo RAB_LoadCompactLightInfo(uint linearIndex)
+{
+    return unpackCompactLight(gRtxdiBridge.risLightData[linearIndex * 2],
+                              gRtxdiBridge.risLightData[linearIndex * 2 + 1]);
+}
+
+// false: the light keeps no compact form (spot), RTXDI loads its world row instead
+bool RAB_StoreCompactLightInfo(uint linearIndex, RAB_LightInfo light)
+{
+    uint4 first;
+    uint4 second;
+    if (!packCompactLight(light, first, second))
+    {
+        return false;
+    }
+    gRtxdiBridge.risLightData[linearIndex * 2] = first;
+    gRtxdiBridge.risLightData[linearIndex * 2 + 1] = second;
+    return true;
+}
+
+// ReGIR's cell weight of a light for every surface in the sphere; infinite lights take no part in it
+float RAB_GetLightTargetPdfForVolume(RAB_LightInfo light, float3 volumeCenter, float volumeRadius)
+{
+    if (light.type == LightType.Triangle)
+    {
+        return triangleLightWeightForVolume(asTriangleLight(light), volumeCenter, volumeRadius);
+    }
+    if (light.type == LightType.Directional)
+    {
+        return 0.0;
+    }
+    return punctualLightWeightForVolume(light, volumeCenter, volumeRadius);
+}
+
 // light rows keep their index across frames until a load or unload, which resets history
 int RAB_TranslateLightIndex(uint lightIndex, bool currentToPrevious)
 {
@@ -341,10 +450,24 @@ void RAB_GetLightDirDistance(RAB_Surface surface, RAB_LightSample sample, out fl
     distance = sample.distance;
 }
 
-// selection pdf of a local light hit by a BRDF ray: uniform until Power_RIS's PDF texture (M7)
+// selection pdf of a local light hit by a BRDF ray, the light candidates' MIS weight against it. Presampled modes: its
+// power over the total, as the RTXDI sample (the PDF texel over the top mip's mean times the texel count). Uniform:
+// 1 / count, which the sample would take from the PDF too, biasing the MIS weights of a uniform light candidate
 float RAB_EvaluateLocalLightSourcePdf(uint lightIndex)
 {
-    return gRtxdiBridge.localLightCount > 0 ? 1.0 / float(gRtxdiBridge.localLightCount) : 0.0;
+    if (lightIndex >= gRtxdiBridge.localLightCount)
+    {
+        return 0.0;
+    }
+    if (gRtxdiBridge.localLightSamplingMode == ReSTIRDI_LocalLightSamplingMode_UNIFORM)
+    {
+        return 1.0 / float(gRtxdiBridge.localLightCount);
+    }
+    const Texture2D pdf = lightPdfTexture();
+    const float power = pdf.Load(int3(RTXDI_LinearIndexToZCurve(lightIndex), 0)).r;
+    const uint side = gRtxdiBridge.lightPdfSide;
+    const float totalPower = pdf.Load(int3(0, 0, firstbithigh(side))).r * float(side * side);
+    return totalPower > 0.0 ? power / totalPower : 0.0;
 }
 
 float2 RAB_GetEnvironmentMapRandXYFromDir(float3 direction)

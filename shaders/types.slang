@@ -552,7 +552,7 @@ public struct FramePushData
     public uint64_t frameRoot;
 };
 
-// 56 B, matches src/render/push_data.hpp
+// 64 B, matches src/render/push_data.hpp
 public struct LightWorldPushData
 {
     public uint64_t frameRoot;
@@ -562,7 +562,17 @@ public struct LightWorldPushData
     public uint assetLightCount;  // asset rows, with the triangle region after their point and spot rows; then the sun
     public uint64_t triangleLightTasks; // GpuTriangleLightTask[triangleLightTaskCount]
     public uint triangleLightTaskCount;
+    public uint lightPdf;           // resource heap: storage view of the local light PDF's mip 0
+    public uint lightPdfTexelCount; // mip 0 texels; every one is written each frame
     public uint pad0;
+};
+
+// 16 B, matches src/render/push_data.hpp
+public struct LightPdfMipsPushData
+{
+    public uint srcImage; // resource heap: storage view of the read mip
+    public uint dstImage; // resource heap: storage view of the written mip
+    public uint2 dstSize;
 };
 
 // 16 B, matches src/render/push_data.hpp

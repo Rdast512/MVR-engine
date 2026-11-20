@@ -2,7 +2,9 @@ module triangle_lights;
 
 import types;
 import core.binding;
+import core.math;
 import geometry.hit;
+import lighting.lights;
 
 // emissive-triangle lights (spec/m7/e2_emissive_triangles.md): world rows of type Triangle, a ray hit -> the light it
 // names, and the area sample RTXDI scores. The sampling follows TriangleLight in the RTXDI sample
@@ -124,4 +126,29 @@ public TriangleLightSample sampleTriangleLight(GpuTriangleLight light, float3 su
     sample.solidAnglePdf = sample.distance * sample.distance / (cosine * 0.5 * doubleArea);
     sample.radiance = light.radiance;
     return sample;
+}
+
+// the light's weight for every surface inside a sphere (TriangleLight::GetWeightForVolume): radiance times the solid
+// angle area / d^2 at the mean distance, at most a hemisphere. Zero when the whole sphere lies behind a one-sided
+// triangle's emitting face
+public float triangleLightWeightForVolume(GpuTriangleLight light, float3 center, float radius)
+{
+    const float3 scaledNormal = cross(light.edge1, light.edge2);
+    const float doubleArea = length(scaledNormal);
+    if (doubleArea <= 0.0)
+    {
+        return 0.0;
+    }
+    if ((light.flags & kTriangleLightFlagDoubleSided) == 0)
+    {
+        const float facing = (light.flags & kTriangleLightFlagMirrored) != 0 ? -1.0 : 1.0;
+        if (facing * dot(center - light.v0, scaledNormal) / doubleArea < -radius)
+        {
+            return 0.0;
+        }
+    }
+    const float3 centroid = light.v0 + (light.edge1 + light.edge2) / 3.0;
+    const float meanDistance = averageDistanceToVolume(length(centroid - center), radius);
+    const float solidAngle = min(0.5 * doubleArea / (meanDistance * meanDistance), 2.0 * kPi);
+    return solidAngle * luminance(light.radiance);
 }

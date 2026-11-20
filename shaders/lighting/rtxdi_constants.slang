@@ -5,6 +5,8 @@
 // Matches GpuRtxdiConstants in src/render/vk_rtxdi.hpp; tests/layout_test.cpp checks it
 #include "Rtxdi/DI/ReSTIRDIParameters.h"
 #include "Rtxdi/GI/ReSTIRGIParameters.h"
+#include "Rtxdi/LightSampling/RISBufferSegmentParameters.h"
+#include "Rtxdi/ReGIR/ReGIRParameters.h"
 
 // GpuFrameRoot.rtxdiConstants (PBR plan F1)
 struct GpuRtxdiConstants
@@ -34,6 +36,16 @@ struct GpuRtxdiConstants
     RTXDI_GIFinalShadingParameters giFinalShading;
     uint giReferenceBounces;  // bounces traced after X2 instead of the NRC cache term; 0: the cache term
     uint giFlags;             // kGiFlag* bits
+    // local light presampling (spec/m7/f1_light_presampling.md): passes/rtxdi_presample.slang fills the tiles and the
+    // cells, RTXDI's initial sampling reads them. No environment light: its segment is never read
+    RTXDI_RISBufferSegmentParameters localLightRisBuffer;
+    RTXDI_RISBufferSegmentParameters environmentLightRisBuffer;
+    ReGIR_Parameters regir;
+    uint64_t risBuffer;       // uint2[risEntryCount], RTXDI_RIS_BUFFER
+    uint64_t risLightData;    // uint4[2 * risEntryCount], the compact light of each entry
+    uint risEntryCount;
+    uint lightPdf;            // resource heap: sampled, full mip chain; kNoneIndex without local lights
+    uint2 lightPdfSize;       // mip 0, square
 };
 
 // GiFlag in src/render/vk_rtxdi.hpp

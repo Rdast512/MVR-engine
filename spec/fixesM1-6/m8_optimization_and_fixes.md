@@ -81,7 +81,7 @@ NVIDIA's reason (ChangeLog 3.1): DLSS-RR "prefers temporally independent samples
 | Neighbor surface loads | depth R32F + packed normals (uint oct) + packed geo normal + packed material, ~20 B, position rebuilt from depth (`RAB_Surface.hlsli`) | `Position` RGBA32F + `NormalRoughness` RGBA16F + `SpecularF0` + `GeoNormal` + `DiffuseAlbedo`, 36 B (`rtxdi_bridge.slang` `RAB_GetGBufferSurface`) | candidate O4 |
 | Checkerboard | `Fast` preset: DI checkerboard `Black` | off for DI and GI (C-G2-1) | floor-tier candidate O7 |
 | `Fast` DI preset | Power_RIS 4 local, **0 BRDF samples**, bias correction `Off`, 1 spatial + 2 boost samples, boiling 0.2, final visibility reuse | `Medium`, with 1 BRDF candidate that finds no light until M7 (C-R32-3, 0.04 ms) | candidate O8 |
-| Local light presampling (Power_RIS, ReGIR) | `Presampling/*.hlsl`; `Medium` uses ReGIR | uniform until M7 | M7 (plan F1 `Power_RIS`) |
+| Local light presampling (Power_RIS, ReGIR) | `Presampling/*.hlsl`; `Medium` uses ReGIR | the same since M7 F1 (2026-11-20): `ReGIR_RIS` default, `Power_RIS` and `Uniform` selectable | built ([m7/f1_light_presampling.md](../m7/f1_light_presampling.md)) |
 | Stratified table shared with GI | one table, filled in the selected DI mode | the same. GI reads it linearly, which is valid (each entry is an offset), just not stratified | no action; a stratified GI walk needs a library change |
 
 ### 2.4 Candidates

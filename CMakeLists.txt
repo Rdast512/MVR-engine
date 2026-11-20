@@ -294,7 +294,10 @@ engine_add_slang_pass(passes/indirect.slang ENTRIES indirectMain
 engine_add_slang_pass(passes/nrc_update.slang ENTRIES nrcUpdateMain
     FLAGS ${RTXDI_SLANG_FLAGS} -DNRC_UPDATE=1)
 engine_add_slang_pass(passes/nrc_resolve.slang ENTRIES nrcResolveMain FLAGS ${RTXDI_SLANG_FLAGS})
-engine_add_slang_pass(passes/light_world.slang ENTRIES lightWorldMain)
+engine_add_slang_pass(passes/light_world.slang ENTRIES lightWorldMain FLAGS ${RTXDI_SLANG_FLAGS})
+engine_add_slang_pass(passes/light_pdf_mips.slang ENTRIES lightPdfMipsMain)
+engine_add_slang_pass(passes/rtxdi_presample.slang ENTRIES rtxdiPresampleMain rtxdiPresampleRegirMain
+    FLAGS ${RTXDI_SLANG_FLAGS})
 engine_add_slang_pass(passes/rtxdi_initial.slang ENTRIES rtxdiInitialMain FLAGS ${RTXDI_SLANG_FLAGS})
 engine_add_slang_pass(passes/rtxdi_temporal.slang ENTRIES rtxdiTemporalMain FLAGS ${RTXDI_SLANG_FLAGS})
 engine_add_slang_pass(passes/rtxdi_shade.slang ENTRIES rtxdiShadeMain FLAGS ${RTXDI_SLANG_FLAGS})

@@ -30,13 +30,16 @@ struct RasterOrigin : IRayOrigin
 };
 
 // one RIS-sampled light at a lit vertex, without reuse. Light candidates alone reach every light, triangles included;
-// a BRDF candidate would spend one more ray per vertex
+// a BRDF candidate would spend one more ray per vertex. Local lights are sampled in the primary surface's mode and
+// count (neeLocalLightSampling of the RTXDI sample), from the same presampled tiles and ReGIR cells
 RTXDI_DIReservoir sampleLightsAt(RAB_Surface surface, GpuRtxdiConstants constants, inout RTXDI_RandomSamplerState rng,
                                  inout RTXDI_RandomSamplerState coherentRng, out RAB_LightSample lightSample)
 {
     RTXDI_DIInitialSamplingParameters sampling = constants.initialSampling;
     sampling.numBrdfSamples = 0;
-    return RTXDI_SampleLightsForSurface(rng, coherentRng, surface, sampling, constants.lightBuffer, lightSample);
+    return RTXDI_SampleLightsForSurface(rng, coherentRng, surface, sampling, constants.lightBuffer,
+                                        constants.localLightRisBuffer, constants.environmentLightRisBuffer,
+                                        regirParameters(), lightSample);
 }
 
 // a sampled light's contribution with one visibility ray
