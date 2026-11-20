@@ -12,9 +12,9 @@ A runtime toggle between three ways of producing `indirectRadiance`. NRC stays b
 
 | Mode | Sample radiance at X₂ | NRC | ReSTIR GI | `indirectRadiance` |
 |---|---|---|---|---|
-| **NRC → ReSTIR GI** (default) | emission + direct light at X₂ + `prefixThroughput × cachedRadiance` (spec §11.3–11.4) | update paths, `QueryAndTrain`, custom resolve, `EndFrame` | temporal + spatial | ReSTIR GI output |
+| **NRC → ReSTIR GI** | emission + direct light at X₂ + `prefixThroughput × cachedRadiance` (spec §11.3–11.4) | update paths, `QueryAndTrain`, custom resolve, `EndFrame` | temporal + spatial | ReSTIR GI output |
 | **NRC** | the same | the same | skipped | the resolved sample shaded at the primary surface: one sample per pixel, no reuse (RTXGI `IndirectDiffuseMode::Nrc` with RR) |
-| **ReSTIR GI** | emission + direct light at X₂ only: one bounce, as the RTXDI sample | paused: no update paths, no `QueryAndTrain`, no resolve, no `EndFrame` | temporal + spatial | ReSTIR GI output |
+| **ReSTIR GI** (default since 2026-11-20) | emission + direct light at X₂ only: one bounce, as the RTXDI sample | paused: no update paths, no `QueryAndTrain`, no resolve, no `EndFrame` | temporal + spatial | ReSTIR GI output |
 
 ## Decisions
 
@@ -28,7 +28,7 @@ A runtime toggle between three ways of producing `indirectRadiance`. NRC stays b
 | Shader | no new shader input: a paused cache has zeroed NRC constants (the query pass makes no queries, as without a scene), and NRC mode is RTXDI's resampling mode `None`, which the G5 shade pass already handles. The 1% uniform-branch rule has nothing to measure | no preprocessor permutations (S9); one indirect pass and one ReSTIR GI pass set |
 | Combine | unchanged: it always reads `indirectRadiance` | the three terms still meet only in combine (spec §11.6) |
 | UI | `Indirect (M4)` panel: an `Indirect mode` combo; the `NRC cache` debug view is disabled while NRC is paused (ReSTIR GI mode or ground-truth paths), and the panel shows `paused` | a debug view must not show a stale cache as if it were live |
-| Tiers | both tiers default to NRC → ReSTIR GI (spec P1). The toggle is for A/B measurement and debugging; a tier default changes only by an engine-spec decision backed by this step's numbers (for example the floor tier, if NRC fails C-G3-2 / R4) | one shipped path per tier; the others stay working so the choice can be remeasured |
+| Tiers | both tiers default to ReSTIR GI since 2026-11-20 (spec P1, §11.7; NRC → ReSTIR GI until then): NRC's ~10% bias (C-G5-3) outweighs its second bounce. The toggle is for A/B measurement and debugging; a tier default changes only by an engine-spec decision backed by this step's numbers (for example the floor tier, if NRC fails C-G3-2 / R4) | one shipped path per tier; the others stay working so the choice can be remeasured |
 
 ## 1. As built
 
@@ -95,3 +95,4 @@ Destroy or recreate the NRC context on a switch, add a second indirect pass or p
 |---|---|
 | 2026-11-18 | created: indirect mode toggle before 1.0 (user request: switch NRC and ReSTIR GI as a toggle, NRC kept) |
 | 2026-11-19 | built (§1): `IndirectMode`, NRC pause in `prepareFrame`, RTXDI reuse input, `IndirectHistoryReset` (also for G5's reference toggles), `ENGINE_INDIRECT_MODE`, GI check mode phases with a noise-floor-relative tile limit, guide capture per mode, UI combo; verified and timed on the 5070 (§3) |
+| 2026-11-20 | default switched to ReSTIR GI on both tiers (user decision: NRC reads ~10% bright, C-G5-3); NRC stays built and paused |

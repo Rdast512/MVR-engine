@@ -16,7 +16,7 @@
 // then ReSTIR GI) is measured and logged, not gated, with convergedGiSettings and with the NVIDIA defaults: NRC's bias
 // and RTXDI's heuristics (considerations C-G5-1 to C-G5-3). Per indirect mode (spec/m4/g7_indirect_modes.md): NRC mode
 // is measured against the same ground truth; ReSTIR GI mode is gated against a one-bounce ground truth (its own paths
-// without reuse). ENGINE_GI_CHECK=1 enables the run; the engine quits after the summary
+// without reuse), and measured there with the shipped and the NVIDIA settings. ENGINE_GI_CHECK=1 enables the run; the engine quits after the summary
 class EngineGiCheck
 {
 public:
@@ -53,6 +53,13 @@ private:
         OneBounceNoiseFloor,
         // ReSTIR GI mode against it
         RestirGiMode,
+        // the same with the shipped and the NVIDIA settings
+        RestirGiModeDefaults,
+        RestirGiModeNvidia,
+        // the shipped settings with the RTXDI sample's X2 options (spec/features/m8_optimization_and_fixes.md O2, O6)
+        RestirGiModeSecondary,
+        RestirGiModeClamp,
+        RestirGiModeSecondaryClamp,
         Count,
     };
 
@@ -65,6 +72,20 @@ private:
         Compared,
     };
 
+    enum class GiSettingsSource : uint8_t
+    {
+        // RtxdiContext::convergedGiSettings
+        Converged,
+        // RtxdiContext::defaultGiSettings, shipped
+        Shipped,
+        // RtxdiContext::nvidiaGiSettings
+        Nvidia,
+        // Shipped with secondary DI resampling, the firefly clamp, or both
+        ShippedSecondary,
+        ShippedClamp,
+        ShippedSecondaryClamp,
+    };
+
     struct PhaseInfo
     {
         const char* name;
@@ -73,8 +94,7 @@ private:
         // RtxdiContext::giReferenceBounces: > 0 traces the bounces after X2 and pauses NRC
         uint32_t referenceBounces;
         bool isGiReference;
-        // RtxdiContext::defaultGiSettings instead of convergedGiSettings
-        bool isNvidiaDefaults;
+        GiSettingsSource settings;
         // frames before the first capture: reservoir history (ReSTIR GI) and training after the pause (NRC)
         uint32_t warmupFrames;
         uint32_t frames;
@@ -103,23 +123,35 @@ private:
     // is noisier per tile (sun fireflies in the gallery's dim tiles): its own floor sets the tile limit
     static constexpr uint32_t kTraced = RtxdiContext::kGiGroundTruthBounces;
     static constexpr std::array<PhaseInfo, static_cast<size_t>(Phase::Count)> kPhases = {{
-        {"ground truth", Role::GroundTruth, IndirectMode::NrcRestirGi, kTraced, true, false, 4, 2048, 0.0, 0.0},
-        {"ground truth again (noise floor)", Role::NoiseFloor, IndirectMode::NrcRestirGi, kTraced, true, false, 4, 512,
-         0.01, 0.06},
+        {"ground truth", Role::GroundTruth, IndirectMode::NrcRestirGi, kTraced, true, GiSettingsSource::Converged, 4,
+         2048, 0.0, 0.0},
+        {"ground truth again (noise floor)", Role::NoiseFloor, IndirectMode::NrcRestirGi, kTraced, true,
+         GiSettingsSource::Converged, 4, 512, 0.01, 0.06},
         {"ReSTIR GI (converged settings, traced paths)", Role::Compared, IndirectMode::NrcRestirGi, kTraced, false,
-         false, 64, 512, 0.015, 0.08},
+         GiSettingsSource::Converged, 64, 512, 0.015, 0.08},
         // NRC retrains after the pause
-        {"NRC + ReSTIR GI (converged settings)", Role::Compared, IndirectMode::NrcRestirGi, 0, false, false, 512, 512,
-         0.0, 0.0},
-        {"NRC + ReSTIR GI (NVIDIA defaults)", Role::Compared, IndirectMode::NrcRestirGi, 0, false, true, 64, 512, 0.0,
-         0.0},
-        {"NRC mode", Role::Compared, IndirectMode::Nrc, 0, false, false, 64, 512, 0.0, 0.0},
+        {"NRC + ReSTIR GI (converged settings)", Role::Compared, IndirectMode::NrcRestirGi, 0, false,
+         GiSettingsSource::Converged, 512, 512, 0.0, 0.0},
+        {"NRC + ReSTIR GI (NVIDIA defaults)", Role::Compared, IndirectMode::NrcRestirGi, 0, false,
+         GiSettingsSource::Nvidia, 64, 512, 0.0, 0.0},
+        {"NRC mode", Role::Compared, IndirectMode::Nrc, 0, false, GiSettingsSource::Converged, 64, 512, 0.0, 0.0},
         {"one-bounce ground truth (ReSTIR GI mode, no reuse)", Role::GroundTruth, IndirectMode::RestirGi, 0, true,
-         false, 4, 2048, 0.0, 0.0},
-        {"one-bounce ground truth again (noise floor)", Role::NoiseFloor, IndirectMode::RestirGi, 0, true, false, 4,
-         512, 0.01, 0.0},
+         GiSettingsSource::Converged, 4, 2048, 0.0, 0.0},
+        {"one-bounce ground truth again (noise floor)", Role::NoiseFloor, IndirectMode::RestirGi, 0, true,
+         GiSettingsSource::Converged, 4, 512, 0.01, 0.0},
         {"ReSTIR GI mode (converged settings) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
-         false, 64, 512, 0.015, 0.08},
+         GiSettingsSource::Converged, 64, 512, 0.015, 0.08},
+        // what ships, and what it replaced (spec/features/m8_optimization_and_fixes.md O1)
+        {"ReSTIR GI mode (shipped defaults) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
+         GiSettingsSource::Shipped, 64, 512, 0.0, 0.0},
+        {"ReSTIR GI mode (NVIDIA defaults) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
+         GiSettingsSource::Nvidia, 64, 512, 0.0, 0.0},
+        {"ReSTIR GI mode (shipped + secondary DI resampling) against one bounce", Role::Compared,
+         IndirectMode::RestirGi, 0, false, GiSettingsSource::ShippedSecondary, 64, 512, 0.0, 0.0},
+        {"ReSTIR GI mode (shipped + firefly clamp) against one bounce", Role::Compared, IndirectMode::RestirGi, 0,
+         false, GiSettingsSource::ShippedClamp, 64, 512, 0.0, 0.0},
+        {"ReSTIR GI mode (shipped + both) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
+         GiSettingsSource::ShippedSecondaryClamp, 64, 512, 0.0, 0.0},
     }};
     static constexpr std::array<Pose, 2> kPoses = {{
         {"gallery (startup)", true, {}, {}},

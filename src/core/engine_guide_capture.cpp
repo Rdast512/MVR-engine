@@ -388,7 +388,7 @@ bool EngineGuideCapture::writePng(const Renderer::DisplayCapture& capture) const
     std::error_code errorCode;
     std::filesystem::create_directories(directory, errorCode);
     const ShotView& shotView = kViews[viewIndex];
-    // the default mode keeps the file names of the other runs
+    // NRC + ReSTIR GI keeps the file names of the runs before G7
     const std::string modeSuffix = shotView.mode == IndirectMode::NrcRestirGi
         ? std::string()
         : std::format("_{}", indirectModeInfo(shotView.mode).id);

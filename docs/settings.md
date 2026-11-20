@@ -160,15 +160,15 @@ When judging stability by eye, hold the camera still for a few seconds and watch
 
 ## 7. ReSTIR GI
 
-`Indirect mode` at the top of the `Indirect (M4)` panel ([g7_indirect_modes.md](../spec/m4/g7_indirect_modes.md)): `NRC + ReSTIR GI` (default, both tiers), `NRC` (the cache samples without reuse), `ReSTIR GI` (one bounce, NRC paused; GPU total 2.72 ms vs 3.27–3.30 ms at 1280×720, no C-G3-6 host wait). A switch resets ReSTIR GI and DLSS-RR history; `ENGINE_INDIRECT_MODE` sets it from the environment.
+`Indirect mode` at the top of the `Indirect (M4)` panel ([g7_indirect_modes.md](../spec/m4/g7_indirect_modes.md)): `ReSTIR GI` (default on both tiers since 2026-11-20: one bounce, NRC paused; GPU total 2.72 ms vs 3.27–3.30 ms at 1280×720, no C-G3-6 host wait), `NRC + ReSTIR GI` (both tiers; NRC reads ~10% bright, considerations C-G5-3), `NRC` (the cache samples without reuse). A switch resets ReSTIR GI and DLSS-RR history; `ENGINE_INDIRECT_MODE` sets it from the environment.
 
-The `ReSTIR GI` section of the `Indirect (M4)` panel. Defaults: the library's, which the RTXDI sample uses unchanged in every preset (`RtxdiContext::defaultGiSettings`).
+The `ReSTIR GI` section of the `Indirect (M4)` panel. Defaults (`RtxdiContext::defaultGiSettings`, since 2026-11-20): the library's, which the RTXDI sample uses unchanged in every preset, with ray-traced spatial bias correction. `NVIDIA defaults` (`nvidiaGiSettings`) restores the library's exactly. Why and what it costs: [m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md) §2.5.
 
 | Setting | Default | Converged | Effect |
 |---|---|---|---|
 | Max history length | 8 | 8 | frames of temporal reuse |
 | Max sample age | 30 | 1024 (never) | discards a reused sample this old; reacts to light changes, biases a still frame bright (+5.6% in the gallery, considerations C-G5-1) |
-| Temporal / spatial bias correction | Basic | Ray traced | Basic darkens occluded places (−15.9% with NRC in the gallery, C-G5-2); Ray traced adds a ray per merged sample |
+| Temporal / spatial bias correction | Basic / Ray traced (NVIDIA: Basic / Basic) | Ray traced | spatial Basic darkens occluded places (ReSTIR GI mode −27% gallery / −9% courtyard, C-G5-2); Ray traced adds a ray per merged sample (spatial +0.15 ms at 1280×720); the temporal pass's Basic does not darken |
 | Fallback sampling | on | off | reuse last frame's sample at the same pixel when no history matches |
 | Spatial samples, radius | 2, 32 px | 2, 32 px | |
 | Boiling filter | on, 0.2 | off | suppresses reservoirs far brighter than their 8×8 group |

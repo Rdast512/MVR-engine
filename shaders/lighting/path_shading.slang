@@ -29,21 +29,20 @@ struct RasterOrigin : IRayOrigin
     float3 spawn(float3 direction) { return rasterRayOrigin(surface, direction); }
 };
 
-// one RIS-sampled light without reuse and one visibility ray. No geometry is a light before emissive triangles (M7):
-// a BRDF candidate would only spend a ray
-float3 directLightAt<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, GpuRtxdiConstants constants,
-                                          inout RTXDI_RandomSamplerState rng,
-                                          inout RTXDI_RandomSamplerState coherentRng)
+// one RIS-sampled light at a lit vertex, without reuse. No geometry is a light before emissive triangles (M7): a BRDF
+// candidate would only spend a ray
+RTXDI_DIReservoir sampleLightsAt(RAB_Surface surface, GpuRtxdiConstants constants, inout RTXDI_RandomSamplerState rng,
+                                 inout RTXDI_RandomSamplerState coherentRng, out RAB_LightSample lightSample)
 {
-    if (gRtxdiBridge.lightCount == 0 || !surface.isLit)
-    {
-        return float3(0.0, 0.0, 0.0);
-    }
     RTXDI_DIInitialSamplingParameters sampling = constants.initialSampling;
     sampling.numBrdfSamples = 0;
-    RAB_LightSample lightSample;
-    const RTXDI_DIReservoir reservoir =
-        RTXDI_SampleLightsForSurface(rng, coherentRng, surface, sampling, constants.lightBuffer, lightSample);
+    return RTXDI_SampleLightsForSurface(rng, coherentRng, surface, sampling, constants.lightBuffer, lightSample);
+}
+
+// a sampled light's contribution with one visibility ray
+float3 shadeLightReservoir<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, RTXDI_DIReservoir reservoir,
+                                                 RAB_LightSample lightSample)
+{
     if (!RTXDI_IsValidDIReservoir(reservoir))
     {
         return float3(0.0, 0.0, 0.0);
@@ -55,6 +54,20 @@ float3 directLightAt<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, Gp
         return float3(0.0, 0.0, 0.0);
     }
     return shade * RTXDI_GetDIReservoirInvPdf(reservoir);
+}
+
+// one RIS-sampled light without reuse and one visibility ray
+float3 directLightAt<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, GpuRtxdiConstants constants,
+                                          inout RTXDI_RandomSamplerState rng,
+                                          inout RTXDI_RandomSamplerState coherentRng)
+{
+    if (gRtxdiBridge.lightCount == 0 || !surface.isLit)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    RAB_LightSample lightSample;
+    const RTXDI_DIReservoir reservoir = sampleLightsAt(surface, constants, rng, coherentRng, lightSample);
+    return shadeLightReservoir(surface, origin, reservoir, lightSample);
 }
 
 struct PathHit

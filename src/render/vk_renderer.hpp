@@ -61,8 +61,9 @@ public:
     uint32_t frameNumber = 0;
     // read once per recorded frame; the UI changes it between frames
     DebugViewSettings debugView;
-    // read once per recorded frame; a change resets ReSTIR GI and DLSS-RR history for one frame
-    IndirectMode indirectMode = IndirectMode::NrcRestirGi;
+    // read once per recorded frame; a change resets ReSTIR GI and DLSS-RR history for one frame. ReSTIR GI by
+    // default since 2026-11-20: NRC reads ~10% bright (considerations C-G5-3)
+    IndirectMode indirectMode = IndirectMode::RestirGi;
     // no NRC work this frame: ReSTIR GI mode, or ground-truth paths tracing the bounces the cache would answer
     [[nodiscard]] bool isNrcPaused() const noexcept
     {
@@ -187,7 +188,7 @@ private:
     // what decides the meaning of the indirect samples; a change between frames resets their history
     struct IndirectState
     {
-        IndirectMode mode = IndirectMode::NrcRestirGi;
+        IndirectMode mode = IndirectMode::RestirGi;
         bool isGiReference = false;
         bool isGroundTruthPaths = false;
 

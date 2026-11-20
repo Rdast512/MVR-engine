@@ -15,7 +15,7 @@ What every shader file is for, which pass runs it, and what it reads and writes.
 
 Target hardware is **NVIDIA RTX 20 and newer**, one code path (spec §1.2, §2).
 
-Legend: **[exists]** has real code today · **[stub]** placeholder file · **[new]** to be created · **[delete]** to be removed. Milestones (M0–M9, L1–L3) are the spec's §16.
+Legend: **[exists]** has real code today · **[stub]** placeholder file · **[new]** to be created · **[delete]** to be removed. Milestones (M0–M10, L1–L3) are the spec's §16.
 
 ---
 
@@ -213,8 +213,9 @@ The spec's §16. Each step renders something testable and is measured against sp
 | M4 | `raytracing/*`, `pathtrace_*` with SER, `nrc_bridge`, NRC path defines, `nrc_resolve`, `restir_gi`, `combine` | bounce light, NRC training loss falls, reorder on/off timings |
 | M6 | alpha-tested bin fragment; OMM flags in `trace` | cut-outs in raster and shadows, zero ray candidates |
 | M7 | `classify`, per-bin `resolve` execution set with overlap guard; emissive-triangle lights; `rtxdi_presample` | per-bin timings; Bistro emissives lit |
-| M8 | none (asset pipeline) | — |
-| M9 (1.0) | per-stage tuning against spec §2.3 | Bistro at target |
+| M8 | per-pass tuning from the frame profile; GI temporal reuse merged into `indirect` (O3); packed RTXDI surface guide (O4); NRC query heuristic if I5 confirms it | per-scope table before and after; GI check gated ([spec/m8](./m8/README.md)) |
+| M9 | none (asset pipeline) | — |
+| M10 (1.0) | per-stage tuning against spec §2.3 | Bistro at target |
 | L1–L3 (post-1.0) | LOD traversal kernels above `meshlet_cull` (node tree, `testForTraversal`, persistent traversal, reject nodes and groups); software raster into the vis buffer; RT LOD traversal and cluster BLAS builds | Bistro fully on cluster LOD (L3) |
 
 ---

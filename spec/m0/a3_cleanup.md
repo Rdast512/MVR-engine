@@ -59,7 +59,7 @@ signals the current slot fence after the offscreen submit.
 - C-M0-2 records one recreate for the scripted resize and 13 of 13 motion
   scenarios passing. C-M0-3 and C-M0-6 record the build and documentation fixes.
 - C-M0-5 tracks the full per-entity writes in `FrameData::write`. AU4 is the
-  optional GPU scene update. The loader split remains under M8.
+  optional GPU scene update. The loader split remains under M9.
 - C-M0-7 records the Debug `gltf_ktx2` assertion and UBSan reports on
   `SheenCloth`. Release converted the same asset. The exit is a clean Debug
   conversion of the glTF samples under sanitizers.

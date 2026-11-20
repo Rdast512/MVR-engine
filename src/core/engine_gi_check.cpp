@@ -21,8 +21,24 @@ void EngineGiCheck::applyPhase(RtxdiContext& rtxdi, IndirectMode& indirectMode) 
     indirectMode = info.mode;
     rtxdi.giReferenceBounces = info.referenceBounces;
     rtxdi.isGiReference = info.isGiReference;
-    rtxdi.giSettings =
-        info.isNvidiaDefaults ? RtxdiContext::defaultGiSettings() : RtxdiContext::convergedGiSettings();
+    switch (info.settings) {
+    case GiSettingsSource::Converged:
+        rtxdi.giSettings = RtxdiContext::convergedGiSettings();
+        break;
+    case GiSettingsSource::Shipped:
+        rtxdi.giSettings = RtxdiContext::defaultGiSettings();
+        break;
+    case GiSettingsSource::Nvidia:
+        rtxdi.giSettings = RtxdiContext::nvidiaGiSettings();
+        break;
+    case GiSettingsSource::ShippedSecondary:
+    case GiSettingsSource::ShippedClamp:
+    case GiSettingsSource::ShippedSecondaryClamp:
+        rtxdi.giSettings = RtxdiContext::defaultGiSettings();
+        rtxdi.giSettings.isSecondaryResamplingEnabled = info.settings != GiSettingsSource::ShippedClamp;
+        rtxdi.giSettings.isFireflyClampEnabled = info.settings != GiSettingsSource::ShippedSecondary;
+        break;
+    }
 }
 
 EngineGiCheck::Request EngineGiCheck::beginFrame(Camera& camera, RtxdiContext& rtxdi, IndirectMode& indirectMode,

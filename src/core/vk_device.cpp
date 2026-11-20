@@ -636,7 +636,7 @@ void Device::queryCapabilities()
     }
     capabilities.memoryDecompression = propertiesChain.get<vk::PhysicalDeviceMemoryDecompressionPropertiesEXT>();
     {
-        // M8 gdeflate uploads need GDEFLATE_1_0 here
+        // M9 gdeflate uploads need GDEFLATE_1_0 here
         const auto& decompression = capabilities.memoryDecompression;
         logInfo(std::format("Memory decompression: methods={} maxIndirectCount={}",
                              vk::to_string(decompression.decompressionMethods),

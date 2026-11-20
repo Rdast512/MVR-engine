@@ -180,7 +180,7 @@ Required since 2026-11-14 (engine spec §10.3); built 2026-11-14 (plan C4, step 
 - Global partition (moving instances parked, returned after 16 still frames): 0.19–0.21 ms in the same moving cases, so it was dropped.
 - `PREFER_FAST_BUILD` or no flags: no gain on moving frames; `PREFER_FAST_BUILD` raises still frames to 0.09–0.14 ms.
 - Grid density (~16, ~64, ~256 per cell): no consistent winner; ~64 kept.
-- Open: Bistro (M9; engine spec Q10), the 2060 Super, and the sample's near/far mode, which could bring the global partition back for far partitions.
+- Open: Bistro (M10; engine spec Q10), the 2060 Super, and the sample's near/far mode, which could bring the global partition back for far partitions.
 
 ---
 

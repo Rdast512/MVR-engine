@@ -472,8 +472,8 @@ What the target architecture adds to or removes from the resources above, by spe
 | M6 | OMM arrays per primitive (NVIDIA OMM SDK) with a per-cluster OMM index buffer, baked from the final cluster triangles | §7.1, §10.5 |
 | M7 | Material bin tile lists, counts and the per-pixel bin-id image; DGC compute execution set | §9.1–9.2 |
 | M7 | Emissive-triangle light list built on the GPU at load | §6.1, §11.2 |
-| M8 | Uploads through GDeflate pages in ReBAR staging, `vkCmdDecompressMemoryEXT` on a graphics or compute queue; host image copy only for first-load source images; KTX2 BC7 / BC5 produced automatically and cached; geometry cache per asset + processing version | §3, §6.4, §7.2 |
-| M8 | Geometry streams: octahedral snorm16 normal + packed tangent, half2 UV, vertex order by `meshopt_optimizeVertexFetchRemap` | §6.3 |
+| M9 | Uploads through GDeflate pages in ReBAR staging, `vkCmdDecompressMemoryEXT` on a graphics or compute queue; host image copy only for first-load source images; KTX2 BC7 / BC5 produced automatically and cached; geometry cache per asset + processing version | §3, §6.4, §7.2 |
+| M9 | Geometry streams: octahedral snorm16 normal + packed tangent, half2 UV, vertex order by `meshopt_optimizeVertexFetchRemap` | §6.3 |
 | L1–L3 (post-1.0) | Cluster DAG levels in the same model slices (`meshletRow` space grows), node tree + `TraversalMetric`, `generatingGroup` per cluster, fixed list capacities with clamping, per-frame cluster BLAS with sharing / merging / caching, all LOD levels' CLAS resident | §7.1, §10.3, §16.3 |
 
 The binding model (§1, model slices, frame root, handle-or-address) carries over unchanged.

@@ -185,7 +185,7 @@ RtxdiContext::Settings RtxdiContext::convergedSettings()
     return converged;
 }
 
-RtxdiContext::GiSettings RtxdiContext::defaultGiSettings()
+RtxdiContext::GiSettings RtxdiContext::nvidiaGiSettings()
 {
     const RTXDI_GITemporalResamplingParameters temporal = rtxdi::GetDefaultReSTIRGITemporalResamplingParams();
     const RTXDI_GISpatialResamplingParameters spatial = rtxdi::GetDefaultReSTIRGISpatialResamplingParams();
@@ -210,9 +210,20 @@ RtxdiContext::GiSettings RtxdiContext::defaultGiSettings()
     };
 }
 
+RtxdiContext::GiSettings RtxdiContext::defaultGiSettings()
+{
+    // Basic spatial correction darkens occluded places: -27% / -9% against the one-bounce ground truth in ReSTIR GI
+    // mode (considerations C-G5-2, spec/features/m8_optimization_and_fixes.md O1). The temporal pass's Basic
+    // correction does not; rays there cost 0.06 ms for nothing. History, age and boiling filter stay NVIDIA's:
+    // dropping all three, as RTXDI 3.1's DLSS-RR profile for ReSTIR PT does, lets fireflies through DLSS-RR
+    GiSettings settings = nvidiaGiSettings();
+    settings.spatialBiasCorrection = RTXDI_GIBiasCorrectionMode::Raytraced;
+    return settings;
+}
+
 RtxdiContext::GiSettings RtxdiContext::convergedGiSettings()
 {
-    GiSettings converged = defaultGiSettings();
+    GiSettings converged = nvidiaGiSettings();
     converged.temporalBiasCorrection = RTXDI_GIBiasCorrectionMode::Raytraced;
     converged.spatialBiasCorrection = RTXDI_GIBiasCorrectionMode::Raytraced;
     // keeping only reservoirs whose sample is young keeps the ones a bright candidate won recently: +5.6% on the
@@ -388,7 +399,8 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
         .giSpatialResampling = giContext->GetSpatialResamplingParameters(),
         .giFinalShading = giContext->GetFinalShadingParameters(),
         .giReferenceBounces = giReferenceBounces,
-        .pad0 = 0,
+        .giFlags = (giSettings.isSecondaryResamplingEnabled ? GiFlag::SecondaryResampling : 0u) |
+                   (giSettings.isFireflyClampEnabled ? GiFlag::FireflyClamp : 0u),
     };
     std::memcpy(constants[frameSlot].mapped, &data, sizeof(data));
 }

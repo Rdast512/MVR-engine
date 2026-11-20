@@ -550,7 +550,7 @@ namespace
         LAYOUT_FIELD(GpuRtxdiConstants, giSpatialResampling),
         LAYOUT_FIELD(GpuRtxdiConstants, giFinalShading),
         LAYOUT_FIELD(GpuRtxdiConstants, giReferenceBounces),
-        LAYOUT_FIELD(GpuRtxdiConstants, pad0),
+        LAYOUT_FIELD(GpuRtxdiConstants, giFlags),
     }};
 
     // textual mirror next to the NRC SDK's NrcConstants

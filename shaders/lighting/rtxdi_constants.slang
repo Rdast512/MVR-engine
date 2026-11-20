@@ -33,8 +33,12 @@ struct GpuRtxdiConstants
     RTXDI_GISpatialResamplingParameters giSpatialResampling;
     RTXDI_GIFinalShadingParameters giFinalShading;
     uint giReferenceBounces;  // bounces traced after X2 instead of the NRC cache term; 0: the cache term
-    uint pad0;
+    uint giFlags;             // kGiFlag* bits
 };
+
+// GiFlag in src/render/vk_rtxdi.hpp
+static const uint kGiFlagSecondaryResampling = 1u << 0;
+static const uint kGiFlagFireflyClamp = 1u << 1;
 
 // RtxdiContext::kGiInitialReservoirArray: the indirect pass's initial samples, after RTXDI's two arrays
 static const uint kGiInitialReservoirArray = 2;

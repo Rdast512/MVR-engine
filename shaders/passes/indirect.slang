@@ -1,6 +1,7 @@
 import types;
 import core.binding;
 import core.frame;
+import core.math;
 import geometry.hit;
 import material.brdf;
 import material.pbr;
@@ -8,6 +9,7 @@ import raytracing.trace;
 
 #include "lighting/rtxdi_bridge.slang"
 #include "lighting/path_shading.slang"
+#include "Rtxdi/DI/SpatialResampling.hlsli"
 #include "Rtxdi/GI/Reservoir.hlsli"
 #include "Rtxdi/Utils/RandomSamplerPerPassSeeds.hlsli"
 // NRC_QUERY=1 (CMakeLists.txt)
@@ -64,6 +66,66 @@ PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
     return bounce;
 }
 
+// RTXDI sample secondarySurfaceReSTIRDIParams with its Medium preset (radius 1 px, 1 sample made even for the
+// stratified walk, Basic); spec/features/m8_optimization_and_fixes.md O2
+RTXDI_DISpatialResamplingParameters secondaryResamplingParams(GpuRtxdiConstants constants)
+{
+    RTXDI_DISpatialResamplingParameters params = constants.spatialResampling;
+    params.numSamples = 2;
+    params.numDisocclusionBoostSamples = 0;
+    params.samplingRadius = 1.0;
+    params.biasCorrectionMode = RTXDI_BIAS_CORRECTION_BASIC;
+    params.depthThreshold = 0.1;
+    params.normalThreshold = 0.9;
+    params.enableMaterialSimilarityTest = 0;
+    params.discountNaiveSamples = 0;
+    params.targetHistoryLength = 0;
+    return params;
+}
+
+// X2's direct light; with kGiFlagSecondaryResampling the sampled light is resampled against this frame's final ReSTIR
+// DI reservoirs around X2's pixel when X2 is on screen, as the RTXDI sample's ShadeSecondarySurfaces
+float3 secondaryDirectLight(GpuFrameRoot root, RAB_Surface surface, HitOrigin origin, GpuRtxdiConstants constants,
+                            inout RTXDI_RandomSamplerState rng, inout RTXDI_RandomSamplerState coherentRng)
+{
+    if (gRtxdiBridge.lightCount == 0 || !surface.isLit)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    RAB_LightSample lightSample;
+    RTXDI_DIReservoir reservoir = sampleLightsAt(surface, constants, rng, coherentRng, lightSample);
+    if ((constants.giFlags & kGiFlagSecondaryResampling) != 0)
+    {
+        const GpuCameraData camera = loadCamera(root);
+        const float4 clip = mul(camera.viewProj, float4(surface.position, 1.0));
+        // the guides were rasterized jittered
+        const float2 ndc = clip.xy / max(clip.w, 1e-6) + camera.jitterOffset;
+        if (clip.w > 0.0 && all(abs(ndc) < 1.0))
+        {
+            const uint2 pixel = min(uint2((ndc * 0.5 + 0.5) * float2(gRtxdiBridge.renderSize)),
+                                    gRtxdiBridge.renderSize - 1);
+            // the neighbor tests compare view depths
+            RAB_Surface center = surface;
+            center.viewDepth = clip.w;
+            reservoir = RTXDI_DISpatialResampling(pixel, center, reservoir, rng, constants.runtime,
+                                                  constants.reservoirBuffer,
+                                                  constants.bufferIndices.shadingInputBufferIndex,
+                                                  secondaryResamplingParams(constants), lightSample);
+            if (RTXDI_IsValidDIReservoir(reservoir))
+            {
+                // the resampling may have taken a neighbor's light: evaluate it at X2
+                lightSample =
+                    RAB_SamplePolymorphicLight(RAB_LoadLightInfo(RTXDI_GetDIReservoirLightIndex(reservoir), false),
+                                               surface, RTXDI_GetDIReservoirSampleUV(reservoir));
+            }
+        }
+    }
+    return shadeLightReservoir(surface, origin, reservoir, lightSample);
+}
+
+// RTXDI sample c_MaxIndirectRadiance (10) as displayed luminance: scene luminance times last frame's exposure
+static const float kMaxSecondaryDisplayLuminance = 10.0;
+
 // the query sits on the path's first cache vertex: the termination heuristic is off in this pass's copy of the
 // constants (one ray per pixel, spec §11.3)
 NrcContext nrcQueryContext(GpuFrameRoot root, uint2 pixel)
@@ -111,7 +173,8 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
             RTXDI_SECONDARY_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
         HitOrigin origin;
         origin.hit = hit;
-        float3 radiance = secondary.emissive + directLightAt(secondary.surface, origin, constants, rng, coherentRng);
+        float3 radiance =
+            secondary.emissive + secondaryDirectLight(root, secondary.surface, origin, constants, rng, coherentRng);
         if (constants.giReferenceBounces > 0)
         {
             RTXDI_RandomSamplerState pathRng =
@@ -119,6 +182,17 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
             radiance += referencePathRadiance(root, secondary.surface, origin, constants.giReferenceBounces,
                                               length(ray.Origin - gRtxdiBridge.cameraPos) + hit.t, constants, pathRng,
                                               rng, coherentRng);
+        }
+        // biased firefly suppression (spec/features/m8_optimization_and_fixes.md O6)
+        if ((constants.giFlags & kGiFlagFireflyClamp) != 0)
+        {
+            const uint exposureIndex = bdaPtr<GpuTargets>(root.targets)[0].exposureStorage;
+            const float exposure = storageTex2D<float, kImageFormatR32f>(exposureIndex)[uint2(0, 0)];
+            const float displayed = luminance(radiance) * exposure;
+            if (displayed > kMaxSecondaryDisplayLuminance)
+            {
+                radiance *= kMaxSecondaryDisplayLuminance / displayed;
+            }
         }
         reservoir = RTXDI_MakeGIReservoir(secondary.surface.position, secondary.surface.geoNormal, radiance, pdf);
         // an unlit X2 reflects no light, so the cache has nothing to add

@@ -970,7 +970,7 @@ void EngineUi::drawRayTracingPanel()
         rtxdi.giReferenceBounces = 0;
         dlss.settings = {};
         context.renderer.getNrc().settings = {};
-        context.renderer.indirectMode = IndirectMode::NrcRestirGi;
+        context.renderer.indirectMode = IndirectMode::RestirGi;
     }
 
     ImGui::SeparatorText("Indirect (M4)");
@@ -985,9 +985,9 @@ void EngineUi::drawRayTracingPanel()
         }
         ImGui::EndCombo();
     }
-    ImGui::SetItemTooltip("NRC + ReSTIR GI ships on both tiers, the others are for A/B measurement. NRC: the cache "
-                          "samples without reuse. ReSTIR GI: one bounce, NRC paused. A switch resets ReSTIR GI and "
-                          "DLSS-RR history");
+    ImGui::SetItemTooltip("ReSTIR GI (one bounce, NRC paused) ships on both tiers, the others are for A/B "
+                          "measurement. NRC: the cache samples without reuse. A switch resets ReSTIR GI and DLSS-RR "
+                          "history");
     // spec/m4/g3_nrc.md
     NrcCache& nrcCache = context.renderer.getNrc();
     NrcCache::Settings& nrc = nrcCache.settings;
@@ -1050,8 +1050,18 @@ void EngineUi::drawRayTracingPanel()
     ImGui::SameLine();
     ImGui::Checkbox("Final MIS", &gi.isFinalMisEnabled);
     ImGui::SetItemTooltip("blend in the pixel's own initial sample where its BRDF lobe is glossy");
-    if (ImGui::Button("NVIDIA defaults##gi")) {
+    ImGui::Checkbox("Secondary DI resampling", &gi.isSecondaryResamplingEnabled);
+    ImGui::SetItemTooltip("X2's light reuses this frame's ReSTIR DI reservoirs where X2 is on screen");
+    ImGui::SameLine();
+    ImGui::Checkbox("Firefly clamp", &gi.isFireflyClampEnabled);
+    ImGui::SetItemTooltip("clamps X2's radiance in display units; biased");
+    if (ImGui::Button("Defaults##gi")) {
         gi = RtxdiContext::defaultGiSettings();
+    }
+    ImGui::SetItemTooltip("shipped: NVIDIA's with ray-traced spatial bias correction");
+    ImGui::SameLine();
+    if (ImGui::Button("NVIDIA defaults##gi")) {
+        gi = RtxdiContext::nvidiaGiSettings();
     }
     ImGui::SetItemTooltip("the RTXDI sample's ReSTIR GI settings (the library defaults)");
     ImGui::SameLine();

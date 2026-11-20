@@ -56,8 +56,15 @@ struct GpuRtxdiConstants {
     RTXDI_GIFinalShadingParameters giFinalShading;
     // bounces traced after X2 instead of the NRC cache term; 0: the cache term (spec §14 ground truth)
     uint32_t giReferenceBounces;
-    uint32_t pad0;
+    // GiFlag bits
+    uint32_t giFlags;
 };
+// GpuRtxdiConstants::giFlags; mirrored in shaders/lighting/rtxdi_constants.slang
+namespace GiFlag
+{
+    inline constexpr uint32_t SecondaryResampling = 1u << 0;
+    inline constexpr uint32_t FireflyClamp = 1u << 1;
+} // namespace GiFlag
 static_assert(sizeof(GpuRtxdiConstants) == 496);
 static_assert(offsetof(GpuRtxdiConstants, reservoirs) == 304);
 static_assert(offsetof(GpuRtxdiConstants, giReservoirBuffer) == 328);
@@ -145,6 +152,11 @@ public:
         bool isFinalVisibilityEnabled = false;
         // the final sample and the pixel's initial sample, weighted by how glossy their BRDF lobes are
         bool isFinalMisEnabled = false;
+        // X2's light resampled from this frame's DI reservoirs where X2 is on screen (RTXDI sample
+        // enableSecondaryResampling; spec/features/m8_optimization_and_fixes.md O2)
+        bool isSecondaryResamplingEnabled = false;
+        // X2's radiance clamped in display units (RTXDI sample c_MaxIndirectRadiance; O6); biased
+        bool isFireflyClampEnabled = false;
 
         bool operator==(const GiSettings&) const = default;
     };
@@ -152,6 +164,8 @@ public:
     // the RTXDI sample's default Medium preset (spec/features/rtxdi_3_2_update.md §3.3)
     [[nodiscard]] static Settings defaultSettings();
     // the RTXDI sample's ReSTIR GI settings: the library defaults, temporal and spatial (spec/m4/g5_restir_gi.md §1)
+    [[nodiscard]] static GiSettings nvidiaGiSettings();
+    // shipped: NVIDIA's with ray-traced spatial bias correction (spec/features/m8_optimization_and_fixes.md O1)
     [[nodiscard]] static GiSettings defaultGiSettings();
     // the GI check's ReSTIR GI configuration (spec/m4/g5_restir_gi.md §3): bias correction with rays; no sample age
     // limit, fallback, permutation or boiling filter

@@ -2,7 +2,7 @@
 
 **Status** — Built. A1 landed on 2026-11-08. Layout reflection followed on 2026-11-13.\
 **Implements** — PBR A1 and §4.2. Engine spec §6.2 and §16.2.\
-**Used by** — M1 resolve, M2 hit decode, M3 lighting, M4 G1, M6 OMM and M8 decompression.\
+**Used by** — M1 resolve, M2 hit decode, M3 lighting, M4 G1, M6 OMM and M9 decompression.\
 [PBR plan](../pbr_implementation_plan.md) · [Engine spec](../../docs/engine_spec.md)
 
 ## Shared layout
@@ -42,7 +42,7 @@ reflection in sync when a later milestone adds a field.
 `Device` caches opacity-micromap and invocation-reorder properties in
 `HardwareCapabilities`. Startup logs report the SER reorder hint and maximum
 SBT record index, and the decompression method mask and maximum indirect count.
-M4 G1, M6 and M8 own the uses of these queried values.
+M4 G1, M6 and M9 own the uses of these queried values.
 [Device initialization](../../src/core/vk_device.cpp) · [M4 G1](../m4/g1_ser_rt_pipeline.md)
 
 ## Decisions and data flow
