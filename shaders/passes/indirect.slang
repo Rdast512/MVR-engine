@@ -124,7 +124,7 @@ float3 secondaryDirectLight(GpuFrameRoot root, RAB_Surface surface, HitOrigin or
 }
 
 // RTXDI sample c_MaxIndirectRadiance (10) as displayed luminance: scene luminance times last frame's exposure
-static const float kMaxSecondaryDisplayLuminance = 10.0;
+static const float kMaxIndirectRadiance = 10.0;
 
 // the query sits on the path's first cache vertex: the termination heuristic is off in this pass's copy of the
 // constants (one ray per pixel, spec §11.3)
@@ -183,15 +183,13 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
                                               length(ray.Origin - gRtxdiBridge.cameraPos) + hit.t, constants, pathRng,
                                               rng, coherentRng);
         }
-        // biased firefly suppression (spec/features/m8_optimization_and_fixes.md O6)
+        // scene-unit firefly suppression (m8 O6)
         if ((constants.giFlags & kGiFlagFireflyClamp) != 0)
         {
-            const uint exposureIndex = bdaPtr<GpuTargets>(root.targets)[0].exposureStorage;
-            const float exposure = storageTex2D<float, kImageFormatR32f>(exposureIndex)[uint2(0, 0)];
-            const float displayed = luminance(radiance) * exposure;
-            if (displayed > kMaxSecondaryDisplayLuminance)
+            const float secondaryLuminance = luminance(radiance);
+            if (secondaryLuminance > kMaxIndirectRadiance)
             {
-                radiance *= kMaxSecondaryDisplayLuminance / displayed;
+                radiance *= kMaxIndirectRadiance / secondaryLuminance;
             }
         }
         reservoir = RTXDI_MakeGIReservoir(secondary.surface.position, secondary.surface.geoNormal, radiance, pdf);

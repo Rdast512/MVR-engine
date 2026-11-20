@@ -1,6 +1,6 @@
 # M3 · H2 — Exposure, tonemap and present
 
-**Status** — Built and checked on 2026-11-14.\
+**Status** — Built on 2026-11-14. Metering updated by the [dark-area exposure fix](../fixesM1-6/auto_exposure_dark_boiling.md).\
 **Implements** — PBR H2 and engine spec §12.3.\
 **Depends on** — [H1 reconstruction](h1_dlss_ray_reconstruction.md) and [M1 present](../m1/v4_v5_visibility_raster.md).
 [PBR plan](../pbr_implementation_plan.md) · [Considerations C-H2-1–3](../considerations.md)
@@ -8,32 +8,33 @@
 ## Lit post chain
 
 1. `exposureHistogramMain` builds a 256-bin log-luminance histogram of the
-   display-resolution RR output over the 2⁻¹⁶ to 2¹⁶ range. Bin 0 tracks
-   black and is excluded from metering.
+   display-resolution RR output over the 2⁻¹² to 2¹² range. It includes
+   black in bin 0 and splits finite samples between adjacent bins in
+   fixed point.
 2. `exposureAdaptMain` reads and clears the histogram. It meters the
    40th–95th percentiles toward 0.18 with exposure compensation and EV
-   bounds. It adapts in log space with `1 − exp(−dt × rate)`. Manual
-   exposure and snap requests jump to the target, and automatic exposure
-   keeps its current value on an all-black frame.
+   bounds, with a default maximum of +6 EV. Each frame keeps
+   `exp2(−dt × speed)` of the existing EV gap. The default speed is 2
+   when metered luminance rises and 1 when it falls. Manual exposure
+   and snap requests apply the target immediately. If no pixels are
+   finite, automatic exposure holds the current value inside the EV range.
 3. `postMain` applies exposure and one ACES fitted curve into a linear
    display-resolution RGBA16F target. Present samples that target into
    the sRGB swapchain and renders ImGui. Debug views keep their own
    render-resolution display path.
 
 `PostProcess` writes the 1×1 R32F exposure image and per-slot readback
-statistics for the UI. The current post pass uses this frame's value.
-NGX uses the previous frame's value and leaves pre-exposure at 1.
-Resize initializes exposure and requests a snap. C-H2-1 tracks HDR
-input headroom, C-H2-2 tracks the one-frame exposure delay, and C-H2-3
-tracks the meter's black-pixel exclusion.
+statistics for the UI. Tonemapping uses this frame's exposure. NGX
+receives scene-linear input with unity pre-exposure. Resize initializes
+exposure and requests a snap.
 [Post host](../../src/render/vk_post.cpp) · [Exposure shader](../../shaders/passes/exposure.slang) · [Tonemap](../../shaders/passes/post.slang) · [Present](../../shaders/passes/present.slang)
 
 ## Exposure math and data dependencies
 
 Each 16×16 group builds a local histogram and merges nonzero bins
 into the global buffer. One 256-lane reduction group copies and
-clears those bins, then evaluates the weighted overlap of each lit
-bin with the 40th–95th percentile interval. Use the bin-center log
+clears those bins, then evaluates the weighted overlap of each
+bin with the 40th–95th percentile interval. Use each bin's log
 luminance for the mean. The automatic target in EV is
 `clamp(log2(0.18) − meanLog2 + compensationEv, minEv, maxEv)`.
 Manual mode uses the clamped manual EV. Adapt from a valid prior
@@ -43,13 +44,11 @@ value in log space, then exponentiate for the exposure texture.
 |---|---|
 | H1 to histogram | RR output must be readable before histogram sampling. Previous histogram clear must be complete. |
 | Histogram to adapt | Global bin updates are visible before the reduction reads and clears them. |
-| Adapt to tonemap | New R32F exposure is visible to this frame's post pass. A following H1 evaluation uses it as the previous exposure. |
+| Adapt to tonemap | New R32F exposure is visible to this frame's post pass and becomes the next frame's adaptation history. |
 | Tonemap to present and telemetry | Linear post color becomes fragment-readable for sRGB presentation. Exposure readback receives a compute-to-host dependency and is collected after the slot wait. |
 
-C-H2-1 tracks FP16 headroom because the HDR input still uses scalar
-pre-exposure 1. C-H2-2 records the previous-frame feedback. C-H2-3
-tracks the meter ignoring sub-threshold black. These are separate
-from the visible sRGB encode done by the swapchain.
+C-H2-1 tracks FP16 headroom because the HDR input uses unity pre-exposure.
+C-H2-2 and C-H2-3 record the exposure feedback and black-pixel fixes.
 [Meter shader](../../shaders/passes/exposure.slang) · [Recording barriers](../../src/render/vk_post.cpp)
 
 ## Tasks and recorded results

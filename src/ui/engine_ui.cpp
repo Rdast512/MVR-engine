@@ -1125,16 +1125,18 @@ void EngineUi::drawPostPanel()
     const GpuExposureReadback& exposure = post.getLastExposure();
     ImGui::Text("Exposure %.3g (%+.2f EV), target %.3g", exposure.exposure,
                 exposure.exposure > 0.0f ? std::log2(exposure.exposure) : 0.0f, exposure.targetExposure);
-    ImGui::Text("Average luminance %.3g over %u lit pixels", exposure.averageLuminance, exposure.pixels);
+    ImGui::Text("Average luminance %.3g from %u metered pixels", exposure.averageLuminance, exposure.pixels);
     ImGui::Checkbox("Auto exposure", &settings.isAutoExposure);
-    ImGui::SetItemTooltip("middle grey over the mean log luminance between the 40th and 95th percentile of the "
-                          "non-black pixels");
+    ImGui::SetItemTooltip("targets middle grey using the 40th to 95th luminance percentiles, including black pixels");
     if (settings.isAutoExposure) {
         ImGui::SliderFloat("Compensation", &settings.compensationEv, -8.0f, 8.0f, "%+.1f EV",
                            ImGuiSliderFlags_AlwaysClamp);
-        ImGui::SliderFloat("Adaptation rate", &settings.adaptationRate, 0.1f, 10.0f, "%.1f /s",
+        ImGui::SliderFloat("Light adaptation", &settings.adaptationSpeedUp, 0.1f, 10.0f, "%.1f /s",
                            ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-        ImGui::SetItemTooltip("the exposure closes 63%% of its gap to the target in 1 / rate seconds");
+        ImGui::SetItemTooltip("halves the EV gap in 1 / speed seconds as the scene gets brighter");
+        ImGui::SliderFloat("Dark adaptation", &settings.adaptationSpeedDown, 0.1f, 10.0f, "%.1f /s",
+                           ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("halves the EV gap in 1 / speed seconds as the scene gets darker");
     } else {
         ImGui::SliderFloat("Exposure", &settings.manualEv, settings.minEv, settings.maxEv, "%+.1f EV",
                            ImGuiSliderFlags_AlwaysClamp);

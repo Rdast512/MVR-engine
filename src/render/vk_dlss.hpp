@@ -12,8 +12,8 @@ struct NVSDK_NGX_Handle;
 struct NVSDK_NGX_Parameter;
 
 // DLSS Ray Reconstruction through NGX (PBR plan H1, engine spec §12.1): the DLSSD feature at the render size of the
-// chosen quality mode (Quality by default), HW reverse-Z depth, packed normal + roughness, HDR color with the engine's
-// exposure (H2). Required: a GPU or driver without RR throws at construction
+// chosen quality mode (Quality by default), HW reverse-Z depth, packed normal + roughness and scene-linear HDR color.
+// Required: a GPU or driver without RR throws at construction
 class Dlss
 {
 public:
@@ -61,8 +61,6 @@ public:
         Image normalRoughness;
         // display resolution, written
         Image output;
-        // 1x1 R32F: the exposure scale post applies before the tonemap
-        Image exposure;
         // render pixels, the offset the raster added to every vertex (y down)
         glm::vec2 jitterPixels{0.0f};
         // unjittered

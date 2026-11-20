@@ -284,7 +284,7 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
     initialize(*noisyColorTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*upscaledTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*postTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
-    // exposure 1 until the first exposure pass: DLSS-RR reads it before that pass writes it
+    // initialize the adaptation history to unity
     transitionImageLayout(&cmd, *exposureTarget.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
                           {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}, VK_QUEUE_FAMILY_IGNORED,
                           VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eNone,

@@ -390,9 +390,9 @@ namespace
             LAYOUT_FIELD(ExposurePushData, manualEv),
             LAYOUT_FIELD(ExposurePushData, minEv),
             LAYOUT_FIELD(ExposurePushData, maxEv),
-            LAYOUT_FIELD(ExposurePushData, adaptationRate),
+            LAYOUT_FIELD(ExposurePushData, adaptationSpeedUp),
+            LAYOUT_FIELD(ExposurePushData, adaptationSpeedDown),
             LAYOUT_FIELD(ExposurePushData, flags),
-            LAYOUT_FIELD(ExposurePushData, pad0),
         }},
         {"MotionCheckPushData", sizeof(MotionCheckPushData), {
             LAYOUT_FIELD(MotionCheckPushData, frameRoot),

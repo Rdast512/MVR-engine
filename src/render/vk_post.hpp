@@ -13,7 +13,7 @@ class ShaderObjects;
 
 // PBR plan H2, engine spec §12.3: auto exposure from a luminance histogram of the DLSS-RR output, then one tonemap
 // curve into the display-resolution post target that present shows. The exposure lives in a 1x1 R32F image
-// (RenderTargets), which the next frame's DLSS-RR evaluation also reads
+// (RenderTargets), shared by adaptation and tonemapping
 class PostProcess
 {
 public:
@@ -26,9 +26,10 @@ public:
         float manualEv = 0.0f;
         // clamp of log2(exposure scale)
         float minEv = -24.0f;
-        float maxEv = 16.0f;
-        // 1/s: the exposure closes 1 - e^-1 of its gap to the target in 1 / rate seconds
-        float adaptationRate = 1.5f;
+        float maxEv = 6.0f;
+        // inverse half-lives for rising and falling metered luminance
+        float adaptationSpeedUp = 2.0f;
+        float adaptationSpeedDown = 1.0f;
 
         bool operator==(const Settings&) const = default;
     };
@@ -55,7 +56,7 @@ public:
 private:
     const VkAllocator& allocator;
     const ShaderObjects& shaderObjects;
-    // uint[kExposureHistogramBins]; the exposure pass clears it after reading
+    // two 32-bit words per weighted bin, cleared by the exposure pass
     HostBuffer histogram;
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> readbacks;
     std::array<bool, MAX_FRAMES_IN_FLIGHT> isReadbackPending{};

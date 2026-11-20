@@ -128,7 +128,7 @@ static_assert(sizeof(SerCheckPushData) == 16);
 // passes/exposure.slang (both entries); must match shaders/types.slang ExposurePushData
 struct ExposurePushData {
     vk::DeviceAddress frameRoot;
-    // uint[kExposureHistogramBins]
+    // uint2[kExposureHistogramBins]
     vk::DeviceAddress histogram;
     // GpuExposureReadback of the frame slot
     vk::DeviceAddress readback;
@@ -137,13 +137,15 @@ struct ExposurePushData {
     float manualEv;
     float minEv;
     float maxEv;
-    float adaptationRate;
+    float adaptationSpeedUp;
+    float adaptationSpeedDown;
     uint32_t flags; // ExposureFlag
-    uint32_t pad0;
 };
 
 static_assert(std::is_trivially_copyable_v<ExposurePushData>);
 static_assert(offsetof(ExposurePushData, deltaSeconds) == 24);
+static_assert(offsetof(ExposurePushData, adaptationSpeedUp) == 44);
+static_assert(offsetof(ExposurePushData, flags) == 52);
 static_assert(sizeof(ExposurePushData) == 56);
 
 // ExposurePushData::flags; must match shaders/types.slang kExposureFlag*

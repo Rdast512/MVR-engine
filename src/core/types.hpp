@@ -943,11 +943,10 @@ struct GpuGuideSet
 };
 static_assert(sizeof(GpuGuideSet) == 64);
 
-// render-resolution targets of one frame, reached from GpuFrameRoot::targets
-// passes/exposure.slang's log2-luminance histogram; bin 0 holds black pixels, which do not count
+// passes/exposure.slang's log2-luminance histogram, including black in bin 0
 inline constexpr uint32_t kExposureHistogramBins = 256;
-inline constexpr float kExposureMinLog2 = -16.0f;
-inline constexpr float kExposureLog2Range = 32.0f;
+inline constexpr float kExposureMinLog2 = -12.0f;
+inline constexpr float kExposureLog2Range = 24.0f;
 
 // written by passes/exposure.slang each frame it runs; read by the CPU after the slot's fence
 struct GpuExposureReadback
@@ -956,13 +955,15 @@ struct GpuExposureReadback
     float exposure = 0.0f;
     // where the adaptation is heading
     float targetExposure = 0.0f;
-    // the histogram's trimmed mean; 0 when every pixel is black
+    // the histogram's trimmed geometric mean; 0 when no pixel was metered
     float averageLuminance = 0.0f;
-    // non-black pixels in the histogram
+    // finite pixels in the histogram
     uint32_t pixels = 0;
 };
 static_assert(sizeof(GpuExposureReadback) == 16);
+static_assert(offsetof(GpuExposureReadback, pixels) == 12);
 
+// render-resolution targets of one frame, reached from GpuFrameRoot::targets
 struct GpuTargets
 {
     // sampled R32_UINT, eShaderReadOnlyOptimal after the late raster
@@ -995,7 +996,7 @@ struct GpuTargets
     uint32_t upscaledSampled = 0;
     // RGBA16F display resolution, written by passes/post.slang: tonemapped, linear [0, 1]
     uint32_t postStorage = 0;
-    // R32F 1x1: the exposure scale, written by passes/exposure.slang, read by passes/post.slang and DLSS-RR
+    // R32F 1x1: the exposure scale for adaptation and tonemapping
     uint32_t exposureStorage = 0;
     glm::uvec2 displaySize{0};
 };
@@ -1094,7 +1095,7 @@ struct GpuFrameRoot
     // GpuNrcConstants of this frame slot (M4 G3)
     vk::DeviceAddress cacheConstants = 0;
     uint32_t frameIndex = 0;
-    // 1: the exposure reaches post and DLSS-RR as an image (considerations C-H2-1)
+    // 1: scene-linear color uses unity pre-exposure (considerations C-H2-1)
     float exposure = 1.0f;
     // GpuLight[lightCount] in world space, written this frame on the async compute queue (WorldLights)
     vk::DeviceAddress worldLights = 0;

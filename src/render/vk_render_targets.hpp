@@ -69,8 +69,6 @@ public:
     [[nodiscard]] ImageRef upscaled() const { return imageRef(upscaledTarget, kUpscaledFormat); }
     // display resolution, eGeneral: tonemapped, what Lit presents
     [[nodiscard]] ImageRef post() const { return imageRef(postTarget, kPostFormat); }
-    // 1x1, eGeneral: the exposure scale, 1 after each recreate
-    [[nodiscard]] ImageRef exposure() const { return imageRef(exposureTarget, kExposureFormat); }
     // the slot's GpuTargets, for the frame root
     [[nodiscard]] vk::DeviceAddress targetsAddress(uint32_t frameSlot) const noexcept
     {

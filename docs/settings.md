@@ -131,7 +131,7 @@ Re-measure after M4 (GI) and M6 (OMM). With soft indirect light the NVIDIA defau
 
 - RR is evaluated only in the `Lit` view, and only when the scene has lights. Debug views bypass RR and are not jittered.
 - RR expects ReSTIR-style noise. It flickers more on a noise-free input (§3.4), so judge RTXDI settings on the `Lit` view, not only on `Direct lighting`.
-- RR reads the last post pass's exposure as an input; its color input is not pre-exposed. Very high sun illuminance can overflow that RGBA16F input (considerations C-H2-1).
+- RR receives scene-linear RGBA16F color with unity pre-exposure. Exposure is applied in post. Very high sun illuminance can overflow the RGBA16F input (considerations C-H2-1).
 
 ---
 
@@ -179,7 +179,7 @@ The `ReSTIR GI` part of the `Indirect (M4)` section. Defaults (`RtxdiContext::de
 | Boiling filter | on, 0.2 | off | suppresses reservoirs far brighter than their 8×8 group |
 | Final visibility, final MIS | on, on | on, on | reconnection ray; blend with the pixel's own sample on glossy lobes |
 | Secondary DI resampling | off | off | X₂'s light reuses this frame's ReSTIR DI reservoirs where X₂ is on screen (the RTXDI sample's `ShadeSecondarySurfaces`). With one light it only darkens: −23% in the courtyard, as the DI visibility shortcut keeps M for shadowed samples ([m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md) §2.6, O2) |
-| Firefly clamp | off | off | clamps X₂'s radiance to display luminance 10 / exposure (the sample's `c_MaxIndirectRadiance`); biased, no measurable effect on Sponza (§2.6, O6) |
+| Firefly clamp | off | off | caps X₂'s luminance at 10 in scene units, matching the RTXDI sample's `c_MaxIndirectRadiance` |
 
 - **Ground-truth paths:** trace 8 bounces after X2 instead of querying NRC, which pauses. With `Reference (no reuse)` on as well, the `Indirect radiance` view is the ground truth, one sample per frame.
 - **Cost** (gallery, 1280×720 window (853×480 render, DLSS-RR Quality), shipped defaults, 2026-11-20 ABBA): temporal 0.11 ms, shade 0.41–0.42 ms (0.26–0.27 ms with NVIDIA's Basic spatial correction).

@@ -616,16 +616,16 @@ public static const uint kExposureFlagSnap = 1u << 1;
 public struct ExposurePushData
 {
     public uint64_t frameRoot;
-    public uint64_t histogram; // uint[kExposureHistogramBins]
+    public uint64_t histogram; // uint2[kExposureHistogramBins]
     public uint64_t readback;  // GpuExposureReadback
     public float deltaSeconds;
     public float compensationEv;
     public float manualEv;
     public float minEv;
     public float maxEv;
-    public float adaptationRate;
+    public float adaptationSpeedUp;
+    public float adaptationSpeedDown;
     public uint flags; // kExposureFlag*
-    public uint pad0;
 };
 
 public struct PresentPushData
@@ -693,22 +693,22 @@ public struct GpuTargets
     public uint presentSampled; // present's source: the post target for Lit, else the display image
     public uint upscaledSampled; // RGBA16F DLSS-RR output, linear HDR
     public uint postStorage;     // RGBA16F, display resolution: tonemapped, linear [0, 1]
-    public uint exposureStorage; // R32F 1x1: the exposure scale (exposure pass; read by post and DLSS-RR)
+    public uint exposureStorage; // R32F 1x1: the exposure scale for adaptation and tonemapping
     public uint2 displaySize;
 };
 
-// exposure histogram: bin 0 holds black pixels, bins 1.. cover kExposureMinLog2 + [0, kExposureLog2Range)
+// exposure histogram: bin 0 includes black, bin 255 is the ceiling
 public static const uint kExposureHistogramBins = 256u;
-public static const float kExposureMinLog2 = -16.0;
-public static const float kExposureLog2Range = 32.0;
+public static const float kExposureMinLog2 = -12.0;
+public static const float kExposureLog2Range = 24.0;
 
 // 16 B, matches src/core/types.hpp
 public struct GpuExposureReadback
 {
     public float exposure;         // scale applied before the tonemap
     public float targetExposure;   // where the adaptation is heading
-    public float averageLuminance; // trimmed mean of the histogram; 0 when every pixel is black
-    public uint pixels;            // non-black pixels
+    public float averageLuminance; // trimmed geometric mean; 0 when no pixel was metered
+    public uint pixels;            // finite metered pixels
 };
 
 // [InstanceIndex()] of a TLAS instance; written by the CPU per scene layout (RayTracingScene)
@@ -763,7 +763,7 @@ public struct GpuFrameRoot
     public uint64_t rtxdiConstants; // 0 until M3
     public uint64_t cacheConstants; // GpuNrcConstants of this frame slot (M4 G3)
     public uint frameIndex;
-    public float exposure;          // 1: the exposure reaches post and DLSS-RR as an image (considerations C-H2-1)
+    public float exposure;          // 1: scene-linear color uses unity pre-exposure (considerations C-H2-1)
     public uint64_t worldLights;    // GpuLight[lightCount], world space, written this frame (loadWorldLight)
     public uint64_t prevWorldLights; // last frame's worldLights, same rows; 0 on a history reset
     public uint64_t rayDebug;        // GpuRayDebugCounters of this frame slot; 0 unless kDebugRays

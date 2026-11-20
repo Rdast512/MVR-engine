@@ -529,9 +529,9 @@ Default decision (2026-11-20, user): ReSTIR GI on both tiers. NRC reads ~10% bri
 
 ### 12.1 DLSS Ray Reconstruction
 
-NGX directly (not Streamline), `DLSSD` feature, HW depth, packed roughness, HDR input, pre-exposure. Inputs: `noisyColor`, depth, motion, diffuse/specular albedo, normal+roughness, jitter (PBR plan H1); `specHitDistance` only as the optional input of §9.3. Output: display-resolution RGBA16F. Required: missing RR throws at init.
+NGX directly (not Streamline), `DLSSD` feature, HW depth, packed roughness and scene-linear HDR input. Inputs: `noisyColor`, depth, motion, diffuse/specular albedo, normal+roughness, jitter (PBR plan H1); `specHitDistance` only as the optional input of §9.3. Output: display-resolution RGBA16F. Required: missing RR throws at init.
 
-**As built (PBR H1, 2026-11-14):** `Dlss` creates the feature at the Quality render resolution (853×480 for a 1280×720 window) and evaluates it in the ray submit for the Lit view, in a command buffer of its own since 2026-11-18 (considerations C-G3-6). The exposure comes from post (§12.3) as a 1×1 exposure texture; the color is not pre-exposed (considerations C-H2-1). NGX's kernels need the driver-managed descriptor heap, so an empty legacy descriptor set is bound before each evaluation (considerations C-H1-1). 1.14 ms on the RTX 5070 at that size.
+**As built:** `Dlss` creates the feature at the Quality render resolution (853×480 for a 1280×720 window) and evaluates it in the ray submit for the Lit view, in a command buffer of its own since 2026-11-18 (considerations C-G3-6). RR uses unity pre-exposure with NGX auto exposure disabled. Post applies the exposure after reconstruction (§12.3, considerations C-H2-2). NGX's kernels need the driver-managed descriptor heap, so an empty legacy descriptor set is bound before each evaluation (considerations C-H1-1). 1.14 ms on the RTX 5070 at that size.
 
 ### 12.2 Jitter and resolution
 
@@ -550,7 +550,7 @@ Culling and jitter (§8.1 A8, as in `vk_lod_clusters`): frustum, Hi-Z and the LO
 
 Auto exposure from a luminance histogram (compute) → tonemap (ACES fitted or AgX; one curve, applied once) → swapchain → ImGui. No bloom or other effects in the baseline.
 
-**As built (PBR H2, 2026-11-14):** `PostProcess` runs three compute passes after the DLSS-RR evaluation, for the Lit view only. A 256-bin log2-luminance histogram of the RR output (black pixels in their own bin, not metered) is followed by one group that averages the 40th–95th percentile, aims it at 0.18 and adapts in log space (`1 − e^(−dt·rate)`, 1.5/s by default). The result goes into a 1×1 R32F exposure image. `post` then applies the exposure and ACES (Hill's fit), the only tonemap in the frame, into a display-resolution RGBA16F post target, which `present` draws into the sRGB swapchain. DLSS-RR reads the same exposure image, one frame old (considerations C-H2-2). The Post panel sets compensation, adaptation rate, an EV range and a manual exposure, and can snap to the target; a resize snaps too. 0.030 ms on the 5070 at 1280×720.
+**As built:** `PostProcess` runs three compute passes after DLSS-RR, for the Lit view only. The 256-bin histogram meters finite pixels over −12 to +12 log2 luminance. Black pixels count in the first bin. Six fractional bits split each pixel's weight between adjacent bins. The adaptation pass computes the 40th–95th percentile geometric mean, targets 0.18 and smooths exposure in EV. By default the EV gap halves in 0.5 seconds as the scene brightens and in 1 second as it darkens. The default upper bound is +6 EV. `post` reads the 1×1 R32F exposure and applies ACES (Hill's fit) into the display-resolution RGBA16F target. `present` draws that target into the sRGB swapchain. The Post panel controls exposure compensation, both adaptation speeds, the EV range and manual exposure. A resize or snap request applies the target immediately.
 
 ### 12.4 Transparency
 

@@ -941,7 +941,6 @@ const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::Co
         .specularAlbedo = toDlss(targets.guide(frameNumber, GuideImage::SpecAlbedo)),
         .normalRoughness = toDlss(targets.guide(frameNumber, GuideImage::NormalRoughness)),
         .output = toDlss(targets.upscaled()),
-        .exposure = toDlss(targets.exposure()),
         // NDC units, y down like pixels
         .jitterPixels = cameraData.jitterOffset * 0.5f * glm::vec2(renderExtent.width, renderExtent.height),
         .view = cameraData.view,

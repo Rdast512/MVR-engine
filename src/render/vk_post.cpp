@@ -30,9 +30,10 @@ PostProcess::PostProcess(const Device& device, const VkAllocator& allocator, con
     allocator(allocator), shaderObjects(shaderObjects)
 {
     // host-visible VRAM (ReBAR): zeroed once here, then cleared by the exposure pass
-    histogram = createHostBuffer(kExposureHistogramBins * sizeof(uint32_t), allocator.allocator, device.vkdevice,
-                                 device.queueFamilyIndices, "ExposureHistogram", nullptr);
-    std::memset(histogram.mapped, 0, kExposureHistogramBins * sizeof(uint32_t));
+    constexpr auto histogramBytes = kExposureHistogramBins * sizeof(uint64_t);
+    histogram = createHostBuffer(histogramBytes, allocator.allocator, device.vkdevice, device.queueFamilyIndices,
+                                 "ExposureHistogram", nullptr);
+    std::memset(histogram.mapped, 0, histogramBytes);
     for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
         readbacks[slot] = createHostBuffer(sizeof(GpuExposureReadback), allocator.allocator, device.vkdevice,
                                            device.queueFamilyIndices, std::format("ExposureReadback_{}", slot),
@@ -65,9 +66,9 @@ void PostProcess::record(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot,
         .manualEv = settings.manualEv,
         .minEv = settings.minEv,
         .maxEv = settings.maxEv,
-        .adaptationRate = settings.adaptationRate,
+        .adaptationSpeedUp = settings.adaptationSpeedUp,
+        .adaptationSpeedDown = settings.adaptationSpeedDown,
         .flags = flags,
-        .pad0 = 0,
     };
     const vk::PushDataInfoEXT exposurePushInfo{.offset = 0,
                                                .data = {.address = &exposurePush, .size = sizeof(exposurePush)}};

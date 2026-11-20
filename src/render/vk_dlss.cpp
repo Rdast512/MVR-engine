@@ -248,7 +248,7 @@ vk::Extent2D Dlss::recreate(vk::Extent2D display)
     create.InTargetWidth = display.width;
     create.InTargetHeight = display.height;
     create.InPerfQualityValue = quality;
-    // motion in render pixels, reverse Z; the exposure comes from the engine (Frame::exposure)
+    // motion in render pixels, reverse z, scene-linear color
     create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
                                   NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
 
@@ -276,7 +276,6 @@ void Dlss::evaluate(const vk::raii::CommandBuffer& cmd, const Frame& frame) cons
     NVSDK_NGX_Resource_VK specularAlbedo = ngxResource(frame.specularAlbedo, renderExtent, false);
     NVSDK_NGX_Resource_VK normalRoughness = ngxResource(frame.normalRoughness, renderExtent, false);
     NVSDK_NGX_Resource_VK output = ngxResource(frame.output, displayExtent, true);
-    NVSDK_NGX_Resource_VK exposure = ngxResource(frame.exposure, vk::Extent2D{1, 1}, false);
     glm::mat4 worldToView = ngxRowMajor(frame.view);
     glm::mat4 viewToClip = ngxRowMajor(frame.proj);
 
@@ -290,8 +289,8 @@ void Dlss::evaluate(const vk::raii::CommandBuffer& cmd, const Frame& frame) cons
     // packed: roughness in normals.w
     eval.pInNormals = &normalRoughness;
     eval.pInRoughness = &normalRoughness;
-    // the exposure of the last post pass; the color is not pre-exposed (InPreExposure 1)
-    eval.pInExposureTexture = &exposure;
+    // keep the post exposure feedback outside ray reconstruction
+    eval.pInExposureTexture = nullptr;
     // same sign as the raster offset: measured, the opposite sign shimmers ~20x more on a still camera
     eval.InJitterOffsetX = frame.jitterPixels.x;
     eval.InJitterOffsetY = frame.jitterPixels.y;

@@ -69,9 +69,7 @@ Reviewed 2026-11-20 against the code, after M4. The M0 work handed to M1–M4 is
 
 ## M3 · H2 post
 
-- **C-H2-1 · Limitation · the color is not pre-exposed.** `GpuFrameRoot.exposure` and DLSS-RR's `InPreExposure` stay 1, and the exposure reaches DLSS-RR only as the 1×1 exposure texture. NGX takes pre-exposure as a CPU float, which would need the GPU exposure read back a frame or more late. The RGBA16F `noisyColor` had enough range on the test scenes. **Exit:** a scene whose radiance nears the FP16 limits (65504 at the top), then pre-expose by a read-back value.
-- **C-H2-2 · Limitation · DLSS-RR sees last frame's exposure.** The exposure pass runs after the evaluation, so the exposure texture DLSS-RR reads was written by the previous frame's post. While adapting, it differs by `1 − e^(−dt·rate)` of the gap, under 3% per frame at 60 Hz and the default rate. **Exit:** none planned unless RR shows exposure lag.
-- **C-H2-3 · Limitation · auto exposure ignores black pixels.** Bin 0 holds pixels below 2^−16 and is not metered, so a mostly unlit frame is exposed for its lit part (on `Sponza` + `LightsPunctualLamp`, about 7% of the pixels). The EV range bounds it. **Exit:** a scene where dark areas should pull the exposure up, then meter them with a floor.
+- **C-H2-1 · Limitation · the color is not pre-exposed.** `GpuFrameRoot.exposure` and DLSS-RR's `InPreExposure` stay 1. NGX takes pre-exposure as a CPU float, which would need the GPU exposure read back a frame or more late. The RGBA16F `noisyColor` had enough range on the test scenes. **Exit:** a scene whose radiance nears the FP16 limits (65504 at the top), then pre-expose by a read-back value.
 
 ## M4 · lighting defaults and screen-edge convergence (M3 features)
 
@@ -185,6 +183,8 @@ Measured by the GI check (`ENGINE_GI_CHECK=1`, [g5_restir_gi.md](./m4/g5_restir_
 
 | ID | Stamp | Problem | Fixed |
 |---|---|---|---|
+| C-H2-2 | M3 · H2 | DLSS-RR read post exposure from the previous frame | 2026-11-20: [F3](fixesM1-6/auto_exposure_dark_boiling.md) keeps exposure in post and supplies no exposure texture to DLSS-RR |
+| C-H2-3 | M3 · H2 | auto exposure ignored black and sub-floor pixels | 2026-11-20: [F1](fixesM1-6/auto_exposure_dark_boiling.md) clamps finite luminance to a −12 EV floor and includes bin 0 in the percentile count |
 | C-D-1 | M6 · D | alpha-tested geometry was opaque to rays: every instance `FORCE_OPAQUE`, rectangular plant shadows, leaves shadowed by the transparent parts of neighboring cards, jitter flicker at alpha edges | 2026-11-20: D1 bakes per-cluster OMMs with the OMM SDK, D2 attaches them to the CLAS and drops `FORCE_OPAQUE` on alpha instances, D3 cuts the same threshold in a raster bin, D4 checks both in every runner (`AlphaBlendModeTest_sun` and `Sponza_plants` guide shots, RT check `alpha-edge` class). Remaining edge differences are C-D3-1 |
 | C-D4-1 | M3 · D4 | `traceVisibility` lacked D4's candidate counter, `pointOffset` and `minT` | 2026-11-20: Debug builds count queries whose one `Proceed()` meets a candidate (`kDebugRays` specialization constant, `GpuRayDebugCounters`), 0 in every runner. `pointOffset` not built: the `Sponza_terminator` shot shows no faceted terminator. `minT` not built: 0 self-hits over the guide capture with OMMs ([d4_ray_contract.md](./m6/d4_ray_contract.md)) |
 | C-G3-1 | M4 · G3 | SHaRC code stayed in the tree beside NRC: a `GiCache` fallback with SHaRC's 64-bit atomic features, NRC's extensions optional, `gi/sharc.slang`, `sharc_test` and the SHaRC fetch | 2026-11-17: all removed; NRC's instance and device extensions are required through `mergeSdkExtensions` (PBR plan G3) |

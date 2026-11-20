@@ -1,6 +1,6 @@
 # Fix: Auto-exposure boiling in shaded (indirect-only) areas
 
-**Date:** 2026-11-20 · **Status:** diagnosed, ready for implementation · **Milestone:** [M8](../m8/README.md) (fixes M3 H2 / H1 + M4 G5)
+**Date:** 2026-11-20 · **Status:** F1–F4 implemented · **Milestone:** [M8](../m8/README.md) (fixes M3 H2 / H1 + M4 G5)
 **Why:** Turning on auto exposure in Sponza areas with no direct sunlight (the +Z gallery, under the arches) causes severe temporal boiling. In the gallery, `indirectRadiance` has a mean of ~`0.00019` linear ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §2.6): auto exposure amplifies it by ~1000× (+10 EV) and up to 65,536× (+16 EV), feeding that extreme, fluctuating gain back into DLSS-RR.
 
 **Sources checked**
@@ -34,7 +34,7 @@ Reproduce in the +Z gallery (startup Sponza pose, `Lit` view, `ReSTIR GI` mode):
 1. Turn **Auto exposure ON**, let it settle, and record the displayed `Exposure` EV and `Average luminance` in the Post panel.
 2. Turn **Auto exposure OFF** and set **Manual exposure** to that same EV.
    - Boiling that disappears under locked manual EV comes from the **auto-exposure feedback loop** (F1, F2, F3 below).
-   - Boiling that remains at high manual EV comes from **extreme exposure gain feeding DLSS-RR `pInExposureTexture`** (F4) and **sparse 1-bounce ReSTIR GI noise** (F5).
+   - Boiling that remains at high manual EV can come from noise amplified by tonemapping, exposure gain feeding DLSS-RR (F3), and sparse 1-bounce ReSTIR GI noise (F5).
 
 ---
 
@@ -86,3 +86,25 @@ Not an exposure bug, noted so expectations stay clear:
   - `Lit` temporal stability in the gallery and sunlit courtyard (auto exposure ON) matches locked manual exposure at the same EV and shows no regression on the courtyard baseline ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §2.5: std ≤ 1.6%, flickering pixels ≤ 5.0%).
 - Existing checks stay green: `ENGINE_GUIDE_CAPTURE=1` (all shots + ReSTIR DI convergence), `ENGINE_GI_CHECK=1`, `ENGINE_MOTION_TEST=1`, `ENGINE_CULL_CHECK=1`, `ctest`, validation clean.
 - Update [considerations.md](../considerations.md) (`C-H2-3` resolved by F1; `C-H2-2` updated if Option B is chosen).
+
+## 5. Verification
+
+The pre-fix gallery probe ran at 1280×720, DLSS-RR Quality, on an RTX 5070 with driver 621.01 and validation layers off. After 300 warm-up frames, the 120-frame capture of the presented linear image measured +9.011 EV with auto exposure (8.973 to 9.120 EV), a metered luminance of 0.000356, and 6.48% temporal deviation with 61.05% flickering pixels. Locking manual exposure at +9.011 EV measured 6.15% deviation and 58.59% flickering pixels.
+
+The A/B probe used the same setup, shipped ReSTIR GI and the driver's Preset F override. A received the exposure texture with the +6 EV cap. B received no texture. The deviation metric is mean per-pixel standard deviation divided by mean luminance. Flickering pixels have a mean above 0.0001 linear and a standard deviation greater than 10% of their own mean. Each manual run used the mean EV of its corresponding auto run.
+
+| Pose | DLSS-RR output, A and B, auto and manual (deviation / flicker) | Presented A, auto → manual (deviation / flicker) | Presented B, auto → manual (deviation / flicker) | B auto EV (min to max) |
+|---|---:|---:|---:|---:|
+| Gallery, 10 lux | 4.737% / 25.942% | 7.091% / 55.553% → 7.091% / 55.553% | 7.091% / 55.553% → 7.091% / 55.553% | 6.000 to 6.000 |
+| Courtyard, 10 lux | 1.549% / 8.682% | 1.160% / 16.358% → 1.128% / 16.428% | 1.162% / 16.360% → 1.128% / 16.426% | 4.324 to 4.353 |
+| Courtyard, 100 lux | 1.534% / 15.607% | 1.129% / 15.764% → 1.104% / 15.764% | 1.130% / 15.763% → 1.104% / 15.765% | 1.005 to 1.031 |
+
+Option B keeps reconstruction independent of the post settings. A, A with the NGX exposure scale set to 0.82, and B produced the same reconstructed luminance statistics on this driver. With the lower gallery gain, the presented mean fell from 0.04171 to 0.00874 and the mean per-pixel deviation fell from 0.00270 to 0.00062 linear luminance.
+
+The reconstructed output at both courtyard light levels matched a unity-exposure texture control. The 10-lux temporal deviation met the 1.6% target. The flicker count was 8.682% for both the fix and the control with this probe, above the historical 5.0% target. The earlier scratch probe's lit-pixel cutoff was not recorded.
+
+The Post GPU scope measured 0.028–0.032 ms with the fix, compared with 0.028–0.029 ms in the pre-fix gallery captures.
+
+The gallery auto-exposure probe completed with Vulkan core validation, synchronization validation, best-practice checks and GPU-assisted validation enabled. No messages identified the changed passes. The run reported the documented SDK diagnostics, including the NRC shutdown leak (C-G3-3).
+
+The final release build passed `ctest` (6/6), `ENGINE_GUIDE_CAPTURE=1` (315 PNGs, 2/2 normal checks, ReSTIR DI convergence), `ENGINE_GI_CHECK=1` (8/8 gates), `ENGINE_MOTION_TEST=1` (13/13 scenarios), and `ENGINE_CULL_CHECK=1` (16/16 poses).

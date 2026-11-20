@@ -20,7 +20,7 @@ change recreates the feature and dependent render resources.
 | Depth and motion | Inverted hardware depth and low-resolution motion in render pixels, scale 1. |
 | Guides | Diffuse albedo, specular albedo, and world normals with packed perceptual roughness. |
 | Jitter | Raster offset converted from NDC to render pixels with the same sign. |
-| Exposure | H2's R32F exposure image, written last frame. Pre-exposure is 1. |
+| Exposure | Unity pre-exposure. H2 applies exposure after reconstruction. |
 | Output | Display-resolution RGBA16F HDR for H2. |
 
 RR runs for Lit when the scene has lights. Debug views and the no-light
@@ -38,7 +38,7 @@ NGX, and C-H1-3 tracks the allocator link workaround.
 
 | Boundary | Rule |
 |---|---|
-| Creation | Query NGX extensions, initialize with project ID, then create DLSSD in unified denoise mode with packed roughness and hardware depth. Use HDR, low-res motion and inverted-depth flags. External exposure supersedes NGX auto exposure. |
+| Creation | Query NGX extensions, initialize with project ID, then create DLSSD in unified denoise mode with packed roughness and hardware depth. Use HDR, low-res motion and inverted-depth flags. NGX auto exposure is disabled. |
 | Recreate | Apply the mode and preset when building the swapchain-sized resources. Propagate queried render size to the camera, targets, Hi-Z and RTXDI. Presets are hints and a driver application override can take precedence. |
 | Prepare evaluate | Combine produces the linear input. Order its writes and prior NGX work before evaluation. Pass image views at their true render/display sizes, row-major view/projection, render pixel jitter, motion scale 1 and frame time. |
 | Evaluate and return | Bind the empty compatibility set so NGX uses the driver heap. Evaluate into display-sized HDR. Rebind engine heaps and order RR writes before H2. |
