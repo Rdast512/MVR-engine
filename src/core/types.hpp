@@ -308,6 +308,21 @@ enum class RasterBin : uint32_t
 };
 inline constexpr uint32_t kRasterBinCount = std::to_underlying(RasterBin::Count);
 
+// resolve shader a pixel runs (engine spec §9.1, spec/m7/e1_material_binning.md): one bin per material shading
+// body, plus Background for depth 0. Also the index into the resolve's DGC execution set
+enum class MaterialBin : uint32_t
+{
+    Background = 0,
+    // glTF metallic-roughness
+    Standard,
+    // KHR_materials_unlit
+    Unlit,
+    Count,
+};
+inline constexpr uint32_t kMaterialBinCount = std::to_underlying(MaterialBin::Count);
+// edge of a classify / resolve tile in pixels; matches shaders/types.slang kMaterialTileSize
+inline constexpr uint32_t kMaterialTileSize = 8;
+
 // two-phase occlusion: early draws what passes against the previous pyramid, late what the fresh one recovers.
 // each phase has its own GpuCullView, GpuCullCounters, visible list region and DGC sequences
 enum class CullPhase : uint32_t
@@ -999,8 +1014,12 @@ struct GpuTargets
     // R32F 1x1: the exposure scale for adaptation and tonemapping
     uint32_t exposureStorage = 0;
     glm::uvec2 displaySize{0};
+    // R8_UINT MaterialBin per pixel, written by passes/classify.slang
+    uint32_t binIdsStorage = 0;
+    uint32_t binIdsSampled = 0;
 };
-static_assert(sizeof(GpuTargets) == 208);
+static_assert(sizeof(GpuTargets) == 216);
+static_assert(offsetof(GpuTargets, binIdsStorage) == 208);
 static_assert(offsetof(GpuTargets, current) == 32);
 
 // GpuFrameRoot::frameFlags, matches shaders/types.slang kFrameFlag*
@@ -1103,8 +1122,11 @@ struct GpuFrameRoot
     vk::DeviceAddress prevWorldLights = 0;
     // GpuRayDebugCounters of this frame slot; 0 unless kDebugRays
     vk::DeviceAddress rayDebug = 0;
+    // GpuMaterialBins, then the per-bin tile lists (RenderTargets); one copy for both frame slots
+    vk::DeviceAddress materialBins = 0;
 };
-static_assert(sizeof(GpuFrameRoot) == 200);
+static_assert(sizeof(GpuFrameRoot) == 208);
+static_assert(offsetof(GpuFrameRoot, materialBins) == 200);
 static_assert(offsetof(GpuFrameRoot, camera) == 0);
 static_assert(offsetof(GpuFrameRoot, instances) == 8);
 static_assert(offsetof(GpuFrameRoot, models) == 16);

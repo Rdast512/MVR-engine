@@ -76,9 +76,8 @@ struct PathHit
     float3 emissive;
 };
 
-// decode + material at a hit. Ray cone from the primary pixel's footprint grown over coneDistance, without the
-// curvature or roughness of earlier vertices; no DLSS LOD bias: indirect texture detail is never reconstructed at
-// display resolution
+// decode + material at a hit. coneDistance is camera to ray.Origin; decodeHit adds cone.spread * hit.t. No DLSS LOD
+// bias: indirect texture detail is never reconstructed at display resolution
 PathHit shadeRayHit(GpuFrameRoot root, RayHit hit, RayDesc ray, float coneDistance)
 {
     const GpuCameraData camera = loadCamera(root);
@@ -106,7 +105,8 @@ bool scatterBrdf<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, inout 
     const float3 u = float3(RTXDI_GetNextRandom(rng), RTXDI_GetNextRandom(rng), RTXDI_GetNextRandom(rng));
     const BrdfSample brdf =
         sampleBrdf(surface.normal, surface.diffuseAlbedo, surface.specularF0, surface.roughness, surface.viewDir, u);
-    if (brdf.pdf <= 0.0)
+    // reject directions tilted below the geometric plane by normal mapping (RTXDI BrdfRayTracing.hlsl)
+    if (brdf.pdf <= 0.0 || dot(surface.geoNormal, brdf.l) <= 0.0)
     {
         return false;
     }
@@ -146,8 +146,8 @@ float3 referencePathRadiance(GpuFrameRoot root, RAB_Surface start, HitOrigin sta
         {
             break;
         }
-        pathLength += hit.t;
         const PathHit next = shadeRayHit(root, hit, ray, pathLength);
+        pathLength += hit.t;
         origin.hit = hit;
         radiance += throughput * (next.emissive + directLightAt(next.surface, origin, constants, lightRng, coherentRng));
         vertex = next.surface;

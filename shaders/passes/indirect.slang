@@ -59,7 +59,8 @@ PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
         const BrdfSample brdf = sampleBrdf(primary.normal, primary.diffuseAlbedo, primary.specularF0,
                                            primary.roughness, primary.viewDir, u);
         bounce.pdf = brdf.pdf;
-        bounce.isActive = brdf.pdf > 0.0;
+        // normal maps can tilt n so a sample lies below the triangle's geometric plane (RTXDI BrdfRayTracing.hlsl)
+        bounce.isActive = brdf.pdf > 0.0 && dot(primary.geoNormal, brdf.l) > 0.0;
         bounce.ray.Origin = rasterRayOrigin(primary, brdf.l);
         bounce.ray.Direction = brdf.l;
     }

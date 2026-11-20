@@ -381,6 +381,22 @@ namespace
         {"FramePushData", sizeof(FramePushData), {
             LAYOUT_FIELD(FramePushData, frameRoot),
         }},
+        {"ResolvePushData", sizeof(ResolvePushData), {
+            LAYOUT_FIELD(ResolvePushData, frameRoot),
+            LAYOUT_FIELD(ResolvePushData, tileList),
+        }},
+        {"ResolveDgcSequence", sizeof(ResolveDgcSequence), {
+            LAYOUT_FIELD(ResolveDgcSequence, executionSetIndex),
+            LAYOUT_FIELD(ResolveDgcSequence, pad0),
+            LAYOUT_FIELD_AS(ResolveDgcSequence, push, pushData),
+            LAYOUT_FIELD_AS(ResolveDgcSequence, groupCount, dispatch),
+            LAYOUT_FIELD(ResolveDgcSequence, pad1),
+        }},
+        {"GpuMaterialBins", sizeof(GpuMaterialBins), {
+            LAYOUT_FIELD(GpuMaterialBins, tileCount),
+            LAYOUT_FIELD(GpuMaterialBins, sequenceCount),
+            LAYOUT_FIELD(GpuMaterialBins, sequences),
+        }},
         {"ExposurePushData", sizeof(ExposurePushData), {
             LAYOUT_FIELD(ExposurePushData, frameRoot),
             LAYOUT_FIELD(ExposurePushData, histogram),
@@ -479,6 +495,8 @@ namespace
             LAYOUT_FIELD(GpuTargets, postStorage),
             LAYOUT_FIELD(GpuTargets, exposureStorage),
             LAYOUT_FIELD(GpuTargets, displaySize),
+            LAYOUT_FIELD(GpuTargets, binIdsStorage),
+            LAYOUT_FIELD(GpuTargets, binIdsSampled),
         }},
         {"GpuExposureReadback", sizeof(GpuExposureReadback), {
             LAYOUT_FIELD(GpuExposureReadback, exposure),
@@ -527,6 +545,7 @@ namespace
             LAYOUT_FIELD(GpuFrameRoot, worldLights),
             LAYOUT_FIELD(GpuFrameRoot, prevWorldLights),
             LAYOUT_FIELD(GpuFrameRoot, rayDebug),
+            LAYOUT_FIELD(GpuFrameRoot, materialBins),
         }},
     };
 
@@ -601,6 +620,7 @@ namespace
         ImageFormatConstant{"kImageFormatR32f", SLANG_IMAGE_FORMAT_r32f},
         ImageFormatConstant{"kImageFormatRgba8", SLANG_IMAGE_FORMAT_rgba8},
         ImageFormatConstant{"kImageFormatRg16Snorm", SLANG_IMAGE_FORMAT_rg16_snorm},
+        ImageFormatConstant{"kImageFormatR8ui", SLANG_IMAGE_FORMAT_r8ui},
     };
 
     // the engine's slangc flags that change layout: -target spirv, -fvk-use-scalar-layout, column-major

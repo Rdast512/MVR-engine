@@ -135,6 +135,7 @@ private:
     // signals frameNumber on FrameSync::computeTimeline
     void submitComputeCommands();
     void recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase);
+    void recordClassify(const vk::raii::CommandBuffer& cmd);
     void recordResolve(const vk::raii::CommandBuffer& cmd);
     void recordDirectLight(const vk::raii::CommandBuffer& cmd);
     // NRC begin frame -> update paths -> indirect (query) pass -> QueryAndTrain -> NRC resolve into the GI reservoirs

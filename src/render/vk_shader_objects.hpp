@@ -30,6 +30,7 @@ public:
     void createCullShaders();
     void createHiZShaders();
     void createFrameShaders();
+    void createResolveShaders();
     void createRtShaders();
 
     // the bin's vis-buffer raster pair and every state a monolithic pipeline would bake; viewport/scissor stay with
@@ -81,8 +82,9 @@ public:
     // FramePushData compute passes after the late raster
     struct FrameShaders
     {
-        // passes/resolve.slang
-        vk::raii::ShaderEXT resolve = nullptr;
+        // passes/classify.slang: material bin per pixel and tile lists, then the resolve's DGC sequences
+        vk::raii::ShaderEXT classify = nullptr;
+        vk::raii::ShaderEXT binArgs = nullptr;
         // passes/debug_view.slang
         vk::raii::ShaderEXT debugView = nullptr;
         // passes/motion_check.slang, MotionCheckPushData; ENGINE_MOTION_TEST only
@@ -114,6 +116,9 @@ public:
     };
     FrameShaders frameShaders;
 
+    // passes/resolve.slang, one per MaterialBin: the resolve's DGC execution set (ResolvePushData)
+    std::array<vk::raii::ShaderEXT, kMaterialBinCount> resolveShaders = {nullptr, nullptr, nullptr};
+
     // async compute RT scene passes
     struct RtShaders
     {
@@ -140,6 +145,8 @@ private:
     // fullscreen triangle into the swapchain
     static void setFullscreenState(const vk::raii::CommandBuffer& cmd, const MeshShaderPair& shaderPair);
     // file under ENGINE_SHADER_DIR/passes
+    // extraFlags: on top of eDescriptorHeap
     [[nodiscard]] vk::raii::ShaderEXT createComputeShader(std::string_view file, const char* entry,
-                                                          std::string_view debugName) const;
+                                                          std::string_view debugName,
+                                                          vk::ShaderCreateFlagsEXT extraFlags = {}) const;
 };

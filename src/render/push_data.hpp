@@ -8,6 +8,8 @@
 #include <glm/vec3.hpp>
 #include <vulkan/vulkan.hpp>
 
+#include "core/types.hpp"
+
 // one DGC sequence: everything else is reached through the frame root
 struct MeshPushData {
     vk::DeviceAddress frameRoot;
@@ -36,6 +38,50 @@ static_assert(std::is_trivially_copyable_v<MeshDgcSequence>);
 static_assert(offsetof(MeshDgcSequence, pushData) == 0);
 static_assert(offsetof(MeshDgcSequence, draw) == sizeof(MeshPushData));
 static_assert(sizeof(MeshDgcSequence) == 32);
+
+// one material bin's resolve shader (passes/resolve.slang); must match shaders/types.slang ResolvePushData
+struct ResolvePushData {
+    vk::DeviceAddress frameRoot;
+    // uint[tileCount] of the bin: tile x in the low 16 bits, y in the high
+    vk::DeviceAddress tileList;
+};
+
+static_assert(std::is_trivially_copyable_v<ResolvePushData>);
+static_assert(sizeof(ResolvePushData) == 16);
+
+// written by passes/classify.slang binArgsMain (shaders/types.slang ResolveDgcSequence): EXECUTION_SET + PUSH_DATA +
+// DISPATCH; the 40 B stride keeps the push data's addresses 8-byte aligned behind the 16 B GpuMaterialBins counts
+struct ResolveDgcSequence
+{
+    // MaterialBin: index into the resolve execution set
+    uint32_t executionSetIndex;
+    uint32_t pad0;
+    ResolvePushData pushData;
+    vk::DispatchIndirectCommand dispatch;
+    uint32_t pad1;
+};
+
+static_assert(std::is_trivially_copyable_v<ResolveDgcSequence>);
+static_assert(offsetof(ResolveDgcSequence, pushData) == 8);
+static_assert(offsetof(ResolveDgcSequence, dispatch) == 24);
+static_assert(sizeof(ResolveDgcSequence) == 40);
+
+// head of RenderTargets' material-bin buffer, followed by kMaterialBinCount tile lists of one entry per render tile
+// each; must match shaders/types.slang GpuMaterialBins. Counts are cleared by a fill before classify
+struct GpuMaterialBins
+{
+    std::array<uint32_t, kMaterialBinCount> tileCount;
+    // DGC sequenceCountAddress: one sequence per non-empty bin
+    uint32_t sequenceCount;
+    std::array<ResolveDgcSequence, kMaterialBinCount> sequences;
+};
+
+static_assert(std::is_trivially_copyable_v<GpuMaterialBins>);
+static_assert(offsetof(GpuMaterialBins, sequenceCount) == 12);
+static_assert(offsetof(GpuMaterialBins, sequences) == 16);
+static_assert(sizeof(GpuMaterialBins) == 136);
+// the counts the fill clears
+inline constexpr vk::DeviceSize kMaterialBinCountBytes = offsetof(GpuMaterialBins, sequences);
 
 // meshlet cull dispatches; must match shaders/types.slang CullPushData
 struct CullPushData {
@@ -201,5 +247,5 @@ static_assert(sizeof(HiZViewPushData) == 24);
 // largest push block of any pass; checked against maxPushDataSize at startup
 inline constexpr size_t kMaxPushDataBytes =
     std::max({sizeof(MeshPushData), sizeof(CullPushData), sizeof(HiZPushData), sizeof(HiZViewPushData),
-              sizeof(FramePushData), sizeof(PresentPushData), sizeof(RtInstancesPushData),
+              sizeof(FramePushData), sizeof(ResolvePushData), sizeof(PresentPushData), sizeof(RtInstancesPushData),
               sizeof(ExposurePushData), sizeof(LightWorldPushData), sizeof(SerCheckPushData)});

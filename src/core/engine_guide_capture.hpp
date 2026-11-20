@@ -146,7 +146,7 @@ private:
         DebugView view;
         IndirectMode mode;
     };
-    static constexpr std::array<ShotView, 21> kViews = {{
+    static constexpr std::array<ShotView, 22> kViews = {{
         {DebugView::DiffuseAlbedo, IndirectMode::NrcRestirGi},
         {DebugView::SpecularF0, IndirectMode::NrcRestirGi},
         {DebugView::Roughness, IndirectMode::NrcRestirGi},
@@ -154,6 +154,8 @@ private:
         {DebugView::GeometricNormal, IndirectMode::NrcRestirGi},
         {DebugView::Emissive, IndirectMode::NrcRestirGi},
         {DebugView::AmbientOcclusion, IndirectMode::NrcRestirGi},
+        // classify's resolve bins (spec/m7/e1_material_binning.md)
+        {DebugView::MaterialBin, IndirectMode::NrcRestirGi},
         {DebugView::UnshadowedLights, IndirectMode::NrcRestirGi},
         {DebugView::ShadowedLights, IndirectMode::NrcRestirGi},
         {DebugView::DirectLighting, IndirectMode::NrcRestirGi},

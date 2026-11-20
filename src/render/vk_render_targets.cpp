@@ -4,6 +4,7 @@
 #include "util/debug.hpp"
 #include "util/vk_tracy.hpp"
 #include "util/vk_utils.hpp"
+#include "push_data.hpp"
 
 #include <format>
 #include <stdexcept>
@@ -79,11 +80,13 @@ RenderTargets::~RenderTargets()
     destroy(upscaledTarget);
     destroy(postTarget);
     destroy(exposureTarget);
+    destroy(binIds);
     for (auto& guides : guideSets) {
         for (Target& guide : guides) {
             destroy(guide);
         }
     }
+    destroyVmaBuffer(vma, materialBins, materialBinsMemory);
     for (HostBuffer& buffer : frameTargets) {
         destroyHostBuffer(vma, buffer, nullptr);
     }
@@ -169,6 +172,7 @@ void RenderTargets::checkFormatSupport() const
     check(kUpscaledFormat, kStorageFeatures | vk::FormatFeatureFlagBits2::eSampledImageFilterLinear);
     check(kPostFormat, kStorageFeatures | vk::FormatFeatureFlagBits2::eSampledImageFilterLinear);
     check(kExposureFormat, kStorageFeatures);
+    check(kBinIdsFormat, kStorageFeatures);
     check(kVisBufferFormat, vk::FormatFeatureFlagBits2::eColorAttachment | vk::FormatFeatureFlagBits2::eSampledImage);
 }
 
@@ -211,11 +215,14 @@ void RenderTargets::destroyTargets()
     destroy(upscaledTarget);
     destroy(postTarget);
     destroy(exposureTarget);
+    destroy(binIds);
     for (auto& guides : guideSets) {
         for (Target& guide : guides) {
             destroy(guide);
         }
     }
+    destroyVmaBuffer(vma, materialBins, materialBinsMemory);
+    materialBinsDeviceAddress = 0;
     if (depthIndex != kNoneIndex) {
         descriptorManager.freeImageDescriptor(depthIndex);
         depthIndex = kNoneIndex;
@@ -251,6 +258,8 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
     // transfer destination for its initial value
     createTarget(exposureTarget, kExposureFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferDst,
                  vk::ImageLayout::eGeneral, "Exposure", vk::Extent2D{1, 1});
+    createTarget(binIds, kBinIdsFormat, kStorageUsage, vk::ImageLayout::eGeneral, "MaterialBinIds", extent);
+    createMaterialBins();
     for (uint32_t set = 0; set < kGuideSetCount; ++set) {
         for (size_t guide = 0; guide < kGuideImageCount; ++guide) {
             createTarget(guideSets[set][guide], kGuideFormats[guide], kStorageUsage, vk::ImageLayout::eGeneral,
@@ -284,6 +293,7 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
     initialize(*noisyColorTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*upscaledTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*postTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
+    initialize(*binIds.image, vk::ImageLayout::eGeneral, kStorageAccess);
     // initialize the adaptation history to unity
     transitionImageLayout(&cmd, *exposureTarget.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
                           {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}, VK_QUEUE_FAMILY_IGNORED,
@@ -304,6 +314,30 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
         }
     }
     submitAndWait(cmd, device.graphicsQueue);
+}
+
+// one list per bin with room for every render tile: a tile is appended at most once per bin, so nothing overflows
+void RenderTargets::createMaterialBins()
+{
+    const uint32_t tilesX = (extent.width + kMaterialTileSize - 1) / kMaterialTileSize;
+    const uint32_t tilesY = (extent.height + kMaterialTileSize - 1) / kMaterialTileSize;
+    const uint32_t tileCount = tilesX * tilesY;
+    // a bin launches one group per tile in x; tile coordinates are packed into 16 bits each
+    const uint32_t maxGroups = device.capabilities.properties2.properties.limits.maxComputeWorkGroupCount[0];
+    if (tileCount > maxGroups || tilesX > 0xffffu || tilesY > 0xffffu) {
+        throw std::runtime_error(std::format("render targets: {}x{} resolve tiles exceed maxComputeWorkGroupCount[0] {} "
+                                             "or 16-bit tile coordinates",
+                                             tilesX, tilesY, maxGroups));
+    }
+    const vk::DeviceSize size =
+        sizeof(GpuMaterialBins) + static_cast<vk::DeviceSize>(kMaterialBinCount) * tileCount * sizeof(uint32_t);
+    // indirect: DGC sequences and sequenceCountAddress; transfer: the per-frame count fill
+    createBuffer(size,
+                 vk::BufferUsageFlagBits2::eIndirectBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress |
+                     vk::BufferUsageFlagBits2::eTransferDst,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal, materialBins, materialBinsMemory, allocator.allocator,
+                 device.vkdevice, device.queueFamilyIndices, "MaterialBins");
+    materialBinsDeviceAddress = device.vkdevice.getBufferAddress({.buffer = *materialBins});
 }
 
 RenderTargets::ImageRef RenderTargets::guide(uint32_t frameNumber, GuideImage image) const
@@ -346,5 +380,7 @@ void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool 
         .postStorage = postTarget.storageIndex,
         .exposureStorage = exposureTarget.storageIndex,
         .displaySize = {displayExtent.width, displayExtent.height},
+        .binIdsStorage = binIds.storageIndex,
+        .binIdsSampled = binIds.sampledIndex,
     };
 }

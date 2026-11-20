@@ -6,6 +6,7 @@
 #include <format>
 #include <fstream>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #ifndef ENGINE_SHADER_DIR
@@ -33,6 +34,7 @@ void ShaderObjects::init()
     createCullShaders();
     createHiZShaders();
     createFrameShaders();
+    createResolveShaders();
     createRtShaders();
 }
 
@@ -84,7 +86,8 @@ void ShaderObjects::createHiZShaders()
 
 void ShaderObjects::createFrameShaders()
 {
-    frameShaders.resolve = createComputeShader("resolve.spv", "resolveMain", "Resolve");
+    frameShaders.classify = createComputeShader("classify.spv", "classifyMain", "Classify");
+    frameShaders.binArgs = createComputeShader("classify.spv", "binArgsMain", "BinArgs");
     frameShaders.debugView = createComputeShader("debug_view.spv", "debugViewMain", "DebugView");
     frameShaders.motionCheck = createComputeShader("motion_check.spv", "motionCheckMain", "MotionCheck");
     frameShaders.rayCheck = createComputeShader("rt_check.spv", "rayCheckMain", "RayCheck");
@@ -103,13 +106,34 @@ void ShaderObjects::createFrameShaders()
     frameShaders.post = createComputeShader("post.spv", "postMain", "Post");
 }
 
+void ShaderObjects::createResolveShaders()
+{
+    struct BinEntry
+    {
+        MaterialBin bin;
+        const char* entry;
+        std::string_view debugName;
+    };
+    constexpr std::array<BinEntry, kMaterialBinCount> kBinEntries = {{
+        {MaterialBin::Background, "resolveBackgroundMain", "ResolveBackground"},
+        {MaterialBin::Standard, "resolveStandardMain", "ResolveStandard"},
+        {MaterialBin::Unlit, "resolveUnlitMain", "ResolveUnlit"},
+    }};
+    for (const BinEntry& binEntry : kBinEntries) {
+        resolveShaders[std::to_underlying(binEntry.bin)] =
+            createComputeShader("resolve.spv", binEntry.entry, binEntry.debugName,
+                                vk::ShaderCreateFlagBitsEXT::eIndirectBindable);
+    }
+}
+
 void ShaderObjects::createRtShaders()
 {
     rtShaders.writeInstances = createComputeShader("rt_instances.spv", "rtInstancesMain", "RtInstances");
 }
 
 vk::raii::ShaderEXT ShaderObjects::createComputeShader(std::string_view file, const char* entry,
-                                                       std::string_view debugName) const
+                                                       std::string_view debugName,
+                                                       vk::ShaderCreateFlagsEXT extraFlags) const
 {
     const auto spirv = readPassSpirv(file);
     // raytracing/trace.slang [vk::constant_id(1)]; a shader that declares no such constant ignores the entry
@@ -120,7 +144,7 @@ vk::raii::ShaderEXT ShaderObjects::createComputeShader(std::string_view file, co
     const vk::SpecializationInfo specialization{
         .mapEntryCount = 1, .pMapEntries = &debugRaysEntry, .dataSize = sizeof(debugRays), .pData = &debugRays};
     const vk::ShaderCreateInfoEXT createInfo{
-        .flags = vk::ShaderCreateFlagBitsEXT::eDescriptorHeap,
+        .flags = vk::ShaderCreateFlagBitsEXT::eDescriptorHeap | extraFlags,
         .stage = vk::ShaderStageFlagBits::eCompute,
         .codeType = vk::ShaderCodeTypeEXT::eSpirv,
         .codeSize = spirv.size(),

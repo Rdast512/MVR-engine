@@ -425,6 +425,8 @@ bool EngineGuideCapture::writePng(const Renderer::DisplayCapture& capture) const
     const std::filesystem::path file =
         directory / std::format("{}_{}{}.png", shot.name, fileStem(debugViewInfo(shotView.view).name), modeSuffix);
     const int stride = static_cast<int>(capture.extent.width) * 4;
+    // fast zlib compression cuts 315-PNG write time without changing decoded pixels
+    stbi_write_png_compression_level = 1;
     if (stbi_write_png(file.string().c_str(), static_cast<int>(capture.extent.width),
                        static_cast<int>(capture.extent.height), 4, pixels.data(), stride) == 0) {
         logError(std::format("could not write {}", file.string()), "GuideCapture");

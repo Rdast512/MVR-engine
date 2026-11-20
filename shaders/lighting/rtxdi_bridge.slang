@@ -256,6 +256,7 @@ struct RAB_LightSample
     float3 l;        // unit, toward the light
     float distance;  // visibility tMax; kInfiniteDistance for directional
     float3 radiance; // incident, before NdotL
+    float3 position; // world position for local lights; unused when distance >= kInfiniteDistance
 };
 
 RAB_LightInfo RAB_EmptyLightInfo()
@@ -297,6 +298,7 @@ RAB_LightSample RAB_SamplePolymorphicLight(RAB_LightInfo light, RAB_Surface surf
     sample.l = evaluated.l;
     sample.distance = evaluated.distance;
     sample.radiance = evaluated.radiance;
+    sample.position = light.position;
     return sample;
 }
 
@@ -380,11 +382,28 @@ bool RAB_GetConservativeVisibility(RAB_Surface surface, RAB_LightSample sample)
     return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(surface, sample.l), sample.l, 0.0, sample.distance);
 }
 
-// from last frame's surface through this frame's TLAS: there is no previous TLAS to trace
+// no previous TLAS: trace from currentSurface through this frame's TLAS toward the light sample, as the RTXDI sample
+// without enablePrevTLAS (RAB_VisibilityTest.hlsli)
 bool RAB_GetTemporalConservativeVisibility(RAB_Surface currentSurface, RAB_Surface previousSurface,
                                            RAB_LightSample sample)
 {
-    return RAB_GetConservativeVisibility(previousSurface, sample);
+    if (!RAB_IsSurfaceValid(currentSurface))
+    {
+        return false;
+    }
+    if (sample.distance >= kInfiniteDistance)
+    {
+        return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(currentSurface, sample.l), sample.l, 0.0,
+                               kInfiniteDistance);
+    }
+    const float3 toLight = sample.position - currentSurface.position;
+    const float distance = length(toLight);
+    if (distance <= 0.0)
+    {
+        return true;
+    }
+    const float3 l = toLight / distance;
+    return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(currentSurface, l), l, 0.0, distance);
 }
 
 // BRDF rays: until emissive triangles (M7) no geometry is a light, so a hit never names one

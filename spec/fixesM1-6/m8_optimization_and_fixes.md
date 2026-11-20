@@ -1,6 +1,6 @@
 # Feature: M8 optimization and fixes — RTXDI and NRC sample reviews, pipeline findings
 
-**Date:** 2026-11-20 · **Status:** review; O1 done in a changed form (§2.5), O2 and O6 built behind flags (default off) and measured (§2.6) · **Milestone:** [M8](../m8/README.md) (engine spec §16.2)
+**Date:** 2026-11-20 · **Status:** review; O1 done in a changed form (§2.5), O2 and O6 built behind flags (default off) and measured (§2.6); auto-exposure boiling fixed (F10, [auto_exposure_dark_boiling.md](./auto_exposure_dark_boiling.md)) · **Milestone:** [M8](./README.md) (engine spec §16.2)
 **Why:** ReSTIR GI mode became the default indirect mode on 2026-11-20 (engine spec §11.7), because NRC reads ~10% bright (considerations C-G5-3). The 1.0 goal is the full RTXDI stack with NRC as a comparison switch (engine spec §1.1). This document merges two reviews. The first compares the engine with the RTXDI sample and the 3.1 / 3.2 library changes. The second compares it with the RTXGI NRC sample. It also adds the frame and check findings of the same day. M8 turns all of it into steps.
 
 **Sources**
@@ -98,7 +98,7 @@ Each candidate lands only when three conditions hold:
 | O2 | Secondary-surface DI resampling at X₂ (sample `Medium`) | X₂'s direct light inherits the primary DI reservoirs' light choice | **built, off:** −24% courtyard bias, no stability gain with one light (§2.6) | I9 (after M7) |
 | O3 | GI temporal reuse inside the indirect pass | drops one dispatch and one reservoir write + read (up to the 0.11 ms of the temporal pass) | — | I7 |
 | O4 | Compact surface loads for RTXDI: one packed guide (oct normals, roughness, f0 / albedo) and position from depth | 36 → ~20 B per neighbor surface in DI temporal / shade and GI temporal / shade | `Position` is a guide by F2's decision (both frames); rebuilding it needs exact previous view matrices with jitter | I7 |
-| O6 | Firefly clamp on the X₂ radiance (display luminance 10 × exposure) | stability under DLSS-RR | **built, off:** no measurable effect on Sponza (§2.6) | I9 (after M7) |
+| O6 | Firefly clamp on the X₂ radiance at scene luminance 10 (the sample's `c_MaxIndirectRadiance`; display luminance 10 / exposure until the auto-exposure fix's F4) | stability under DLSS-RR | **built, off:** no measurable effect on Sponza (§2.6) | I9 (after M7) |
 | O7 | Checkerboard GI (and DI) on the floor tier | roughly halves `Indirect` and the reuse passes there | quality under DLSS-RR; floor tier only (C-G2-1) | I8 |
 | O8 | No DI BRDF candidate until M7 | 0.04 ms | it stays for parity with NVIDIA's `Medium` (C-R32-3); the user's call | I4 |
 
@@ -145,7 +145,7 @@ Each candidate lands only when three conditions hold:
   - projects X₂ with `camera.viewProj` and the jitter offset;
   - runs `RTXDI_DISpatialResampling` on the shade-input DI reservoirs (2 samples, radius 1 px, `Basic`, material test off);
   - re-evaluates the chosen light.
-- The firefly clamp limits X₂'s radiance to display luminance 10 / exposure, reading the 1×1 exposure image (`GpuTargets.exposureStorage`).
+- The firefly clamp limited X₂'s radiance to display luminance 10 / exposure, reading the 1×1 exposure image (`GpuTargets.exposureStorage`). Since the auto-exposure fix's F4 ([auto_exposure_dark_boiling.md](./auto_exposure_dark_boiling.md)), it clamps at scene luminance 10 (`kMaxIndirectRadiance`) and no longer reads the exposure image. The numbers below ran at the default manual exposure (scale 1), where the two clamps are identical.
 - Flags: `GpuRtxdiConstants::giFlags`, set from `GiSettings::isSecondaryResamplingEnabled` / `isFireflyClampEnabled`; both are off.
 
 **Measured** with the stability probe (as in §2.5, shipped settings + flag) and with GI-check phases per flag:
@@ -261,7 +261,7 @@ With NRC paused (the default since 2026-11-20), the cache costs nothing per fram
 | # | Finding | Source | M8 step |
 |---|---|---|---|
 | F1 | GI-check realizations depend on the frame index, so adding a phase shifts every later phase's noise. On 2026-11-20 the courtyard's converged ReSTIR GI gate read +1.51% against its 1.5% limit (7 of 8). This was a realization shift, not a regression: the same settings read within the limit before the O1 phases were added, and again at +0.63% (8 of 8) once the O2 / O6 phases were appended | C-G5-1 note | I1 |
-| F2 | The stability probe (static-camera `Lit` / `Indirect` temporal std, flickering px, mean per settings set) exists only as a scratch patch. In each batch, the first process run reads abnormal (a courtyard `Lit` mean half the normal one), so batches need a warm-up run | §2.5, §2.6 | I1 |
+| F2 | The stability probe (static-camera `Lit` / `Indirect` temporal std, flickering px, mean per settings set) exists only as a scratch patch. In each batch, the first process run reads abnormal (a courtyard `Lit` mean half the normal one), so batches need a warm-up run. The probe's lit-pixel cutoff was not recorded. The auto-exposure probe (mean > 1e-4 linear, std > 10% of the mean) reads the courtyard `Lit` at 1.549% / 8.682%, so the 5.0% flickering baseline is not comparable until the runner fixes the cutoff | §2.5, §2.6, [auto_exposure_dark_boiling.md](./auto_exposure_dark_boiling.md) §5 | I1 |
 | F3 | No check measures how fast lighting settles after a change (age limit, C-G5-1), or how the screen-edge band converges (C-M4-1) | C-G5-1, C-M4-1 | I1, I3, I4 |
 | F4 | `ReSTIR DI initial` includes the wait for the async TLAS | C-F3-9 | I2 |
 | F5 | The DI ray budget with one light: initial-candidate visibility, the ray-traced temporal correction ray, final visibility (reused up to 4 frames), and a BRDF candidate that finds no light (O8). Final visibility reuse leaks light up to ~16 px past hard shadow edges | C-R32-3, C-R32-4 | I4 |
@@ -269,6 +269,7 @@ With NRC paused (the default since 2026-11-20), the cache costs nothing per fram
 | F7 | A non-empty PTLAS update costs at least ~0.11 ms, more than the full build it replaced when everything moves | C-C4-4 | I2 |
 | F8 | Per-frame CPU work is O(entities) (`FrameData::write`) | C-M0-5, audit AU4 | I2 |
 | F9 | The async-compute overlap capture and every 2060 Super number are still open | M0 / M2 status, C-M0-1, C-F3-7, C-G3-2 | I2, I8 |
+| F10 | Auto exposure boiled in shaded areas: a +16 EV cap, unmetered black pixels, symmetric adaptation, and the exposure fed back into DLSS-RR. **Fixed 2026-11-20** ([auto_exposure_dark_boiling.md](./auto_exposure_dark_boiling.md) F1–F4): −12 EV histogram floor with bin 0 counted, +6 EV cap, asymmetric adaptation, no exposure texture to DLSS-RR, and a scene-unit O6 clamp. The gallery's remaining noise is the sparse one-bounce signal (its F5) | C-H2-2, C-H2-3 (resolved) | I5 (F5) |
 
 ## 5. Not applicable
 

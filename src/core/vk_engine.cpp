@@ -83,7 +83,9 @@ void Engine::initialize()
     }
 
     swapChain = std::make_unique<SwapChain>(window, *device);
-    swapChain->isUncapped = bench.has_value() || giCheck.has_value() || guideCapture.has_value();
+    swapChain->isUncapped =
+        bench.has_value() || motionTest.has_value() || guideCapture.has_value() || cullCheck.has_value() ||
+        giCheck.has_value() || rayCheck.has_value();
     swapChain->init();
 
     camera = std::make_unique<Camera>(*swapChain);
@@ -322,6 +324,7 @@ bool Engine::run()
                 }
             }
 
+            bool isCaptureRequested = false;
             if (motionTest) {
                 applyMotionTestRequest(motionTest->beginFrame(*camera, scene->objectStorage));
             }
@@ -329,15 +332,19 @@ bool Engine::run()
                 const ObjectStorage& objects = scene->objectStorage;
                 const std::optional<glm::vec4> bounds =
                     objects.size() > 0 ? std::optional(objects.localBounds[0]) : std::nullopt;
-                applyGuideCaptureRequest(
-                    guideCapture->beginFrame(*camera, renderer->debugView, renderer->getRtxdi().settings, bounds));
+                const EngineGuideCapture::Request request =
+                    guideCapture->beginFrame(*camera, renderer->debugView, renderer->getRtxdi().settings, bounds);
+                isCaptureRequested = request.shouldCapture || isCaptureRequested;
+                applyGuideCaptureRequest(request);
             }
             if (cullCheck &&
                 cullCheck->beginFrame(*camera, renderer->getCulling().settings, renderer->debugView).shouldCapture) {
+                isCaptureRequested = true;
                 renderer->requestDisplayCapture();
             }
             if (giCheck && giCheck->beginFrame(*camera, renderer->getRtxdi(), renderer->indirectMode, renderer->debugView)
                                .shouldCapture) {
+                isCaptureRequested = true;
                 renderer->requestDisplayCapture();
             }
             if (isIndirectModeCycling) {
@@ -354,17 +361,25 @@ bool Engine::run()
                 quit = motionTest->endFrame(renderer->getLastMotionCheck());
             }
             if (guideCapture) {
-                // the capture is read on the CPU right away
-                deviceRef.waitIdle();
-                quit = guideCapture->endFrame(renderer->getLastDisplayCapture()) || quit;
+                if (isCaptureRequested) {
+                    deviceRef.waitIdle();
+                }
+                quit = guideCapture->endFrame(isCaptureRequested ? renderer->getLastDisplayCapture() : std::nullopt) ||
+                    quit;
             }
             if (cullCheck) {
-                deviceRef.waitIdle();
-                quit = cullCheck->endFrame(renderer->getLastDisplayCapture()) || quit;
+                if (isCaptureRequested) {
+                    deviceRef.waitIdle();
+                }
+                quit = cullCheck->endFrame(isCaptureRequested ? renderer->getLastDisplayCapture() : std::nullopt) ||
+                    quit;
             }
             if (giCheck) {
-                deviceRef.waitIdle();
-                quit = giCheck->endFrame(renderer->getLastDisplayCapture()) || quit;
+                if (isCaptureRequested) {
+                    deviceRef.waitIdle();
+                }
+                quit = giCheck->endFrame(isCaptureRequested ? renderer->getLastDisplayCapture() : std::nullopt) ||
+                    quit;
             }
             if (rayCheck) {
                 deviceRef.waitIdle();

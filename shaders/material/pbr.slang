@@ -91,6 +91,13 @@ public bool isAlphaTested(GpuMaterial material)
     return cutoff > 0.0 && material.baseColorFactor.a >= cutoff;
 }
 
+// matches materialBin in src/core/material_store.hpp: the resolve bin of a surface pixel, from GpuMaterial.flags so
+// classify loads one field of the row
+public uint materialBin(uint materialFlags)
+{
+    return (materialFlags & kMaterialFlagUnlit) != 0 ? kMaterialBinUnlit : kMaterialBinStandard;
+}
+
 // the base-color texture's uv and lodBias-scaled gradients at a surface, as sampleMaterial reads them
 public TextureGradients baseColorGradients(GpuMaterial material, Surface surface, float lodBias)
 {
@@ -129,7 +136,14 @@ void transformTangentFrame(GpuUvMatrix transform, inout float3 t, inout float3 b
     b = bitangent;
 }
 
+// rays hit every material: the unlit body is picked per row
 public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodBias)
+{
+    return sampleMaterial(material, surface, lodBias, materialBin(material.flags) == kMaterialBinUnlit);
+}
+
+// isUnlit: a constant in each resolve bin's entry, so the bin compiles only its own body
+public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodBias, bool isUnlit)
 {
     const float4 one = float4(1.0, 1.0, 1.0, 1.0);
     // sRGB views decode base color and emissive in hardware
@@ -186,7 +200,7 @@ public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, flo
     }
 
     // unlit: no diffuse or specular response, the color is all emission
-    if ((material.flags & kMaterialFlagUnlit) != 0)
+    if (isUnlit)
     {
         result.emissive = result.baseColor;
         result.baseColor = float3(0.0, 0.0, 0.0);

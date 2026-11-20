@@ -13,6 +13,8 @@ class DescriptorManager;
 // GPU-driven mesh draws: PUSH_DATA + DRAW_MESH_TASKS via VK_EXT_device_generated_commands.
 // The meshlet cull pass writes the sequences and their counts; one execute per (CullPhase, RasterBin).
 // Each pair owns a sequence region and a preprocess region.
+// The material-binned resolve (spec/m7/e1_material_binning.md) is one compute execute: EXECUTION_SET + PUSH_DATA +
+// DISPATCH over the sequences passes/classify.slang writes, one per non-empty MaterialBin
 class DeviceGeneratedCommands
 {
 public:
@@ -45,6 +47,11 @@ public:
     // binds the bin's mesh state, then executes its sequences; nothing when the bin holds no meshlet
     void recordExecute(vk::raii::CommandBuffer& cmd, CullPhase phase, RasterBin group) const;
 
+    // materialBins: RenderTargets' GpuMaterialBins, its sequences made visible to the preprocess stage
+    void recordResolvePreprocess(const vk::raii::CommandBuffer& cmd, vk::DeviceAddress materialBins) const;
+    // binds the execution set's initial shader, as the state command buffer does, then executes
+    void recordResolveExecute(const vk::raii::CommandBuffer& cmd, vk::DeviceAddress materialBins) const;
+
 private:
     void createLayout();
     void createStateCommandBuffer();
@@ -54,6 +61,8 @@ private:
     void allocatePreprocessBuffer(uint32_t frameSlot, uint32_t capacity);
     [[nodiscard]] vk::DeviceSize queryPreprocessSize(uint32_t capacity) const;
     [[nodiscard]] vk::GeneratedCommandsInfoEXT generatedCommandsInfo(CullPhase phase, RasterBin group) const;
+    void createResolveCommands();
+    [[nodiscard]] vk::GeneratedCommandsInfoEXT resolveCommandsInfo(vk::DeviceAddress materialBins) const;
 
     Device& device;
     const VkAllocator& allocator;
@@ -70,6 +79,17 @@ private:
     vk::raii::CommandPool statePool = nullptr;
     // one per bin: execute must match the preprocessed graphics state exactly, shaders included
     std::array<vk::raii::CommandBuffer, kRasterBinCount> stateCommandBuffers = {nullptr, nullptr};
+    // binds the resolve execution set's initial shader (MaterialBin::Background)
+    vk::raii::CommandBuffer resolveStateCommandBuffer = nullptr;
+
+    vk::raii::IndirectCommandsLayoutEXT resolveLayout = nullptr;
+    // MaterialBin-indexed resolve shaders
+    vk::raii::IndirectExecutionSetEXT resolveExecutionSet = nullptr;
+    // one region for both frame slots: frames are ordered on the graphics queue by the resolve's barriers
+    vk::raii::Buffer resolvePreprocessBuffer = nullptr;
+    VmaAllocation resolvePreprocessMemory = nullptr;
+    vk::DeviceAddress resolvePreprocessAddress = 0;
+    vk::DeviceSize resolvePreprocessSize = 0;
 
     // frame recorded by the last prepareFrame
     uint32_t frame = 0;

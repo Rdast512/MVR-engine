@@ -125,7 +125,7 @@ void nrcUpdateMain(uint3 id : SV_DispatchThreadID)
             NrcUpdateOnMiss(path);
             break;
         }
-        const PathHit vertex = shadeRayHit(root, hit, ray, pathLength + hit.t);
+        const PathHit vertex = shadeRayHit(root, hit, ray, pathLength);
         pathLength += hit.t;
         const NrcProgressState progress =
             NrcUpdateOnHit(nrc, path, attributesOf(nrcConstants, vertex.surface), hit.t, bounce, throughput, radiance);

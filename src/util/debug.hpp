@@ -29,3 +29,5 @@ void setDebugName(const vk::raii::Device &device, const vk::raii::Fence &fence, 
 void setDebugName(const vk::raii::Device &device, const vk::raii::AccelerationStructureKHR &structure, std::string_view name);
 void setDebugName(const vk::raii::Device &device, const vk::raii::MicromapEXT &micromap, std::string_view name);
 void setDebugName(const vk::raii::Device &device, const vk::raii::Pipeline &pipeline, std::string_view name);
+void setDebugName(const vk::raii::Device &device, const vk::raii::IndirectCommandsLayoutEXT &layout, std::string_view name);
+void setDebugName(const vk::raii::Device &device, const vk::raii::IndirectExecutionSetEXT &executionSet, std::string_view name);

@@ -15,8 +15,9 @@
 namespace
 {
     const vk::ImageSubresourceRange kColorRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-    // matches passes/resolve.slang, passes/debug_view.slang and the passes/rtxdi_*.slang
+    // matches passes/classify.slang, passes/debug_view.slang and the passes/rtxdi_*.slang
     constexpr uint32_t kFullscreenTile = 8;
+    static_assert(kFullscreenTile == kMaterialTileSize, "classify launches one group per resolve tile");
 
     constexpr uint32_t divideRoundUp(uint32_t value, uint32_t divisor) { return (value + divisor - 1) / divisor; }
 } // namespace
@@ -282,6 +283,7 @@ void Renderer::drawFrame()
                             .lightCount = worldLights.lightCount(),
                             .localLightCount = worldLights.localLightCount(),
                             .rayDebug = rayDebugCounters[currentFrame].address,
+                            .materialBins = targets.materialBinsAddress(),
                         });
     }
     // after the frame root and node instances of the slot are written
@@ -452,6 +454,13 @@ void Renderer::recordFrameCommands(vk::raii::CommandBuffer& cmd)
     }
     MeshletCulling::recordCounterReadback(cmd);
 
+    {
+        ZoneScopedN("Classify");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneClassify, *cmd, "GPU_Classify", gpuTrace);
+#endif
+        recordClassify(cmd);
+    }
     {
         ZoneScopedN("Resolve");
 #ifdef TRACY_ENABLE
@@ -736,8 +745,9 @@ void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase)
     }
 }
 
-// vis buffer + depth -> guides of this frame's set; depth is already eShaderReadOnlyOptimal after the late hi-z build
-void Renderer::recordResolve(const vk::raii::CommandBuffer& cmd)
+// vis buffer + depth -> a material bin per pixel, the bins' tile lists and the resolve's DGC sequences
+// (spec/m7/e1_material_binning.md); depth is already eShaderReadOnlyOptimal after the late hi-z build
+void Renderer::recordClassify(const vk::raii::CommandBuffer& cmd)
 {
     const vk::ImageMemoryBarrier2 visBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
@@ -751,18 +761,65 @@ void Renderer::recordResolve(const vk::raii::CommandBuffer& cmd)
         .image = targets.getVisBufferImage(),
         .subresourceRange = kColorRange,
     };
-    // earlier frames' reads of the guide and display images (compute, present fragment) -> this frame's writes
+    // earlier frames' reads of the guide, display and bin images (compute, present fragment), and of the one copy of
+    // the bin buffer and the resolve preprocess region (preprocess, execute) -> this frame's writes
     const vk::MemoryBarrier2 writeAfterReadBarrier{
-        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eFragmentShader,
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eFragmentShader |
+                        vk::PipelineStageFlagBits2::eCommandPreprocessEXT | vk::PipelineStageFlagBits2::eDrawIndirect,
         .srcAccessMask = vk::AccessFlagBits2::eNone,
-        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eClear |
+                        vk::PipelineStageFlagBits2::eCommandPreprocessEXT,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eTransferWrite |
+                         vk::AccessFlagBits2::eCommandPreprocessWriteEXT,
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1,
                                             .pMemoryBarriers = &writeAfterReadBarrier,
                                             .imageMemoryBarrierCount = 1,
                                             .pImageMemoryBarriers = &visBarrier});
-    dispatchFullscreen(cmd, shaderObjects.frameShaders.resolve);
+
+    const vk::Buffer materialBins = targets.getMaterialBinsBuffer();
+    cmd.fillBuffer(materialBins, 0, kMaterialBinCountBytes, 0);
+    // cleared counts -> classify's appends
+    const vk::MemoryBarrier2 fillBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eClear,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &fillBarrier});
+    dispatchFullscreen(cmd, shaderObjects.frameShaders.classify);
+
+    // tile counts -> binArgs reads them and writes the sequences
+    const vk::MemoryBarrier2 countBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &countBarrier});
+    const FramePushData push{.frameRoot = frameData.frameRootAddress(currentFrame)};
+    ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.binArgs);
+    cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
+    cmd.dispatch(1, 1, 1);
+    gpuTimer.end(cmd, GpuTimerScope::Classify);
+}
+
+// one DGC execute: a sequence per non-empty bin, each bin shader over its tile list with the overlap guard
+void Renderer::recordResolve(const vk::raii::CommandBuffer& cmd)
+{
+    // sequences and count -> preprocess and execute; binIds and tile lists -> the bin shaders
+    const vk::MemoryBarrier2 sequenceBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eCommandPreprocessEXT | vk::PipelineStageFlagBits2::eDrawIndirect |
+                        vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eCommandPreprocessReadEXT | vk::AccessFlagBits2::eIndirectCommandRead |
+                         vk::AccessFlagBits2::eShaderStorageRead,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &sequenceBarrier});
+    const vk::DeviceAddress materialBins = targets.materialBinsAddress();
+    dgc.recordResolvePreprocess(cmd, materialBins);
+    dgc.recordResolveExecute(cmd, materialBins);
     gpuTimer.end(cmd, GpuTimerScope::Resolve);
 }
 

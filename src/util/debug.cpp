@@ -138,3 +138,11 @@ void setDebugName(const vk::raii::Device &device, const vk::raii::MicromapEXT &m
 void setDebugName(const vk::raii::Device &device, const vk::raii::Pipeline &pipeline, std::string_view name) {
 	setDebugNameImpl(device, pipeline, name, vk::ObjectType::ePipeline);
 }
+
+void setDebugName(const vk::raii::Device &device, const vk::raii::IndirectCommandsLayoutEXT &layout, std::string_view name) {
+	setDebugNameImpl(device, layout, name, vk::ObjectType::eIndirectCommandsLayoutEXT);
+}
+
+void setDebugName(const vk::raii::Device &device, const vk::raii::IndirectExecutionSetEXT &executionSet, std::string_view name) {
+	setDebugNameImpl(device, executionSet, name, vk::ObjectType::eIndirectExecutionSetEXT);
+}

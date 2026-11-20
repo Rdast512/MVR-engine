@@ -31,11 +31,16 @@ void rtxdiGiTemporalMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_Grou
     // uniform: after a reset the previous guides and reservoirs do not apply (undefined after a resize), after an
     // indirect mode change the reservoirs hold other samples
     const bool isHistoryValid = hasIndirectHistory(root);
-    // no early return before the boiling filter: it synchronizes the whole group. Out of bounds the surface is empty
+    // no early return before the boiling filter: it synchronizes the whole group. Out of bounds the reservoir stays
+    // empty so padding lanes never read unwritten VRAM into the group threshold
+    const bool isInBounds = all(id.xy < gRtxdiBridge.renderSize);
     const RAB_Surface surface = RAB_GetGBufferSurface(int2(id.xy), false);
     const uint2 reservoirPosition = RTXDI_PixelPosToReservoirPos(id.xy, constants.runtime.activeCheckerboardField);
-    RTXDI_GIReservoir reservoir =
-        RTXDI_LoadGIReservoir(constants.giReservoirBuffer, reservoirPosition, kGiInitialReservoirArray);
+    RTXDI_GIReservoir reservoir = RTXDI_EmptyGIReservoir();
+    if (isInBounds)
+    {
+        reservoir = RTXDI_LoadGIReservoir(constants.giReservoirBuffer, reservoirPosition, kGiInitialReservoirArray);
+    }
     if (isHistoryValid && RAB_IsSurfaceValid(surface))
     {
         RTXDI_RandomSamplerState rng =
@@ -52,7 +57,7 @@ void rtxdiGiTemporalMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_Grou
     {
         RTXDI_GIBoilingFilter(localId.xy, constants.giBoilingFilter.boilingFilterStrength, reservoir);
     }
-    if (any(id.xy >= gRtxdiBridge.renderSize))
+    if (!isInBounds)
     {
         return;
     }

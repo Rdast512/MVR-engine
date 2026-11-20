@@ -30,6 +30,8 @@ public:
     static constexpr vk::Format kUpscaledFormat = vk::Format::eR16G16B16A16Sfloat;
     static constexpr vk::Format kPostFormat = vk::Format::eR16G16B16A16Sfloat;
     static constexpr vk::Format kExposureFormat = vk::Format::eR32Sfloat;
+    // MaterialBin per pixel, written by passes/classify.slang
+    static constexpr vk::Format kBinIdsFormat = vk::Format::eR8Uint;
 
     // an image with the view NGX needs; the descriptor heap does not keep views
     struct ImageRef
@@ -81,6 +83,9 @@ public:
     [[nodiscard]] vk::ImageView getVisBufferView() const noexcept { return *visBufferView; }
     // kDisplayFormat, eGeneral
     [[nodiscard]] vk::Image getDisplayImage() const noexcept { return *display.image; }
+    // GpuMaterialBins + tile lists; written and read within one frame's graphics work, so one copy serves both slots
+    [[nodiscard]] vk::Buffer getMaterialBinsBuffer() const noexcept { return *materialBins; }
+    [[nodiscard]] vk::DeviceAddress materialBinsAddress() const noexcept { return materialBinsDeviceAddress; }
 
 private:
     struct Target
@@ -122,6 +127,7 @@ private:
         return ImageRef{.image = *target.image, .view = *target.view, .format = format};
     }
     void destroyTargets();
+    void createMaterialBins();
 
     const Device& device;
     const VkAllocator& allocator;
@@ -141,6 +147,10 @@ private:
     Target upscaledTarget;
     Target postTarget;
     Target exposureTarget;
+    Target binIds;
+    vk::raii::Buffer materialBins = nullptr;
+    VmaAllocation materialBinsMemory = nullptr;
+    vk::DeviceAddress materialBinsDeviceAddress = 0;
     std::array<std::array<Target, kGuideImageCount>, kGuideSetCount> guideSets;
     // sampled depth for the resolve and debug views
     uint32_t depthIndex = kNoneIndex;

@@ -23,6 +23,9 @@ enum class GpuTimerScope : uint32_t
     LateDraw,
     LateAlphaDraw,
     LateHiZ,
+    // material bin per pixel, tile lists and the resolve's DGC sequences (spec/m7/e1_material_binning.md)
+    Classify,
+    // DGC preprocess and execute of the material-bin resolve shaders
     Resolve,
     // first span of the ray command buffer: includes any wait for the TLAS build
     RtxdiInitial,
@@ -81,6 +84,8 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "Late alpha draw";
     case GpuTimerScope::LateHiZ:
         return "Late Hi-Z build";
+    case GpuTimerScope::Classify:
+        return "Material classify";
     case GpuTimerScope::Resolve:
         return "Vis-buffer resolve";
     case GpuTimerScope::RtxdiInitial:

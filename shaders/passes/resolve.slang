@@ -7,11 +7,11 @@ import geometry.visbuffer;
 import material.brdf;
 import material.pbr;
 
-// vis buffer -> shading surface -> guides of this frame's set (spec/features/visibility_buffer.md §3.5)
+// vis buffer -> shading surface -> guides of this frame's set (spec/features/visibility_buffer.md §3.5). One entry per
+// material bin, launched by the resolve's DGC execute with one group per tile of the bin's list
+// (spec/m7/e1_material_binning.md)
 
-static const uint kResolveTile = 8; // matches src/render/vk_renderer.cpp
-
-[[vk::push_constant]] ConstantBuffer<FramePushData> push;
+[[vk::push_constant]] ConstantBuffer<ResolvePushData> push;
 
 // render-resolution pixels from this frame's unjittered position to last frame's; z is the view depth there minus
 // here (clip w), RTXDI's expected previous linear depth offset
@@ -41,38 +41,32 @@ void writeGuides(GpuGuideSet set, uint2 pixel, float4 normalRoughness, float2 ge
     storageTex2D<float4, kImageFormatRgba32f>(set.storage[kGuidePosition])[pixel] = position;
 }
 
-[shader("compute")]
-[numthreads(kResolveTile, kResolveTile, 1)]
-void resolveMain(uint3 id : SV_DispatchThreadID)
+// empty pixel: zero guides, and the motion of a direction at infinity
+void resolveBackground(GpuFrameRoot root, GpuTargets targets, uint2 pixel)
 {
-    const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
-    const GpuTargets targets = loadTargets(root);
-    if (any(id.xy >= targets.renderSize))
-    {
-        return;
-    }
     const GpuCameraData camera = loadCamera(root);
     const float2 targetSize = float2(targets.renderSize);
-    const float2 ndc = pixelToNdc(float2(id.xy) + 0.5, targetSize);
+    const float2 ndc = pixelToNdc(float2(pixel) + 0.5, targetSize);
+    // a direction at infinity moves with the camera rotation only
+    const float4 farPoint = mul(camera.invViewProj, float4(ndc, 0.0, 1.0));
+    const float3 direction = farPoint.xyz / farPoint.w - camera.cameraPos;
+    const float4 previousClip = mul(camera.prevViewProj, float4(direction, 0.0));
+    const float4 currentClip = mul(camera.viewProj, float4(direction, 0.0));
+    const float3 none = float3(0.0, 0.0, 0.0);
+    const float4 none4 = float4(0.0, 0.0, 0.0, 0.0);
+    // a direction has no depth: only the screen motion is meaningful
+    const float3 motion = float3(motionPixels(root, currentClip, previousClip, targetSize).xy, 0.0);
+    writeGuides(targets.current, pixel, none4, float2(0.0, 0.0), none4, none4, none, none, motion, none4);
+}
 
-    // reverse Z: the clear value 0 is empty sky; the payload of an empty pixel is undefined
-    const float depth = tex2D(targets.depth).Load(int3(id.xy, 0)).r;
-    if (depth == 0.0)
-    {
-        // a direction at infinity moves with the camera rotation only
-        const float4 farPoint = mul(camera.invViewProj, float4(ndc, 0.0, 1.0));
-        const float3 direction = farPoint.xyz / farPoint.w - camera.cameraPos;
-        const float4 previousClip = mul(camera.prevViewProj, float4(direction, 0.0));
-        const float4 currentClip = mul(camera.viewProj, float4(direction, 0.0));
-        const float3 none = float3(0.0, 0.0, 0.0);
-        const float4 none4 = float4(0.0, 0.0, 0.0, 0.0);
-        // a direction has no depth: only the screen motion is meaningful
-        const float3 motion = float3(motionPixels(root, currentClip, previousClip, targetSize).xy, 0.0);
-        writeGuides(targets.current, id.xy, none4, float2(0.0, 0.0), none4, none4, none, none, motion, none4);
-        return;
-    }
+// covered pixel; isUnlit is a constant per entry
+void resolveSurface(GpuFrameRoot root, GpuTargets targets, uint2 pixel, bool isUnlit)
+{
+    const GpuCameraData camera = loadCamera(root);
+    const float2 targetSize = float2(targets.renderSize);
+    const float2 ndc = pixelToNdc(float2(pixel) + 0.5, targetSize);
 
-    const uint payload = uintTex2D(targets.visBuffer).Load(int3(id.xy, 0));
+    const uint payload = uintTex2D(targets.visBuffer).Load(int3(pixel, 0));
     const DrawContext draw = loadDrawContext(root, visPayloadRow(payload));
     const TriangleCorners corners = loadTriangleCorners(draw, camera, visPayloadTriangle(payload));
     const Barycentrics bary =
@@ -81,7 +75,7 @@ void resolveMain(uint3 id : SV_DispatchThreadID)
 
     // log2(render / display): DLSS-RR reconstructs display-resolution texture detail
     const SampledMaterial material =
-        sampleMaterial(loadMaterial(root, materialRow(draw.primitive)), surface, camera.lodBias);
+        sampleMaterial(loadMaterial(root, materialRow(draw.primitive)), surface, camera.lodBias, isUnlit);
 
     const float3 view = normalize(camera.cameraPos - surface.position);
     const BrdfInputs brdfInputs = fromMaterial(material);
@@ -91,8 +85,57 @@ void resolveMain(uint3 id : SV_DispatchThreadID)
                               material.specularWeight;
     const float4 currentClip = mul(camera.viewProj, float4(surface.position, 1.0));
     const float4 previousClip = mul(camera.prevViewProj, float4(surface.prevPosition, 1.0));
-    writeGuides(targets.current, id.xy, float4(material.n, material.roughness), octEncode(surface.geoNormal),
+    writeGuides(targets.current, pixel, float4(material.n, material.roughness), octEncode(surface.geoNormal),
                 float4(brdfInputs.cDiff, material.ao), float4(f0, material.specularWeight), specAlbedo,
                 material.emissive, motionPixels(root, currentClip, previousClip, targetSize),
                 float4(surface.position, currentClip.w));
+}
+
+// the pixel of this thread in its group's tile; false outside the target or on another bin's pixel, so every pixel is
+// written by exactly one bin
+bool binPixel(GpuTargets targets, uint bin, uint3 groupId, uint3 threadId, out uint2 pixel)
+{
+    const uint tile = bdaPtr<uint>(push.tileList)[groupId.x];
+    pixel = uint2(tile & 0xffffu, tile >> 16) * kMaterialTileSize + threadId.xy;
+    return all(pixel < targets.renderSize) &&
+           storageTex2D<uint, kImageFormatR8ui>(targets.binIdsStorage)[pixel] == bin;
+}
+
+[shader("compute")]
+[numthreads(kMaterialTileSize, kMaterialTileSize, 1)]
+void resolveBackgroundMain(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
+{
+    const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
+    const GpuTargets targets = loadTargets(root);
+    uint2 pixel;
+    if (binPixel(targets, kMaterialBinBackground, groupId, threadId, pixel))
+    {
+        resolveBackground(root, targets, pixel);
+    }
+}
+
+[shader("compute")]
+[numthreads(kMaterialTileSize, kMaterialTileSize, 1)]
+void resolveStandardMain(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
+{
+    const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
+    const GpuTargets targets = loadTargets(root);
+    uint2 pixel;
+    if (binPixel(targets, kMaterialBinStandard, groupId, threadId, pixel))
+    {
+        resolveSurface(root, targets, pixel, false);
+    }
+}
+
+[shader("compute")]
+[numthreads(kMaterialTileSize, kMaterialTileSize, 1)]
+void resolveUnlitMain(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
+{
+    const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
+    const GpuTargets targets = loadTargets(root);
+    uint2 pixel;
+    if (binPixel(targets, kMaterialBinUnlit, groupId, threadId, pixel))
+    {
+        resolveSurface(root, targets, pixel, true);
+    }
 }

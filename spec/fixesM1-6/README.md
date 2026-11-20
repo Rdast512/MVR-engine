@@ -2,9 +2,11 @@
 
 **Status** — Milestone planned on 2026-11-20. No step spec is written yet, and no step is built.\
 **Scope** — Make the whole pipeline produce its best image per millisecond. That means fixing the measured bias and stability problems of the default lighting, closing or explaining the NRC bias, and landing the measured perf levers. Each step is backed by a check that keeps it fixed.
-[Engine spec](../../docs/engine_spec.md) · [Findings](../features/m8_optimization_and_fixes.md) · [PBR plan](../pbr_implementation_plan.md) · [Considerations](../considerations.md)
+[Engine spec](../../docs/engine_spec.md) · [Findings](./m8_optimization_and_fixes.md) · [PBR plan](../pbr_implementation_plan.md) · [Considerations](../considerations.md)
 
-Findings and candidate ids (O, Q, NP, F) refer to [m8_optimization_and_fixes.md](../features/m8_optimization_and_fixes.md). Each step gets its own spec in this folder (`i1_check_runners.md`, …) before its code, written after the step's reference is studied in `reference/`.
+Fixes landed ahead of the steps: [auto-exposure dark boiling](./auto_exposure_dark_boiling.md) (2026-11-20, finding F10).
+
+Findings and candidate ids (O, Q, NP, F) refer to [m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md). Each step gets its own spec in this folder (`i1_check_runners.md`, …) before its code, written after the step's reference is studied in `reference/`.
 
 | Step | Contract | Findings |
 |---|---|---|

@@ -14,6 +14,14 @@ public static const uint kCullGroupSize = 64;
 public static const uint kRasterBinCount = 2;
 public static const uint kRasterBinAlphaTested = 1;
 
+// MaterialBin in src/core/types.hpp: resolve shader per pixel, also the resolve execution-set index
+public static const uint kMaterialBinBackground = 0;
+public static const uint kMaterialBinStandard = 1;
+public static const uint kMaterialBinUnlit = 2;
+public static const uint kMaterialBinCount = 3;
+// classify / resolve tile edge in pixels
+public static const uint kMaterialTileSize = 8;
+
 public struct GpuCameraData
 {
     public float4x4 view;
@@ -112,6 +120,7 @@ public static const uint kDebugViewRtxdiReservoirs = 26u;
 public static const uint kDebugViewIndirectSamples = 27u;
 public static const uint kDebugViewNrcCache = 28u;
 public static const uint kDebugViewIndirectRadiance = 29u;
+public static const uint kDebugViewMaterialBin = 30u;
 public static const uint kDebugViewModeMask = 0xffu;
 public static const uint kDebugViewFlagEdges = 1u << 8;
 
@@ -466,6 +475,31 @@ public struct MeshDgcSequence
 };
 
 // 16 B, matches src/render/push_data.hpp
+public struct ResolvePushData
+{
+    public uint64_t frameRoot;
+    public uint64_t tileList; // uint[] of the bin: tile x in the low 16 bits, y in the high
+};
+
+// one DGC sequence: EXECUTION_SET + PUSH_DATA + DISPATCH, 40 B stride
+public struct ResolveDgcSequence
+{
+    public uint executionSetIndex; // kMaterialBin*
+    public uint pad0;
+    public ResolvePushData push;
+    public uint3 groupCount;
+    public uint pad1;
+};
+
+// head of the material-bin buffer, followed by kMaterialBinCount tile lists of one entry per render tile each
+public struct GpuMaterialBins
+{
+    public uint tileCount[kMaterialBinCount];
+    public uint sequenceCount; // DGC sequenceCountAddress
+    public ResolveDgcSequence sequences[kMaterialBinCount];
+};
+
+// 16 B, matches src/render/push_data.hpp
 public struct CullPushData
 {
     public uint64_t frameRoot;
@@ -695,6 +729,8 @@ public struct GpuTargets
     public uint postStorage;     // RGBA16F, display resolution: tonemapped, linear [0, 1]
     public uint exposureStorage; // R32F 1x1: the exposure scale for adaptation and tonemapping
     public uint2 displaySize;
+    public uint binIdsStorage; // R8_UINT kMaterialBin* per pixel, written by classify
+    public uint binIdsSampled;
 };
 
 // exposure histogram: bin 0 includes black, bin 255 is the ceiling
@@ -767,4 +803,5 @@ public struct GpuFrameRoot
     public uint64_t worldLights;    // GpuLight[lightCount], world space, written this frame (loadWorldLight)
     public uint64_t prevWorldLights; // last frame's worldLights, same rows; 0 on a history reset
     public uint64_t rayDebug;        // GpuRayDebugCounters of this frame slot; 0 unless kDebugRays
+    public uint64_t materialBins;    // GpuMaterialBins, then the per-bin tile lists
 };

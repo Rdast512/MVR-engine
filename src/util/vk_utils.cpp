@@ -93,9 +93,15 @@ void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags2 usage, vk::MemoryPr
     allocInfo.preferredFlags = static_cast<VkMemoryPropertyFlags>(properties);
 
     if (properties & vk::MemoryPropertyFlagBits::eHostVisible) {
-        allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        const bool isHostCached = static_cast<bool>(properties & vk::MemoryPropertyFlagBits::eHostCached);
+        allocInfo.usage = isHostCached ? VMA_MEMORY_USAGE_AUTO_PREFER_HOST : VMA_MEMORY_USAGE_AUTO;
         allocInfo.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-        allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+        if (properties & vk::MemoryPropertyFlagBits::eHostCoherent) {
+            allocInfo.requiredFlags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        }
+        // cached readback buffers must avoid uncached ReBAR write-combined VRAM (100x slower CPU reads)
+        allocInfo.flags = isHostCached ? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+                                       : VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
         allocInfo.priority = 0.25f; // staging / CPU-visible (NVIDIA memory priority)
     } else {
         allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;

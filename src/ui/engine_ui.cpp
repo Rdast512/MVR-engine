@@ -941,8 +941,8 @@ void EngineUi::drawRayTracingPanel()
     if (ImGui::Button("Converged")) {
         di = RtxdiContext::convergedSettings();
     }
-    ImGui::SetItemTooltip("the convergence check's configuration: unbiased on a static camera, neighbors only on "
-                          "disocclusion");
+    ImGui::SetItemTooltip("the convergence check's configuration: ray-traced bias correction, temporal only, no "
+                          "fallback, permutation or boiling filter");
     ImGui::EndDisabled();
 
     ImGui::SeparatorText("DLSS Ray Reconstruction");

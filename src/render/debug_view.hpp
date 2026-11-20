@@ -55,6 +55,8 @@ enum class DebugView : uint32_t
     NrcCache,
     // ReSTIR GI's indirectRadiance (spec/m4/g5_restir_gi.md): converges to Indirect samples, with less noise
     IndirectRadiance,
+    // classify's resolve bin per pixel (spec/m7/e1_material_binning.md): Background black, Standard grey, Unlit orange
+    MaterialBin,
     Count,
 };
 
@@ -70,6 +72,8 @@ static_assert(std::to_underlying(DebugView::RtxdiReservoirs) == 26);
 static_assert(std::to_underlying(DebugView::IndirectSamples) == 27);
 static_assert(std::to_underlying(DebugView::NrcCache) == 28);
 static_assert(std::to_underlying(DebugView::IndirectRadiance) == 29);
+// shaders/types.slang kDebugViewMaterialBin
+static_assert(std::to_underlying(DebugView::MaterialBin) == 30);
 
 enum class DebugViewCategory : uint8_t
 {
@@ -142,6 +146,7 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"Indirect samples", DebugViewCategory::Lighting, true},
     {"NRC cache", DebugViewCategory::Lighting, true},
     {"Indirect radiance", DebugViewCategory::Lighting, true},
+    {"Material bin", DebugViewCategory::Geometry, true},
 }};
 
 [[nodiscard]] constexpr const DebugViewInfo& debugViewInfo(DebugView view)

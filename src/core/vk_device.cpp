@@ -635,6 +635,15 @@ void Device::queryCapabilities()
                              static_cast<bool>(dgc.deviceGeneratedCommandsTransformFeedback),
                              static_cast<bool>(dgc.deviceGeneratedCommandsMultiDrawIndirectCount)),
                  "Device");
+        // the material-binned resolve: one execution set of compute shader objects (spec/m7/e1_material_binning.md)
+        if (!(dgc.supportedIndirectCommandsShaderStagesShaderBinding & vk::ShaderStageFlagBits::eCompute) ||
+            dgc.maxIndirectShaderObjectCount < kMaterialBinCount) {
+            throw std::runtime_error(std::format("DGC cannot bind {} compute shader objects (shaderBind={:#x}, "
+                                                 "maxShaderObjects={})",
+                                                 kMaterialBinCount,
+                                                 static_cast<uint32_t>(dgc.supportedIndirectCommandsShaderStagesShaderBinding),
+                                                 dgc.maxIndirectShaderObjectCount));
+        }
     }
     capabilities.memoryDecompression = propertiesChain.get<vk::PhysicalDeviceMemoryDecompressionPropertiesEXT>();
     {

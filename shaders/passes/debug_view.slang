@@ -217,6 +217,20 @@ float3 indirectSample(GpuFrameRoot root, uint2 pixel)
     return shadeGiSample(surface, reservoir.position, reservoir.radiance) * reservoir.weightSum;
 }
 
+// classify's bin per pixel: Background black, Standard grey, Unlit orange
+float3 materialBinColor(GpuTargets targets, uint2 pixel)
+{
+    switch (uintTex2D(targets.binIdsSampled).Load(int3(pixel, 0)))
+    {
+    case kMaterialBinStandard:
+        return float3(0.55, 0.6, 0.65);
+    case kMaterialBinUnlit:
+        return float3(1.0, 0.55, 0.1);
+    default:
+        return float3(0.0, 0.0, 0.0);
+    }
+}
+
 float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCameraData camera, uint2 pixel, float depth)
 {
     const GpuGuideSet set = targets.current;
@@ -263,6 +277,8 @@ float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCamer
         const float2 motion = loadGuide(set, kGuideMotion, pixel).xy;
         return float3(saturate(abs(motion) / 16.0), 0.0) + (all(motion == 0.0) ? 0.0 : 0.1);
     }
+    case kDebugViewMaterialBin:
+        return materialBinColor(targets, pixel);
     case kDebugViewReprojection:
         // a reset frame has nothing valid to compare against
         return hasHistory(root) ? reprojectionError(targets, pixel) : float3(0.0, 0.0, 0.0);

@@ -4,6 +4,7 @@
 #include "core/vk_descriptors.hpp"
 #include "push_data.hpp"
 #include "util/vk_tracy.hpp"
+#include "util/debug.hpp"
 #include "util/vk_utils.hpp"
 
 #include <algorithm>
@@ -41,6 +42,7 @@ DeviceGeneratedCommands::~DeviceGeneratedCommands()
     for (uint32_t frameSlot = 0; frameSlot < MAX_FRAMES_IN_FLIGHT; ++frameSlot) {
         destroyFrameResources(frameSlot);
     }
+    destroyVmaBuffer(allocator.allocator, resolvePreprocessBuffer, resolvePreprocessMemory);
 }
 
 void DeviceGeneratedCommands::init()
@@ -71,6 +73,7 @@ void DeviceGeneratedCommands::init()
     }
     createLayout();
     createStateCommandBuffer();
+    createResolveCommands();
 
     logInfo(std::format("DGC ready: stride={} maxSequences={}", sizeof(MeshDgcSequence),
                         props.maxIndirectSequenceCount),
@@ -139,6 +142,114 @@ void DeviceGeneratedCommands::createStateCommandBuffer()
         state.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
         state.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
     }
+}
+
+// the resolve shaders were created indirect-bindable; the execution set starts with MaterialBin::Background and gets
+// the other bins by index, as every initial shader must have a distinct stage
+void DeviceGeneratedCommands::createResolveCommands()
+{
+    const auto& props = device.capabilities.deviceGeneratedCommands;
+    constexpr uint32_t kResolveTokenCount = 3;
+    if (!(props.supportedIndirectCommandsShaderStages & vk::ShaderStageFlagBits::eCompute) ||
+        props.maxIndirectCommandsTokenCount < kResolveTokenCount ||
+        props.maxIndirectCommandsTokenOffset < offsetof(ResolveDgcSequence, dispatch) ||
+        props.maxIndirectCommandsIndirectStride < sizeof(ResolveDgcSequence)) {
+        throw std::runtime_error("DGC limits below the material-binned resolve layout");
+    }
+
+    const auto& shaders = shaderObjects.resolveShaders;
+    const vk::raii::ShaderEXT& initialShader = shaders[std::to_underlying(MaterialBin::Background)];
+    const vk::ShaderEXT initialHandle = *initialShader;
+    // heap shaders: no set layouts (VUID-VkIndirectExecutionSetShaderInfoEXT-pInitialShaders-11323), push data only
+    const vk::IndirectExecutionSetShaderInfoEXT shaderInfo{
+        .shaderCount = 1,
+        .pInitialShaders = &initialHandle,
+        .maxShaderCount = kMaterialBinCount,
+    };
+    resolveExecutionSet = vk::raii::IndirectExecutionSetEXT(
+        device.vkdevice,
+        vk::IndirectExecutionSetCreateInfoEXT{.type = vk::IndirectExecutionSetInfoTypeEXT::eShaderObjects,
+                                              .info = &shaderInfo});
+    setDebugName(device.vkdevice, resolveExecutionSet, "DgcResolveExecutionSet");
+    std::array<vk::WriteIndirectExecutionSetShaderEXT, kMaterialBinCount - 1> writes{};
+    for (uint32_t bin = 1; bin < kMaterialBinCount; ++bin) {
+        writes[bin - 1] = vk::WriteIndirectExecutionSetShaderEXT{.index = bin, .shader = *shaders[bin]};
+    }
+    resolveExecutionSet.updateShader(writes);
+
+    const vk::IndirectCommandsExecutionSetTokenEXT executionSetToken{
+        .type = vk::IndirectExecutionSetInfoTypeEXT::eShaderObjects,
+        .shaderStages = vk::ShaderStageFlagBits::eCompute,
+    };
+    const vk::IndirectCommandsPushConstantTokenEXT pushToken{
+        .updateRange =
+            {
+                // VUID-VkIndirectCommandsLayoutTokenEXT-type-11333: PUSH_DATA tokens take every stage
+                .stageFlags = vk::ShaderStageFlagBits::eAll,
+                .offset = 0,
+                .size = static_cast<uint32_t>(sizeof(ResolvePushData)),
+            },
+    };
+    // the execution-set token comes first (VUID-VkIndirectCommandsLayoutCreateInfoEXT-pTokens-11139)
+    const std::array<vk::IndirectCommandsLayoutTokenEXT, kResolveTokenCount> tokens = {
+        vk::IndirectCommandsLayoutTokenEXT{
+            .type = vk::IndirectCommandsTokenTypeEXT::eExecutionSet,
+            .data = vk::IndirectCommandsTokenDataEXT{&executionSetToken},
+            .offset = static_cast<uint32_t>(offsetof(ResolveDgcSequence, executionSetIndex)),
+        },
+        vk::IndirectCommandsLayoutTokenEXT{
+            .type = vk::IndirectCommandsTokenTypeEXT::ePushData,
+            .data = vk::IndirectCommandsTokenDataEXT{&pushToken},
+            .offset = static_cast<uint32_t>(offsetof(ResolveDgcSequence, pushData)),
+        },
+        vk::IndirectCommandsLayoutTokenEXT{
+            .type = vk::IndirectCommandsTokenTypeEXT::eDispatch,
+            .offset = static_cast<uint32_t>(offsetof(ResolveDgcSequence, dispatch)),
+        },
+    };
+    resolveLayout = vk::raii::IndirectCommandsLayoutEXT(
+        device.vkdevice, vk::IndirectCommandsLayoutCreateInfoEXT{
+                             .flags = vk::IndirectCommandsLayoutUsageFlagBitsEXT::eExplicitPreprocess,
+                             .shaderStages = vk::ShaderStageFlagBits::eCompute,
+                             .indirectStride = static_cast<uint32_t>(sizeof(ResolveDgcSequence)),
+                             .pipelineLayout = nullptr,
+                             .tokenCount = static_cast<uint32_t>(tokens.size()),
+                             .pTokens = tokens.data(),
+                         });
+    setDebugName(device.vkdevice, resolveLayout, "DgcResolveLayout");
+
+    vk::raii::CommandBuffers buffers(device.vkdevice, vk::CommandBufferAllocateInfo{
+                                                          .commandPool = *statePool,
+                                                          .level = vk::CommandBufferLevel::eSecondary,
+                                                          .commandBufferCount = 1,
+                                                      });
+    resolveStateCommandBuffer = std::move(buffers.front());
+    setDebugName(device.vkdevice, resolveStateCommandBuffer, "DgcResolveStateCommandBuffer");
+    const vk::CommandBufferInheritanceInfo inheritance{};
+    resolveStateCommandBuffer.begin({.pInheritanceInfo = &inheritance});
+    ShaderObjects::bindComputeShader(resolveStateCommandBuffer, initialShader);
+    resolveStateCommandBuffer.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
+    resolveStateCommandBuffer.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
+
+    // sized for every bin at once, the most binArgsMain writes
+    const vk::GeneratedCommandsMemoryRequirementsInfoEXT memInfo{
+        .indirectExecutionSet = *resolveExecutionSet,
+        .indirectCommandsLayout = *resolveLayout,
+        .maxSequenceCount = kMaterialBinCount,
+        .maxDrawCount = 1,
+    };
+    const vk::DeviceSize preprocessSize =
+        device.vkdevice.getGeneratedCommandsMemoryRequirementsEXT(memInfo).memoryRequirements.size;
+    if (preprocessSize == 0) {
+        return;
+    }
+    resolvePreprocessSize = alignUp(preprocessSize, kPreprocessRegionAlignment);
+    createBuffer(resolvePreprocessSize,
+                 vk::BufferUsageFlagBits2::ePreprocessBufferEXT | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal, resolvePreprocessBuffer, resolvePreprocessMemory,
+                 allocator.allocator, device.vkdevice, device.queueFamilyIndices, "DgcResolvePreprocess", 0,
+                 kPreprocessRegionAlignment);
+    resolvePreprocessAddress = device.vkdevice.getBufferAddress({.buffer = *resolvePreprocessBuffer});
 }
 
 // the largest bin's: every (phase, bin) region has the same stride
@@ -315,4 +426,43 @@ void DeviceGeneratedCommands::recordExecute(vk::raii::CommandBuffer& cmd, CullPh
     // execute leaves the bound graphics state undefined; rebind exactly what preprocess saw
     shaderObjects.bindMeshState(cmd, group);
     cmd.executeGeneratedCommandsEXT(vk::True, generatedCommandsInfo(phase, group));
+}
+
+vk::GeneratedCommandsInfoEXT DeviceGeneratedCommands::resolveCommandsInfo(vk::DeviceAddress materialBins) const
+{
+    return vk::GeneratedCommandsInfoEXT{
+        .shaderStages = vk::ShaderStageFlagBits::eCompute,
+        .indirectExecutionSet = *resolveExecutionSet,
+        .indirectCommandsLayout = *resolveLayout,
+        .indirectAddress = materialBins + offsetof(GpuMaterialBins, sequences),
+        .indirectAddressSize = sizeof(GpuMaterialBins::sequences),
+        .preprocessAddress = resolvePreprocessAddress,
+        .preprocessSize = resolvePreprocessSize,
+        .maxSequenceCount = kMaterialBinCount,
+        .sequenceCountAddress = materialBins + offsetof(GpuMaterialBins, sequenceCount),
+        .maxDrawCount = 1,
+    };
+}
+
+void DeviceGeneratedCommands::recordResolvePreprocess(const vk::raii::CommandBuffer& cmd,
+                                                      vk::DeviceAddress materialBins) const
+{
+    ZoneScopedN("DeviceGeneratedCommands::recordResolvePreprocess");
+    cmd.preprocessGeneratedCommandsEXT(resolveCommandsInfo(materialBins), *resolveStateCommandBuffer);
+    const vk::MemoryBarrier2 preprocessBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eCommandPreprocessEXT,
+        .srcAccessMask = vk::AccessFlagBits2::eCommandPreprocessWriteEXT,
+        .dstStageMask = vk::PipelineStageFlagBits2::eCommandPreprocessEXT | vk::PipelineStageFlagBits2::eDrawIndirect,
+        .dstAccessMask = vk::AccessFlagBits2::eCommandPreprocessReadEXT | vk::AccessFlagBits2::eIndirectCommandRead,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &preprocessBarrier});
+}
+
+void DeviceGeneratedCommands::recordResolveExecute(const vk::raii::CommandBuffer& cmd,
+                                                   vk::DeviceAddress materialBins) const
+{
+    ZoneScopedN("DeviceGeneratedCommands::recordResolveExecute");
+    // the state the preprocess saw; execute leaves the bound compute shader undefined afterwards
+    ShaderObjects::bindComputeShader(cmd, shaderObjects.resolveShaders[std::to_underlying(MaterialBin::Background)]);
+    cmd.executeGeneratedCommandsEXT(vk::True, resolveCommandsInfo(materialBins));
 }

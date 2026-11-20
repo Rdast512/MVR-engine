@@ -1,6 +1,6 @@
 # Fix: Auto-exposure boiling in shaded (indirect-only) areas
 
-**Date:** 2026-11-20 · **Status:** F1–F4 implemented · **Milestone:** [M8](../m8/README.md) (fixes M3 H2 / H1 + M4 G5)
+**Date:** 2026-11-20 · **Status:** F1–F4 implemented and verified (§5; F3 is Option B); F5 open in M8 I5 · **Milestone:** [M8](./README.md) (fixes M3 H2 / H1 + M4 G5; finding F10 of [m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md))
 **Why:** Turning on auto exposure in Sponza areas with no direct sunlight (the +Z gallery, under the arches) causes severe temporal boiling. In the gallery, `indirectRadiance` has a mean of ~`0.00019` linear ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §2.6): auto exposure amplifies it by ~1000× (+10 EV) and up to 65,536× (+16 EV), feeding that extreme, fluctuating gain back into DLSS-RR.
 
 **Sources checked**
@@ -15,7 +15,7 @@
 
 ## 1. Root causes vs NVIDIA references
 
-| Aspect | Engine today | NVIDIA references | Effect in shaded Sponza |
+| Aspect | Engine before the fix | NVIDIA references | Effect in shaded Sponza |
 |---|---|---|---|
 | **Max exposure gain / luminance floor** | `maxEv = +16.0` (65,536×), `kExposureMinLog2 = -16.0` (`1.5e-5`), `vk_post.hpp:28-29` | **RTXDI** (`SceneRenderer.cpp:1783`): `minAdaptedLuminance = 0.002f` (≈ −9 EV → max ~90× / +6.5 EV, ~+5.5 EV with `exposureBias = -1.0`). **RTXGI** (`AutoExposurePass.h:32`): `minLogLuminance = -12.0f` (~+9.5 EV cap) | Engine boosts `~0.00019` gallery radiance by +10 to +16 EV, dragging sub-percent 1-bounce noise into bright mid-tones |
 | **Black pixels in histogram** | `exposure.slang:21-29, 73`: pixels `< 2^-16` go to `bin 0`, and `bin 0` is **excluded** from `total` (C-H2-3) | **RTXGI** (`AutoExposure.hlsl:50-80`): dark/sub-floor pixels clamp into `bin 0` and **count** in `pixelCount`; `lowPercentile = 0.40` drops the bottom 40% naturally | When most pixels are near black, the 40th–95th percentile meters only the sparse, noisy lit fraction, causing frame-to-frame target exposure jitter |
@@ -49,12 +49,16 @@ Match RTXGI's `AutoExposure.hlsl`:
 - Sum `total` over `bin = 0..255` (including dark/black pixels clamped to `bin 0`), instead of skipping `bin 0`. The `0.40..0.95` percentile window still ignores up to 40% black pixels, while scenes that are >40% dark smoothly approach the `minLog2` floor instead of chasing the brightest 1% of noisy pixels.
 - Keep `readback.pixels` reporting finite metered pixels (or add a non-zero count if needed for the UI).
 
+**As built:** each global bin is two 32-bit words, with the high word bumped on carry, so display-size totals of 64-weighted pixels cannot overflow without 64-bit buffer atomics. `readback.pixels` is `total / 64`, the count of finite pixels.
+
 ### F2 · Tighter default exposure clamp and asymmetric adaptation speeds (`src/render/vk_post.{hpp,cpp}`, `shaders/passes/exposure.slang`, `src/ui/engine_ui.cpp`)
 
 Match RTXDI (`SceneRenderer.cpp:1783-1787`) and RTXGI (`AutoExposurePass.h:36-37`):
 
 - Tighten default `PostProcess::Settings::maxEv` from `+16.0f` to **`+6.0f`** (64× max gain, close to RTXDI's `minAdaptedLuminance = 0.002f` → `+6.5 EV` / `+5.5 EV` with `-1 EV` bias). Keep the UI `Exposure range` control able to widen it manually when inspecting dark scenes.
 - Split `adaptationRate` into `adaptationSpeedUp = 2.0f` and `adaptationSpeedDown = 1.0f` (in EV half-lives via `exp2(-dt * speed)`, as in RTXGI `AutoExposure.hlsl:116-117`), so dark dips cannot rapidly yank exposure upward on transient denoiser noise.
+
+**As built:** `adaptationSpeedUp` applies when the metered luminance rises (exposure falls), and `adaptationSpeedDown` applies when it falls. The Post panel shows them as `Light adaptation` and `Dark adaptation`.
 
 ### F3 · Stabilize or decouple DLSS-RR's `pInExposureTexture` (`src/render/vk_dlss.{hpp,cpp}`, `src/render/vk_renderer.cpp`, `shaders/passes/exposure.slang`)
 
@@ -65,10 +69,13 @@ Test and pick one of two clean behaviors against the gallery + courtyard stabili
 
 Record A/B stability numbers (gallery + courtyard, auto exposure ON and OFF) before locking Option A vs B.
 
+**Chosen: Option B** (§5). `Dlss::evaluate` passes `pInExposureTexture = nullptr`, and the exposure image feeds only adaptation and tonemapping. `InPreExposure` stays 1 (C-H2-1). C-H2-2 is closed.
+
 ### F4 · Decouple O6 firefly clamp from auto exposure (`shaders/passes/indirect.slang`)
 
 - Replace the exposure-multiplied clamp (`luminance(radiance) * exposure > 10.0`) with a fixed scene-unit ceiling matching RTXDI's `ShadeSecondarySurfaces.hlsl:34,133-135` (`kMaxIndirectRadiance = 10.0`, independent of `exposureStorage`).
 - This removes the `exposure -> indirect.slang -> ReSTIR GI -> DLSS-RR -> exposure` feedback path when O6 is enabled (e.g. for M7/M8 many-light scenes).
+- O6 stays off by default. Its 2026-11-20 measurement ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §2.6) ran at the default manual exposure, which has a scale of 1. At that scale, the old and new clamps are identical. M8 I9 re-measures O6.
 
 ### F5 · Longer-term signal quality in shaded Sponza (separate from exposure)
 
@@ -76,6 +83,7 @@ Not an exposure bug, noted so expectations stay clear:
 
 - Without an environment/sky light (C-F3-5, currently unscheduled) and with 1-bounce ReSTIR GI (`NRC` paused for C-G5-3), deep shaded areas of Sponza have very sparse non-zero bounce hits.
 - Fixing C-G5-3 (M8 I5, re-enabling multi-bounce NRC) and/or adding a sky/environment light will raise shaded-area hit density by an order of magnitude, eliminating the residual low-frequency blotchiness that high exposure reveals.
+- The §5 gallery numbers are this residual: 4.737% deviation and 25.942% flickering pixels in the DLSS-RR output, identical for A and B and for auto and manual exposure.
 
 ---
 
@@ -108,3 +116,13 @@ The Post GPU scope measured 0.028–0.032 ms with the fix, compared with 0.028�
 The gallery auto-exposure probe completed with Vulkan core validation, synchronization validation, best-practice checks and GPU-assisted validation enabled. No messages identified the changed passes. The run reported the documented SDK diagnostics, including the NRC shutdown leak (C-G3-3).
 
 The final release build passed `ctest` (6/6), `ENGINE_GUIDE_CAPTURE=1` (315 PNGs, 2/2 normal checks, ReSTIR DI convergence), `ENGINE_GI_CHECK=1` (8/8 gates), `ENGINE_MOTION_TEST=1` (13/13 scenarios), and `ENGINE_CULL_CHECK=1` (16/16 poses).
+
+**Against §4:**
+
+| Criterion | Result |
+|---|---|
+| Gallery exposure stable to ≤ 0.05 EV | met: 6.000 to 6.000 EV, held at the `maxEv` cap |
+| Auto exposure matches locked manual exposure at the same EV | met on every pose (table above) |
+| Courtyard no worse than std ≤ 1.6% / flickering ≤ 5.0% | std met (1.549%). The flicker reading (8.682%) uses a lit-pixel cutoff that the 5.0% baseline did not record, and it equals the unity-exposure control. It is not a regression. The comparable baseline is M8 I1's stability runner ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) F2) |
+| Checks green, validation clean | met |
+| considerations.md updated | met: C-H2-2 and C-H2-3 resolved; C-H2-1 reworded |

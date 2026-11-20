@@ -62,6 +62,13 @@ inline constexpr float kBlendAlphaCutoff = 0.5f;
     return cutoff > 0.0f && material.baseColorFactor.a >= cutoff;
 }
 
+// the resolve bin of a surface pixel; matches materialBin in shaders/material/pbr.slang. Background is never a
+// material's: it comes from depth 0
+[[nodiscard]] inline MaterialBin materialBin(const GpuMaterial& material)
+{
+    return (material.flags & GpuMaterialFlag::Unlit) != 0 ? MaterialBin::Unlit : MaterialBin::Standard;
+}
+
 // Shared material table. Rows are deduplicated by value across every loaded model and refcounted by the models that
 // reference them. Ids are absolute GPU rows and never shift: a freed row's slot is reused by the next new material.
 // Row 0 is the default material, permanent and not refcounted.
