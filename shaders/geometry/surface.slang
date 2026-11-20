@@ -89,7 +89,7 @@ float4 loadVertexTangent(DrawContext draw, uint vertexIndex)
         : float4(0.0, 0.0, 0.0, 0.0);
 }
 
-float2 loadVertexUv1(DrawContext draw, uint vertexIndex)
+public float2 loadVertexUv1(DrawContext draw, uint vertexIndex)
 {
     return (draw.model.attributeMask & kModelAttributeUv1) != 0
         ? bdaPtr<float2>(draw.model.uv1)[vertexIndex]

@@ -103,6 +103,7 @@ void FrameData::writeFrameRoot(uint32_t frameSlot, const FrameRootInputs& inputs
         .exposure = 1.0f,
         .worldLights = inputs.worldLights,
         .prevWorldLights = inputs.prevWorldLights,
+        .rayDebug = inputs.rayDebug,
     };
 }
 

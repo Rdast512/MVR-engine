@@ -430,6 +430,14 @@ Cluster AS supports OMM per cluster: `VkClusterAccelerationStructureBuildTriangl
 - Clusters reorder triangles, so each cluster gets an OMM index buffer that maps its local triangle to the bake entry (`opacityMicromapIndexBuffer`; 0 would mean "triangle index in the geometry", which no longer matches the bake order). It is the cluster's subrange of the SDK's per-triangle output, and all clusters of a primitive share its micromap array.
 - After §16.3, simplified LOD levels have new triangles: bake OMMs per LOD level from the simplified triangles and their UVs.
 
+**Built (M6, 2026-11-20):**
+- **D1:** OMM SDK CPU bake per alpha primitive.
+- **D2:** one micromap per primitive, built before its CLAS in the same submit. Each cluster points at its index subrange, and alpha instances drop `FORCE_OPAQUE`.
+- **D3:** an alpha-tested raster bin with the same threshold.
+- **D4:** one `Proceed()` per query, with a Debug candidate counter that reads 0 in every runner, and an `alpha-edge` class in `ENGINE_RT_CHECK` for raster-vs-OMM differences next to a cut.
+- One rule picks the alpha primitives for both raster and rays: `isAlphaTested` in `material_store.hpp`.
+- Files: [spec/m6/](../spec/m6/README.md).
+
 ---
 
 ## 11. Lighting

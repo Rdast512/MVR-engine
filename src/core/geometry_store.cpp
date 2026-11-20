@@ -447,8 +447,10 @@ void GeometryStore::clearScratch()
     // meshletGroups is catalog: the cull templates read it after the upload
     drop(meshletVertices);
     drop(meshletTriangles);
+    drop(ommBakes);
     presentStreams = 0;
     textureRefs = {};
+    ommSummary = {};
     flushedPrimitiveCount = static_cast<uint32_t>(primitiveDraws.size());
     flushedAuxBlobCount = static_cast<uint32_t>(auxBlobs.size());
     flushedNodeCount = static_cast<uint32_t>(nodeDraws.size());

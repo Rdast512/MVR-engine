@@ -583,10 +583,10 @@ Spec §8.2, §10.5. Planned 2026-11-20. Each step has its own spec under [m6/](.
 
 | Step | Spec | Summary | Status |
 |---|---|---|---|
-| D1 | [d1_omm_bake.md](./m6/d1_omm_bake.md) | OMM SDK CPU bake per alpha primitive over its final cluster triangles, from the runtime texture's alpha (BC7 decoded with `bcdec`); `VK_EXT_opacity_micromap` kept | planned |
-| D2 | [d2_micromap_clas.md](./m6/d2_micromap_clas.md) | `VkMicromapEXT` per baked primitive built before the CLAS, per-cluster OMM index ranges, alpha instances drop `FORCE_OPAQUE` | planned; the micromap address rule is verified first |
-| D3 | [d3_alpha_raster_bin.md](./m6/d3_alpha_raster_bin.md) | draw records routed to `AlphaTested`, a mesh variant with UV + material, `discard` fragment, one DGC state per bin | planned |
-| D4 | [d4_ray_contract.md](./m6/d4_ray_contract.md) | zero-candidate debug counter, `pointOffset` / `minT` on measured need, alpha shots in the self-test runners | planned; `traceVisibility` built early with F2 |
+| D1 | [d1_omm_bake.md](./m6/d1_omm_bake.md) | OMM SDK CPU bake per alpha primitive over its final cluster triangles, from the runtime texture's alpha (BC7 decoded with `bcdec`); `VK_EXT_opacity_micromap` kept | built 2026-11-20; Sponza bake 741 ms, chains at 0.19 known area (C-D1-2) |
+| D2 | [d2_micromap_clas.md](./m6/d2_micromap_clas.md) | `VkMicromapEXT` per baked primitive built before the CLAS, per-cluster OMM index ranges, alpha instances drop `FORCE_OPAQUE` | built 2026-11-20; address rule confirmed; Sponza micromaps 1.11 MiB, CLAS +0.64 MiB, load build +30–120 ms (C-D2-1) |
+| D3 | [d3_alpha_raster_bin.md](./m6/d3_alpha_raster_bin.md) | draw records routed to `AlphaTested`, a mesh variant with UV + material, `discard` fragment, one DGC state per bin | built 2026-11-20; Sponza alpha bin 0.015 ms, opaque bin not slower; RT check edge differences C-D3-1 |
+| D4 | [d4_ray_contract.md](./m6/d4_ray_contract.md) | zero-candidate debug counter, `pointOffset` / `minT` on measured need, alpha shots in the self-test runners | built 2026-11-20; 0 candidates in every Debug runner, `pointOffset` / `minT` not needed, RT check `alpha-edge` class, GI check 8 of 8 |
 
 ### Phase E — Resolve and guides
 
@@ -921,7 +921,7 @@ A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
 | [M3 First lit frame](./m3/README.md) | B1 (**done**), B2 (**done**), B3 (**done**), E1 (**done**: AO, jitter, unlit specular, `lodBias`), E2 (**done**: punctual; emissive triangles M7), F1 (**done**), F2 (**done**), F3 (**done**), H1 (**done**), H2 (**done**), E3 sun (**done**); **M3 done** (2026-11-14) |
 | M4 Indirect | G1 (shelved, C-G1-3), G2 (**built**), G3 NRC (**built**), G5 ReSTIR GI (**built**), G6 combine (**built**), G7 indirect mode toggle (**built**; ReSTIR GI default since 2026-11-20). Open: 2060 Super timings (C-M0-1, C-G3-2); default tuning and NRC bias moved to M8 |
 | M5 | merged into M4 (2026-11-14) |
-| [M6 Alpha](./m6/README.md) | D1, D2, D3, D4 (spec planned 2026-11-20) |
+| [M6 Alpha](./m6/README.md) | D1, D2, D3, D4 (built 2026-11-20) |
 | M7 Material binning | E2 emissive triangles, F1 `Power_RIS`, resolve per bin (spec §9.1–9.2) |
 | [M8 Optimization and fixes](./m8/README.md) | I1–I9 (milestone planned 2026-11-20; findings in [m8_optimization_and_fixes.md](./features/m8_optimization_and_fixes.md)) |
 

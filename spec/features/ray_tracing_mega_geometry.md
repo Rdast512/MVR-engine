@@ -271,6 +271,10 @@ The origin offset uses the **geometric** normal, never the shading normal.
 
 **As built (RT4):** `safeSpawnPoint(hit, direction)` in `geometry/hit.slang`, offsetting to `direction`'s side of the triangle. `ENGINE_RT_CHECK` spawns one cosine-weighted ray from every matched interior primary hit: 0 self-hits over about 385 million rays (cull check, motion test, guide capture). The truncation bound is not added, since positions are untruncated (§9.4). `pointOffset` and `minT` stay with D4.
 
+**As built (D4, 2026-11-20): neither `pointOffset` nor `minT` is built.**
+- **`pointOffset`:** the guide capture's `Sponza_terminator` shot (upper colonnade, sun at azimuth 20°, elevation 40°) shows the column shafts and arches shading smoothly into shadow in `Shadowed lights`, with no faceted terminator. The rule of [d4_ray_contract.md](../m6/d4_ray_contract.md) builds it only when an image shows the artifact.
+- **`minT`:** with OMMs on, `ENGINE_RT_CHECK` reads 0 self-hits from the hemisphere rays of 7.8 M interior pixels on Sponza and of 24.4 M over a full guide capture, which includes `AlphaBlendModeTest` and two Sponza poses under the sun. `tMin = 0` stays.
+
 ### 6.2 Visibility rays
 
 The sample traces shadow and AO rays through the pipeline with `TerminateOnFirstHit | SkipClosestHitShader` (+ `Opaque` when the scene has no alpha test) and a miss shader that clears the payload. The engine uses `RayQuery` (spec §11.1, plan D4):
@@ -280,7 +284,13 @@ The sample traces shadow and AO rays through the pipeline with `TerminateOnFirst
 - No facing cull: a back face blocks light (closed meshes would leak otherwise). Same as the sample.
 - Debug builds count any candidate returned by `Proceed()` and assert zero (plan D4).
 
-**As built (PBR F2):** `traceVisibility(tlas, origin, direction, tMin, tMax)` in `raytracing/trace.slang`, with the flags above; `true` when nothing blocks. The debug candidate counter is still open (D4).
+**As built (PBR F2):** `traceVisibility(tlas, origin, direction, tMin, tMax)` in `raytracing/trace.slang`, with the flags above; `true` when nothing blocks.
+
+**As built (D4):**
+- `traceVisibility(RayScene, …)` and `traceClosest` (`geometry/hit.slang`) are the only `TraceRayInline` calls. Each makes one `Proceed()` and passes its result to `countCandidate`; `traceClosest`'s empty `while (Proceed())` loop is gone.
+- **Candidate counter:** `kDebugRays` is a specialization constant (`[vk::constant_id(1)]`) that `ShaderObjects::createComputeShader` sets in Debug builds only, so Release specializes the branch away.
+- When it is set, a query still running after `Proceed()` adds one to `GpuRayDebugCounters::candidates` (`GpuFrameRoot.rayDebug`, one host-visible buffer per frame slot). The renderer logs any nonzero count as a `[RayContract]` error and writes `Ray contract: N ray-query candidates over F frames` at shutdown.
+- Forcing every PTLAS instance to `FORCE_NO_OPAQUE` reads about 1.78 M candidates per frame on Sponza, so the counter fires.
 
 ---
 

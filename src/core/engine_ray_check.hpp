@@ -41,6 +41,8 @@ private:
     uint64_t backFaceHits = 0;
     uint64_t mipOutliers = 0;
     uint64_t depthTies = 0;
+    // misses, id mismatches and empty hits next to an alpha cut (spec/m6/d4_ray_contract.md): logged, not failures
+    uint64_t alphaEdges = 0;
     float maxNormalError = 0.0f;
     float maxGeoNormalError = 0.0f;
     float maxPositionError = 0.0f;

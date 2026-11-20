@@ -545,7 +545,7 @@ public struct GpuSerCheckStats
     public uint maxDistanceErrorBits;    // float bits, relative to the hit distance
 };
 
-// 68 B, matches src/core/types.hpp: rt_check pass, ENGINE_RT_CHECK only. max* fields are float bits
+// 72 B, matches src/core/types.hpp: rt_check pass, ENGINE_RT_CHECK only. max* fields are float bits
 public struct GpuRayCheckStats
 {
     public uint coveredPixels;
@@ -567,6 +567,14 @@ public struct GpuRayCheckStats
     // the same at the ray's own barycentrics: intersection noise through steep normal maps, reported only
     public uint maxHitNormalErrorBits;
     public uint maxHitMaterialNormalErrorBits;
+    // a mismatch next to an alpha-tested triangle's cut, within one OMM micro-triangle plus the raster footprint
+    public uint alphaEdges;
+};
+
+// matches src/core/types.hpp: what the trace helpers report under kDebugRays (raytracing/trace.slang)
+public struct GpuRayDebugCounters
+{
+    public uint candidates; // queries still running after their one Proceed()
 };
 
 // 40 B, matches src/core/types.hpp: motion_check pass, ENGINE_MOTION_TEST only
@@ -630,6 +638,18 @@ public struct PresentPushData
 public struct MeshVertexOut
 {
     public float4 pos : SV_Position;
+};
+
+// alpha-tested bin (spec/m6/d3_alpha_raster_bin.md): the base-color uv with its KHR_texture_transform applied; the
+// rest is uniform per meshlet, loaded once by its workgroup so the fragment reads no buffer
+public struct MeshAlphaVertexOut
+{
+    public float4 pos : SV_Position;
+    public float2 uv : TEXCOORD0;
+    // base-color texture and sampler heap indices
+    public nointerpolation uint2 baseColor : BASE_COLOR;
+    // texture alpha below cutoff / factor.a is cut, as the OMM bake (alphaTestCutoff); lodBias as the resolve's
+    public nointerpolation float2 alphaTest : ALPHA_TEST;
 };
 
 // must match src/core/types.hpp kVisTriangleBits
@@ -703,8 +723,11 @@ public struct GpuRayInstanceBuild
 {
     public uint64_t blas;
     public uint partition; // grid partition, fixed per layout
-    public uint pad0;
+    public uint flags;     // kRayInstanceBuildFlag* bits
 };
+
+// GpuRayInstanceBuild.flags, matches GpuRayInstanceBuildFlag in src/core/types.hpp
+public static const uint kRayInstanceBuildFlagOpacityMicromap = 1u << 0;
 
 // GpuFrameRoot.frameFlags, matches FrameFlag in src/core/types.hpp
 public static const uint kFrameFlagHistoryReset = 1u << 0;
@@ -743,4 +766,5 @@ public struct GpuFrameRoot
     public float exposure;          // 1: the exposure reaches post and DLSS-RR as an image (considerations C-H2-1)
     public uint64_t worldLights;    // GpuLight[lightCount], world space, written this frame (loadWorldLight)
     public uint64_t prevWorldLights; // last frame's worldLights, same rows; 0 on a history reset
+    public uint64_t rayDebug;        // GpuRayDebugCounters of this frame slot; 0 unless kDebugRays
 };

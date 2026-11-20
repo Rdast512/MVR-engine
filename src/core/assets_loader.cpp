@@ -6,8 +6,11 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <span>
 #include <optional>
 #include <thread>
 #include <glm/gtc/quaternion.hpp>
@@ -338,6 +341,10 @@ namespace
         uint32_t heapSrgb = kNoneIndex;
         uint32_t heapLinear = kNoneIndex;
         bool isBroken = false;
+        // base color of an alpha-tested material (collectGltfImageUses): the OMM bake reads its alpha
+        bool needsAlpha = false;
+        // kept from predecoded before its release; otherwise decoded by bakeGltfOmms
+        OmmAlphaTexture alpha;
     };
 
     struct GltfResolvedTexture
@@ -363,6 +370,8 @@ namespace
         // primitives that lacked the stream and got it generated
         uint32_t generatedNormalPrimitives = 0;
         uint32_t generatedTangentPrimitives = 0;
+        // glTF material of each primitive this load stored, in primitiveDraws order
+        std::vector<int32_t> primitiveMaterials{};
     };
 
     static std::string extrasJsonOf(const tg3_extras_ext& ext)
@@ -554,16 +563,26 @@ namespace
         return heap;
     }
 
-    static uint32_t resolveTextureImage(GltfLoadCtx& ctx, int32_t textureIndex, TextureColorSpace colorSpace)
+    // ctx.images row of a glTF texture; nullopt for a missing texture or image
+    static std::optional<uint32_t> textureImageRow(const GltfLoadCtx& ctx, int32_t textureIndex)
     {
         if (textureIndex < 0 || static_cast<uint32_t>(textureIndex) >= ctx.gltfTextures.size()) {
-            return kNoneIndex;
+            return std::nullopt;
         }
         const int32_t imageIndex = ctx.gltfTextures[static_cast<uint32_t>(textureIndex)].imageIndex;
         if (imageIndex < 0 || static_cast<uint32_t>(imageIndex) >= ctx.images.size()) {
+            return std::nullopt;
+        }
+        return static_cast<uint32_t>(imageIndex);
+    }
+
+    static uint32_t resolveTextureImage(GltfLoadCtx& ctx, int32_t textureIndex, TextureColorSpace colorSpace)
+    {
+        const std::optional<uint32_t> imageRow = textureImageRow(ctx, textureIndex);
+        if (!imageRow) {
             return kNoneIndex;
         }
-        GltfImageSrc& image = ctx.images[static_cast<uint32_t>(imageIndex)];
+        GltfImageSrc& image = ctx.images[*imageRow];
         if (ctx.collectImageUses) {
             (colorSpace == TextureColorSpace::Srgb ? image.usedSrgb : image.usedLinear) = true;
             return kNoneIndex;
@@ -897,6 +916,13 @@ namespace
         return flags;
     }
 
+    // any non-opaque mode; isAlphaTested (material_store.hpp) decides on the packed row
+    static bool hasAlphaMode(const tg3_material& material)
+    {
+        return (alphaModeFlags(strView(material.alpha_mode), 0) & GpuMaterialFlag::AlphaModeMask) !=
+               GpuMaterialFlag::AlphaOpaque;
+    }
+
     static void parseGltfMaterials(GltfLoadCtx& ctx, const tg3_model& model)
     {
         logDebug(std::format("glTF materials: {}", model.materials_count), "AssetLoader");
@@ -1177,6 +1203,10 @@ namespace
                                       gltfTextureSlotColorSpace("occlusionTexture"));
             (void)resolveTextureImage(ctx, material.emissive_texture.index,
                                       gltfTextureSlotColorSpace("emissiveTexture"));
+            if (const std::optional<uint32_t> imageRow = textureImageRow(ctx, pbr.base_color_texture.index);
+                imageRow && hasAlphaMode(material)) {
+                ctx.images[*imageRow].needsAlpha = true;
+            }
             GpuMaterial gpu{};
             MaterialPbrExtension ext{};
             parseGltfMaterialPbrExtensions(ctx, material, gpu, ext, std::format("material[{}]", i));
@@ -1238,6 +1268,10 @@ namespace
                 }
                 if (image.usedLinear) {
                     (void)loadGltfImage(ctx, image, TextureColorSpace::Linear);
+                }
+                if (image.needsAlpha && image.predecoded.pixels) {
+                    image.alpha = extractAlpha(image.predecoded.rgba(), static_cast<uint32_t>(image.predecoded.width),
+                                               static_cast<uint32_t>(image.predecoded.height));
                 }
                 // host image copy has consumed the pixels synchronously
                 image.predecoded = {};
@@ -1674,6 +1708,7 @@ namespace
             parseGltfExtras(geometry, AuxOwnerKind::Primitive, static_cast<uint32_t>(geometry.primitiveDraws.size()),
                             prim.ext, std::format("mesh[{}].prim[{}]", mi, pi));
             geometry.primitiveDraws.push_back(draw);
+            ctx.primitiveMaterials.push_back(prim.material);
             ++storedPrimitives;
 
             logDebug(std::format("glTF mesh[{}].prim[{}] POSITION verts={} TEXCOORD_0 floats={} indices={} stored={}",
@@ -1814,6 +1849,341 @@ namespace
                              instances.size()),
                  "AssetLoader");
         return storedPrimitives;
+    }
+
+    // ── OMM bake (spec/m6/d1_omm_bake.md) ───────────────────────
+
+    // plan §settings: subdivision cap and texels per micro-triangle edge (SDK default)
+    constexpr uint32_t kOmmMaxSubdivisionLevel = 5;
+    constexpr float kOmmTexelsPerMicroTriangleEdge = 2.0f;
+
+    struct OmmBakeJob
+    {
+        uint32_t primitive = 0; // load-relative
+        uint32_t image = 0;     // ctx.images row
+        ommTextureAddressMode addressMode = ommTextureAddressMode_Wrap;
+        ommTextureFilterMode filter = ommTextureFilterMode_Linear;
+        float alphaCutoff = kBlendAlphaCutoff;
+        uint32_t uvSet = 0;
+        std::optional<GpuUvMatrix> uvMatrix;
+    };
+
+    static ommTextureAddressMode ommAddressMode(int32_t wrap)
+    {
+        switch (wrap) {
+        case TG3_TEXTURE_WRAP_CLAMP_TO_EDGE:
+            return ommTextureAddressMode_Clamp;
+        case TG3_TEXTURE_WRAP_MIRRORED_REPEAT:
+            return ommTextureAddressMode_Mirror;
+        default:
+            return ommTextureAddressMode_Wrap;
+        }
+    }
+
+    // a bake job when the shader alpha-tests a texture on this primitive; logs the cases that stay opaque to rays
+    static std::optional<OmmBakeJob> qualifyOmmPrimitive(const GltfLoadCtx& ctx, const tg3_model& model,
+                                                         uint32_t primitive, const PrimitiveDraw& draw)
+    {
+        const MaterialStore::MaterialInfo& info = ctx.materials.infos[draw.materialId];
+        const GpuMaterial& material = info.material;
+        const float cutoff = alphaTestCutoff(material);
+        if (!isAlphaTested(material)) {
+            // the shader tests factor.a x texture.a, so a factor below the cutoff would discard everything
+            if ((material.flags & GpuMaterialFlag::AlphaModeMask) != GpuMaterialFlag::AlphaOpaque && cutoff > 0.0f &&
+                material.baseColorFactor.a < cutoff) {
+                logInfo(std::format("OMM prim {} '{}': factor alpha {} < cutoff {} is fully transparent; stays opaque "
+                                    "to rays and raster",
+                                    primitive, info.name, material.baseColorFactor.a, cutoff),
+                        "AssetLoader");
+            }
+            return std::nullopt;
+        }
+
+        const int32_t gltfMaterial = ctx.primitiveMaterials[primitive];
+        if (gltfMaterial < 0 || static_cast<uint32_t>(gltfMaterial) >= model.materials_count) {
+            return std::nullopt;
+        }
+        const int32_t texture = model.materials[gltfMaterial].pbr_metallic_roughness.base_color_texture.index;
+        const std::optional<uint32_t> image = textureImageRow(ctx, texture);
+        if (!image) {
+            return std::nullopt;
+        }
+
+        // glTF defaults: REPEAT, linear magnification
+        int32_t wrapS = TG3_TEXTURE_WRAP_REPEAT;
+        int32_t wrapT = TG3_TEXTURE_WRAP_REPEAT;
+        int32_t magFilter = TG3_TEXTURE_FILTER_LINEAR;
+        const int32_t sampler = model.textures[texture].sampler;
+        if (sampler >= 0 && static_cast<uint32_t>(sampler) < model.samplers_count) {
+            wrapS = model.samplers[sampler].wrap_s;
+            wrapT = model.samplers[sampler].wrap_t;
+            magFilter = model.samplers[sampler].mag_filter;
+        }
+        // the SDK takes one address mode for both axes
+        if (ommAddressMode(wrapS) != ommAddressMode(wrapT)) {
+            logInfo(std::format("OMM prim {} '{}': warning: wrapS {} != wrapT {}, baked with wrapS", primitive,
+                                info.name, wrapS, wrapT),
+                    "AssetLoader");
+        }
+
+        // the uv matrix the GPU row carries, so the bake samples where sampleMaterial does
+        const GpuMaterial packed = packMaterial(material, info.extension);
+        return OmmBakeJob{
+            .primitive = primitive,
+            .image = *image,
+            .addressMode = ommAddressMode(wrapS),
+            .filter = magFilter == TG3_TEXTURE_FILTER_NEAREST ? ommTextureFilterMode_Nearest
+                                                              : ommTextureFilterMode_Linear,
+            .alphaCutoff = cutoff / material.baseColorFactor.a,
+            .uvSet = std::min<uint32_t>(material.baseColorUv, 1u),
+            .uvMatrix = (packed.flags & GpuMaterialFlag::UvTransformBaseColor) != 0
+                            ? std::optional(packed.uvMatrices[0])
+                            : std::nullopt,
+        };
+    }
+
+    // mip 0 alpha of the runtime texture, from the same source loadGltfImage uploads; never a KTX2's source PNG
+    static OmmAlphaTexture loadOmmAlpha(const GltfImageSrc& image)
+    {
+        if (!image.decodedRgba.empty()) {
+            return extractAlpha(image.decodedRgba, static_cast<uint32_t>(image.width),
+                                static_cast<uint32_t>(image.height));
+        }
+        if (!image.encoded.empty() || (!image.path.empty() && !TextureManager::isKtxPath(image.path))) {
+            const TextureManager::DecodedImage decoded = image.encoded.empty()
+                                                             ? TextureManager::decodeRgba8File(image.path)
+                                                             : TextureManager::decodeRgba8(image.encoded);
+            if (!decoded.pixels) {
+                throw std::runtime_error("decode failed");
+            }
+            return extractAlpha(decoded.rgba(), static_cast<uint32_t>(decoded.width),
+                                static_cast<uint32_t>(decoded.height));
+        }
+        if (image.path.empty()) {
+            throw std::runtime_error("no image source");
+        }
+        const TextureManager::KtxBaseLevel level = TextureManager::readKtxBaseLevel(image.path);
+        switch (level.format) {
+        case vk::Format::eBc7UnormBlock:
+        case vk::Format::eBc7SrgbBlock:
+            return decodeBc7Alpha(level.bytes, level.width, level.height);
+        case vk::Format::eR8G8B8A8Unorm:
+        case vk::Format::eR8G8B8A8Srgb:
+            return extractAlpha(level.bytes, level.width, level.height);
+        default:
+            throw std::runtime_error(std::format("no alpha decoder for {}", vk::to_string(level.format)));
+        }
+    }
+
+    // the primitive's final cluster triangles, exactly as C1 hands them to the CLAS build
+    static OmmBake bakeOmmPrimitive(const GeometryStore& geometry, const PrimitiveDraw& draw, const OmmBakeJob& job,
+                                    const OmmAlphaTexture& alpha, const OmmBaker& baker, std::string_view name,
+                                    uint8_t maxSubdivisionLevel)
+    {
+        const std::vector<glm::vec2>& sourceUvs = job.uvSet == 0 ? geometry.uv0 : geometry.uv1;
+        std::vector<glm::vec2> uvs(draw.vertexCount);
+        for (uint32_t v = 0; v < draw.vertexCount; ++v) {
+            const glm::vec2 uv = sourceUvs[draw.firstVertex + v];
+            uvs[v] = job.uvMatrix ? glm::vec2{glm::dot(job.uvMatrix->row0, glm::vec3{uv, 1.0f}),
+                                              glm::dot(job.uvMatrix->row1, glm::vec3{uv, 1.0f})}
+                                  : uv;
+        }
+
+        std::vector<uint32_t> indices;
+        indices.reserve(draw.indexCount);
+        for (uint32_t m = draw.meshlets.firstMeshlet; m < draw.meshlets.firstMeshlet + draw.meshlets.meshletCount;
+             ++m) {
+            const GpuMeshletDesc& meshlet = geometry.meshlets[m];
+            for (uint32_t corner = 0; corner < meshlet.triangleCount * 3u; ++corner) {
+                const uint8_t local = geometry.meshletTriangles[meshlet.triangleOffset + corner];
+                indices.push_back(geometry.meshletVertices[meshlet.vertexOffset + local] - draw.firstVertex);
+            }
+        }
+
+        return baker.bake({
+            .name = name,
+            .alpha = alpha.texels,
+            .width = alpha.width,
+            .height = alpha.height,
+            .addressMode = job.addressMode,
+            .filter = job.filter,
+            .alphaCutoff = job.alphaCutoff,
+            .uvs = uvs,
+            .indices = indices,
+            .maxSubdivisionLevel = maxSubdivisionLevel,
+            .dynamicSubdivisionScale = kOmmTexelsPerMicroTriangleEdge,
+        });
+    }
+
+    constexpr uint64_t kFnvOffsetBasis = 0xcbf29ce484222325ull;
+    constexpr uint64_t kFnvPrime = 0x100000001b3ull;
+
+    static uint64_t hashBytes(uint64_t hash, std::span<const std::byte> bytes)
+    {
+        for (const std::byte value : bytes) {
+            hash = (hash ^ static_cast<uint8_t>(value)) * kFnvPrime;
+        }
+        return hash;
+    }
+
+    // determinism check: two loads must log the same value
+    static uint64_t hashOmmBake(uint64_t hash, const OmmBake& bake)
+    {
+        hash = hashBytes(hash, std::as_bytes(std::span(bake.arrayData)));
+        hash = hashBytes(hash, std::as_bytes(std::span(bake.triangles)));
+        hash = hashBytes(hash, std::as_bytes(std::span(bake.usages)));
+        hash = hashBytes(hash, std::as_bytes(std::span(bake.indices)));
+        hash = hashBytes(hash, std::as_bytes(std::span(&bake.indexType, 1)));
+        return hashBytes(hash, std::as_bytes(std::span(&bake.triangleCount, 1)));
+    }
+
+    // ENGINE_OMM_DEBUG_IMAGES=1: ommDebugSaveAsImages per bake into logs/omm next to logs/engine.log
+    static std::optional<std::filesystem::path> ommDebugImageDirectory()
+    {
+        const char* text = std::getenv("ENGINE_OMM_DEBUG_IMAGES");
+        if (text == nullptr || std::string_view(text) != "1") {
+            return std::nullopt;
+        }
+        const char* base = SDL_GetBasePath();
+        const std::filesystem::path directory = std::filesystem::path(base != nullptr ? base : "") / "logs" / "omm";
+        std::error_code errorCode;
+        std::filesystem::create_directories(directory, errorCode);
+        return directory;
+    }
+
+    // One OMM SDK bake per alpha-tested primitive of this load into GeometryStore::ommBakes. A primitive whose alpha
+    // or bake fails is logged and stays opaque to rays.
+    static void bakeGltfOmms(GltfLoadCtx& ctx, const tg3_model& model, const std::filesystem::path& modelPath,
+                             uint32_t maxOpacity4StateSubdivisionLevel)
+    {
+        ZoneScopedN("AssetLoader::bakeGltfOmms");
+        GeometryStore& geometry = ctx.geometry;
+        const auto primitiveCount = static_cast<uint32_t>(ctx.primitiveMaterials.size());
+        const uint32_t firstPrimitive = static_cast<uint32_t>(geometry.primitiveDraws.size()) - primitiveCount;
+        geometry.ommBakes.assign(primitiveCount, {});
+
+        std::vector<OmmBakeJob> jobs;
+        for (uint32_t primitive = 0; primitive < primitiveCount; ++primitive) {
+            if (std::optional<OmmBakeJob> job =
+                    qualifyOmmPrimitive(ctx, model, primitive, geometry.primitiveDraws[firstPrimitive + primitive])) {
+                jobs.push_back(std::move(*job));
+            }
+        }
+        if (jobs.empty()) {
+            return;
+        }
+        const auto start = std::chrono::steady_clock::now();
+
+        // each image decoded once, freed by the last bake that reads it
+        std::vector<uint32_t> readers(ctx.images.size(), 0);
+        std::vector<uint32_t> images;
+        for (const OmmBakeJob& job : jobs) {
+            if (readers[job.image]++ == 0) {
+                images.push_back(job.image);
+            }
+        }
+        std::vector<std::string> imageErrors(images.size());
+        parallelFor(images.size(), [&](size_t k) {
+            GltfImageSrc& image = ctx.images[images[k]];
+            if (!image.alpha.texels.empty()) {
+                return;
+            }
+            try {
+                image.alpha = loadOmmAlpha(image);
+            } catch (const std::exception& error) {
+                imageErrors[k] = error.what();
+            }
+        });
+        for (size_t k = 0; k < images.size(); ++k) {
+            if (!imageErrors[k].empty()) {
+                logError(std::format("OMM alpha of image '{}' unavailable, its primitives stay opaque to rays: {}",
+                                     ctx.images[images[k]].cacheKey, imageErrors[k]),
+                         "AssetLoader");
+            }
+        }
+
+        const uint8_t maxSubdivisionLevel =
+            static_cast<uint8_t>(std::min(kOmmMaxSubdivisionLevel, maxOpacity4StateSubdivisionLevel));
+        const std::string modelName = modelPath.stem().string();
+        std::vector<std::atomic<uint32_t>> pendingReaders(ctx.images.size());
+        for (size_t i = 0; i < readers.size(); ++i) {
+            pendingReaders[i].store(readers[i], std::memory_order_relaxed);
+        }
+        std::vector<std::string> bakeErrors(jobs.size());
+        const OmmBaker baker(ommDebugImageDirectory());
+        const size_t threads = parallelFor(jobs.size(), [&](size_t j) {
+            const OmmBakeJob& job = jobs[j];
+            GltfImageSrc& image = ctx.images[job.image];
+            if (!image.alpha.texels.empty()) {
+                try {
+                    geometry.ommBakes[job.primitive] =
+                        bakeOmmPrimitive(geometry, geometry.primitiveDraws[firstPrimitive + job.primitive], job,
+                                         image.alpha, baker, std::format("{}_prim{}", modelName, job.primitive),
+                                         maxSubdivisionLevel);
+                } catch (const std::exception& error) {
+                    bakeErrors[j] = error.what();
+                }
+            }
+            // acq_rel: every reader's bake happens before the free
+            if (pendingReaders[job.image].fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                image.alpha = {};
+            }
+        });
+
+        OmmBakeSummary summary{.minKnownAreaMetric = 1.0f};
+        uint64_t hash = kFnvOffsetBasis;
+        for (size_t j = 0; j < jobs.size(); ++j) {
+            const OmmBakeJob& job = jobs[j];
+            const std::string& materialName =
+                ctx.materials.infos[geometry.primitiveDraws[firstPrimitive + job.primitive].materialId].name;
+            if (!bakeErrors[j].empty()) {
+                logError(std::format("OMM prim {} '{}' stays opaque to rays: {}", job.primitive, materialName,
+                                     bakeErrors[j]),
+                         "AssetLoader");
+                continue;
+            }
+            const OmmBake& bake = geometry.ommBakes[job.primitive];
+            if (bake.triangleCount == 0) {
+                continue;
+            }
+            ++summary.primitiveCount;
+            summary.opaque += bake.stats.opaque;
+            summary.transparent += bake.stats.transparent;
+            summary.unknown += bake.stats.unknown;
+            summary.minKnownAreaMetric = std::min(summary.minKnownAreaMetric, bake.stats.knownAreaMetric);
+            summary.arrayBytes += bake.arrayData.size();
+            summary.indexBytes += bake.indices.size();
+            hash = hashOmmBake(hash, bake);
+            // no usages: every triangle took a special index
+            uint32_t minLevel = bake.usages.empty() ? 0u : ~0u;
+            uint32_t maxLevel = 0;
+            for (const VkMicromapUsageEXT& usage : bake.usages) {
+                minLevel = std::min(minLevel, usage.subdivisionLevel);
+                maxLevel = std::max(maxLevel, usage.subdivisionLevel);
+            }
+            logInfo(std::format("OMM prim {} '{}' ({}): tris={} cutoff={:.3f} wrap={} filter={} omms={} subdivision "
+                                "{}-{} micro O/T/U={}/{}/{} known={:.3f} array={} B index={} B ({}-bit)",
+                                job.primitive, materialName,
+                                std::filesystem::path(ctx.images[job.image].cacheKey).filename().string(),
+                                bake.triangleCount, job.alphaCutoff, static_cast<int>(job.addressMode),
+                                static_cast<int>(job.filter), bake.triangles.size(), minLevel, maxLevel,
+                                bake.stats.opaque, bake.stats.transparent, bake.stats.unknown,
+                                bake.stats.knownAreaMetric, bake.arrayData.size(), bake.indices.size(),
+                                bake.indexType == VK_INDEX_TYPE_UINT16 ? 16 : 32),
+                    "AssetLoader");
+        }
+        if (summary.primitiveCount == 0) {
+            summary.minKnownAreaMetric = 0.0f;
+        }
+        summary.bakeMilliseconds =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        geometry.ommSummary = summary;
+        logInfo(std::format("OMM baked {} of {} alpha primitives in {:.1f} ms on {} threads (subdivision <= {}): "
+                            "array {} B, index {} B, min known area {:.3f}, hash {:016x}",
+                            summary.primitiveCount, jobs.size(), summary.bakeMilliseconds, threads,
+                            maxSubdivisionLevel, summary.arrayBytes, summary.indexBytes, summary.minKnownAreaMetric,
+                            hash),
+                "AssetLoader");
     }
 
     // Textures a load picked up. Until commit, a failed load frees the ones no other model retains.
@@ -1997,6 +2367,8 @@ std::optional<EntityId> AssetsLoader::loadGltfModel(const std::string& modelPath
     }
     parseGltfLights(ctx, model);
     appendGltfGeometry(ctx, model);
+    bakeGltfOmms(ctx, model, std::filesystem::path(modelPath),
+                 textureManager.deviceWrapper.capabilities.opacityMicromap.maxOpacity4StateSubdivisionLevel);
     const uint32_t primitiveCount = static_cast<uint32_t>(geometryStore.primitiveDraws.size()) - firstPrimitive;
 
     MeshletDraw unionDraw{};

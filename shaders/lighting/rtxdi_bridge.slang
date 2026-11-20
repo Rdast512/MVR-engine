@@ -56,7 +56,7 @@ struct RtxdiBridgeState
     uint2 renderSize;
     float3 cameraPos;
     float3 prevCameraPos;
-    uint64_t tlas;
+    RayScene rays;
     uint64_t worldLights;
     uint64_t prevWorldLights;
     uint lightCount;
@@ -78,7 +78,7 @@ void rtxdiBridgeInit(GpuFrameRoot root)
     gRtxdiBridge.renderSize = targets.renderSize;
     gRtxdiBridge.cameraPos = camera[0].cameraPos;
     gRtxdiBridge.prevCameraPos = camera[0].prevCameraPos;
-    gRtxdiBridge.tlas = root.tlas;
+    gRtxdiBridge.rays = loadRayScene(root);
     gRtxdiBridge.worldLights = root.worldLights;
     gRtxdiBridge.prevWorldLights = root.prevWorldLights;
     gRtxdiBridge.lightCount = root.lightCount;
@@ -377,7 +377,7 @@ bool RAB_GetConservativeVisibility(RAB_Surface surface, RAB_LightSample sample)
     {
         return false;
     }
-    return traceVisibility(gRtxdiBridge.tlas, rasterRayOrigin(surface, sample.l), sample.l, 0.0, sample.distance);
+    return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(surface, sample.l), sample.l, 0.0, sample.distance);
 }
 
 // from last frame's surface through this frame's TLAS: there is no previous TLAS to trace
@@ -393,7 +393,7 @@ bool RAB_TraceRayForLocalLight(float3 origin, float3 direction, float tMin, floa
 {
     lightIndex = RTXDI_InvalidLightIndex;
     randXY = float2(0.0, 0.0);
-    return !traceVisibility(gRtxdiBridge.tlas, origin, direction, tMin, tMax);
+    return !traceVisibility(gRtxdiBridge.rays, origin, direction, tMin, tMax);
 }
 
 //
@@ -452,7 +452,7 @@ bool isReconnectionVisible(RAB_Surface surface, float3 samplePosition)
         return false;
     }
     const float3 l = toSample / distance;
-    return traceVisibility(gRtxdiBridge.tlas, rasterRayOrigin(surface, l), l, 0.0,
+    return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(surface, l), l, 0.0,
                            distance * (1.0 - kReconnectionShortening));
 }
 

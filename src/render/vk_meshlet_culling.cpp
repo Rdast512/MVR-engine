@@ -208,13 +208,15 @@ void MeshletCulling::readBackCounters(uint32_t frameSlot)
     TracyPlot("Culling/Overflowed", static_cast<double>(overflowedCount(early) + overflowedCount(late)));
 }
 
-// alpha-masked materials stay opaque until the M6 alpha-tested bin
+// the alpha bin takes exactly what the OMM bake cuts for rays (isAlphaTested, spec/m6/d3_alpha_raster_bin.md)
 uint32_t MeshletCulling::drawRecordFlagsOf(const PrimitiveDraw& primitive) const
 {
     const MaterialStore& materials = scene.materialStore;
     const uint32_t materialId = primitive.materialId == kNoneIndex ? materials.defaultMaterialId() : primitive.materialId;
-    const bool isTwoSided = (materials.infos[materialId].material.flags & GpuMaterialFlag::DoubleSided) != 0;
-    return std::to_underlying(RasterBin::Opaque) | (isTwoSided ? DrawRecordFlag::TwoSided : 0u);
+    const GpuMaterial& material = materials.infos[materialId].material;
+    const bool isTwoSided = (material.flags & GpuMaterialFlag::DoubleSided) != 0;
+    const RasterBin bin = isAlphaTested(material) ? RasterBin::AlphaTested : RasterBin::Opaque;
+    return std::to_underlying(bin) | (isTwoSided ? DrawRecordFlag::TwoSided : 0u);
 }
 
 // one item per node instance with meshlets, its draw records contiguous behind firstDrawRecord

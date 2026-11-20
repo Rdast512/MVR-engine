@@ -1,5 +1,6 @@
 #pragma once
 
+#include "omm_baker.hpp"
 #include "types.hpp"
 
 #include <string>
@@ -54,6 +55,10 @@ public:
     std::vector<std::string> extensionsRequired;
     // texture heap indices the loaded model retains; the flush hands them to its ModelAllocation
     std::vector<uint32_t> textureRefs;
+    // parallel to this load's primitiveDraws (from flushedPrimitiveCount); D2's micromap input
+    std::vector<OmmBake> ommBakes;
+    // the flush hands it to its ModelAllocation
+    OmmBakeSummary ommSummary;
 
     // GpuModelAttribute bits of the optional streams any primitive of this load provided;
     // absent streams stay zero-filled in scratch and are not uploaded

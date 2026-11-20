@@ -79,6 +79,7 @@ struct ModelAllocation {
     // one reference each, dropped with the model
     std::vector<uint32_t> materialRefs; // MaterialStore rows
     std::vector<uint32_t> textureRefs;  // TextureManager heap indices
+    OmmBakeSummary omm;
     // entities drawing the model
     uint32_t refCount = 0;
 };

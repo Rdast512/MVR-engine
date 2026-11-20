@@ -1,6 +1,6 @@
 # M6 · D1: OMM bake per primitive
 
-**Status:** planned 2026-11-20 · **Milestone:** M6
+**Status:** built 2026-11-20; the known-area gate is open on Sponza's 4 chain primitives (C-D1-2) · **Milestone:** M6
 **Implements:** engine spec §7.1 step 5, §10.5; plan D1 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
 **Depends on:** A4 (material rows, `uvMatrices`), C1 (final cluster triangles and their order)
 **Considerations:** C-D-1 (rays see alpha cards whole), C-T-2 (EXT vs KHR, closed here), new C-D1-1 (no processing cache)
@@ -85,3 +85,6 @@ A primitive without a base-color texture, or with an untextured alpha (factor on
 | Date | Change |
 |---|---|
 | 2026-11-20 | Spec written; EXT kept (VUID-11636); `bcdec` chosen for BC7; cache deferred (C-D1-1) |
+| 2026-11-20 | Built. `OmmBaker` / `OmmBake` in `src/core/omm_baker.{hpp,cpp}`; the loader's `bakeGltfOmms` fills `GeometryStore::ommBakes` (parallel to the load's primitives) and `ommSummary`, which the flush copies to `ModelAllocation::omm` for the UI's `OMM` column in Loaded models. `bcdec` pinned at `80859ed3`, linked privately into `engine_core` |
+| 2026-11-20 | Deviations: (1) stats use `ommDebugGetStats2` (result handle): `ommDebugGetStats` passes no uv areas and always reports `knownAreaMetric` 0. (2) KTX2 alpha comes from `TextureManager::readKtxBaseLevel`, a thread-safe re-read of the same file's level 0 on the asset workers, not from a hook in `uploadKtx`; uncompressed images keep their alpha from `predecoded` right before its release in `uploadGltfImages`, and an image already cached by an earlier model is decoded again. (3) `packMaterial` moved to `material_store.hpp`, so the bake applies the GPU row's uv matrix |
+| 2026-11-20 | Results (release, RTX 5070 machine, no validation). Sponza: 14 of 14 mask primitives baked in 741 / 737 ms on 14 threads; array 1,022,596 B, index 69,880 B (all 16-bit); hash `88c545dd851ec878` in three loads (one with debug images), so deterministic. Known area: 10 primitives 0.831–0.900; prims 73/75/77/79 (chains, `16275776544635328252.ktx2`, 8 triangles each, all at subdivision 5) 0.192 (C-D1-2). `AlphaBlendModeTest`: 5 of 5 (2 Blend, 3 Mask) baked, known area 0.762–0.772; one Blend decal is all special indices (no micromap data). Debug images: point-sampled at 512², the O/T states agree with the source PNG's alpha on 192,775 / 107,044 / 26,662 texels for prims 1 / 0 / 73 (8 disagreements on prim 1, at edges); the `AlphaBlendModeTest` bar is transparent at its alpha-0 top, and the cut moves by ~0.24 of the bar per 0.25 of cutoff, so orientation and cutoff are right. Writing the debug images dominates their run (37 s Sponza). Debug build: 37.6 s, same hash, `EnableValidation` silent, no sanitizer report |

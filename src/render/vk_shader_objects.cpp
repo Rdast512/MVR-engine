@@ -45,6 +45,13 @@ void ShaderObjects::createMeshShaders()
         .fragmentEntry = "fragMain",
         .debugName = "VisRaster",
     });
+    visRasterAlpha = createMeshShaderPair({
+        .meshFile = "mesh_raster.spv",
+        .fragmentFile = "mesh_alpha_fragment.spv",
+        .meshEntry = "meshAlphaMain",
+        .fragmentEntry = "alphaFragMain",
+        .debugName = "VisRasterAlpha",
+    });
     hizView = createMeshShaderPair({
         .meshFile = "hiz_view.spv",
         .fragmentFile = "hiz_view.spv",
@@ -105,6 +112,13 @@ vk::raii::ShaderEXT ShaderObjects::createComputeShader(std::string_view file, co
                                                        std::string_view debugName) const
 {
     const auto spirv = readPassSpirv(file);
+    // raytracing/trace.slang [vk::constant_id(1)]; a shader that declares no such constant ignores the entry
+    constexpr uint32_t kDebugRaysConstantId = 1;
+    const vk::Bool32 debugRays = kDebugRays ? vk::True : vk::False;
+    const vk::SpecializationMapEntry debugRaysEntry{
+        .constantID = kDebugRaysConstantId, .offset = 0, .size = sizeof(debugRays)};
+    const vk::SpecializationInfo specialization{
+        .mapEntryCount = 1, .pMapEntries = &debugRaysEntry, .dataSize = sizeof(debugRays), .pData = &debugRays};
     const vk::ShaderCreateInfoEXT createInfo{
         .flags = vk::ShaderCreateFlagBitsEXT::eDescriptorHeap,
         .stage = vk::ShaderStageFlagBits::eCompute,
@@ -112,6 +126,7 @@ vk::raii::ShaderEXT ShaderObjects::createComputeShader(std::string_view file, co
         .codeSize = spirv.size(),
         .pCode = spirv.data(),
         .pName = entry,
+        .pSpecializationInfo = &specialization,
     };
     vk::raii::ShaderEXT shader = device.createShaderEXT(createInfo);
     setDebugName(device, shader, std::format("ShaderObject_{}_Compute", debugName));
@@ -163,9 +178,9 @@ ShaderObjects::MeshShaderPair ShaderObjects::createMeshShaderPair(const MeshShad
     return result;
 }
 
-void ShaderObjects::bindMeshState(const vk::raii::CommandBuffer& cmd) const
+void ShaderObjects::bindMeshState(const vk::raii::CommandBuffer& cmd, RasterBin bin) const
 {
-    bindShaderPair(cmd, visRaster);
+    bindShaderPair(cmd, meshShaders(bin));
     setRasterState(cmd, vk::CullModeFlagBits::eBack, true);
 }
 

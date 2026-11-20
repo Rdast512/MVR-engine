@@ -123,6 +123,80 @@ bool isSameTriangle(RayHit a, RayHit b)
     return a.rayInstance == b.rayInstance && a.meshletRow == b.meshletRow && a.triangle == b.triangle;
 }
 
+// D1's bake settings, src/core/assets_loader.cpp kOmmTexelsPerMicroTriangleEdge / kOmmMaxSubdivisionLevel
+static const float kOmmTexelsPerMicroTriangleEdge = 2.0;
+static const uint kOmmMaxSubdivisionLevel = 5;
+// texels between alpha samples: bilinear spreads a one-texel line over two
+static const float kAlphaEdgeSampleSpacing = 1.0;
+// per axis: wider disks (chains at subdivision 5) are sampled more sparsely
+static const uint kMaxAlphaEdgeSteps = 64;
+
+// the OMM SDK's dynamic subdivision (omm-lib bake_cpu_impl.cpp GetDynamicSubdivisionLevel): the level whose 4^N
+// micro-triangles keep at least kOmmTexelsPerMicroTriangleEdge^2 texels each
+uint ommSubdivisionLevel(float areaTexels)
+{
+    const uint ratio = uint(areaTexels / (kOmmTexelsPerMicroTriangleEdge * kOmmTexelsPerMicroTriangleEdge));
+    const uint log2NextPow2 = ratio <= 1 ? 0 : firstbithigh(ratio - 1) + 1;
+    return min(log2NextPow2 >> 1, kOmmMaxSubdivisionLevel);
+}
+
+// spec/m6/d4_ray_contract.md alpha-edge: the alpha test crosses its threshold within one OMM micro-triangle of the
+// point, widened by the sampling footprint and one bilinear texel. There the OMM (per micro-triangle at mip 0, unknown
+// as opaque) and the alpha bin (per texel at its mip) may disagree; away from it they may not
+bool isNearAlphaCut(GpuFrameRoot root, DrawContext draw, TriangleCorners corners, Surface surface, float lodBias)
+{
+    const GpuMaterial material = loadMaterial(root, materialRow(draw.primitive));
+    if (!isAlphaTested(material))
+    {
+        return false;
+    }
+    float2 uv[3];
+    [unroll]
+    for (uint i = 0; i < 3; ++i)
+    {
+        uv[i] = baseColorUv(material, corners.texCoord[i], loadVertexUv1(draw, corners.vertexIndex[i]));
+    }
+    const Texture2D texture = tex2D(NonUniformResourceIndex(material.baseColorTex));
+    const SamplerState sampler = samplerOf(NonUniformResourceIndex(material.baseColorSamp));
+    uint width;
+    uint height;
+    uint levels;
+    texture.GetDimensions(0, width, height, levels);
+    const float2 size = float2(width, height);
+    // in texels; micro-triangles are similar to their triangle
+    const float2 e0 = (uv[1] - uv[0]) * size;
+    const float2 e1 = (uv[2] - uv[1]) * size;
+    const float2 e2 = (uv[0] - uv[2]) * size;
+    const float areaTexels = 0.5 * abs(e0.x * e2.y - e0.y * e2.x);
+    const float longestEdge = max(length(e0), max(length(e1), length(e2)));
+    const float microEdge = longestEdge / float(1u << ommSubdivisionLevel(areaTexels));
+    const TextureGradients gradients = baseColorGradients(material, surface, lodBias);
+    const float footprint = max(length(gradients.ddx * size), length(gradients.ddy * size));
+    const float radius = microEdge + footprint + 1.0;
+
+    // every texel of the disk: a sparse pattern misses one-texel lines. Only mismatching pixels get here
+    const uint steps = min(uint(ceil(2.0 * radius / kAlphaEdgeSampleSpacing)) + 1, kMaxAlphaEdgeSteps);
+    const float spacing = 2.0 * radius / float(max(steps - 1, 1u));
+    const float threshold = alphaTestCutoff(material) / material.baseColorFactor.a;
+    bool isBelow = false;
+    bool isAbove = false;
+    for (uint y = 0; y < steps; ++y)
+    {
+        for (uint x = 0; x < steps; ++x)
+        {
+            const float2 offset = float2(x, y) * spacing - radius;
+            if (dot(offset, offset) > radius * radius)
+            {
+                continue;
+            }
+            const float alpha = texture.SampleLevel(sampler, gradients.uv + offset / size, 0.0).a;
+            isBelow = isBelow || alpha < threshold;
+            isAbove = isAbove || alpha >= threshold;
+        }
+    }
+    return isBelow && isAbove;
+}
+
 [shader("compute")]
 [numthreads(kRayCheckTile, kRayCheckTile, 1)]
 void rayCheckMain(uint3 id : SV_DispatchThreadID)
@@ -151,6 +225,8 @@ void rayCheckMain(uint3 id : SV_DispatchThreadID)
     // a coverage disagreement within the snap of a triangle edge: an edge pixel, not a mismatch
     bool isSnapEdge = false;
     bool isDepthTie = false;
+    // a miss, id mismatch or empty hit next to an alpha-tested triangle's cut: logged, not a failure
+    bool isAlphaEdge = false;
     bool isSelfHit = false;
     bool isMipOutlier = false;
     float normalError = 0.0;
@@ -164,10 +240,14 @@ void rayCheckMain(uint3 id : SV_DispatchThreadID)
     {
         const DecodedHit decoded = decodeHit(root, hit, primary.ray.Direction, primary.cone);
         isBackFace = !decoded.surface.isFrontFacing && !decoded.draw.isDoubleSided;
+        const TriangleCorners hitTriangle = loadTriangleCorners(decoded.draw, camera, hit.triangle);
         if (isInterior && !isBackFace)
         {
-            isSnapEdge = isOnSnappedEdge(root, loadTriangleCorners(decoded.draw, camera, hit.triangle), center,
-                                         targetSize);
+            isSnapEdge = isOnSnappedEdge(root, hitTriangle, center, targetSize);
+            if (!isCovered && !isSnapEdge)
+            {
+                isAlphaEdge = isNearAlphaCut(root, decoded.draw, hitTriangle, decoded.surface, camera.lodBias);
+            }
         }
         if (isCovered)
         {
@@ -182,8 +262,14 @@ void rayCheckMain(uint3 id : SV_DispatchThreadID)
                 // the raster triangle's point on this ray
                 const Barycentrics bary = computeBarycentrics(corners.clip[0], corners.clip[1], corners.clip[2],
                                                               pixelToNdc(center, targetSize), 2.0 / targetSize);
-                const float rasterT = length(buildSurface(draw, corners, bary).position - primary.ray.Origin);
+                const Surface rasterSurface = buildSurface(draw, corners, bary);
+                const float rasterT = length(rasterSurface.position - primary.ray.Origin);
                 isDepthTie = !isSnapEdge && abs(hit.t - rasterT) <= kDepthTieTolerance * hit.t;
+                if (!isSnapEdge && !isDepthTie)
+                {
+                    isAlphaEdge = isNearAlphaCut(root, draw, corners, rasterSurface, camera.lodBias) ||
+                        isNearAlphaCut(root, decoded.draw, hitTriangle, decoded.surface, camera.lodBias);
+                }
             }
             if (isMatched && isInterior)
             {
@@ -243,19 +329,27 @@ void rayCheckMain(uint3 id : SV_DispatchThreadID)
     else if (isCovered && isInterior)
     {
         const DrawContext draw = loadDrawContext(root, visPayloadRow(payload));
-        isSnapEdge = isOnSnappedEdge(root, loadTriangleCorners(draw, camera, visPayloadTriangle(payload)), center,
-                                     targetSize);
+        const TriangleCorners corners = loadTriangleCorners(draw, camera, visPayloadTriangle(payload));
+        isSnapEdge = isOnSnappedEdge(root, corners, center, targetSize);
+        if (!isSnapEdge)
+        {
+            const Barycentrics bary = computeBarycentrics(corners.clip[0], corners.clip[1], corners.clip[2],
+                                                          pixelToNdc(center, targetSize), 2.0 / targetSize);
+            isAlphaEdge = isNearAlphaCut(root, draw, corners, buildSurface(draw, corners, bary), camera.lodBias);
+        }
     }
 
     waveCount(stats.coveredPixels, isCovered);
     waveCount(stats.interiorPixels, isCovered && isInterior);
     const bool isEdge = !isInterior || isSnapEdge;
-    waveCount(stats.misses, isCovered && !isEdge && !isHit);
-    waveCount(stats.idMismatches, isCovered && !isEdge && isHit && !isMatched && !isBackFace && !isDepthTie);
+    waveCount(stats.misses, isCovered && !isEdge && !isHit && !isAlphaEdge);
+    waveCount(stats.idMismatches,
+              isCovered && !isEdge && isHit && !isMatched && !isBackFace && !isDepthTie && !isAlphaEdge);
     waveCount(stats.depthTies, isDepthTie);
     waveCount(stats.backFaceHits, isHit && !isMatched && isBackFace);
     waveCount(stats.edgeMismatches, isCovered && isEdge && isHit && !isMatched && !isBackFace);
-    waveCount(stats.emptyHits, !isCovered && !isEdge && isHit && !isBackFace);
+    waveCount(stats.emptyHits, !isCovered && !isEdge && isHit && !isBackFace && !isAlphaEdge);
+    waveCount(stats.alphaEdges, isAlphaEdge);
     waveCount(stats.selfHits, isSelfHit);
     waveCount(stats.mipOutliers, isMipOutlier);
     waveMax(stats.maxNormalErrorBits, normalError);

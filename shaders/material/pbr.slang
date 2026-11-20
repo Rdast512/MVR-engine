@@ -33,25 +33,68 @@ public struct TextureGradients
     public float2 ddy;
 };
 
+// matches kBlendAlphaCutoff in src/core/material_store.hpp
+static const float kBlendAlphaCutoff = 0.5;
+
+// matches alphaTestCutoff in src/core/material_store.hpp: factor.a x texture.a below it is cut
+public float alphaTestCutoff(GpuMaterial material)
+{
+    return (material.flags & kMaterialAlphaModeMask) == uint(AlphaMode.Mask) ? material.alphaCutoff : kBlendAlphaCutoff;
+}
+
+// uv' = M * (uv, 1) where the slot's KHR_texture_transform bit is set
+float2 transformUv(GpuMaterial material, uint slot, float2 uv)
+{
+    if ((material.flags & (kMaterialFlagUvTransformBaseColor << slot)) == 0)
+    {
+        return uv;
+    }
+    const GpuUvMatrix transform = material.uvMatrices[slot];
+    const float3 homogeneousUv = float3(uv, 1.0);
+    return float2(dot(transform.row0, homogeneousUv), dot(transform.row1, homogeneousUv));
+}
+
+// base-color uv set 0 or 1 at a vertex, transformed: the transform is affine, so it commutes with interpolation
+public float2 baseColorUv(GpuMaterial material, float2 uv0, float2 uv1)
+{
+    return transformUv(material, kUvSlotBaseColor, material.baseColorUv == 0 ? uv0 : uv1);
+}
+
 // lodBias: log2(render / display) under DLSS (GpuCameraData.lodBias); applied by scaling the gradients
 TextureGradients textureGradients(GpuMaterial material, uint slot, Surface surface, uint uvSet, float lodBias)
 {
     const uint set = min(uvSet, 1u);
     const float scale = exp2(lodBias);
     TextureGradients result;
-    result.uv = surface.uv[set];
+    result.uv = transformUv(material, slot, surface.uv[set]);
     result.ddx = surface.uvDdx[set] * scale;
     result.ddy = surface.uvDdy[set] * scale;
     if ((material.flags & (kMaterialFlagUvTransformBaseColor << slot)) != 0)
     {
         const GpuUvMatrix transform = material.uvMatrices[slot];
-        const float3 homogeneousUv = float3(result.uv, 1.0);
-        result.uv = float2(dot(transform.row0, homogeneousUv), dot(transform.row1, homogeneousUv));
         // gradients are directions: no translation
         result.ddx = float2(dot(transform.row0.xy, result.ddx), dot(transform.row1.xy, result.ddx));
         result.ddy = float2(dot(transform.row0.xy, result.ddy), dot(transform.row1.xy, result.ddy));
     }
     return result;
+}
+
+// matches isAlphaTested in src/core/material_store.hpp: the alpha-tested raster bin and the OMM bake take these
+public bool isAlphaTested(GpuMaterial material)
+{
+    if ((material.flags & kMaterialAlphaModeMask) == uint(AlphaMode.Opaque) || material.baseColorTex == kNoneIndex ||
+        material.baseColorSamp == kNoneIndex)
+    {
+        return false;
+    }
+    const float cutoff = alphaTestCutoff(material);
+    return cutoff > 0.0 && material.baseColorFactor.a >= cutoff;
+}
+
+// the base-color texture's uv and lodBias-scaled gradients at a surface, as sampleMaterial reads them
+public TextureGradients baseColorGradients(GpuMaterial material, Surface surface, float lodBias)
+{
+    return textureGradients(material, kUvSlotBaseColor, surface, material.baseColorUv, lodBias);
 }
 
 // absent texture: the factor alone (kNoneIndex never becomes a handle)

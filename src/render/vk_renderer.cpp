@@ -42,10 +42,30 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
             std::format("push data of {} B exceeds the device's maxPushDataSize of {} B", kMaxPushDataBytes, maxPushData));
     }
     dgc.init();
+    if constexpr (kDebugRays) {
+        for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
+            rayDebugCounters[slot] =
+                createHostBuffer(sizeof(GpuRayDebugCounters), allocator.allocator, device.vkdevice,
+                                 device.queueFamilyIndices, std::format("RayDebugCounters_{}", slot), nullptr);
+            *static_cast<GpuRayDebugCounters*>(rayDebugCounters[slot].mapped) = {};
+        }
+    }
 }
 
 Renderer::~Renderer()
 {
+    if constexpr (kDebugRays) {
+        const std::string summary =
+            std::format("Ray contract: {} ray-query candidates over {} frames", rayCandidates, rayDebugFrames);
+        if (rayCandidates == 0) {
+            logInfo(summary, "RayContract");
+        } else {
+            logError(summary, "RayContract");
+        }
+    }
+    for (HostBuffer& counters : rayDebugCounters) {
+        destroyHostBuffer(allocator.allocator, counters, nullptr);
+    }
     for (HostBuffer& stats : motionCheckStats) {
         destroyHostBuffer(allocator.allocator, stats, nullptr);
     }
@@ -206,6 +226,19 @@ void Renderer::drawFrame()
     if (void* stats = rayCheckStats[currentFrame].mapped) {
         *static_cast<GpuRayCheckStats*>(stats) = {};
     }
+    if (void* mapped = rayDebugCounters[currentFrame].mapped) {
+        auto& counters = *static_cast<GpuRayDebugCounters*>(mapped);
+        if (isRayDebugRecorded[currentFrame]) {
+            ++rayDebugFrames;
+            rayCandidates += counters.candidates;
+            if (counters.candidates != 0) {
+                logError(std::format("frame {}: {} ray queries met a candidate (spec/m6/d4_ray_contract.md)",
+                                     frameNumber - MAX_FRAMES_IN_FLIGHT, counters.candidates),
+                         "RayContract");
+            }
+        }
+        counters = {};
+    }
 
     // the fence covers both submits of this slot; every path below ends in a submit that signals it
     deviceRef.resetFences(fence);
@@ -247,6 +280,7 @@ void Renderer::drawFrame()
                             .frameIndex = frameNumber,
                             .lightCount = worldLights.lightCount(),
                             .localLightCount = worldLights.localLightCount(),
+                            .rayDebug = rayDebugCounters[currentFrame].address,
                         });
     }
     // after the frame root and node instances of the slot are written
@@ -475,6 +509,18 @@ void Renderer::recordRayCommands()
         isDisplayCapturePending = false;
     }
     lastRecordedFrame = currentFrame;
+    if (rayDebugCounters[currentFrame].mapped != nullptr) {
+        // every ray pass of the frame is on this queue before here; a fence wait alone does not make device writes
+        // visible to the host
+        const vk::MemoryBarrier2 readbackBarrier{
+            .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+            .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+            .dstAccessMask = vk::AccessFlagBits2::eHostRead,
+        };
+        cmd->pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &readbackBarrier});
+        isRayDebugRecorded[currentFrame] = true;
+    }
 
     cmd->end();
 }
@@ -670,8 +716,11 @@ void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase)
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneDrawCalls, *cmd, "GPU_DrawCalls", gpuTrace);
 #endif
-        dgc.recordExecute(cmd, phase);
+        // opaque first: its depth makes occluded alpha-tested fragments fail the test before they sample
+        dgc.recordExecute(cmd, phase, RasterBin::Opaque);
         gpuTimer.end(cmd, scope(GpuTimerScope::EarlyDraw, GpuTimerScope::LateDraw));
+        dgc.recordExecute(cmd, phase, RasterBin::AlphaTested);
+        gpuTimer.end(cmd, scope(GpuTimerScope::EarlyAlphaDraw, GpuTimerScope::LateAlphaDraw));
     }
     cmd.endRendering();
 

@@ -448,7 +448,7 @@ void EngineUi::drawLoadedModelsPanel()
         return;
     }
 
-    constexpr int kColumnCount = 7;
+    constexpr int kColumnCount = 8;
     constexpr ImGuiTableFlags kTableFlags =
         ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingFixedFit;
     if (!ImGui::BeginTable("##loadedModels", kColumnCount, kTableFlags)) {
@@ -460,6 +460,7 @@ void EngineUi::drawLoadedModelsPanel()
     ImGui::TableSetupColumn("Meshlets");
     ImGui::TableSetupColumn("Textures");
     ImGui::TableSetupColumn("Geometry");
+    ImGui::TableSetupColumn("OMM");
     ImGui::TableSetupColumn("##unload");
     ImGui::TableHeadersRow();
 
@@ -493,6 +494,20 @@ void EngineUi::drawLoadedModelsPanel()
                 ImGui::SetItemTooltip("geometry shared by %u entities loaded from the same file", model->refCount);
             } else {
                 ImGui::Text("%.1f MiB", toMiB(hasModel ? context.assets.modelGpuBytes(modelId) : 0));
+            }
+            ImGui::TableNextColumn();
+            if (model != nullptr && model->omm.primitiveCount > 0) {
+                const OmmBakeSummary& omm = model->omm;
+                ImGui::Text("%u", omm.primitiveCount);
+                ImGui::SetItemTooltip("alpha-tested prims baked in %.1f ms\nmicro-triangles opaque %llu, transparent "
+                                      "%llu, unknown %llu\nmin known area %.3f\narray %.1f KiB, index %.1f KiB",
+                                      omm.bakeMilliseconds, static_cast<unsigned long long>(omm.opaque),
+                                      static_cast<unsigned long long>(omm.transparent),
+                                      static_cast<unsigned long long>(omm.unknown), omm.minKnownAreaMetric,
+                                      static_cast<double>(omm.arrayBytes) / 1024.0,
+                                      static_cast<double>(omm.indexBytes) / 1024.0);
+            } else {
+                ImGui::TextDisabled("-");
             }
             ImGui::TableNextColumn();
             if (ImGui::SmallButton("Unload")) {

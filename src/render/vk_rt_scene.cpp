@@ -137,6 +137,7 @@ void RayTracingScene::buildTemplates()
         const ModelAllocation& model = assets.models()[modelId];
         // indexed by model-relative primitive row
         const std::span<const vk::DeviceAddress> blas = assets.rayGeometry().blasAddresses(modelId);
+        const std::span<const uint8_t> micromapped = assets.rayGeometry().micromapFlags(modelId);
         const glm::mat4 entityMatrix = computeModelMatrix(storage.transforms[id]);
         for (uint32_t k = 0; k < model.nodes.count; ++k) {
             const NodeDraw& node = geometry.nodeDraws[model.nodes.first + k];
@@ -149,7 +150,11 @@ void RayTracingScene::buildTemplates()
                 }
                 templates.rows.push_back(GpuRayInstance{.nodeInstanceIndex = nodeInstanceFirsts[id] + k,
                                                         .primitiveRow = p});
-                templates.builds.push_back(GpuRayInstanceBuild{.blas = address});
+                templates.builds.push_back(GpuRayInstanceBuild{
+                    .blas = address,
+                    .flags = micromapped[p - model.primitives.first] != 0 ? GpuRayInstanceBuildFlag::OpacityMicromap
+                                                                          : 0u,
+                });
                 const BoundingBox box = primitiveBounds(geometry, geometry.primitiveDraws[p]);
                 const glm::vec4 center = world * glm::vec4(0.5f * (box.bboxMin + box.bboxMax), 1.0f);
                 centers.emplace_back(center.x, center.z);

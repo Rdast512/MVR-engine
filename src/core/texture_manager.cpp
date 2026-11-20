@@ -6,6 +6,7 @@
 #include <format>
 #include <limits>
 #include <stdexcept>
+#include <vulkan/vulkan_format_traits.hpp>
 
 TextureManager::TextureManager(Device& deviceWrapper, const VkAllocator& allocator, DescriptorManager &descriptorManager) :
     deviceWrapper(deviceWrapper), allocator(allocator), descriptorManager(descriptorManager),
@@ -128,6 +129,27 @@ vk::ImageLayout stbHostCopyDstLayout(const vk::raii::PhysicalDevice& physicalDev
     }
 
     return vk::ImageLayout::eGeneral;
+}
+
+using KtxTexturePtr = std::unique_ptr<ktxTexture2, decltype(&ktxTexture2_Destroy)>;
+
+// typed ktxTexture2 API: the generic ktxTexture_* vtable calls trip UBSan function-type checks
+// zstd levels are inflated on load
+KtxTexturePtr openKtx2(const std::string& path)
+{
+    ktxTexture2* rawTexture = nullptr;
+    if (ktxTexture2_CreateFromNamedFile(path.c_str(), KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &rawTexture) !=
+            KTX_SUCCESS ||
+        !rawTexture) {
+        throw std::runtime_error("Failed to load KTX2 texture: " + path);
+    }
+    KtxTexturePtr texture(rawTexture, &ktxTexture2_Destroy);
+
+    if (texture->numDimensions != 2 || texture->numLayers != 1 || texture->numFaces != 1 ||
+        ktxTexture2_NeedsTranscoding(texture.get())) {
+        throw std::runtime_error("Unsupported KTX2 texture (expected 2D, single layer, not Basis): " + path);
+    }
+    return texture;
 }
 
 vk::Format rgbaFormat(TextureColorSpace colorSpace)
@@ -330,6 +352,26 @@ bool TextureManager::isKtxPath(std::string_view path)
     return detectFormat(path) == TextureFormat::Ktx;
 }
 
+TextureManager::KtxBaseLevel TextureManager::readKtxBaseLevel(const std::string& path)
+{
+    ZoneScopedN("TextureManager::readKtxBaseLevel");
+    const KtxTexturePtr texture = openKtx2(path);
+    const auto format = static_cast<vk::Format>(texture->vkFormat);
+    const auto [blockWidth, blockHeight, blockDepth] = vk::blockExtent(format);
+    const uint32_t width = texture->baseWidth;
+    const uint32_t height = texture->baseHeight;
+    const size_t levelBytes = size_t{(width + blockWidth - 1) / blockWidth} * ((height + blockHeight - 1) / blockHeight) *
+                              vk::blockSize(format);
+
+    ktx_size_t offset = 0;
+    if (ktxTexture2_GetImageOffset(texture.get(), 0, 0, 0, &offset) != KTX_SUCCESS ||
+        offset + levelBytes > texture->dataSize) {
+        throw std::runtime_error("KTX2 level 0 out of range: " + path);
+    }
+    const ktx_uint8_t* level = ktxTexture_GetData(ktxTexture(texture.get())) + offset;
+    return {.format = format, .width = width, .height = height, .bytes = {level, level + levelBytes}};
+}
+
 uint32_t TextureManager::loadTexture(std::string texturePath, TextureColorSpace colorSpace)
 {
     ZoneScopedN("TextureManager::loadTexture");
@@ -416,20 +458,7 @@ uint32_t TextureManager::getOrCreateSampler(int32_t minFilter, int32_t magFilter
 uint32_t TextureManager::uploadKtx(const std::string& path)
 {
     ZoneScopedN("TextureManager::uploadKtx");
-    // typed ktxTexture2 API: the generic ktxTexture_* vtable calls trip UBSan function-type checks
-    // zstd levels are inflated on load
-    ktxTexture2* rawTexture = nullptr;
-    if (ktxTexture2_CreateFromNamedFile(path.c_str(), KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT, &rawTexture) !=
-            KTX_SUCCESS ||
-        !rawTexture) {
-        throw std::runtime_error("Failed to load KTX2 texture: " + path);
-    }
-    const std::unique_ptr<ktxTexture2, decltype(&ktxTexture2_Destroy)> kTexture(rawTexture, &ktxTexture2_Destroy);
-
-    if (kTexture->numDimensions != 2 || kTexture->numLayers != 1 || kTexture->numFaces != 1 ||
-        ktxTexture2_NeedsTranscoding(kTexture.get())) {
-        throw std::runtime_error("Unsupported KTX2 texture (expected 2D, single layer, not Basis): " + path);
-    }
+    const KtxTexturePtr kTexture = openKtx2(path);
     const auto format = static_cast<vk::Format>(kTexture->vkFormat);
     const auto formatChain = physicalDevice.getFormatProperties2<vk::FormatProperties2, vk::FormatProperties3>(format);
     if (!(formatChain.get<vk::FormatProperties3>().optimalTilingFeatures &

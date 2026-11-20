@@ -7,6 +7,14 @@
 #include <string_view>
 #include <vector>
 
+// Debug builds count the ray-query candidates the ray contract rules out (raytracing/trace.slang kDebugRays,
+// spec/m6/d4_ray_contract.md); compute shaders are specialized with it
+#ifdef NDEBUG
+inline constexpr bool kDebugRays = false;
+#else
+inline constexpr bool kDebugRays = true;
+#endif
+
 // SPIR-V of a file under ENGINE_SHADER_DIR/passes; throws when it cannot be opened
 [[nodiscard]] std::vector<char> readPassSpirv(std::string_view file);
 
@@ -24,9 +32,9 @@ public:
     void createFrameShaders();
     void createRtShaders();
 
-    // vis-buffer raster and every state a monolithic pipeline would bake; viewport/scissor stay with the caller.
-    // One state serves every RasterBin until M6 gives AlphaTested its own fragment shader
-    void bindMeshState(const vk::raii::CommandBuffer& cmd) const;
+    // the bin's vis-buffer raster pair and every state a monolithic pipeline would bake; viewport/scissor stay with
+    // the caller. The bins differ only in their shaders
+    void bindMeshState(const vk::raii::CommandBuffer& cmd, RasterBin bin) const;
     // fullscreen Hi-Z mip view: no culling, no depth; push HiZViewPushData, then draw one mesh task
     void bindHiZViewState(const vk::raii::CommandBuffer& cmd) const;
     // fullscreen display image -> swapchain: no culling, no depth; push PresentPushData, then draw one mesh task
@@ -40,8 +48,14 @@ public:
         vk::raii::ShaderEXT fragment = nullptr;
     };
 
-    // passes/mesh_raster.slang + passes/mesh_fragment.slang
+    // passes/mesh_raster.slang meshMain + passes/mesh_fragment.slang
     MeshShaderPair visRaster;
+    // passes/mesh_raster.slang meshAlphaMain + passes/mesh_alpha_fragment.slang (spec/m6/d3_alpha_raster_bin.md)
+    MeshShaderPair visRasterAlpha;
+    [[nodiscard]] const MeshShaderPair& meshShaders(RasterBin bin) const
+    {
+        return bin == RasterBin::AlphaTested ? visRasterAlpha : visRaster;
+    }
 
     // passes/meshlet_cull.slang
     struct CullShaders

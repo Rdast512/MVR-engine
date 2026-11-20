@@ -3,7 +3,9 @@
 #include "types.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <format>
 #include <span>
@@ -13,6 +15,52 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+// M = T * R * S. v grows down: the rotation sign follows the Khronos sample renderer and the extension's example
+[[nodiscard]] inline GpuUvMatrix packUvMatrix(const MaterialUvTransform& uv)
+{
+    const float c = std::cos(uv.rotation);
+    const float s = std::sin(uv.rotation);
+    return {.row0 = {c * uv.scale.x, s * uv.scale.y, uv.offset.x}, .row1 = {-s * uv.scale.x, c * uv.scale.y, uv.offset.y}};
+}
+
+// the store keeps authored values for dedup and the UI; the GPU row is precomputed
+[[nodiscard]] inline GpuMaterial packMaterial(GpuMaterial material, const MaterialPbrExtension& ext)
+{
+    material.emissiveFactor *= ext.emissiveStrength;
+    const std::array<MaterialUvTransform, kMaterialUvSlotCount> transforms = {
+        ext.baseColorUv, ext.metalRoughUv, ext.normalUv, ext.occlusionUv, ext.emissiveUv};
+    for (uint32_t slot = 0; slot < kMaterialUvSlotCount; ++slot) {
+        if (transforms[slot] != MaterialUvTransform{}) {
+            material.uvMatrices[slot] = packUvMatrix(transforms[slot]);
+            material.flags |= GpuMaterialFlag::UvTransformBaseColor << slot;
+        }
+    }
+    return material;
+}
+
+// Blend is cut like Mask at this alpha: no transparency before 1.0 (plan D)
+inline constexpr float kBlendAlphaCutoff = 0.5f;
+
+// factor.a x texture.a below it is cut
+[[nodiscard]] inline float alphaTestCutoff(const GpuMaterial& material)
+{
+    return (material.flags & GpuMaterialFlag::AlphaModeMask) == GpuMaterialFlag::AlphaMask ? material.alphaCutoff
+                                                                                          : kBlendAlphaCutoff;
+}
+
+// one rule for the raster alpha bin (spec/m6/d3) and the OMM bake (d1), so raster and rays cut the same surfaces: a
+// Mask or Blend material whose base-color texture decides the cut. Untextured alpha is constant, a cutoff <= 0 cuts
+// nothing, and a factor alpha below the cutoff would cut everything: all of these stay opaque
+[[nodiscard]] inline bool isAlphaTested(const GpuMaterial& material)
+{
+    if ((material.flags & GpuMaterialFlag::AlphaModeMask) == GpuMaterialFlag::AlphaOpaque ||
+        material.baseColorTex == kNoneIndex || material.baseColorSamp == kNoneIndex) {
+        return false;
+    }
+    const float cutoff = alphaTestCutoff(material);
+    return cutoff > 0.0f && material.baseColorFactor.a >= cutoff;
+}
 
 // Shared material table. Rows are deduplicated by value across every loaded model and refcounted by the models that
 // reference them. Ids are absolute GPU rows and never shift: a freed row's slot is reused by the next new material.

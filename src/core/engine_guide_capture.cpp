@@ -160,13 +160,16 @@ EngineGuideCapture::Request EngineGuideCapture::beginFrame(Camera& camera, Debug
         }
         return request;
     }
-    if (shotFrame == 1 && modelBounds) {
+    if (shotFrame == 1 && shot.pose) {
+        camera.lookAt(shot.pose->position, shot.pose->target);
+    } else if (shotFrame == 1 && modelBounds) {
         // the bounding sphere fills the vertical field of view
         const glm::vec3 center(*modelBounds);
         const float halfFov = glm::radians(camera.getFovDegrees()) * 0.5f;
         const float distance = kFramingMargin * modelBounds->w / std::sin(halfFov);
         camera.lookAt(center + distance * glm::normalize(shot.viewDirection), center);
     }
+    request.sun = shot.sun;
     debugView.view = isConvergenceRunning ? DebugView::DirectLighting : kViews[viewIndex].view;
     request.indirectMode = isConvergenceRunning ? IndirectMode::NrcRestirGi : kViews[viewIndex].mode;
     request.shouldCapture = shotFrame >= kSettleFrames && modelBounds.has_value() &&

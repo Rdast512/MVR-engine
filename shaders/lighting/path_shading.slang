@@ -49,7 +49,7 @@ float3 shadeLightReservoir<Origin : IRayOrigin>(RAB_Surface surface, Origin orig
     }
     const float3 shade = shadeLightSample(surface, lightSample);
     if (all(shade <= 0.0) ||
-        !traceVisibility(gRtxdiBridge.tlas, origin.spawn(lightSample.l), lightSample.l, 0.0, lightSample.distance))
+        !traceVisibility(gRtxdiBridge.rays, origin.spawn(lightSample.l), lightSample.l, 0.0, lightSample.distance))
     {
         return float3(0.0, 0.0, 0.0);
     }

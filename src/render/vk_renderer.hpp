@@ -225,6 +225,12 @@ private:
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> motionCheckStats;
     // per frame slot; empty unless enableRayCheck
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> rayCheckStats;
+    // per frame slot, GpuRayDebugCounters; empty unless kDebugRays
+    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> rayDebugCounters;
+    // the slot's counters hold a recorded frame's results
+    std::array<bool, MAX_FRAMES_IN_FLIGHT> isRayDebugRecorded{};
+    uint64_t rayDebugFrames = 0;
+    uint64_t rayCandidates = 0;
     uint32_t lastRecordedFrame = 0;
     // per frame slot; grown on the first capture at a larger extent
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> displayCaptures;

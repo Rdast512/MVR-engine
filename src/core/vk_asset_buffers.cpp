@@ -105,30 +105,6 @@ namespace
         return (size + alignment - 1) / alignment * alignment;
     }
 
-    // M = T * R * S. v grows down: the rotation sign follows the Khronos sample renderer and the extension's example
-    [[nodiscard]] GpuUvMatrix packUvMatrix(const MaterialUvTransform& uv)
-    {
-        const float c = std::cos(uv.rotation);
-        const float s = std::sin(uv.rotation);
-        return {.row0 = {c * uv.scale.x, s * uv.scale.y, uv.offset.x},
-                .row1 = {-s * uv.scale.x, c * uv.scale.y, uv.offset.y}};
-    }
-
-    // the store keeps authored values for dedup and the UI; the GPU row is precomputed
-    [[nodiscard]] GpuMaterial packMaterial(GpuMaterial material, const MaterialPbrExtension& ext)
-    {
-        material.emissiveFactor *= ext.emissiveStrength;
-        const std::array<MaterialUvTransform, kMaterialUvSlotCount> transforms = {
-            ext.baseColorUv, ext.metalRoughUv, ext.normalUv, ext.occlusionUv, ext.emissiveUv};
-        for (uint32_t slot = 0; slot < kMaterialUvSlotCount; ++slot) {
-            if (transforms[slot] != MaterialUvTransform{}) {
-                material.uvMatrices[slot] = packUvMatrix(transforms[slot]);
-                material.flags |= GpuMaterialFlag::UvTransformBaseColor << slot;
-            }
-        }
-        return material;
-    }
-
     [[nodiscard]] GpuUvTransform packUvTransform(const MaterialUvTransform& uv)
     {
         return {.offset = uv.offset, .scale = uv.scale, .rotation = uv.rotation};
@@ -684,6 +660,7 @@ void AssetBuffers::flush()
         .lights = packScratchLights(),
         .materialRefs = {},
         .textureRefs = std::move(geometryStore.textureRefs),
+        .omm = geometryStore.ommSummary,
         .refCount = 0,
     };
 
@@ -727,7 +704,8 @@ void AssetBuffers::flush()
                              .meshlets = geometryStore.meshlets,
                              .meshletVertices = geometryStore.meshletVertices,
                              .meshletTriangles = geometryStore.meshletTriangles,
-                             .primitives = packed.primitives});
+                             .primitives = packed.primitives,
+                             .ommBakes = geometryStore.ommBakes});
     // remapped to GPU-absolute above
     allocation.meshletDraw = objectStorage.meshletDraws[entity];
     allocation.materialRefs = materialStore.commitModel();

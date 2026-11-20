@@ -15,11 +15,11 @@ namespace
     [[nodiscard]] std::string describe(const GpuRayCheckStats& stats)
     {
         return std::format("{} interior px: {} misses, {} id mismatches, {} empty hits, {} self hits; {} back-face hits, "
-                           "{} edge mismatches, {} depth ties; decode max error normal {:.4f} deg, geometric normal {:.4f} deg, "
+                           "{} edge mismatches, {} depth ties, {} alpha edges; decode max error normal {:.4f} deg, geometric normal {:.4f} deg, "
                            "material normal {:.4f} deg; position {:.2e} px, mip {:.3f} ({} px over 0.5); at the hit's "
                            "barycentrics normal {:.4f} deg, material normal {:.4f} deg",
                            stats.interiorPixels, stats.misses, stats.idMismatches, stats.emptyHits, stats.selfHits,
-                           stats.backFaceHits, stats.edgeMismatches, stats.depthTies,
+                           stats.backFaceHits, stats.edgeMismatches, stats.depthTies, stats.alphaEdges,
                            fromBits(stats.maxNormalErrorBits),
                            fromBits(stats.maxGeoNormalErrorBits), fromBits(stats.maxMaterialNormalErrorBits),
                            fromBits(stats.maxPositionErrorBits), fromBits(stats.maxMipErrorBits), stats.mipOutliers,
@@ -61,6 +61,7 @@ bool EngineRayCheck::endFrame(const GpuRayCheckStats& stats, bool isStandalone)
     backFaceHits += stats.backFaceHits;
     mipOutliers += stats.mipOutliers;
     depthTies += stats.depthTies;
+    alphaEdges += stats.alphaEdges;
     maxNormalError = std::max(maxNormalError, fromBits(stats.maxNormalErrorBits));
     maxGeoNormalError = std::max(maxGeoNormalError, fromBits(stats.maxGeoNormalErrorBits));
     maxPositionError = std::max(maxPositionError, fromBits(stats.maxPositionErrorBits));
@@ -79,11 +80,11 @@ void EngineRayCheck::logSummary() const
     const auto ratio = [](uint64_t part, uint64_t whole) {
         return whole == 0 ? 0.0 : 100.0 * static_cast<double>(part) / static_cast<double>(whole);
     };
-    logInfo(std::format("{} interior px checked; {} back-face hits; {} depth ties; edge mismatches {:.3f}% of edge px; "
+    logInfo(std::format("{} interior px checked; {} back-face hits; {} depth ties; {} alpha edges; edge mismatches {:.3f}% of edge px; "
                         "decode max error normal {:.4f} deg, geometric normal {:.4f} deg, material normal {:.4f} deg; "
                         "position {:.2e} px, mip {:.3f} ({:.3f}% of interior px over 0.5); at the hit's barycentrics "
                         "normal {:.4f} deg, material normal {:.4f} deg",
-                        interiorPixels, backFaceHits, depthTies, ratio(edgeMismatches, edgePixels), maxNormalError,
+                        interiorPixels, backFaceHits, depthTies, alphaEdges, ratio(edgeMismatches, edgePixels), maxNormalError,
                         maxGeoNormalError, maxMaterialNormalError, maxPositionError, maxMipError,
                         ratio(mipOutliers, interiorPixels), maxHitNormalError, maxHitMaterialNormalError),
             "RayCheck");

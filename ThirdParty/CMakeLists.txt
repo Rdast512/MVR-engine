@@ -282,6 +282,13 @@ engine_fetch_declare(omm
 
 set(_tp_rtx_names rtxdi omm)
 
+# 19. bcdec: header-only BC decoder for the OMM bake's BC7 alpha; its CMake builds only a test
+engine_fetch_declare(bcdec
+        GIT_REPOSITORY https://github.com/iOrange/bcdec.git
+        GIT_TAG 80859ed3b7afb1c527a2a99d70c61457bea72d0c
+        SOURCE_SUBDIR skip-add-subdirectory
+)
+
 # 18. NRC: prebuilt x64 Windows binaries only (git-lfs, ~230 MB)
 if (WIN32)
     engine_fetch_declare(nrc
@@ -293,7 +300,7 @@ if (WIN32)
 endif ()
 
 # fmt before spdlog: spdlog's CMake uses TARGET fmt::fmt when SPDLOG_FMT_EXTERNAL=ON.
-set(_tp_fetch_names glm SDL3 fmt spdlog ImGui taskflow KTXSoftware mimalloc meshoptimizer ${_tp_rtx_names})
+set(_tp_fetch_names glm SDL3 fmt spdlog ImGui taskflow KTXSoftware mimalloc meshoptimizer bcdec ${_tp_rtx_names})
 message(STATUS "Fetching ThirdParty dependencies: ${_tp_fetch_names}")
 FetchContent_MakeAvailable(${_tp_fetch_names})
 
@@ -409,6 +416,11 @@ set_target_properties(omm-lib PROPERTIES
         ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 add_library(ThirdParty::omm ALIAS omm-lib)
+
+# --- bcdec: BCDEC_IMPLEMENTATION lives in its one user (src/core/omm_baker.cpp), not in ThirdParty::all ---
+add_library(bcdec INTERFACE)
+target_include_directories(bcdec INTERFACE "${bcdec_SOURCE_DIR}")
+add_library(ThirdParty::bcdec ALIAS bcdec)
 
 # --- NRC: Lib exports MSVC-mangled C++ the windows-gnu/libc++ toolchain cannot link ---
 # NrcLibrary binds NRC_Vulkan.dll at runtime instead

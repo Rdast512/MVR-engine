@@ -42,8 +42,8 @@ public:
     // preprocess snapshots the state command buffer's shaders and state; it runs outside the render pass, after the
     // cull pass is made visible to it
     void recordPreprocess(vk::raii::CommandBuffer& cmd, CullPhase phase) const;
-    // binds the mesh state before each bin's execute
-    void recordExecute(vk::raii::CommandBuffer& cmd, CullPhase phase) const;
+    // binds the bin's mesh state, then executes its sequences; nothing when the bin holds no meshlet
+    void recordExecute(vk::raii::CommandBuffer& cmd, CullPhase phase, RasterBin group) const;
 
 private:
     void createLayout();
@@ -61,15 +61,15 @@ private:
     ShaderObjects& shaderObjects;
 
     vk::raii::IndirectCommandsLayoutEXT layout = nullptr;
-    // one handle per stage of kDgcMeshStages, pointed to by generatedShaderInfo
-    std::array<vk::ShaderEXT, 2> generatedShaders{};
-    vk::GeneratedCommandsShaderInfoEXT generatedShaderInfo{};
+    // per bin: one handle per stage of kDgcMeshStages, pointed to by the bin's generatedShaderInfos row
+    std::array<std::array<vk::ShaderEXT, 2>, kRasterBinCount> generatedShaders{};
+    std::array<vk::GeneratedCommandsShaderInfoEXT, kRasterBinCount> generatedShaderInfos{};
     vk::ShaderStageFlags shaderStages{};
 
     // stays in recording state; pool declared first so the buffers are freed before it
     vk::raii::CommandPool statePool = nullptr;
-    // execute must match the preprocessed graphics state exactly; every bin shares it until M6
-    vk::raii::CommandBuffer stateCommandBuffer = nullptr;
+    // one per bin: execute must match the preprocessed graphics state exactly, shaders included
+    std::array<vk::raii::CommandBuffer, kRasterBinCount> stateCommandBuffers = {nullptr, nullptr};
 
     // frame recorded by the last prepareFrame
     uint32_t frame = 0;

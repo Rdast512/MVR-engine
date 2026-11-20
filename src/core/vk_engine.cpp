@@ -456,6 +456,12 @@ void Engine::applyGuideCaptureRequest(const EngineGuideCapture::Request& request
             unloadModel(0);
         }
     }
+    WorldLights::Sun& sun = renderer->getWorldLights().sun;
+    sun.isEnabled = request.sun.has_value();
+    if (request.sun) {
+        sun.azimuthDegrees = request.sun->azimuthDegrees;
+        sun.elevationDegrees = request.sun->elevationDegrees;
+    }
     renderer->indirectMode = request.indirectMode;
     if (request.shouldCapture) {
         renderer->requestDisplayCapture();

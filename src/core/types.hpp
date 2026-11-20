@@ -544,9 +544,20 @@ struct GpuRayCheckStats {
     // the same at the ray's own barycentrics: intersection noise through steep normal maps, reported only
     uint32_t maxHitNormalErrorBits = 0;
     uint32_t maxHitMaterialNormalErrorBits = 0;
+    // a miss, id mismatch or empty hit where an alpha-tested triangle's alpha crosses its threshold within one OMM
+    // micro-triangle plus the raster footprint: the OMM and the per-texel test may disagree there (spec/m6/d4)
+    uint32_t alphaEdges = 0;
 };
-static_assert(sizeof(GpuRayCheckStats) == 68);
+static_assert(sizeof(GpuRayCheckStats) == 72);
 static_assert(offsetof(GpuRayCheckStats, maxNormalErrorBits) == 40);
+static_assert(offsetof(GpuRayCheckStats, alphaEdges) == 68);
+
+// Debug builds (kDebugRays): what the trace helpers report; zeroed by the CPU per frame
+struct GpuRayDebugCounters {
+    // queries still running after their one Proceed(): candidates only an any-hit or a candidate loop resolves
+    uint32_t candidates = 0;
+};
+static_assert(sizeof(GpuRayDebugCounters) == 4);
 
 static_assert(sizeof(GpuCullCounters) == 112);
 static_assert(offsetof(GpuCullCounters, candidatesOverflowed) == 100);
@@ -1018,10 +1029,18 @@ struct GpuRayInstanceBuild
     vk::DeviceAddress blas = 0;
     // grid partition, fixed per layout
     uint32_t partition = 0;
-    uint32_t pad0 = 0;
+    // GpuRayInstanceBuildFlag bits
+    uint32_t flags = 0;
 };
 static_assert(sizeof(GpuRayInstanceBuild) == 16);
 static_assert(offsetof(GpuRayInstanceBuild, partition) == 8);
+static_assert(offsetof(GpuRayInstanceBuild, flags) == 12);
+
+namespace GpuRayInstanceBuildFlag
+{
+    // the primitive's clusters carry a micromap: the instance drops FORCE_OPAQUE
+    inline constexpr uint32_t OpacityMicromap = 1u << 0;
+} // namespace GpuRayInstanceBuildFlag
 static_assert(offsetof(GpuRayInstance, primitiveRow) == 4);
 
 // per-frame entry point for every shader: the only address the push data carries
@@ -1081,8 +1100,10 @@ struct GpuFrameRoot
     vk::DeviceAddress worldLights = 0;
     // last frame's worldLights, same rows; 0 on a history reset
     vk::DeviceAddress prevWorldLights = 0;
+    // GpuRayDebugCounters of this frame slot; 0 unless kDebugRays
+    vk::DeviceAddress rayDebug = 0;
 };
-static_assert(sizeof(GpuFrameRoot) == 192);
+static_assert(sizeof(GpuFrameRoot) == 200);
 static_assert(offsetof(GpuFrameRoot, camera) == 0);
 static_assert(offsetof(GpuFrameRoot, instances) == 8);
 static_assert(offsetof(GpuFrameRoot, models) == 16);
@@ -1108,6 +1129,7 @@ static_assert(offsetof(GpuFrameRoot, frameFlags) == 136);
 static_assert(offsetof(GpuFrameRoot, localLightCount) == 140);
 static_assert(offsetof(GpuFrameRoot, worldLights) == 176);
 static_assert(offsetof(GpuFrameRoot, prevWorldLights) == 184);
+static_assert(offsetof(GpuFrameRoot, rayDebug) == 192);
 static_assert(offsetof(GpuFrameRoot, rayInstances) == 144);
 static_assert(offsetof(GpuFrameRoot, rtxdiConstants) == 152);
 static_assert(offsetof(GpuFrameRoot, cacheConstants) == 160);

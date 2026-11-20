@@ -13,11 +13,15 @@ enum class GpuTimerScope : uint32_t
 {
     EarlyCull = 0,
     EarlyPreprocess,
+    // the opaque bin
     EarlyDraw,
+    // the alpha-tested bin (spec/m6/d3_alpha_raster_bin.md)
+    EarlyAlphaDraw,
     EarlyHiZ,
     LateCull,
     LatePreprocess,
     LateDraw,
+    LateAlphaDraw,
     LateHiZ,
     Resolve,
     // first span of the ray command buffer: includes any wait for the TLAS build
@@ -63,6 +67,8 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "Early DGC preprocess";
     case GpuTimerScope::EarlyDraw:
         return "Early mesh draw";
+    case GpuTimerScope::EarlyAlphaDraw:
+        return "Early alpha draw";
     case GpuTimerScope::EarlyHiZ:
         return "Early Hi-Z build";
     case GpuTimerScope::LateCull:
@@ -71,6 +77,8 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "Late DGC preprocess";
     case GpuTimerScope::LateDraw:
         return "Late mesh draw";
+    case GpuTimerScope::LateAlphaDraw:
+        return "Late alpha draw";
     case GpuTimerScope::LateHiZ:
         return "Late Hi-Z build";
     case GpuTimerScope::Resolve:

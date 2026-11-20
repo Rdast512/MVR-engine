@@ -84,6 +84,16 @@ public:
     [[nodiscard]] static size_t decodedRgba8FileBytes(const std::string& path);
     [[nodiscard]] static bool isKtxPath(std::string_view path);
 
+    // mip 0 of a KTX2 file as uploadKtx copies it (block-compressed formats stay compressed)
+    struct KtxBaseLevel {
+        vk::Format format = vk::Format::eUndefined;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        std::vector<uint8_t> bytes;
+    };
+    // thread-safe (no Vulkan); throws on a file uploadKtx would reject
+    [[nodiscard]] static KtxBaseLevel readKtxBaseLevel(const std::string& path);
+
     // Uploads between begin and flush share one command buffer and one submit + fence wait.
     // Heap indices returned in between are valid, but the images are not sampleable until flush.
     void beginUploadBatch();

@@ -23,11 +23,20 @@ class EngineGuideCapture
 public:
     [[nodiscard]] static bool isRequested();
 
+    // the engine sun's direction (WorldLights::Sun)
+    struct SunAngles
+    {
+        float azimuthDegrees = 0.0f;
+        float elevationDegrees = 0.0f;
+    };
+
     // what only the engine can do for the capture before this frame
     struct Request
     {
         // replaces every entity with this model at the origin
         std::optional<std::filesystem::path> model;
+        // the engine sun at its default illuminance; off when nullopt
+        std::optional<SunAngles> sun;
         bool shouldCapture = false;
         IndirectMode indirectMode = IndirectMode::NrcRestirGi;
     };
@@ -49,6 +58,13 @@ private:
         NoNormals,
     };
 
+    // a camera in the model's space, which is world space: the model sits at the origin
+    struct CameraPose
+    {
+        glm::vec3 position;
+        glm::vec3 target;
+    };
+
     struct Shot
     {
         // model folder, relative to the repository root
@@ -58,6 +74,10 @@ private:
         Variant variant;
         // from the bounds center towards the camera; normalized on use
         glm::vec3 viewDirection;
+        // replaces the framing along viewDirection
+        std::optional<CameraPose> pose;
+        // the samples ship their own lights, as in the Khronos screenshots: the engine sun stays off unless set
+        std::optional<SunAngles> sun;
     };
 
     // two captures whose normals must agree pixel by pixel
@@ -74,7 +94,7 @@ private:
     static constexpr size_t kMirrorShippedShot = 4;
     static constexpr size_t kMirrorGeneratedShot = 5;
     static constexpr size_t kFlatNormalsShot = 7;
-    static constexpr std::array<Shot, 12> kShots = {{
+    static constexpr std::array<Shot, 15> kShots = {{
         {"gltf/2.0/MetalRoughSpheres/glTF", "MetalRoughSpheres_front", Variant::AsShipped, kFront},
         // the plane lies in xz with its normal +y
         {"gltf/2.0/TwoSidedPlane/glTF", "TwoSidedPlane_top", Variant::AsShipped, {0.0f, 0.8f, 0.6f}},
@@ -95,6 +115,18 @@ private:
         // E2: point lights (candela, range window) and a directional one (lux) through the world light buffer
         {"gltf/2.0/LightsPunctualLamp/glTF", "LightsPunctualLamp_front", Variant::AsShipped, kFront},
         {"gltf/2.0/DirectionalLight/glTF", "DirectionalLight_front", Variant::AsShipped, kFront},
+        // D4 (spec/m6/d4_ray_contract.md): cut-outs in raster and in shadows. The panels stand 0.47 in front of the
+        // backdrop; a sun from the front right throws their shadows down and left onto it, past the panel edges and
+        // through the cut-outs
+        {"gltf/2.0/AlphaBlendModeTest/glTF", "AlphaBlendModeTest_sun", Variant::AsShipped, {0.0f, 0.35f, 1.0f},
+         std::nullopt, SunAngles{60.0f, 35.0f}},
+        // the courtyard vase plant and column vine under the default sun (WorldLights::defaultSun)
+        {"models/Sponza", "Sponza_plants", Variant::AsShipped, kFront,
+         CameraPose{{-0.48f, 5.21f, -0.31f}, {-0.18f, 4.51f, -0.91f}}, SunAngles{20.0f, 65.0f}},
+        // the shadow-terminator check (D4 §1.2): the upper colonnade from the courtyard, a sun lower than the default
+        // along the courtyard; the column shafts and arches turn away from it. Shadowed lights is the clean view
+        {"models/Sponza", "Sponza_terminator", Variant::AsShipped, kFront,
+         CameraPose{{0.0f, 4.0f, 2.5f}, {-4.0f, 7.0f, -4.0f}}, SunAngles{20.0f, 40.0f}},
     }};
     static constexpr std::array<NormalCheck, 2> kNormalChecks = {{
         {"A4 generated tangents match the shipped ones (NormalTangentMirrorTest shading normal)", kMirrorGeneratedShot,

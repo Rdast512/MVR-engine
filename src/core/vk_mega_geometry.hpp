@@ -6,6 +6,7 @@
 #include <vector>
 #include <vulkan/vulkan_raii.hpp>
 #include "object_storage.hpp"
+#include "omm_baker.hpp"
 #include "types.hpp"
 #include "vk_allocator.hpp"
 #include "vk_device.hpp"
@@ -14,7 +15,8 @@
 // Ray-tracing geometry built once per model at load (engine spec §10.2, PBR plan C1): one CLAS per meshlet and one
 // cluster BLAS per mesh primitive, grouped per model and indexed like AssetBuffers::models(). A cluster BLAS refers to
 // its CLAS by address, so both stay in the model's own allocations and never move: unloading a model leaves every
-// other model's structures as they are.
+// other model's structures as they are. A baked primitive also gets one opacity micromap, built before its CLAS and
+// referenced by address from each of its clusters (spec/m6/d2_micromap_clas.md).
 class MegaGeometry {
 public:
     // one model's meshlets as AssetBuffers uploads them: meshlet rows and vertex ids are model-relative
@@ -24,6 +26,8 @@ public:
         std::span<const uint32_t> meshletVertices;
         std::span<const uint8_t> meshletTriangles;
         std::span<const GpuPrimitive> primitives;
+        // parallel to primitives, or empty when nothing was baked
+        std::span<const OmmBake> ommBakes;
     };
 
     MegaGeometry(const Device& device, const VkAllocator& allocator, FrameSync& frameSync);
@@ -44,7 +48,12 @@ public:
     {
         return models[modelId].blasAddresses;
     }
-    // CLAS and BLAS bytes of every model
+    // per model-relative primitive row; 1 when the primitive's clusters carry a micromap
+    [[nodiscard]] std::span<const uint8_t> micromapFlags(ModelId modelId) const
+    {
+        return models[modelId].micromapFlags;
+    }
+    // CLAS, BLAS and micromap bytes of every model
     [[nodiscard]] vk::DeviceSize totalBytes() const noexcept;
 
 private:
@@ -71,6 +80,10 @@ private:
         OwnedBuffer clas;
         OwnedBuffer blas;
         std::vector<vk::DeviceAddress> blasAddresses;
+        // declared before micromaps: members are destroyed in reverse order, the micromaps first
+        OwnedBuffer micromapStorage;
+        std::vector<vk::raii::MicromapEXT> micromaps;
+        std::vector<uint8_t> micromapFlags;
     };
 
     [[nodiscard]] OwnedBuffer createOwnedBuffer(vk::DeviceSize bytes, vk::DeviceSize alignment,
@@ -83,6 +96,8 @@ private:
     const vk::raii::Device& device;
     const std::vector<uint32_t>& queueFamilyIndices;
     const vk::PhysicalDeviceClusterAccelerationStructurePropertiesNV& limits;
+    // micromap build scratch alignment
+    vk::DeviceSize scratchOffsetAlignment;
     const VkAllocator& allocator;
     FrameSync& frameSync;
     // indexed by ModelId

@@ -130,6 +130,8 @@ constexpr std::array kRequiredFeatures = {
     ENGINE_FEATURE(PhysicalDeviceVulkan13Features, synchronization2),
     ENGINE_FEATURE(PhysicalDeviceVulkan13Features, dynamicRendering),
     ENGINE_FEATURE(PhysicalDeviceVulkan13Features, maintenance4),
+    // discard in the alpha-tested bin: SPIR-V 1.6 lowers it to OpDemoteToHelperInvocation
+    ENGINE_FEATURE(PhysicalDeviceVulkan13Features, shaderDemoteToHelperInvocation),
     ENGINE_FEATURE(PhysicalDeviceVulkan14Features, globalPriorityQuery),
     ENGINE_FEATURE(PhysicalDeviceVulkan14Features, dynamicRenderingLocalRead),
     ENGINE_FEATURE(PhysicalDeviceVulkan14Features, maintenance5),

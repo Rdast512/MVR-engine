@@ -43,7 +43,7 @@ namespace
     };
 
     // shader-only structs: no C++ mirror
-    constexpr std::array<std::string_view, 1> kShaderOnly = {"MeshVertexOut"};
+    constexpr std::array<std::string_view, 2> kShaderOnly = {"MeshVertexOut", "MeshAlphaVertexOut"};
 
 #define LAYOUT_FIELD(type, field)                                                                                      \
     FieldLayout { #field, offsetof(type, field) }
@@ -445,6 +445,10 @@ namespace
             LAYOUT_FIELD(GpuRayCheckStats, maxMaterialNormalErrorBits),
             LAYOUT_FIELD(GpuRayCheckStats, maxHitNormalErrorBits),
             LAYOUT_FIELD(GpuRayCheckStats, maxHitMaterialNormalErrorBits),
+            LAYOUT_FIELD(GpuRayCheckStats, alphaEdges),
+        }},
+        {"GpuRayDebugCounters", sizeof(GpuRayDebugCounters), {
+            LAYOUT_FIELD(GpuRayDebugCounters, candidates),
         }},
         {"PresentPushData", sizeof(PresentPushData), {
             LAYOUT_FIELD(PresentPushData, frameRoot),
@@ -489,7 +493,7 @@ namespace
         {"GpuRayInstanceBuild", sizeof(GpuRayInstanceBuild), {
             LAYOUT_FIELD(GpuRayInstanceBuild, blas),
             LAYOUT_FIELD(GpuRayInstanceBuild, partition),
-            LAYOUT_FIELD(GpuRayInstanceBuild, pad0),
+            LAYOUT_FIELD(GpuRayInstanceBuild, flags),
         }},
         {"GpuFrameRoot", sizeof(GpuFrameRoot), {
             LAYOUT_FIELD(GpuFrameRoot, camera),
@@ -522,6 +526,7 @@ namespace
             LAYOUT_FIELD(GpuFrameRoot, exposure),
             LAYOUT_FIELD(GpuFrameRoot, worldLights),
             LAYOUT_FIELD(GpuFrameRoot, prevWorldLights),
+            LAYOUT_FIELD(GpuFrameRoot, rayDebug),
         }},
     };
 

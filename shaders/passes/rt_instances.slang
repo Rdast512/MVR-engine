@@ -8,8 +8,8 @@ import core.binding;
 
 static const uint kRtInstancesGroupSize = 64; // matches src/render/vk_rt_scene.cpp
 static const uint kInstanceMaskAll = 0xFFu;
-// VK_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCE_FLAG_FORCE_OPAQUE_BIT_NV: no any-hit; alpha-tested primitives drop it
-// in plan D, and rays force OMM 2-state themselves
+// VK_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCE_FLAG_FORCE_OPAQUE_BIT_NV: no any-hit. Primitives with a micromap drop
+// it and carry no opacity flag; rays force OMM 2-state themselves (spec/m6/d2_micromap_clas.md)
 static const uint kPtlasInstanceForceOpaque = 0x4u;
 
 // VkPartitionedAccelerationStructureWriteInstanceDataNV, 104 B
@@ -91,7 +91,7 @@ void rtInstancesMain(uint3 dispatchId: SV_DispatchThreadID)
     instance.instanceMask = kInstanceMaskAll;
     // one hit group: record offset 0. No facing flags: RT handles mirrored transforms itself
     instance.hitGroupOffset = 0;
-    instance.instanceFlags = kPtlasInstanceForceOpaque;
+    instance.instanceFlags = (build.flags & kRayInstanceBuildFlagOpacityMicromap) != 0 ? 0u : kPtlasInstanceForceOpaque;
     instance.instanceIndex = row;
     instance.partitionIndex = build.partition;
     instance.blas = build.blas;

@@ -41,6 +41,8 @@ struct FrameRootInputs {
     // WorldLights rows: the asset's lights, then the engine's sun
     uint32_t lightCount;
     uint32_t localLightCount;
+    // GpuRayDebugCounters of this slot; 0 unless kDebugRays
+    vk::DeviceAddress rayDebug;
 };
 
 // Per-frame-slot host-visible data rewritten by the CPU every frame: the GpuFrameRoot, the GpuObjectUB rows and the

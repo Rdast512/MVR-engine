@@ -1,6 +1,6 @@
 # M6 · Alpha
 
-**Status** — Spec planned on 2026-11-20; no step built.\
+**Status** — Spec planned on 2026-11-20; D1 built the same day (known-area gate open on Sponza's chains, C-D1-2); D2 built the same day (micromap build cost C-D2-1, no AS memory row C-D2-2); D3 built the same day (raster vs OMM edge differences C-D3-1); D4 built the same day, which completes M6 (acceptance below, 2026-11-20).\
 **Scope** — PBR plan Phase D: alpha-tested geometry is cut out in raster and in every ray.
 [Engine spec](../../docs/engine_spec.md) · [PBR plan](../pbr_implementation_plan.md) · [Considerations](../considerations.md)
 
@@ -30,6 +30,8 @@ M6 is done when:
 - Sponza's plants cast leaf-shaped shadows, and the jitter flicker of C-D-1 is gone;
 - `ENGINE_RT_CHECK`, `ENGINE_CULL_CHECK`, `ENGINE_MOTION_TEST`, `ENGINE_GUIDE_CAPTURE` and `ENGINE_GI_CHECK` still pass, and validation and GPU-AV are clean;
 - the bake time, micromap memory and the alpha bin's raster cost are recorded (RTX 5070; the 2060 Super stays with C-M0-1).
+
+Acceptance, 2026-11-20 (D4 log): `AlphaBlendModeTest_sun` cuts each panel at its marker in raster and in its shadow; `Sponza_plants` shows leaf-shaped shadows. The flicker's cause, rays shadowing through card cut-outs the raster drew whole, is gone; no stability runner measured it. RT check 438 of 438 with the `alpha-edge` class, cull check 16 of 16, motion test 13 of 13, guide capture normal checks 2 of 2 and convergence passed, GI check 8 of 8, validation and GPU-AV clean. Bake time in D1, micromap build and memory in D2 (C-D2-1, accepted), alpha bin cost in D3, ray-pass cost with OMMs in D4 (+4–8%).
 
 ## Facts established while planning (2026-11-20)
 
