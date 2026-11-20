@@ -47,6 +47,11 @@ public:
                                      std::optional<glm::vec4> modelBounds);
     // after the frame's fence; true once every shot is written and the checks are logged
     [[nodiscard]] bool endFrame(const std::optional<Renderer::DisplayCapture>& capture);
+    [[nodiscard]] bool isPassed() const noexcept
+    {
+        return isFinished && normalPassedCount == kNormalChecks.size() &&
+            convergenceCheckCount == kConvergenceShots.size() && convergencePassedCount == kConvergenceShots.size();
+    }
 
 private:
     // a copy of the model under logs/guides/variants/<shot name> with attributes removed from its .gltf
@@ -165,14 +170,24 @@ private:
         {DebugView::IndirectRadiance, IndirectMode::RestirGi},
         {DebugView::DlssInput, IndirectMode::RestirGi},
     }};
-    // ReSTIR DI (Direct lighting) averaged over frames against Shadowed lights on the lamp shot, after its views
-    static constexpr size_t kConvergenceShot = 10;
+    // ReSTIR DI (Direct lighting) averaged over frames against Shadowed lights on local lights (lamp) and directional
+    // sun + shadows (Sponza_terminator), after each shot's views
+    static constexpr std::array<size_t, 2> kConvergenceShots = {10, 14};
     static constexpr uint32_t kConvergenceWarmupFrames = 16;
     static constexpr uint32_t kConvergenceFrames = 64;
     static constexpr uint32_t kConvergenceTileSize = 16;
     // shares of the reference's summed luminance; RTXDI 3.1's fused pass read +0.13% and 2.43%, its Basic bug -35%
     static constexpr double kMaxConvergenceBias = 0.005;
     static constexpr double kMaxConvergenceTileP90 = 0.03;
+    [[nodiscard]] static constexpr bool isConvergenceShot(size_t index) noexcept
+    {
+        for (const size_t shot : kConvergenceShots) {
+            if (shot == index) {
+                return true;
+            }
+        }
+        return false;
+    }
     // the load frame, then frames with the shot's camera before the first capture
     static constexpr uint32_t kSettleFrames = 3;
     // bounding sphere to frame height
@@ -209,11 +224,18 @@ private:
 
     struct ConvergenceRun
     {
-        vk::Extent2D extent;
-        // Shadowed lights luminance of the convergence shot
+        size_t shotIndex = 0;
+        vk::Extent2D extent{};
+        // Shadowed lights luminance and RGB sum of the convergence shot
         std::vector<float> reference;
-        // tested luminance summed over the captured frames
+        std::array<double, 3> referenceRgb{0.0, 0.0, 0.0};
+        uint64_t referenceNonFinite = 0;
+        uint64_t referenceNegative = 0;
+        // tested luminance and RGB summed over the captured frames
         std::vector<double> sum;
+        std::array<double, 3> rgbSum{0.0, 0.0, 0.0};
+        uint64_t nonFinitePixels = 0;
+        uint64_t negativePixels = 0;
         std::vector<float> previous;
         // over frames of the pixel sum of |frame - reference| and of |frame - previous frame|
         double absoluteErrorSum = 0.0;
@@ -225,8 +247,10 @@ private:
     // engaged from the reference capture; the run begins after the shot's last view
     std::optional<ConvergenceRun> convergence;
     bool isConvergenceRunning = false;
-    // set once the run is evaluated
-    std::optional<bool> isConvergencePassed;
-    // the settings replaced while the convergence shot runs
+    bool isFinished = false;
+    size_t normalPassedCount = 0;
+    size_t convergenceCheckCount = 0;
+    size_t convergencePassedCount = 0;
+    // the settings replaced while a convergence shot runs
     std::optional<RtxdiContext::Settings> heldRtxdiSettings;
 };

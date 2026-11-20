@@ -140,10 +140,10 @@ EngineGuideCapture::Request EngineGuideCapture::beginFrame(Camera& camera, Debug
                                                            std::optional<glm::vec4> modelBounds)
 {
     // the check gates the ReSTIR DI port, not the defaults: the NVIDIA defaults fail it (spec rtxdi_3_2_update §6.1)
-    const bool isConvergenceShot = shotIndex == kConvergenceShot;
-    if (isConvergenceShot && !heldRtxdiSettings) {
+    const bool isConverging = isConvergenceShot(shotIndex);
+    if (isConverging && !heldRtxdiSettings) {
         heldRtxdiSettings = std::exchange(rtxdi, RtxdiContext::convergedSettings());
-    } else if (!isConvergenceShot && heldRtxdiSettings) {
+    } else if (!isConverging && heldRtxdiSettings) {
         rtxdi = *heldRtxdiSettings;
         heldRtxdiSettings.reset();
     }
@@ -197,15 +197,20 @@ bool EngineGuideCapture::endFrame(const std::optional<Renderer::DisplayCapture>&
         ++writtenCount;
     }
     keepNormals(*capture);
-    if (shotIndex == kConvergenceShot && kViews[viewIndex].view == DebugView::ShadowedLights) {
+    if (isConvergenceShot(shotIndex) && kViews[viewIndex].view == DebugView::ShadowedLights) {
+        const DecodedFrame decoded = decodeFrame(*capture);
         convergence.emplace();
+        convergence->shotIndex = shotIndex;
         convergence->extent = capture->extent;
-        convergence->reference = decodeLuminance(*capture);
+        convergence->reference = std::move(decoded.luminance);
+        convergence->referenceRgb = decoded.rgbTotal;
+        convergence->referenceNonFinite = decoded.nonFinitePixels;
+        convergence->referenceNegative = decoded.negativePixels;
     }
     if (++viewIndex < kViews.size()) {
         return false;
     }
-    if (shotIndex == kConvergenceShot && convergence) {
+    if (isConvergenceShot(shotIndex) && convergence) {
         isConvergenceRunning = true;
         return false;
     }
@@ -221,20 +226,21 @@ bool EngineGuideCapture::finishShot()
     }
     logInfo(std::format("Guide capture: {} PNGs written to {}", writtenCount, outputDirectory().string()),
             "GuideCapture");
-    const size_t passed = evaluateNormalChecks();
-    const std::string summary = std::format("Normal checks: {} of {} passed", passed, kNormalChecks.size());
-    if (passed == kNormalChecks.size()) {
+    normalPassedCount = evaluateNormalChecks();
+    const std::string summary = std::format("Normal checks: {} of {} passed", normalPassedCount, kNormalChecks.size());
+    if (normalPassedCount == kNormalChecks.size()) {
         logInfo(summary, "GuideCapture");
     } else {
         logError(summary, "GuideCapture");
     }
-    if (!isConvergencePassed) {
-        logError("Convergence check: not run", "GuideCapture");
-    } else if (*isConvergencePassed) {
-        logInfo("Convergence check: passed", "GuideCapture");
+    const std::string convergenceSummary =
+        std::format("Convergence checks: {} of {} passed", convergencePassedCount, kConvergenceShots.size());
+    if (convergenceCheckCount == kConvergenceShots.size() && convergencePassedCount == kConvergenceShots.size()) {
+        logInfo(convergenceSummary, "GuideCapture");
     } else {
-        logError("Convergence check: FAILED", "GuideCapture");
+        logError(convergenceSummary, "GuideCapture");
     }
+    isFinished = true;
     return true;
 }
 
@@ -314,28 +320,39 @@ bool EngineGuideCapture::advanceConvergence(const std::optional<Renderer::Displa
         return false;
     }
     if (!capture || capture->extent != run.extent) {
-        logError("FAIL ReSTIR DI convergence: capture missing or resized", "GuideCapture");
+        logError(std::format("FAIL ReSTIR DI convergence ({}): capture missing or resized", kShots[run.shotIndex].name),
+                 "GuideCapture");
+        ++convergenceCheckCount;
         isConvergenceRunning = false;
-        isConvergencePassed = false;
+        convergence.reset();
         return true;
     }
-    std::vector<float> frame = decodeLuminance(*capture);
+    DecodedFrame decoded = decodeFrame(*capture);
     if (run.sum.empty()) {
-        run.sum.assign(frame.size(), 0.0);
+        run.sum.assign(decoded.luminance.size(), 0.0);
     }
-    for (size_t texel = 0; texel < frame.size(); ++texel) {
-        run.sum[texel] += frame[texel];
-        run.absoluteErrorSum += std::abs(frame[texel] - run.reference[texel]);
+    for (size_t texel = 0; texel < decoded.luminance.size(); ++texel) {
+        const float value = decoded.luminance[texel];
+        run.sum[texel] += value;
+        run.absoluteErrorSum += std::abs(value - run.reference[texel]);
         if (!run.previous.empty()) {
-            run.changeSum += std::abs(frame[texel] - run.previous[texel]);
+            run.changeSum += std::abs(value - run.previous[texel]);
         }
     }
-    run.previous = std::move(frame);
+    for (size_t channel = 0; channel < 3; ++channel) {
+        run.rgbSum[channel] += decoded.rgbTotal[channel];
+    }
+    run.nonFinitePixels += decoded.nonFinitePixels;
+    run.negativePixels += decoded.negativePixels;
+    run.previous = std::move(decoded.luminance);
     if (++run.capturedFrames < kConvergenceFrames) {
         return false;
     }
+    const bool isPassed = evaluateConvergence();
+    ++convergenceCheckCount;
+    convergencePassedCount += isPassed ? 1u : 0u;
     isConvergenceRunning = false;
-    isConvergencePassed = evaluateConvergence();
+    convergence.reset();
     return true;
 }
 
@@ -353,20 +370,30 @@ bool EngineGuideCapture::evaluateConvergence() const
         meanTotal += mean[texel];
     }
     if (referenceTotal <= 0.0) {
-        logError("FAIL ReSTIR DI convergence: the reference is black", "GuideCapture");
+        logError(std::format("FAIL ReSTIR DI convergence ({}): the reference is black", kShots[run.shotIndex].name),
+                 "GuideCapture");
         return false;
     }
 
+    const std::array<double, 3> meanRgb{run.rgbSum[0] / frames, run.rgbSum[1] / frames, run.rgbSum[2] / frames};
+    const std::array<double, 3> rgbBias = computeChannelBias(meanRgb, run.referenceRgb, referenceTotal);
+    const double maxRgbBias = std::max({std::abs(rgbBias[0]), std::abs(rgbBias[1]), std::abs(rgbBias[2])});
     const TileErrors tiles = compareTiles(mean, reference, run.extent, kConvergenceTileSize);
     const double bias = (meanTotal - referenceTotal) / referenceTotal;
-    const bool isPassed = std::abs(bias) <= kMaxConvergenceBias && tiles.p90 <= kMaxConvergenceTileP90;
+    const uint64_t totalNonFinite = run.nonFinitePixels + run.referenceNonFinite;
+    const uint64_t totalNegative = run.negativePixels + run.referenceNegative;
+    const bool isPassed = totalNonFinite == 0 && totalNegative == 0 && std::abs(bias) <= kMaxConvergenceBias &&
+        maxRgbBias <= kMaxConvergenceBias && tiles.p90 <= kMaxConvergenceTileP90 &&
+        tiles.zeroRefLeak <= kMaxConvergenceBias;
     const std::string detail = std::format(
-        "{}, {} frames after {}: bias {:+.3f}%, {}x{} tiles median {:.2f}% / p90 {:.2f}% / max {:.2f}% ({} tiles), "
-        "per-frame error {:.2f}%, frame-to-frame change {:.2f}%",
-        kShots[kConvergenceShot].name, run.capturedFrames, kConvergenceWarmupFrames, bias * 100.0, kConvergenceTileSize,
-        kConvergenceTileSize, tiles.median * 100.0, tiles.p90 * 100.0, tiles.max * 100.0, tiles.count,
+        "{}, {} frames after {}: bias {:+.3f}% (RGB {:+.3f}/{:+.3f}/{:+.3f}%), {}x{} tiles median {:.2f}% / p90 "
+        "{:.2f}% / max {:.2f}% ({} tiles, dark leak {:.3f}% in {} tiles), per-frame error {:.2f}%, frame-to-frame "
+        "change {:.2f}%, nonFinite {} neg {}",
+        kShots[run.shotIndex].name, run.capturedFrames, kConvergenceWarmupFrames, bias * 100.0, rgbBias[0] * 100.0,
+        rgbBias[1] * 100.0, rgbBias[2] * 100.0, kConvergenceTileSize, kConvergenceTileSize, tiles.median * 100.0,
+        tiles.p90 * 100.0, tiles.max * 100.0, tiles.count, tiles.zeroRefLeak * 100.0, tiles.zeroRefLeakTiles,
         run.absoluteErrorSum / frames / referenceTotal * 100.0,
-        run.changeSum / (frames - 1.0) / referenceTotal * 100.0);
+        run.changeSum / (frames - 1.0) / referenceTotal * 100.0, totalNonFinite, totalNegative);
     if (isPassed) {
         logInfo(std::format("PASS ReSTIR DI convergence ({})", detail), "GuideCapture");
     } else {

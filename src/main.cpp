@@ -85,7 +85,9 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv)
     checkStl();
     try {
         Engine engine;
-        engine.run();
+        if (!engine.run()) {
+            return EXIT_FAILURE;
+        }
     } catch (const std::exception& e) {
         std::cout << "Engine ended. Exception: " << e.what() << '\n';
         std::cerr << e.what() << '\n';

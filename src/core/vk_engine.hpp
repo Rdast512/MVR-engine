@@ -106,6 +106,7 @@ class Engine
 public:
     ~Engine();
     void initialize();
-    void run();
+    // false when any active self-test runner failed
+    [[nodiscard]] bool run();
     void cleanup();
 };

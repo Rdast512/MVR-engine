@@ -198,7 +198,8 @@ void Renderer::drawFrame()
     {
         const IndirectState indirect{.mode = indirectMode,
                                      .isGiReference = rtxdi.isGiReference,
-                                     .isGroundTruthPaths = rtxdi.giReferenceBounces != 0};
+                                     .isGroundTruthPaths = rtxdi.giReferenceBounces != 0,
+                                     .giSettings = rtxdi.giSettings};
         // the samples change meaning (spec/m4/g7_indirect_modes.md): ReSTIR GI and DLSS-RR start over, ReSTIR DI keeps
         isIndirectHistoryReset = indirect != appliedIndirect;
         if (isIndirectHistoryReset) {

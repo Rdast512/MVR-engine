@@ -1,8 +1,10 @@
-// Checks shaders/material/brdf.slang: the worked numbers of docs/pbr_lighting_materials.html section 7, that pdfBrdf and
-// the weight match sampleBrdf exactly, that sampleBrdf draws from the distribution pdfBrdf describes (its mean weight
-// equals an independent uniform-hemisphere integral of f * NdotL), and that degenerate inputs stay finite.
+// Checks shaders/material/brdf.slang against independent double-precision glTF 2.0 Appendix B / Heitz VNDF
+// references (on-axis and off-axis), Helmholtz reciprocity, single-scattering white-furnace energy bounds,
+// sampleBrdf/pdfBrdf/evalBrdf consistency (including view below the shading normal), envBrdfApprox, and degenerate
+// inputs staying finite.
 #include "test_support.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -15,15 +17,24 @@ using test::check;
 namespace
 {
     constexpr uint32_t kSampleCount = 1u << 20;
-    constexpr uint32_t kResultRows = 4;
+    constexpr uint32_t kResultRows = 5;
     constexpr float kWorkedTolerance = 1e-3f;
+    constexpr float kAnalyticTolerance = 2e-4f;
     constexpr float kIntegralTolerance = 0.02f;
     constexpr float kExactTolerance = 1e-4f;
+    constexpr float kReciprocityTolerance = 5e-4f;
+    constexpr float kEnergyCeiling = 1.005f;
     constexpr float kSkipPdf = -1.0f;
+    constexpr double kPi = 3.14159265358979323846;
 
     struct Vec3
     {
         float x, y, z;
+    };
+
+    struct Vec3d
+    {
+        double x, y, z;
     };
 
     // scalar layout: must match BrdfCase in tests/shaders/brdf_numbers.slang
@@ -55,9 +66,10 @@ namespace
 
     enum class Kind
     {
-        Worked,     // compare f * NdotL and pdf at the case's l against hand-derived values
-        Integrated, // also compare the estimators against each other
-        FiniteOnly, // degenerate input: no nan or inf
+        Worked,       // compare f * NdotL and pdf at the case's l against hand-derived or analytic values
+        Integrated,   // also compare the sampler mean against an independent uniform-hemisphere integral
+        WhiteFurnace, // pure conductor f0 = 1: verify energy <= 1 and exact pdf/weight/reciprocity at low roughness
+        FiniteOnly,   // degenerate input: no nan or inf; still verifies eval/sample/pdf consistency
     };
 
     struct TestCase
@@ -67,10 +79,12 @@ namespace
         Kind kind;
         Vec3 expected;
         float expectedPdf;
+        float workedTolerance;
     };
 
     constexpr Vec3 kUp{0.0f, 0.0f, 1.0f};
     constexpr Vec3 kGold{1.0f, 0.766f, 0.336f};
+    constexpr Vec3 kWhite{1.0f, 1.0f, 1.0f};
     constexpr Vec3 kBlack{0.0f, 0.0f, 0.0f};
 
     constexpr Vec3 gray(float value) { return {value, value, value}; }
@@ -81,11 +95,104 @@ namespace
         return {v.x / length, v.y / length, v.z / length};
     }
 
-    // view at polar angle degrees from +z
-    Vec3 viewAt(float degrees)
+    Vec3d toDouble(Vec3 v) { return {v.x, v.y, v.z}; }
+    double dot(Vec3d a, Vec3d b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+
+    Vec3d normalize(Vec3d v)
     {
-        const float radians = degrees * 3.14159265f / 180.0f;
-        return {std::sin(radians), 0.0f, std::cos(radians)};
+        const double len = std::sqrt(dot(v, v));
+        return {v.x / len, v.y / len, v.z / len};
+    }
+
+    // view at polar angle degrees from +z, azimuth azimuthDegrees from +x
+    Vec3 dirAt(float polarDegrees, float azimuthDegrees = 0.0f)
+    {
+        const double polar = polarDegrees * kPi / 180.0;
+        const double azimuth = azimuthDegrees * kPi / 180.0;
+        return {static_cast<float>(std::sin(polar) * std::cos(azimuth)),
+                static_cast<float>(std::sin(polar) * std::sin(azimuth)), static_cast<float>(std::cos(polar))};
+    }
+
+    // independent double-precision glTF 2.0 Appendix B + Heitz VNDF reference
+    struct AnalyticReference
+    {
+        Vec3 fTimesNdotL;
+        float pdf;
+        Vec3 envBrdf;
+    };
+
+    AnalyticReference referenceGltfBrdf(const BrdfCase& c)
+    {
+        constexpr double kMinAlpha = 1e-3;
+        constexpr double kMinNDotV = 1e-4;
+        constexpr double kMinLobe = 0.1;
+
+        const Vec3d n = normalize(toDouble(c.n));
+        const Vec3d vRaw = normalize(toDouble(c.v));
+        const Vec3d l = normalize(toDouble(c.l));
+        const double nDotVRaw = dot(n, vRaw);
+        const Vec3d v = nDotVRaw >= kMinNDotV
+            ? vRaw
+            : normalize({vRaw.x + n.x * (kMinNDotV - nDotVRaw), vRaw.y + n.y * (kMinNDotV - nDotVRaw),
+                         vRaw.z + n.z * (kMinNDotV - nDotVRaw)});
+        const double nDotV = std::max(dot(n, v), kMinNDotV);
+        const double nDotL = dot(n, l);
+        const double alpha = std::max(static_cast<double>(c.roughness) * c.roughness, kMinAlpha);
+        const double a2 = alpha * alpha;
+
+        // Karis envBrdfApprox reference
+        const double r0 = c.roughness * -1.0 + 1.0;
+        const double r1 = c.roughness * -0.0275 + 0.0425;
+        const double r2 = c.roughness * -0.572 + 1.04;
+        const double r3 = c.roughness * 0.022 - 0.04;
+        const double a004 = std::min(r0 * r0, std::exp2(-9.28 * nDotV)) * r0 + r1;
+        const double envScale = -1.04 * a004 + r2;
+        const double envBias = 1.04 * a004 + r3;
+        const Vec3 envBrdf{static_cast<float>(c.f0.x * envScale + envBias),
+                           static_cast<float>(c.f0.y * envScale + envBias),
+                           static_cast<float>(c.f0.z * envScale + envBias)};
+
+        if (nDotL <= 0.0) {
+            return {kBlack, 0.0f, envBrdf};
+        }
+
+        const Vec3d h = normalize({l.x + v.x, l.y + v.y, l.z + v.z});
+        const double nDotH = std::clamp(dot(n, h), 0.0, 1.0);
+        const double vDotH = std::clamp(dot(v, h), 0.0, 1.0);
+
+        const double dDenom = nDotH * nDotH * (a2 - 1.0) + 1.0;
+        const double D = a2 / (kPi * dDenom * dDenom);
+        const double ggxV = nDotL * std::sqrt(nDotV * nDotV * (1.0 - a2) + a2);
+        const double ggxL = nDotV * std::sqrt(nDotL * nDotL * (1.0 - a2) + a2);
+        const double V = 0.5 / std::max(ggxV + ggxL, 1e-7);
+
+        const double pow5 = std::pow(std::clamp(1.0 - vDotH, 0.0, 1.0), 5.0);
+        const double fx = c.f0.x + (1.0 - c.f0.x) * pow5;
+        const double fy = c.f0.y + (1.0 - c.f0.y) * pow5;
+        const double fz = c.f0.z + (1.0 - c.f0.z) * pow5;
+
+        const Vec3 fTimesNdotL{
+            static_cast<float>(((1.0 - fx) * c.cDiff.x / kPi + fx * D * V) * nDotL),
+            static_cast<float>(((1.0 - fy) * c.cDiff.y / kPi + fy * D * V) * nDotL),
+            static_cast<float>(((1.0 - fz) * c.cDiff.z / kPi + fz * D * V) * nDotL),
+        };
+
+        const auto lum = [](double r, double g, double b) { return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+        const double cDiffLum = lum(c.cDiff.x, c.cDiff.y, c.cDiff.z);
+        double specProb = 1.0;
+        if (cDiffLum > 0.0) {
+            const double pow5V = std::pow(std::clamp(1.0 - nDotV, 0.0, 1.0), 5.0);
+            const double fVx = c.f0.x + (1.0 - c.f0.x) * pow5V;
+            const double fVy = c.f0.y + (1.0 - c.f0.y) * pow5V;
+            const double fVz = c.f0.z + (1.0 - c.f0.z) * pow5V;
+            const double specLum = lum(fVx, fVy, fVz);
+            const double diffLum = lum((1.0 - fVx) * c.cDiff.x, (1.0 - fVy) * c.cDiff.y, (1.0 - fVz) * c.cDiff.z);
+            specProb = std::clamp(specLum / (specLum + diffLum), kMinLobe, 1.0 - kMinLobe);
+        }
+        const double specPdf = D / (2.0 * (nDotV + std::sqrt(a2 + (1.0 - a2) * nDotV * nDotV)));
+        const double diffPdf = nDotL / kPi;
+        const float pdf = static_cast<float>((1.0 - specProb) * diffPdf + specProb * specPdf);
+        return {fTimesNdotL, pdf, envBrdf};
     }
 
     BrdfCase makeCase(Vec3 n, Vec3 v, Vec3 l, Vec3 cDiff, Vec3 f0, float roughness)
@@ -102,17 +209,31 @@ namespace
 
     TestCase worked(const char* name, Vec3 cDiff, Vec3 f0, float roughness, Vec3 expected, float expectedPdf)
     {
-        return {name, makeCase(kUp, kUp, kUp, cDiff, f0, roughness), Kind::Worked, expected, expectedPdf};
+        return {name, makeCase(kUp, kUp, kUp, cDiff, f0, roughness), Kind::Worked, expected, expectedPdf,
+                kWorkedTolerance};
+    }
+
+    TestCase offAxisAnalytic(const char* name, Vec3 n, Vec3 v, Vec3 l, Vec3 cDiff, Vec3 f0, float roughness)
+    {
+        const BrdfCase input = makeCase(n, v, l, cDiff, f0, roughness);
+        const AnalyticReference ref = referenceGltfBrdf(input);
+        return {name, input, Kind::Worked, ref.fTimesNdotL, ref.pdf, kAnalyticTolerance};
     }
 
     TestCase integrated(const char* name, Vec3 n, Vec3 v, Vec3 cDiff, Vec3 f0, float roughness)
     {
-        return {name, makeCase(n, v, n, cDiff, f0, roughness), Kind::Integrated, {}, kSkipPdf};
+        return {name, makeCase(n, v, n, cDiff, f0, roughness), Kind::Integrated, {}, kSkipPdf, kAnalyticTolerance};
+    }
+
+    TestCase whiteFurnace(const char* name, Vec3 v, float roughness)
+    {
+        return {name, makeCase(kUp, v, kUp, kBlack, kWhite, roughness), Kind::WhiteFurnace, {}, kSkipPdf,
+                kAnalyticTolerance};
     }
 
     TestCase finiteOnly(const char* name, Vec3 n, Vec3 v, Vec3 cDiff, Vec3 f0, float roughness)
     {
-        return {name, makeCase(n, v, n, cDiff, f0, roughness), Kind::FiniteOnly, {}, kSkipPdf};
+        return {name, makeCase(n, v, n, cDiff, f0, roughness), Kind::FiniteOnly, {}, kSkipPdf, kAnalyticTolerance};
     }
 
     std::vector<TestCase> buildCases()
@@ -120,25 +241,45 @@ namespace
         const Vec3 tilted = normalized({0.4f, -0.3f, 0.8f});
         const float goldScale = 795.77f;
         return {
-            // f * NdotL from the section 7 table; the plastic pdf is hand-derived: 0.1 (clamped) * 1.2732 + 0.9 * 0.3183
+            // hand-derived worked numbers (docs/pbr_lighting_materials.html section 7)
             worked("white plastic r 0.5", gray(0.8f), gray(0.04f), 0.5f, gray(0.29540f), 0.41380f),
             worked("gold r 0.1", kBlack, kGold, 0.1f,
                    {kGold.x * goldScale, kGold.y * goldScale, kGold.z * goldScale}, kSkipPdf),
-            worked("glTF default", kBlack, gray(1.0f), 1.0f, gray(0.07958f), kSkipPdf),
+            worked("glTF default", kBlack, kWhite, 1.0f, gray(0.07958f), kSkipPdf),
             worked("dark rubber r 1", gray(0.05f), gray(0.04f), 1.0f, gray(0.01846f), kSkipPdf),
 
+            // off-axis exact glTF Appendix B + Heitz VNDF checks (non-trivial Fresnel, Smith G2 and half-vector)
+            offAxisAnalytic("off-axis plastic 60/35 deg r 0.4", kUp, dirAt(60.0f, 0.0f), dirAt(35.0f, 130.0f),
+                            {0.7f, 0.25f, 0.1f}, gray(0.04f), 0.4f),
+            offAxisAnalytic("off-axis grazing Fresnel 80/75 deg r 0.25", kUp, dirAt(80.0f, 0.0f), dirAt(75.0f, 180.0f),
+                            gray(0.5f), gray(0.04f), 0.25f),
+            offAxisAnalytic("off-axis gold 45/40 deg r 0.15", kUp, dirAt(45.0f, 20.0f), dirAt(40.0f, 200.0f), kBlack,
+                            kGold, 0.15f),
+            offAxisAnalytic("off-axis sharp glossy 30/31 deg r 0.05", kUp, dirAt(30.0f, 0.0f), dirAt(31.0f, 180.0f),
+                            gray(0.3f), gray(0.04f), 0.05f),
+            offAxisAnalytic("off-axis tilted normal r 0.5", tilted, normalized({-0.2f, 0.1f, 0.9f}),
+                            normalized({0.6f, -0.5f, 0.6f}), gray(0.6f), gray(0.04f), 0.5f),
+
+            // sampler distribution vs independent uniform-hemisphere integral
             integrated("plastic head-on r 0.5", kUp, kUp, gray(0.8f), gray(0.04f), 0.5f),
-            integrated("plastic 60 deg r 0.3", kUp, viewAt(60.0f), {0.7f, 0.2f, 0.1f}, gray(0.04f), 0.3f),
-            integrated("plastic 85 deg r 0.6", kUp, viewAt(85.0f), gray(0.5f), gray(0.04f), 0.6f),
-            integrated("gold 45 deg r 0.4", kUp, viewAt(45.0f), kBlack, kGold, 0.4f),
-            integrated("metal 80 deg r 1", kUp, viewAt(80.0f), kBlack, gray(0.9f), 1.0f),
+            integrated("plastic 60 deg r 0.3", kUp, dirAt(60.0f), {0.7f, 0.2f, 0.1f}, gray(0.04f), 0.3f),
+            integrated("plastic 85 deg r 0.6", kUp, dirAt(85.0f), gray(0.5f), gray(0.04f), 0.6f),
+            integrated("gold 45 deg r 0.4", kUp, dirAt(45.0f), kBlack, kGold, 0.4f),
+            integrated("metal 80 deg r 1", kUp, dirAt(80.0f), kBlack, gray(0.9f), 1.0f),
             integrated("tilted normal r 0.5", tilted, normalized({-0.2f, 0.1f, 0.9f}), gray(0.6f), gray(0.04f), 0.5f),
             integrated("south-pole normal r 0.5", {0.0f, 0.0f, -1.0f}, normalized({0.3f, 0.2f, -0.9f}), gray(0.6f),
                        gray(0.04f), 0.5f),
 
-            finiteOnly("mirror head-on r 0", kUp, kUp, kBlack, gray(1.0f), 0.0f),
-            finiteOnly("mirror plastic grazing r 0", kUp, viewAt(89.9f), gray(0.5f), gray(0.04f), 0.0f),
-            finiteOnly("view below the shading normal", kUp, viewAt(100.0f), gray(0.5f), gray(0.04f), 0.5f),
+            // single-scattering GGX white-furnace energy conservation (including sharp roughness < 0.3)
+            whiteFurnace("white furnace 30 deg r 0.05", dirAt(30.0f), 0.05f),
+            whiteFurnace("white furnace 60 deg r 0.1", dirAt(60.0f), 0.1f),
+            whiteFurnace("white furnace 45 deg r 0.5", dirAt(45.0f), 0.5f),
+            whiteFurnace("white furnace 75 deg r 1.0", dirAt(75.0f), 1.0f),
+
+            // degenerate inputs: finite + eval/pdf/sample agreement even when view sits below the shading normal
+            finiteOnly("mirror head-on r 0", kUp, kUp, kBlack, kWhite, 0.0f),
+            finiteOnly("mirror plastic grazing r 0", kUp, dirAt(89.9f), gray(0.5f), gray(0.04f), 0.0f),
+            finiteOnly("view below the shading normal", kUp, dirAt(100.0f), gray(0.5f), gray(0.04f), 0.5f),
             finiteOnly("view opposite the normal", kUp, {0.0f, 0.0f, -1.0f}, gray(0.5f), gray(0.04f), 0.5f),
             finiteOnly("black material", kUp, kUp, kBlack, kBlack, 0.5f),
         };
@@ -156,25 +297,38 @@ namespace
     }
 
     void verify(const TestCase& testCase, const float* evaluated, const float* sampled, const float* uniform,
-                const float* stats)
+                const float* stats, const float* envBrdf)
     {
         std::printf("  %s: f*cos (%.5f %.5f %.5f) pdf %.5f, mean weight (%.4f %.4f %.4f), integral (%.4f %.4f %.4f), "
-                    "pdf integral %.4f, invalid %.4f\n",
+                    "pdf integral %.4f, invalid %.4f, recip %.2e\n",
                     testCase.name, evaluated[0], evaluated[1], evaluated[2], evaluated[3], sampled[0], sampled[1],
-                    sampled[2], uniform[0], uniform[1], uniform[2], uniform[3], stats[1]);
+                    sampled[2], uniform[0], uniform[1], uniform[2], uniform[3], stats[1], stats[3]);
 
         check(stats[2] == 0.0f, "  samples are finite and above the surface");
-        if (testCase.kind == Kind::FiniteOnly) {
-            check(std::isfinite(evaluated[0]) && std::isfinite(evaluated[3]), "  eval and pdf are finite");
-            return;
-        }
+        check(std::isfinite(evaluated[0]) && std::isfinite(evaluated[1]) && std::isfinite(evaluated[2]) &&
+                  std::isfinite(evaluated[3]),
+              "  eval and pdf are finite");
         check(sampled[3] <= kExactTolerance, "  pdfBrdf matches sampleBrdf");
         check(stats[0] <= kExactTolerance, "  weight is f * NdotL / pdf");
+        if (testCase.kind == Kind::FiniteOnly) {
+            return;
+        }
+        check(stats[3] <= kReciprocityTolerance, "  evalBrdf satisfies Helmholtz reciprocity");
+        const AnalyticReference ref = referenceGltfBrdf(testCase.input);
+        check(isClose(envBrdf, ref.envBrdf, kAnalyticTolerance), "  envBrdfApprox matches Karis fit");
         if (testCase.kind == Kind::Worked) {
-            check(isClose(evaluated, testCase.expected, kWorkedTolerance), "  f * NdotL matches the worked number");
+            check(isClose(evaluated, testCase.expected, testCase.workedTolerance),
+                  "  f * NdotL matches the analytic value");
             if (testCase.expectedPdf != kSkipPdf) {
-                check(isClose(evaluated[3], testCase.expectedPdf, kWorkedTolerance), "  pdf matches the worked number");
+                check(isClose(evaluated[3], testCase.expectedPdf, testCase.workedTolerance),
+                      "  pdf matches the analytic value");
             }
+            return;
+        }
+        if (testCase.kind == Kind::WhiteFurnace) {
+            check(sampled[0] > 0.0f && sampled[0] <= kEnergyCeiling && sampled[1] <= kEnergyCeiling &&
+                      sampled[2] <= kEnergyCeiling,
+                  "  single-scattering white-furnace albedo in (0, 1]");
             return;
         }
         check(isClose(sampled, {uniform[0], uniform[1], uniform[2]}, kIntegralTolerance),
@@ -182,7 +336,7 @@ namespace
         // reflections lost below the horizon are the only missing mass
         check(isClose(uniform[3] + stats[1], 1.0f, kIntegralTolerance), "  pdf integral + invalid fraction is 1");
     }
-}
+} // namespace
 
 int main()
 {
@@ -232,7 +386,7 @@ int main()
         const auto* rows = static_cast<const float*>(results.mapped);
         for (uint32_t i = 0; i < caseCount; ++i) {
             const float* row = rows + i * kResultRows * 4;
-            verify(cases[i], row, row + 4, row + 8, row + 12);
+            verify(cases[i], row, row + 4, row + 8, row + 12, row + 16);
         }
         test::destroyHostBuffer(vulkan, inputs);
         test::destroyHostBuffer(vulkan, results);

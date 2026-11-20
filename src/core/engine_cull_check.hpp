@@ -27,6 +27,7 @@ public:
     [[nodiscard]] Request beginFrame(Camera& camera, MeshletCullSettings& culling, DebugViewSettings& debugView);
     // after the frame's fence; true once every pose is compared and the summary is logged
     [[nodiscard]] bool endFrame(const std::optional<Renderer::DisplayCapture>& capture);
+    [[nodiscard]] bool isPassed() const noexcept { return poseIndex >= kPoses.size() && passedCount == kPoses.size(); }
 
 private:
     struct Pose

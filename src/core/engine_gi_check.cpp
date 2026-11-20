@@ -45,7 +45,11 @@ EngineGiCheck::Request EngineGiCheck::beginFrame(Camera& camera, RtxdiContext& r
                                                  DebugViewSettings& debugView)
 {
     Request request;
-    if (isFinished || frame < kStartupFrames) {
+    if (isFinished) {
+        rtxdi.frameIndexOverride.reset();
+        return request;
+    }
+    if (frame < kStartupFrames) {
         return request;
     }
     debugView.view = DebugView::IndirectRadiance;
@@ -56,6 +60,8 @@ EngineGiCheck::Request EngineGiCheck::beginFrame(Camera& camera, RtxdiContext& r
         }
         applyPhase(rtxdi, indirectMode);
     }
+    rtxdi.frameIndexOverride = static_cast<uint32_t>(poseIndex) * kPoseSeedStride +
+        static_cast<uint32_t>(std::to_underlying(phase)) * kPhaseSeedStride + phaseFrame;
     isCaptureRequested = phaseFrame >= kPhases[std::to_underlying(phase)].warmupFrames;
     request.shouldCapture = isCaptureRequested;
     return request;
@@ -75,19 +81,24 @@ bool EngineGiCheck::endFrame(const std::optional<Renderer::DisplayCapture>& capt
         if (!capture || (!sum.empty() && capture->extent != extent)) {
             isCaptureMissing = true;
         } else {
-            const std::vector<float> luminance = decodeLuminance(*capture);
+            const DecodedFrame decoded = decodeFrame(*capture);
             if (sum.empty()) {
                 extent = capture->extent;
-                sum.assign(luminance.size(), 0.0);
-                squaredSum.assign(luminance.size(), 0.0);
+                sum.assign(decoded.luminance.size(), 0.0);
+                squaredSum.assign(decoded.luminance.size(), 0.0);
             }
             const bool isGroundTruth = kPhases[std::to_underlying(phase)].role == Role::GroundTruth;
-            for (size_t texel = 0; texel < luminance.size(); ++texel) {
-                const double value = luminance[texel];
+            for (size_t texel = 0; texel < decoded.luminance.size(); ++texel) {
+                const double value = decoded.luminance[texel];
                 const double error = isGroundTruth ? value : value - groundTruth[texel];
                 sum[texel] += value;
                 squaredSum[texel] += error * error;
             }
+            for (size_t channel = 0; channel < 3; ++channel) {
+                rgbSum[channel] += decoded.rgbTotal[channel];
+            }
+            nonFinitePixels += decoded.nonFinitePixels;
+            negativePixels += decoded.negativePixels;
             ++capturedFrames;
         }
     }
@@ -121,14 +132,21 @@ bool EngineGiCheck::evaluatePhase()
         logError(std::format("FAIL {}: the ground truth is black", label), "GiCheck");
         return false;
     }
+    const std::array<double, 3> meanRgb{rgbSum[0] / frames, rgbSum[1] / frames, rgbSum[2] / frames};
+    const std::array<double, 3> rgbBias = computeChannelBias(meanRgb, groundTruthRgb, groundTruthTotal);
+    const double maxRgbBias = std::max({std::abs(rgbBias[0]), std::abs(rgbBias[1]), std::abs(rgbBias[2])});
     const TileErrors tiles = compareTiles(mean, groundTruth, extent, kTileSize);
     const double bias = (meanTotal - groundTruthTotal) / groundTruthTotal;
+    const uint64_t totalNonFinite = nonFinitePixels + groundTruthNonFinite;
+    const uint64_t totalNegative = negativePixels + groundTruthNegative;
     const std::string detail = std::format(
-        "{} frames after {}: bias {:+.2f}%, {}x{} tiles median {:.2f}% / p90 {:.2f}% / max {:.2f}% ({} tiles), "
-        "per-frame RMS error {:.1f}% against the ground truth's 1-sample noise {:.1f}%",
-        capturedFrames, info.warmupFrames, bias * 100.0, kTileSize, kTileSize, tiles.median * 100.0,
-        tiles.p90 * 100.0, tiles.max * 100.0, tiles.count, rmsTotal / groundTruthTotal * 100.0,
-        groundTruthNoise * 100.0);
+        "{} frames after {}: bias {:+.2f}% (RGB {:+.2f}/{:+.2f}/{:+.2f}%), {}x{} tiles median {:.2f}% / p90 {:.2f}% / "
+        "max {:.2f}% ({} tiles, dark leak {:.3f}% in {} tiles), per-frame RMS error {:.1f}% against 1-sample noise "
+        "{:.1f}%, nonFinite {} neg {}",
+        capturedFrames, info.warmupFrames, bias * 100.0, rgbBias[0] * 100.0, rgbBias[1] * 100.0, rgbBias[2] * 100.0,
+        kTileSize, kTileSize, tiles.median * 100.0, tiles.p90 * 100.0, tiles.max * 100.0, tiles.count,
+        tiles.zeroRefLeak * 100.0, tiles.zeroRefLeakTiles, rmsTotal / groundTruthTotal * 100.0,
+        groundTruthNoise * 100.0, totalNonFinite, totalNegative);
     if (!isGated()) {
         logInfo(std::format("MEASURED {} ({})", label, detail), "GiCheck");
         return true;
@@ -139,10 +157,14 @@ bool EngineGiCheck::evaluatePhase()
     const double tileLimit = info.role == Role::Compared
         ? std::max(info.maxTileP90, kNoiseFloorTileFactor * noiseFloorTileP90)
         : info.maxTileP90;
-    const bool isPassed = std::abs(bias) <= info.maxBias && (tileLimit <= 0.0 || tiles.p90 <= tileLimit);
+    const double rgbLimit = info.maxBias * kRgbBiasFactor;
+    const bool isPassed = totalNonFinite == 0 && totalNegative == 0 && std::abs(bias) <= info.maxBias &&
+        maxRgbBias <= rgbLimit && tiles.zeroRefLeak <= info.maxBias &&
+        (tileLimit <= 0.0 || tiles.p90 <= tileLimit);
     const std::string limits = tileLimit > 0.0
-        ? std::format("limits {:.1f}% / {:.1f}%", info.maxBias * 100.0, tileLimit * 100.0)
-        : std::format("limit {:.1f}%, tiles not gated", info.maxBias * 100.0);
+        ? std::format("limits {:.1f}% / RGB {:.2f}% / p90 {:.1f}%", info.maxBias * 100.0, rgbLimit * 100.0,
+                      tileLimit * 100.0)
+        : std::format("limits {:.1f}% / RGB {:.2f}%, tiles not gated", info.maxBias * 100.0, rgbLimit * 100.0);
     if (isPassed) {
         logInfo(std::format("PASS {} ({}; {})", label, detail, limits), "GiCheck");
     } else {
@@ -165,12 +187,17 @@ bool EngineGiCheck::finishPhase()
             total += mean;
             noise += std::sqrt(std::max(squaredSum[texel] / frames - mean * mean, 0.0));
         }
+        for (size_t channel = 0; channel < 3; ++channel) {
+            groundTruthRgb[channel] = frames > 0.0 ? rgbSum[channel] / frames : 0.0;
+        }
+        groundTruthNonFinite = nonFinitePixels;
+        groundTruthNegative = negativePixels;
         groundTruthNoise = total > 0.0 ? noise / total : 0.0;
         noiseFloorTileP90 = 0.0;
         logInfo(std::format("ReSTIR GI {}, {}: {} frames, {} bounces after X2, summed luminance {:.4g}, 1-sample "
-                            "noise {:.1f}%",
+                            "noise {:.1f}%, nonFinite {} neg {}",
                             info.name, kPoses[poseIndex].name, capturedFrames, info.referenceBounces, total,
-                            groundTruthNoise * 100.0),
+                            groundTruthNoise * 100.0, groundTruthNonFinite, groundTruthNegative),
                 "GiCheck");
     } else {
         const bool isPassed = evaluatePhase();
@@ -181,6 +208,9 @@ bool EngineGiCheck::finishPhase()
     }
     sum.clear();
     squaredSum.clear();
+    rgbSum = {0.0, 0.0, 0.0};
+    nonFinitePixels = 0;
+    negativePixels = 0;
     capturedFrames = 0;
     phaseFrame = 0;
     isCaptureMissing = false;

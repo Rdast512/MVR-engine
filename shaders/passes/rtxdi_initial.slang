@@ -38,14 +38,9 @@ void rtxdiInitialMain(uint3 id : SV_DispatchThreadID)
     if (RAB_IsSurfaceValid(surface))
     {
         RAB_LightSample lightSample;
+        // RTXDI_SampleLightsForSurface already traces initial visibility when enableInitialVisibility is set
         reservoir = RTXDI_SampleLightsForSurface(rng, coherentRng, surface, constants.initialSampling,
                                                  constants.lightBuffer, lightSample);
-        if (constants.initialSampling.enableInitialVisibility != 0 && RTXDI_IsValidDIReservoir(reservoir) &&
-            !RAB_GetConservativeVisibility(surface, lightSample))
-        {
-            // drops the sample, keeps M: the occluded candidates still count
-            RTXDI_StoreVisibilityInDIReservoir(reservoir, float3(0.0, 0.0, 0.0), true);
-        }
     }
     // empty pixels too: rtxdi_shade loads every pixel's reservoir
     RTXDI_StoreDIReservoir(reservoir, constants.reservoirBuffer,

@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vulkan/vulkan_raii.hpp>
 
 namespace rtxdi
@@ -209,6 +210,8 @@ public:
     GiSettings giSettings = defaultGiSettings();
     // > 0: the indirect pass traces this many bounces after X2 instead of querying NRC, which the renderer pauses
     uint32_t giReferenceBounces = 0;
+    // deterministic per-phase RNG seed override for self-test runners (EngineGiCheck); nullopt uses Renderer::frameNumber
+    std::optional<uint32_t> frameIndexOverride;
 
 private:
     static constexpr uint32_t kReferenceLocalLightSamples = 32;

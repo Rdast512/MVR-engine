@@ -65,6 +65,26 @@ target_link_libraries(lights_test PRIVATE engine_test_support)
 add_test(NAME lights COMMAND lights_test)
 set_tests_properties(lights PROPERTIES SKIP_RETURN_CODE 77)
 
+# --- RTXDI math: LogLuv GI reservoir packing, Jacobian bounds, shadeGiSample and CheckedBuffer ---
+set(_rtxdiMathShader "${CMAKE_CURRENT_SOURCE_DIR}/shaders/rtxdi_math.slang")
+set(_rtxdiMathSpirv "${_brdfShaderDir}/rtxdiMathMain.spv")
+add_custom_command(
+    OUTPUT ${_rtxdiMathSpirv}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${_brdfShaderDir}
+    COMMAND ${SLANGC_EXECUTABLE} ${_rtxdiMathShader} ${ENGINE_SLANG_FLAGS} ${RTXDI_SLANG_FLAGS} -entry rtxdiMathMain
+            -depfile ${_rtxdiMathSpirv}.d -o ${_rtxdiMathSpirv}
+    DEPENDS ${_rtxdiMathShader}
+    DEPFILE ${_rtxdiMathSpirv}.d
+    COMMENT "Compiling RTXDI math test shader rtxdiMathMain"
+    VERBATIM
+)
+
+add_executable(rtxdi_math_test rtxdi_math_test.cpp ${_rtxdiMathSpirv})
+target_compile_definitions(rtxdi_math_test PRIVATE RTXDI_MATH_TEST_SHADER_DIR="${_brdfShaderDir}")
+target_link_libraries(rtxdi_math_test PRIVATE engine_test_support)
+add_test(NAME rtxdi_math COMMAND rtxdi_math_test)
+set_tests_properties(rtxdi_math PROPERTIES SKIP_RETURN_CODE 77)
+
 # --- Layout: shaders/types.slang reflected by the Slang library vs the C++ mirrors (src/core/types.hpp) ---
 if (WIN32)
     set(_slangPackageDir "${CMAKE_SOURCE_DIR}/ThirdParty/Slang-win")

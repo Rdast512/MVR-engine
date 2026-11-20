@@ -21,6 +21,7 @@ namespace
     // ENGINE_INDIRECT_MODE=cycle: the scripted mode switch of spec/m4/g7_indirect_modes.md
     constexpr uint32_t kIndirectModeCycleFrames = 64;
     constexpr std::string_view kIndirectModeCycle = "cycle";
+    constexpr uint32_t kGiCheckBenchFrames = 50'000;
 } // namespace
 
 Engine::~Engine() { cleanup(); }
@@ -60,9 +61,6 @@ void Engine::initialize()
                                                             device->queueFamilyIndices, device->capabilities);
     descriptorManager->init();
 
-    if (const std::optional<EngineBench::Config> benchConfig = EngineBench::readConfig()) {
-        bench.emplace(*benchConfig);
-    }
     if (EngineMotionTest::isRequested()) {
         motionTest.emplace();
     }
@@ -79,8 +77,13 @@ void Engine::initialize()
         rayCheck.emplace();
     }
 
+    const uint32_t defaultBenchFrames = giCheck ? kGiCheckBenchFrames : 0;
+    if (const auto benchConfig = EngineBench::readConfig(defaultBenchFrames)) {
+        bench.emplace(*benchConfig);
+    }
+
     swapChain = std::make_unique<SwapChain>(window, *device);
-    swapChain->isUncapped = bench.has_value();
+    swapChain->isUncapped = bench.has_value() || giCheck.has_value() || guideCapture.has_value();
     swapChain->init();
 
     camera = std::make_unique<Camera>(*swapChain);
@@ -179,7 +182,7 @@ void Engine::initialize()
     initialized = true;
 }
 
-void Engine::run()
+bool Engine::run()
 {
     if (!initialized) {
         initialize();
@@ -372,8 +375,9 @@ void Engine::run()
             SDL_Delay(100);
         }
 
-        // unfocused windows often lose vsync pacing and burn CPU/GPU
-        if (!windowFocused && !minimized && !quit && !bench) {
+        // unfocused windows often lose vsync pacing and burn CPU/GPU; automated runners stay uncapped
+        const bool isAutomatedRunner = bench || motionTest || guideCapture || cullCheck || giCheck || rayCheck;
+        if (!windowFocused && !minimized && !quit && !isAutomatedRunner) {
             ZoneScopedN("UnfocusedFramePacing");
             const auto frameEndTime = std::chrono::high_resolution_clock::now();
             const double elapsedMs = std::chrono::duration<double, std::milli>(frameEndTime - currentTime).count();
@@ -393,6 +397,23 @@ void Engine::run()
     if (rayCheck) {
         rayCheck->logSummary();
     }
+    bool isPassed = true;
+    if (motionTest) {
+        isPassed = motionTest->isPassed() && isPassed;
+    }
+    if (guideCapture) {
+        isPassed = guideCapture->isPassed() && isPassed;
+    }
+    if (cullCheck) {
+        isPassed = cullCheck->isPassed() && isPassed;
+    }
+    if (giCheck) {
+        isPassed = giCheck->isPassed() && isPassed;
+    }
+    if (rayCheck) {
+        isPassed = rayCheck->isPassed() && isPassed;
+    }
+    return isPassed;
 }
 
 #if ENGINE_ENABLE_IMGUI

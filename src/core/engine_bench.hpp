@@ -20,7 +20,7 @@ public:
         int fieldSide = 0;
     };
 
-    [[nodiscard]] static std::optional<Config> readConfig();
+    [[nodiscard]] static std::optional<Config> readConfig(uint32_t defaultMeasuredFrames = 0);
 
     explicit EngineBench(Config config) : config(config) {}
 

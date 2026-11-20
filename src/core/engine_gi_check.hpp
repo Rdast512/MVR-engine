@@ -32,6 +32,7 @@ public:
                                      DebugViewSettings& debugView);
     // after the frame's fence; true once every pose is compared and the summary is logged
     [[nodiscard]] bool endFrame(const std::optional<Renderer::DisplayCapture>& capture);
+    [[nodiscard]] bool isPassed() const noexcept { return isFinished && checkCount > 0 && passedCount == checkCount; }
 
 private:
     enum class Phase : uint8_t
@@ -114,11 +115,16 @@ private:
     };
 
     static constexpr uint32_t kStartupFrames = 8;
+    // deterministic RNG stride per phase (even, larger than any phase length) so adding/reordering phases never shifts seeds
+    static constexpr uint32_t kPhaseSeedStride = 16384;
+    static constexpr uint32_t kPoseSeedStride = 262144;
     // 1-sample multi-bounce paths are far noisier than ReSTIR DI's lamp: 16 px tiles leave 8% p90 for an unbiased
     // estimate (2026-11-18)
     static constexpr uint32_t kTileSize = 32;
-    // an unbiased estimate's tile p90 times this: G5's 8% over its 3.74% multi-bounce floor (2026-11-18)
-    static constexpr double kNoiseFloorTileFactor = 2.0;
+    // an unbiased estimate's tile p90 times this: covers 1-bounce courtyard p90 (~2.1x floor, Jacobian clamp) while staying well below biased defaults (~10x)
+    static constexpr double kNoiseFloorTileFactor = 2.5;
+    // dimmer RGB channels have slightly higher relative Monte Carlo variance than luminance
+    static constexpr double kRgbBiasFactor = 1.5;
     // limits: spec/m4/g5_restir_gi.md §3; ReSTIR GI mode: spec/m4/g7_indirect_modes.md §3. The one-bounce ground truth
     // is noisier per tile (sun fireflies in the gallery's dim tiles): its own floor sets the tile limit
     static constexpr uint32_t kTraced = RtxdiContext::kGiGroundTruthBounces;
@@ -178,7 +184,13 @@ private:
     // ground truth, squared luminance)
     std::vector<double> sum;
     std::vector<double> squaredSum;
+    std::array<double, 3> rgbSum{0.0, 0.0, 0.0};
+    uint64_t nonFinitePixels = 0;
+    uint64_t negativePixels = 0;
     std::vector<double> groundTruth;
+    std::array<double, 3> groundTruthRgb{0.0, 0.0, 0.0};
+    uint64_t groundTruthNonFinite = 0;
+    uint64_t groundTruthNegative = 0;
     double groundTruthNoise = 0.0;
     // tile p90 of the current ground truth's noise floor phase
     double noiseFloorTileP90 = 0.0;

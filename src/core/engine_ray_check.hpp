@@ -17,6 +17,7 @@ public:
     // after the frame's fence; true once a standalone run has checked all its frames
     [[nodiscard]] bool endFrame(const GpuRayCheckStats& stats, bool isStandalone);
     void logSummary() const;
+    [[nodiscard]] bool isPassed() const noexcept { return checkedFrames > 0 && passedFrames == checkedFrames; }
 
 private:
     // the startup flush and the first TLAS build

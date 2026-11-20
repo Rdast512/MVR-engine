@@ -175,12 +175,14 @@ RtxdiContext::Settings RtxdiContext::convergedSettings()
 {
     Settings converged = defaultSettings();
     converged.brdfSamples = 0;
-    converged.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Basic;
+    converged.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Raytraced;
     converged.isVisibilityShortcutEnabled = false;
+    converged.isFallbackSamplingEnabled = false;
     converged.isPermutationSamplingEnabled = false;
     converged.spatialSamples = 0;
-    converged.disocclusionHistoryLength = converged.maxHistoryLength;
-    converged.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Pairwise;
+    converged.disocclusionHistoryLength = 0;
+    converged.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
+    converged.isBoilingFilterEnabled = false;
     converged.isFinalVisibilityReused = false;
     return converged;
 }
@@ -347,8 +349,9 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
         configureGi(isGiReuse);
     }
     // rotates the reservoir buffer indices and the frame's random number
-    context->SetFrameIndex(frameIndex);
-    giContext->SetFrameIndex(frameIndex);
+    const uint32_t rtxdiFrame = frameIndexOverride.value_or(frameIndex);
+    context->SetFrameIndex(rtxdiFrame);
+    giContext->SetFrameIndex(rtxdiFrame);
     const RTXDI_GIBufferIndices giBufferIndices = giContext->GetBufferIndices();
     // rtxdi_gi_shade reads neighbors from the temporal output and writes next frame's temporal input
     assert(giContext->GetResamplingMode() == rtxdi::ReSTIRGI_ResamplingMode::None ||

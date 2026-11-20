@@ -33,9 +33,11 @@ public float3 fresnelSchlick(float3 f0, float vDotH)
     return f0 + (1.0 - f0) * pow(saturate(1.0 - vDotH), 5.0);
 }
 
-public float ggxD(float nDotH, float a2)
+// cross(n, h) keeps 1 - (N.H)^2 accurate near N = H for low roughness (Filament / Lagarde)
+public float ggxD(float3 n, float3 h, float nDotH, float a2)
 {
-    const float d = nDotH * nDotH * (a2 - 1.0) + 1.0;
+    const float3 nCrossH = cross(n, h);
+    const float d = nDotH * nDotH * a2 + dot(nCrossH, nCrossH);
     return a2 / (kPi * d * d);
 }
 
@@ -52,8 +54,15 @@ float ggxAlpha(float roughness)
     return max(roughness * roughness, kMinAlpha);
 }
 
+// normal mapping can face n away from the viewer; vndf and half-vector evaluation need v above the surface
+float3 viewAboveSurface(float3 n, float3 v)
+{
+    const float nDotV = dot(n, v);
+    return nDotV >= kMinNDotV ? v : normalize(v + n * (kMinNDotV - nDotV));
+}
+
 // caller multiplies by radiance * NdotL once
-public float3 evalBrdf(float3 n, float3 cDiff, float3 f0, float roughness, float3 v, float3 l)
+public float3 evalBrdf(float3 n, float3 cDiff, float3 f0, float roughness, float3 viewDir, float3 l)
 {
     const float nDotL = dot(n, l);
     if (nDotL <= 0.0)
@@ -61,6 +70,7 @@ public float3 evalBrdf(float3 n, float3 cDiff, float3 f0, float roughness, float
         return float3(0.0, 0.0, 0.0);
     }
 
+    const float3 v = viewAboveSurface(n, viewDir);
     const float3 h = normalize(l + v);
     const float nDotV = max(dot(n, v), kMinNDotV);
     const float nDotH = saturate(dot(n, h));
@@ -69,14 +79,7 @@ public float3 evalBrdf(float3 n, float3 cDiff, float3 f0, float roughness, float
     const float a2 = alpha * alpha;
 
     const float3 f = fresnelSchlick(f0, vDotH);
-    return (1.0 - f) * cDiff / kPi + f * ggxD(nDotH, a2) * smithVisibility(nDotL, nDotV, a2);
-}
-
-// normal mapping can face n away from the viewer; vndf needs v above the surface
-float3 viewAboveSurface(float3 n, float3 v)
-{
-    const float nDotV = dot(n, v);
-    return nDotV >= kMinNDotV ? v : normalize(v + n * (kMinNDotV - nDotV));
+    return (1.0 - f) * cDiff / kPi + f * ggxD(n, h, nDotH, a2) * smithVisibility(nDotL, nDotV, a2);
 }
 
 // independent of l, so sampling and pdf agree
@@ -94,9 +97,9 @@ float specularProbability(float3 cDiff, float3 f0, float nDotV)
 }
 
 // G1(v) * D / (4 NdotV) with isotropic G1 expanded
-float vndfPdf(float nDotV, float nDotH, float a2)
+float vndfPdf(float3 n, float3 h, float nDotV, float nDotH, float a2)
 {
-    return ggxD(nDotH, a2) / (2.0 * (nDotV + sqrt(a2 + (1.0 - a2) * nDotV * nDotV)));
+    return ggxD(n, h, nDotH, a2) / (2.0 * (nDotV + sqrt(a2 + (1.0 - a2) * nDotV * nDotV)));
 }
 
 // dupuy and benyoub 2023 spherical cap; v is local with z along n
@@ -126,9 +129,10 @@ public float pdfBrdf(float3 n, float3 cDiff, float3 f0, float roughness, float3 
         return 0.0;
     }
     const float3 v = viewAboveSurface(n, viewDir);
+    const float3 h = normalize(l + v);
     const float nDotV = dot(n, v);
     const float alpha = ggxAlpha(roughness);
-    const float specularPdf = vndfPdf(nDotV, saturate(dot(n, normalize(l + v))), alpha * alpha);
+    const float specularPdf = vndfPdf(n, h, nDotV, saturate(dot(n, h)), alpha * alpha);
     return lerp(nDotL / kPi, specularPdf, specularProbability(cDiff, f0, nDotV));
 }
 

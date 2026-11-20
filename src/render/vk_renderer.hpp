@@ -191,6 +191,7 @@ private:
         IndirectMode mode = IndirectMode::RestirGi;
         bool isGiReference = false;
         bool isGroundTruthPaths = false;
+        RtxdiContext::GiSettings giSettings = RtxdiContext::defaultGiSettings();
 
         bool operator==(const IndirectState&) const = default;
     };

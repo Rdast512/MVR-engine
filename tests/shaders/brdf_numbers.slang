@@ -26,7 +26,7 @@ struct BrdfPush
     uint sampleCount;
 };
 
-static const uint kResultRows = 4;
+static const uint kResultRows = 5;
 
 [[vk::push_constant]] ConstantBuffer<BrdfPush> push;
 
@@ -48,6 +48,12 @@ float3 uniformHemisphere(float3 n, float2 u)
     return t * radius * cos(phi) + b * radius * sin(phi) + n * u.y;
 }
 
+float maxRelError(float3 actual, float3 expected)
+{
+    const float3 relative = abs(actual - expected) / max(abs(expected), float3(1e-6, 1e-6, 1e-6));
+    return max(relative.x, max(relative.y, relative.z));
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void brdfMain(uint3 id : SV_DispatchThreadID)
@@ -58,13 +64,14 @@ void brdfMain(uint3 id : SV_DispatchThreadID)
     }
     const BrdfCase c = push.cases[id.x];
     const float count = float(push.sampleCount);
-    const bool isViewAbove = dot(c.n, c.v) > 0.0;
+    const bool isViewAbove = dot(c.n, c.v) >= 1e-4;
 
     float3 sampledSum = float3(0.0, 0.0, 0.0);
     float3 uniformSum = float3(0.0, 0.0, 0.0);
     float pdfSum = 0.0;
     float worstPdfError = 0.0;
     float worstWeightError = 0.0;
+    float worstReciprocityError = 0.0;
     uint invalidCount = 0;
     uint nonFiniteCount = 0;
     uint state = (id.x + 1u) * 2654435761u;
@@ -77,11 +84,14 @@ void brdfMain(uint3 id : SV_DispatchThreadID)
             const float nDotL = dot(c.n, s.l);
             const float pdf = pdfBrdf(c.n, c.cDiff, c.f0, c.roughness, c.v, s.l);
             worstPdfError = max(worstPdfError, abs(pdf - s.pdf) / s.pdf);
-            if (isViewAbove)
+            const float3 forward = evalBrdf(c.n, c.cDiff, c.f0, c.roughness, c.v, s.l);
+            const float3 expected = forward * nDotL / s.pdf;
+            worstWeightError = max(worstWeightError, maxRelError(s.weight, expected));
+            // helmholtz reciprocity holds when both v and l sit above the shading normal
+            if (isViewAbove && nDotL >= 1e-4)
             {
-                const float3 expected = evalBrdf(c.n, c.cDiff, c.f0, c.roughness, c.v, s.l) * nDotL / s.pdf;
-                const float3 relative = abs(s.weight - expected) / max(expected, float3(1e-6, 1e-6, 1e-6));
-                worstWeightError = max(worstWeightError, max(relative.x, max(relative.y, relative.z)));
+                const float3 reverse = evalBrdf(c.n, c.cDiff, c.f0, c.roughness, s.l, c.v);
+                worstReciprocityError = max(worstReciprocityError, maxRelError(forward, reverse));
             }
             if (any(isnan(s.weight)) || any(isinf(s.weight)) || isnan(s.pdf) || isinf(s.pdf) || nDotL <= 0.0)
             {
@@ -105,5 +115,7 @@ void brdfMain(uint3 id : SV_DispatchThreadID)
                                pdfBrdf(c.n, c.cDiff, c.f0, c.roughness, c.v, c.l));
     push.results[row + 1] = float4(sampledSum / count, worstPdfError);
     push.results[row + 2] = float4(uniformSum / count, pdfSum / count);
-    push.results[row + 3] = float4(worstWeightError, float(invalidCount) / count, float(nonFiniteCount), 0.0);
+    push.results[row + 3] =
+        float4(worstWeightError, float(invalidCount) / count, float(nonFiniteCount), worstReciprocityError);
+    push.results[row + 4] = float4(envBrdfApprox(c.f0, max(dot(c.n, c.v), 1e-4), c.roughness), 0.0);
 }

@@ -28,14 +28,14 @@ template <typename T>
 }
 } // namespace
 
-std::optional<EngineBench::Config> EngineBench::readConfig()
+std::optional<EngineBench::Config> EngineBench::readConfig(uint32_t defaultMeasuredFrames)
 {
-    const std::optional<uint32_t> frames = readEnvNumber<uint32_t>("ENGINE_BENCH_FRAMES");
-    if (!frames || *frames == 0) {
+    const uint32_t frames = readEnvNumber<uint32_t>("ENGINE_BENCH_FRAMES").value_or(defaultMeasuredFrames);
+    if (frames == 0) {
         return std::nullopt;
     }
     return Config{
-        .measuredFrames = *frames,
+        .measuredFrames = frames,
         .fieldSide = readEnvNumber<int>("ENGINE_BENCH_FIELD").value_or(0),
     };
 }

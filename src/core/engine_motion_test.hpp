@@ -28,6 +28,10 @@ public:
     [[nodiscard]] Request beginFrame(Camera& camera, ObjectStorage& objects);
     // after the frame's fence; true once every scenario is evaluated and the summary is logged
     [[nodiscard]] bool endFrame(const GpuMotionCheckStats& stats);
+    [[nodiscard]] bool isPassed() const noexcept
+    {
+        return scenarioIndex >= kScenarios.size() && passedCount == kScenarios.size();
+    }
 
 private:
     enum class Scenario
