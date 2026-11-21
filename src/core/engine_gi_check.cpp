@@ -3,10 +3,12 @@
 #include "convergence_metrics.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <format>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 bool EngineGiCheck::isRequested()
@@ -15,34 +17,29 @@ bool EngineGiCheck::isRequested()
     return text != nullptr && std::string_view(text) == "1";
 }
 
+uint32_t EngineGiCheck::readRunSeed()
+{
+    const char* text = std::getenv("ENGINE_GI_CHECK_SEED");
+    if (text == nullptr) {
+        return 0;
+    }
+    uint32_t seed = 0;
+    const std::string_view value(text);
+    if (std::from_chars(value.data(), value.data() + value.size(), seed).ec != std::errc{}) {
+        logError(std::format("ENGINE_GI_CHECK_SEED='{}' is not a number; seed 0", value), "GiCheck");
+        return 0;
+    }
+    logInfo(std::format("ReSTIR GI convergence: run seed {}", seed), "GiCheck");
+    return seed;
+}
+
 void EngineGiCheck::applyPhase(RtxdiContext& rtxdi, IndirectMode& indirectMode) const
 {
     const PhaseInfo& info = kPhases[std::to_underlying(phase)];
     indirectMode = info.mode;
     rtxdi.giReferenceBounces = info.referenceBounces;
     rtxdi.isGiReference = info.isGiReference;
-    switch (info.settings) {
-    case GiSettingsSource::Converged:
-        rtxdi.giSettings = RtxdiContext::convergedGiSettings();
-        break;
-    case GiSettingsSource::Shipped:
-        rtxdi.giSettings = RtxdiContext::defaultGiSettings();
-        break;
-    case GiSettingsSource::Nvidia:
-        rtxdi.giSettings = RtxdiContext::nvidiaGiSettings();
-        break;
-    case GiSettingsSource::ShippedSecondary:
-    case GiSettingsSource::ShippedClamp:
-    case GiSettingsSource::ShippedSecondaryClamp:
-        rtxdi.giSettings = RtxdiContext::defaultGiSettings();
-        rtxdi.giSettings.isSecondaryResamplingEnabled = info.settings != GiSettingsSource::ShippedClamp;
-        rtxdi.giSettings.isFireflyClampEnabled = info.settings != GiSettingsSource::ShippedSecondary;
-        break;
-    case GiSettingsSource::ShippedNoFloor:
-        rtxdi.giSettings = RtxdiContext::defaultGiSettings();
-        rtxdi.giSettings.isSecondaryRoughnessFloorEnabled = false;
-        break;
-    }
+    rtxdi.giSettings = giSettingsFor(info.settings);
 }
 
 EngineGiCheck::Request EngineGiCheck::beginFrame(Camera& camera, RtxdiContext& rtxdi, IndirectMode& indirectMode,
@@ -64,7 +61,7 @@ EngineGiCheck::Request EngineGiCheck::beginFrame(Camera& camera, RtxdiContext& r
         }
         applyPhase(rtxdi, indirectMode);
     }
-    rtxdi.frameIndexOverride = static_cast<uint32_t>(poseIndex) * kPoseSeedStride +
+    rtxdi.frameIndexOverride = runSeedBase + static_cast<uint32_t>(poseIndex) * kPoseSeedStride +
         static_cast<uint32_t>(std::to_underlying(phase)) * kPhaseSeedStride + phaseFrame;
     isCaptureRequested = phaseFrame >= kPhases[std::to_underlying(phase)].warmupFrames;
     request.shouldCapture = isCaptureRequested;
@@ -161,14 +158,14 @@ bool EngineGiCheck::evaluatePhase()
     const double tileLimit = info.role == Role::Compared
         ? std::max(info.maxTileP90, kNoiseFloorTileFactor * noiseFloorTileP90)
         : info.maxTileP90;
-    const double rgbLimit = info.maxBias * kRgbBiasFactor;
-    const bool isPassed = totalNonFinite == 0 && totalNegative == 0 && std::abs(bias) <= info.maxBias &&
-        maxRgbBias <= rgbLimit && tiles.zeroRefLeak <= info.maxBias &&
+    const double rgbLimit = maxBias() * kRgbBiasFactor;
+    const bool isPassed = totalNonFinite == 0 && totalNegative == 0 && std::abs(bias) <= maxBias() &&
+        maxRgbBias <= rgbLimit && tiles.zeroRefLeak <= maxBias() &&
         (tileLimit <= 0.0 || tiles.p90 <= tileLimit);
     const std::string limits = tileLimit > 0.0
-        ? std::format("limits {:.1f}% / RGB {:.2f}% / p90 {:.1f}%", info.maxBias * 100.0, rgbLimit * 100.0,
+        ? std::format("limits {:.1f}% / RGB {:.2f}% / p90 {:.1f}%", maxBias() * 100.0, rgbLimit * 100.0,
                       tileLimit * 100.0)
-        : std::format("limits {:.1f}% / RGB {:.2f}%, tiles not gated", info.maxBias * 100.0, rgbLimit * 100.0);
+        : std::format("limits {:.1f}% / RGB {:.2f}%, tiles not gated", maxBias() * 100.0, rgbLimit * 100.0);
     if (isPassed) {
         logInfo(std::format("PASS {} ({}; {})", label, detail, limits), "GiCheck");
     } else {

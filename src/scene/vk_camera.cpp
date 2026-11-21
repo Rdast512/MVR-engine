@@ -26,9 +26,9 @@ void Camera::focusOn(const glm::vec3& target, float distance)
     lookAt(target + glm::vec3(safeDistance * 0.55f, safeDistance * 0.4f, safeDistance * 0.85f), target);
 }
 
-void Camera::lookAt(const glm::vec3& position, const glm::vec3& target)
+void Camera::lookAt(const glm::vec3& position, const glm::vec3& target, bool isCut)
 {
-    isCutPending = true;
+    isCutPending = isCutPending || isCut;
     cameraData.cameraPos = position;
 
     const glm::vec3 toTarget = target - position;
@@ -194,7 +194,7 @@ void Camera::updateCameraData(uint8_t currentImage, uint64_t frameIndex, bool is
 
     // raster and resolve only: viewProj and every matrix derived from it stay unjittered
     const bool isJittered = isJitterEnabled && (isJitterResolved || isJitterForced);
-    cameraData.jitterOffset = isJittered ? computeJitterOffset(frameIndex) : glm::vec2(0.0f);
+    cameraData.jitterOffset = isJittered ? computeJitterOffset(jitterPhaseOverride.value_or(frameIndex)) : glm::vec2(0.0f);
     cameraData.view = glm::lookAt(cameraData.cameraPos, cameraData.cameraPos + forward, worldUp);
     cameraData.viewProj = cameraData.proj * cameraData.view;
     // a cut has no previous view: no camera motion instead of a one-frame jump

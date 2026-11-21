@@ -4,21 +4,88 @@ import core.frame;
 
 static const uint kRtxdiTile = 8; // matches src/render/vk_renderer.cpp
 
+// before the RTXDI headers: the firefly test's groupshared arrays are sized by the group
+#define RTXDI_ENABLE_BOILING_FILTER
+#define RTXDI_BOILING_FILTER_GROUP_SIZE 8 // kRtxdiTile
+
 #include "lighting/rtxdi_bridge.slang"
 #include "Rtxdi/GI/SpatialResampling.hlsli"
+#include "Rtxdi/Utils/BoilingFilter.hlsli"
 #include "Rtxdi/Utils/RandomSamplerPerPassSeeds.hlsli"
 
 // ReSTIR GI spatial resampling and final shading (spec/m4/g5_restir_gi.md), the RTXDI sample's GI/SpatialResampling.hlsl
 // and GI/FinalShading.hlsl fused as rtxdi_shade fuses DI's: this pixel's temporal reservoir against this frame's
 // neighbors, then indirectRadiance = evalBrdf · Lo(X2) · NdotL · W with a reconnection ray and the glossy MIS against
 // the pixel's initial sample. Neighbors are read from the temporal output; the result goes to the spatial output,
-// next frame's temporal input. The reference (resampling None) shades the initial sample alone
+// next frame's temporal input. The reference (resampling None) shades the initial sample alone.
+// With giDecorrelation (m8 O11), ReSTIR PT's DLSS-RR decorrelation from RTXDI's PT/Decorrelation.hlsli and
+// PT/DuplicationMap.hlsli, ported to GI reservoirs: final shading may shade the initial sample instead, the stored
+// reservoir keeps its history
 
 [[vk::push_constant]] ConstantBuffer<FramePushData> push;
 
 // the RTXDI sample's FinalShading.hlsl
 static const float kMisRoughness = 0.3;
 static const float kMaxBrdfValue = 1.0e4;
+
+// RTXDI's per-pass seeds stop at 31; NRC's update pass takes 41 and 42, the indirect pass 43
+static const uint kGiDecorrelationSeed = 44;
+// RTXDI_PTStoreDuplicationInputs: stagnancy = age / 40
+static const float kStagnancyAgeScale = 1.0 / 40.0;
+// RTXDI_PT_SMOOTHED_DUPMAP_FILTER_STEP: the 5x5 previous-frame box, dilated
+static const int kStagnancyFilterStep = 2;
+
+// RTXDI_PTComputeSmoothedDuplicationMap, with the sample's ComputeSmoothedDuplicationMap.hlsl reprojection: this
+// frame's stagnancy blended into last frame's smoothed map around the reprojected pixel
+float smoothStagnancy(GpuFrameRoot root, GpuTargets targets, uint2 pixel, float current, float emaFactor)
+{
+    if (!hasIndirectHistory(root))
+    {
+        return current;
+    }
+    const float3 motion = tex2D(gRtxdiBridge.current.sampled[kGuideMotion]).Load(int3(pixel, 0)).xyz;
+    const int2 previousPixel = int2(round(float2(pixel) + motion.xy));
+    const int2 size = int2(gRtxdiBridge.renderSize);
+    if (any(previousPixel < 0) || any(previousPixel >= size))
+    {
+        return current;
+    }
+    const Texture2D previousMap = tex2D(targets.giStagnancyPrevious);
+    float sum = 0.0;
+    float count = 0.0;
+    [unroll]
+    for (int dy = -2; dy <= 2; ++dy)
+    {
+        [unroll]
+        for (int dx = -2; dx <= 2; ++dx)
+        {
+            const int2 tap = previousPixel + int2(dx, dy) * kStagnancyFilterStep;
+            if (all(tap >= 0) && all(tap < size))
+            {
+                sum += previousMap.Load(int3(tap, 0)).x;
+                count += 1.0;
+            }
+        }
+    }
+    // the center tap is in bounds
+    return lerp(sum / count, current, saturate(emaFactor));
+}
+
+// RTXDI_PTApplyDecorrelation's probability: Uniform, or Stagnancy-scaled; a detected firefly is always replaced
+float decorrelationProbability(RTXDI_PTDecorrelationParameters params, float smoothedStagnancy, bool isFirefly)
+{
+    float probability = 0.0;
+    if (params.decorrelationMode == RTXDI_PT_DECORRELATION_MODE_UNIFORM)
+    {
+        probability = saturate(params.decorrelationFactor);
+    }
+    else if (params.decorrelationMode == RTXDI_PT_DECORRELATION_MODE_STAGNANCY)
+    {
+        const float stagnancyScale = pow(saturate(smoothedStagnancy), max(0.0, params.decorrelationStagnancyExponent));
+        probability = saturate(4.0 * saturate(params.decorrelationFactor) * stagnancyScale);
+    }
+    return params.fireflyReplacementFilterEnable != 0 && isFirefly ? 1.0 : probability;
+}
 
 // the initial sample's MIS share at a direction: high where the true lobe is far sharper than one roughened to
 // kMisRoughness, where reuse from neighbors and history is least reliable
@@ -61,48 +128,145 @@ float3 shadeFinalReservoir(RAB_Surface surface, RTXDI_GIReservoir reservoir, RTX
     return radiance;
 }
 
+// lowbias32 integer hash
+uint hashUint(uint value)
+{
+    value ^= value >> 16;
+    value *= 0x7feb352du;
+    value ^= value >> 15;
+    value *= 0x846ca68bu;
+    value ^= value >> 16;
+    return value;
+}
+
+// RTXDI_PTStoreDuplicationInputs' sample id: a GI sample is its X2, so equal positions are the same sample. 0: none
+uint duplicationSampleId(RTXDI_GIReservoir reservoir)
+{
+    if (reservoir.weightSum == 0.0)
+    {
+        return 0u;
+    }
+    const uint3 bits = asuint(reservoir.position);
+    return max(hashUint(bits.x ^ hashUint(bits.y ^ hashUint(bits.z))), 1u);
+}
+
+// the initial sample alone: the reference's estimate, and a decorrelated pixel's. The MIS of a sample with itself is
+// the identity, and it was traced from this surface this frame, so it needs no visibility ray
+float3 shadeInitialSample(RAB_Surface surface, RTXDI_GIReservoir initial)
+{
+    return RTXDI_IsValidGIReservoir(initial)
+        ? shadeGiSample(surface, initial.position, initial.radiance) * initial.weightSum
+        : float3(0.0, 0.0, 0.0);
+}
+
 [shader("compute")]
 [numthreads(kRtxdiTile, kRtxdiTile, 1)]
-void rtxdiGiShadeMain(uint3 id : SV_DispatchThreadID)
+void rtxdiGiShadeMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_GroupThreadID)
 {
     const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
     rtxdiBridgeInit(root);
-    if (any(id.xy >= gRtxdiBridge.renderSize))
-    {
-        return;
-    }
-    // RenderTargets::kIndirectRadianceFormat
-    const uint output = bdaPtr<GpuTargets>(root.targets)[0].indirectRadianceStorage;
+    // no early return before the firefly test: it synchronizes the group. Out of bounds the surface is invalid and
+    // the reservoirs stay empty, so padding lanes never add to the group threshold
+    const bool isInBounds = all(id.xy < gRtxdiBridge.renderSize);
+    const GpuTargets targets = bdaPtr<GpuTargets>(root.targets)[0];
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
+    const RTXDI_PTDecorrelationParameters decorrelation = constants.giDecorrelation;
     const RAB_Surface surface = RAB_GetGBufferSurface(int2(id.xy), false);
     const uint2 reservoirPosition = RTXDI_PixelPosToReservoirPos(id.xy, constants.runtime.activeCheckerboardField);
-    const RTXDI_GIReservoir initial =
-        RTXDI_LoadGIReservoir(constants.giReservoirBuffer, reservoirPosition, kGiInitialReservoirArray);
+    RTXDI_GIReservoir initial = RTXDI_EmptyGIReservoir();
+    if (isInBounds)
+    {
+        initial = RTXDI_LoadGIReservoir(constants.giReservoirBuffer, reservoirPosition, kGiInitialReservoirArray);
+    }
 
     float3 radiance = float3(0.0, 0.0, 0.0);
+    // uniform
     if (constants.giResamplingMode == 0)
     {
-        // the unbiased 1-sample estimate the reuse converges to; the MIS of a sample with itself is the identity
-        if (RTXDI_IsValidGIReservoir(initial))
-        {
-            radiance = shadeGiSample(surface, initial.position, initial.radiance) * initial.weightSum;
-        }
+        // the unbiased 1-sample estimate the reuse converges to
+        radiance = shadeInitialSample(surface, initial);
     }
     else
     {
         const uint inputArray = constants.giBufferIndices.spatialResamplingInputBufferIndex;
-        RTXDI_GIReservoir reservoir =
-            RTXDI_LoadGIReservoir(constants.giReservoirBuffer, reservoirPosition, inputArray);
+        RTXDI_GIReservoir reservoir = RTXDI_EmptyGIReservoir();
+        if (isInBounds)
+        {
+            reservoir = RTXDI_LoadGIReservoir(constants.giReservoirBuffer, reservoirPosition, inputArray);
+        }
         if ((constants.giResamplingMode & 2u) != 0 && RAB_IsSurfaceValid(surface))
         {
+            const float3 temporalPosition = reservoir.position;
             RTXDI_RandomSamplerState rng = RTXDI_InitRandomSampler(id.xy, constants.runtime.frameIndex,
                                                                    RTXDI_GI_SPATIAL_RESAMPLING_RANDOM_SEED);
             reservoir = RTXDI_GISpatialResampling(id.xy, surface, inputArray, reservoir, rng, constants.runtime,
                                                   constants.giReservoirBuffer, constants.giSpatialResampling);
+            // RTXDI_GISpatialResampling does not report which sample won; a neighbor's has another X2
+            if ((constants.giFlags & kGiFlagSpatialAgeReset) != 0 && any(reservoir.position != temporalPosition))
+            {
+                reservoir.age = 0;
+            }
         }
-        RTXDI_StoreGIReservoir(reservoir, constants.giReservoirBuffer, reservoirPosition,
-                               constants.giBufferIndices.spatialResamplingOutputBufferIndex);
-        radiance = shadeFinalReservoir(surface, reservoir, initial, constants.giFinalShading);
+        if (isInBounds)
+        {
+            RTXDI_StoreGIReservoir(reservoir, constants.giReservoirBuffer, reservoirPosition,
+                                   constants.giBufferIndices.spatialResamplingOutputBufferIndex);
+            // the final reservoirs are next frame's temporal input: passes/rtxdi_gi_duplication.slang counts them
+            if ((constants.giFlags & kGiFlagDuplicationHistoryReduction) != 0)
+            {
+                storageTex2D<uint, kImageFormatR32ui>(targets.giSampleIdsStorage)[id.xy] =
+                    duplicationSampleId(reservoir);
+            }
+        }
+        // uniform: RTXDI_PTApplyDecorrelation's gate. Temporal reuse runs whenever reuse does
+        const bool isDecorrelated = decorrelation.decorrelationMode != RTXDI_PT_DECORRELATION_MODE_NONE &&
+            decorrelation.decorrelationFactor > 0.0 && (constants.giResamplingMode & 1u) != 0;
+        bool isFirefly = false;
+        if (isDecorrelated && decorrelation.fireflyReplacementFilterEnable != 0)
+        {
+            // RTXDI_PTDetectDecorrelationFireflies: the reservoir's target luminance times its weight
+            const float fireflyWeight = RTXDI_IsValidGIReservoir(reservoir)
+                ? RAB_GetGISampleTargetPdfForSurface(reservoir.position, reservoir.radiance, surface) *
+                    reservoir.weightSum
+                : 0.0;
+            isFirefly = RTXDI_BoilingFilterInternal(localId.xy, decorrelation.fireflyReplacementFilterStrength,
+                                                    fireflyWeight);
+        }
+        const float stagnancy = min(float(reservoir.age) * kStagnancyAgeScale, 1.0);
+        float smoothedStagnancy = 0.0;
+        if (isDecorrelated && decorrelation.decorrelationMode == RTXDI_PT_DECORRELATION_MODE_STAGNANCY && isInBounds)
+        {
+            smoothedStagnancy = smoothStagnancy(root, targets, id.xy, stagnancy, decorrelation.decorrelationEmaFactor);
+            storageTex2D<float, kImageFormatR32f>(targets.giStagnancyStorage)[id.xy] = smoothedStagnancy;
+        }
+        const float probability =
+            isDecorrelated ? decorrelationProbability(decorrelation, smoothedStagnancy, isFirefly) : 0.0;
+        bool isReplaced = false;
+        if (probability > 0.0)
+        {
+            RTXDI_RandomSamplerState rng =
+                RTXDI_InitRandomSampler(id.xy, constants.runtime.frameIndex, kGiDecorrelationSeed);
+            isReplaced = RTXDI_GetNextRandom(rng) < probability;
+        }
+        if (isReplaced)
+        {
+            // a fresh final sample won this frame: its swap keeps at most the bound times its weight
+            if (decorrelation.fireflyReplacementBiasReduction != 0 && stagnancy == 0.0)
+            {
+                initial.weightSum =
+                    min(decorrelation.fireflyReplacementMultiplyBound * reservoir.weightSum, initial.weightSum);
+            }
+            radiance = shadeInitialSample(surface, initial);
+        }
+        else
+        {
+            radiance = shadeFinalReservoir(surface, reservoir, initial, constants.giFinalShading);
+        }
     }
-    storageTex2D<float4, kImageFormatRgba16f>(output)[id.xy] = float4(radiance, 1.0);
+    if (!isInBounds)
+    {
+        return;
+    }
+    // RenderTargets::kIndirectRadianceFormat
+    storageTex2D<float4, kImageFormatRgba16f>(targets.indirectRadianceStorage)[id.xy] = float4(radiance, 1.0);
 }

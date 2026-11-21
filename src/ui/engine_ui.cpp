@@ -1171,8 +1171,48 @@ void EngineUi::drawRayTracingPanel()
     ImGui::SliderFloat("Depth threshold##gi", &gi.depthThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SliderFloat("Normal threshold##gi", &gi.normalThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::Checkbox("Boiling filter##gi", &gi.isBoilingFilterEnabled);
+    ImGui::SetItemTooltip("after temporal reuse, drops reservoirs far brighter than their 8x8 group. The DLSS-RR "
+                          "profile turns it off for the firefly replacement below");
     ImGui::BeginDisabled(!gi.isBoilingFilterEnabled);
     ImGui::SliderFloat("Boiling strength##gi", &gi.boilingFilterStrength, 0.0f, 1.0f, "%.2f",
+                       ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
+    constexpr std::array kDecorrelationNames{"None", "Uniform", "Stagnancy"};
+    constexpr std::array kDecorrelationModes{RTXDI_PTDecorrelationMode::None, RTXDI_PTDecorrelationMode::Uniform,
+                                             RTXDI_PTDecorrelationMode::Stagnancy};
+    comboEnum("Decorrelation", gi.decorrelationMode, kDecorrelationNames, kDecorrelationModes);
+    ImGui::SetItemTooltip("DLSS-RR prefers temporally independent samples: final shading shades the pixel's own "
+                          "initial sample instead of the reused one, the stored reservoir keeps its history. "
+                          "Stagnancy: more often where samples stay reused longer");
+    ImGui::BeginDisabled(gi.decorrelationMode == RTXDI_PTDecorrelationMode::None);
+    ImGui::SliderFloat("Decorrelation factor", &gi.decorrelationFactor, 0.0f, 1.0f, "%.2f",
+                       ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Uniform: the swap probability. Stagnancy: 4 x factor x stagnancy^exponent");
+    ImGui::BeginDisabled(gi.decorrelationMode != RTXDI_PTDecorrelationMode::Stagnancy);
+    ImGui::SliderFloat("Stagnancy exponent", &gi.decorrelationStagnancyExponent, 0.0f, 4.0f, "%.2f",
+                       ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderFloat("Stagnancy EMA", &gi.decorrelationEmaFactor, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("share of this frame's stagnancy (sample age / 40) against last frame's 5x5 average");
+    ImGui::EndDisabled();
+    ImGui::Checkbox("Firefly replacement", &gi.isFireflyReplacementEnabled);
+    ImGui::SetItemTooltip("the boiling filter's test on the final reservoir; a detected one is always swapped for "
+                          "the initial sample instead of dropped");
+    ImGui::BeginDisabled(!gi.isFireflyReplacementEnabled);
+    ImGui::SliderFloat("Firefly strength", &gi.fireflyReplacementStrength, 0.0f, 1.0f, "%.2f",
+                       ImGuiSliderFlags_AlwaysClamp);
+    ImGui::Checkbox("Bound fresh swaps", &gi.isFireflyReplacementBounded);
+    ImGui::SetItemTooltip("where the final sample is fresh, a swap keeps at most this multiple of its weight");
+    ImGui::BeginDisabled(!gi.isFireflyReplacementBounded);
+    ImGui::SliderFloat("Swap bound", &gi.fireflyReplacementMultiplyBound, 1.0f, 64.0f, "%.0fx",
+                       ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    ImGui::Checkbox("Duplication history reduction", &gi.isDuplicationHistoryReductionEnabled);
+    ImGui::SetItemTooltip("where many of the 17x17 neighbors shared last frame's sample, temporal reuse keeps fewer "
+                          "frames of history; one more pass after the shade pass");
+    ImGui::BeginDisabled(!gi.isDuplicationHistoryReductionEnabled);
+    ImGui::SliderFloat("History reduction strength", &gi.historyReductionStrength, 0.0f, 1.0f, "%.2f",
                        ImGuiSliderFlags_AlwaysClamp);
     ImGui::EndDisabled();
     ImGui::Checkbox("Final visibility", &gi.isFinalVisibilityEnabled);
@@ -1191,7 +1231,9 @@ void EngineUi::drawRayTracingPanel()
     if (ImGui::Button("Defaults##gi")) {
         gi = RtxdiContext::defaultGiSettings();
     }
-    ImGui::SetItemTooltip("shipped: NVIDIA's with ray-traced spatial bias correction");
+    ImGui::SetItemTooltip("shipped: NVIDIA's with ray-traced spatial bias correction and ReSTIR PT's DLSS-RR profile "
+                          "(stagnancy decorrelation, firefly replacement, 20 frames of history, no age limit); its "
+                          "history reduction and swap bound stay off: both darken GI");
     ImGui::SameLine();
     if (ImGui::Button("NVIDIA defaults##gi")) {
         gi = RtxdiContext::nvidiaGiSettings();

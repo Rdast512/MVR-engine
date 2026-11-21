@@ -11,6 +11,7 @@
 #include <Rtxdi/DI/ReSTIRDIParameters.h>
 #include <Rtxdi/GI/ReSTIRGIParameters.h>
 #include <Rtxdi/LightSampling/RISBufferSegmentParameters.h>
+#include <Rtxdi/PT/ReSTIRPTParameters.h>
 #include <Rtxdi/ReGIR/ReGIRParameters.h>
 
 #include <array>
@@ -82,6 +83,11 @@ struct GpuRtxdiConstants {
     uint32_t lightPdf;
     // mip 0, square
     vk::Extent2D lightPdfSize;
+    // ReSTIR PT's DLSS-RR decorrelation, applied to ReSTIR GI's final shading (m8 O11)
+    RTXDI_PTDecorrelationParameters giDecorrelation;
+    // RTXDI_PTTemporalResamplingParameters::historyReductionStrength, with GiFlag::DuplicationHistoryReduction
+    float giHistoryReductionStrength;
+    uint32_t pad0;
 };
 // GpuRtxdiConstants::giFlags; mirrored in shaders/lighting/rtxdi_constants.slang
 namespace GiFlag
@@ -89,9 +95,17 @@ namespace GiFlag
     inline constexpr uint32_t SecondaryResampling = 1u << 0;
     inline constexpr uint32_t FireflyClamp = 1u << 1;
     inline constexpr uint32_t SecondaryRoughnessFloor = 1u << 2;
+    // a neighbor's sample won the spatial reuse: its age restarts, so stagnancy measures temporal reuse only (RTXDI
+    // PT SpatialResampling.hlsl without age-based rejection)
+    inline constexpr uint32_t SpatialAgeReset = 1u << 3;
+    // the temporal pass caps history where last frame's final sample was shared by many pixels; the shade pass writes
+    // the sample ids and rtxdi_gi_duplication counts them (ReSTIR PT's duplication-based history reduction)
+    inline constexpr uint32_t DuplicationHistoryReduction = 1u << 4;
 } // namespace GiFlag
 static_assert(sizeof(ReGIR_Parameters) == 1296);
-static_assert(sizeof(GpuRtxdiConstants) == 1856);
+static_assert(sizeof(RTXDI_PTDecorrelationParameters) == 32);
+static_assert(sizeof(GpuRtxdiConstants) == 1896);
+static_assert(offsetof(GpuRtxdiConstants, giDecorrelation) == 1856);
 static_assert(offsetof(GpuRtxdiConstants, reservoirs) == 304);
 static_assert(offsetof(GpuRtxdiConstants, giReservoirBuffer) == 328);
 static_assert(offsetof(GpuRtxdiConstants, giReservoirs) == 376);
@@ -207,6 +221,26 @@ public:
         // view-dependent glossy outliers out of the non-directional reservoirs; biased on glossy X2
         bool isSecondaryRoughnessFloorEnabled = false;
 
+        // DLSS-RR prefers temporally independent samples (RTXDI 3.1, ReSTIR PT's DLSS-RR profile; O11): final shading
+        // shades the pixel's initial sample instead of the reused one with probability decorrelationFactor. Stagnancy
+        // mode scales it by 4 · stagnancy^exponent, stagnancy = min(age / 40, 1) blended into last frame's 5x5
+        // average by emaFactor. The stored reservoirs keep their history
+        RTXDI_PTDecorrelationMode decorrelationMode = RTXDI_PTDecorrelationMode::None;
+        float decorrelationFactor = 0.0f;
+        float decorrelationStagnancyExponent = 0.0f;
+        float decorrelationEmaFactor = 0.0f;
+        // a final reservoir far brighter than its 8x8 group is always swapped: the boiling filter's test, replacing
+        // the sample instead of discarding it
+        bool isFireflyReplacementEnabled = false;
+        float fireflyReplacementStrength = 0.0f;
+        // a swap where the final sample is fresh keeps at most fireflyReplacementMultiplyBound times its weight
+        bool isFireflyReplacementBounded = false;
+        float fireflyReplacementMultiplyBound = 0.0f;
+        // sample impoverishment: where many of the 17x17 neighbors shared last frame's final sample, temporal reuse
+        // keeps fewer frames of history, down to 1; strength shapes how fast the cap falls with the shared share
+        bool isDuplicationHistoryReductionEnabled = false;
+        float historyReductionStrength = 0.0f;
+
         bool operator==(const GiSettings&) const = default;
     };
 
@@ -216,7 +250,8 @@ public:
     [[nodiscard]] static Settings defaultSettings();
     // the RTXDI sample's ReSTIR GI settings: the library defaults, temporal and spatial (spec/m4/g5_restir_gi.md §1)
     [[nodiscard]] static GiSettings nvidiaGiSettings();
-    // shipped: NVIDIA's with ray-traced spatial bias correction (spec/features/m8_optimization_and_fixes.md O1)
+    // shipped: NVIDIA's with ray-traced spatial bias correction (spec/fixesM1-6/m8_optimization_and_fixes.md O1) and
+    // ReSTIR PT's DLSS-RR profile (O11)
     [[nodiscard]] static GiSettings defaultGiSettings();
     // the GI check's ReSTIR GI configuration (spec/m4/g5_restir_gi.md §3): bias correction with rays; no sample age
     // limit, fallback, permutation or boiling filter
@@ -255,6 +290,8 @@ public:
     [[nodiscard]] bool isReferenceEnabled() const noexcept { return isReferenceApplied; }
     // ReSTIR GI temporal and spatial reuse as applied by the last prepareFrame
     [[nodiscard]] bool isGiReuseEnabled() const noexcept { return isGiReuseApplied; }
+    // rtxdi_gi_duplication runs after the GI shade pass, as written by the last prepareFrame
+    [[nodiscard]] bool isGiDuplicationMapEnabled() const noexcept { return isGiDuplicationMapApplied; }
 
     // GpuRtxdiConstants of the slot
     [[nodiscard]] vk::DeviceAddress constantsAddress(uint32_t frameSlot) const noexcept
@@ -304,6 +341,7 @@ private:
     bool isReferenceApplied = false;
     Settings appliedSettings;
     bool isGiReuseApplied = true;
+    bool isGiDuplicationMapApplied = false;
     GiSettings appliedGiSettings;
     vk::raii::Buffer reservoirs = nullptr;
     VmaAllocation reservoirMemory = nullptr;

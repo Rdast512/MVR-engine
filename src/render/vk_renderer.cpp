@@ -18,6 +18,8 @@ namespace
     // matches passes/classify.slang, passes/debug_view.slang and the passes/rtxdi_*.slang
     constexpr uint32_t kFullscreenTile = 8;
     static_assert(kFullscreenTile == kMaterialTileSize, "classify launches one group per resolve tile");
+    // matches shaders/passes/rtxdi_gi_duplication.slang kDuplicationGroup
+    constexpr uint32_t kGiDuplicationTile = 16;
 
     constexpr uint32_t divideRoundUp(uint32_t value, uint32_t divisor) { return (value + divisor - 1) / divisor; }
 } // namespace
@@ -645,13 +647,14 @@ void Renderer::setViewport(const vk::raii::CommandBuffer& cmd, vk::Extent2D exte
     cmd.setScissorWithCount(vk::Rect2D(vk::Offset2D(0, 0), extent));
 }
 
-void Renderer::dispatchFullscreen(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader) const
+void Renderer::dispatchFullscreen(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader,
+                                  uint32_t tile) const
 {
     const FramePushData push{.frameRoot = frameData.frameRootAddress(currentFrame)};
     ShaderObjects::bindComputeShader(cmd, shader);
     cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
     const vk::Extent2D extent = targets.getExtent();
-    cmd.dispatch(divideRoundUp(extent.width, kFullscreenTile), divideRoundUp(extent.height, kFullscreenTile), 1);
+    cmd.dispatch(divideRoundUp(extent.width, tile), divideRoundUp(extent.height, tile), 1);
 }
 
 // cull -> preprocess -> vis-buffer raster -> hi-z; the late phase draws over the early one
@@ -948,6 +951,12 @@ void Renderer::recordIndirectResampling(const vk::raii::CommandBuffer& cmd)
     }
     gpuTimer.end(cmd, GpuTimerScope::GiTemporal);
     dispatchFullscreen(cmd, shaderObjects.frameShaders.giShade);
+    // timed with the shade pass; its counts are next frame's temporal input
+    if (rtxdi.isGiDuplicationMapEnabled()) {
+        // the shade pass's sample ids -> the count; this frame's temporal reads of the counts -> their overwrite
+        cmd.pipelineBarrier2(dependency);
+        dispatchFullscreen(cmd, shaderObjects.frameShaders.giDuplication, kGiDuplicationTile);
+    }
     gpuTimer.end(cmd, GpuTimerScope::GiShade);
 }
 
@@ -971,9 +980,10 @@ const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::Co
     gpuTimer.end(cmd, GpuTimerScope::Combine);
 
     const auto now = std::chrono::steady_clock::now();
-    const float frameDeltaMs = lastFrameTime == std::chrono::steady_clock::time_point{}
+    const float wallDeltaMs = lastFrameTime == std::chrono::steady_clock::time_point{}
         ? 0.0f
         : std::chrono::duration<float, std::milli>(now - lastFrameTime).count();
+    const float frameDeltaMs = fixedFrameDeltaMs.value_or(wallDeltaMs);
     lastFrameTime = now;
     if (!isDlssPresented()) {
         // the output is not shown; its history would be stale when it is

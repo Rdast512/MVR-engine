@@ -111,6 +111,8 @@ public:
         // passes/rtxdi_gi_temporal.slang and rtxdi_gi_shade.slang: ReSTIR GI into indirectRadiance
         vk::raii::ShaderEXT giTemporal = nullptr;
         vk::raii::ShaderEXT giShade = nullptr;
+        // passes/rtxdi_gi_duplication.slang: the duplication map for history reduction
+        vk::raii::ShaderEXT giDuplication = nullptr;
         // passes/combine.slang: noisyColor, the DLSS-RR color input
         vk::raii::ShaderEXT combine = nullptr;
         // passes/exposure.slang: luminance histogram of the DLSS-RR output, then the adapted exposure

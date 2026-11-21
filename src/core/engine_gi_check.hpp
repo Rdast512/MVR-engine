@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gi_settings_sets.hpp"
 #include "render/debug_view.hpp"
 #include "render/vk_renderer.hpp"
 #include "scene/vk_camera.hpp"
@@ -7,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <tuple>
 #include <vector>
 
 // ReSTIR GI convergence check on the startup Sponza (spec/m4/g5_restir_gi.md §3, engine spec §14). Per pose, on a
@@ -16,7 +18,8 @@
 // then ReSTIR GI) is measured and logged, not gated, with convergedGiSettings and with the NVIDIA defaults: NRC's bias
 // and RTXDI's heuristics (considerations C-G5-1 to C-G5-3). Per indirect mode (spec/m4/g7_indirect_modes.md): NRC mode
 // is measured against the same ground truth; ReSTIR GI mode is gated against a one-bounce ground truth (its own paths
-// without reuse), and measured there with the shipped and the NVIDIA settings. ENGINE_GI_CHECK=1 enables the run; the engine quits after the summary
+// without reuse), and measured there with the shipped and the NVIDIA settings. ENGINE_GI_CHECK=1 enables the run; the engine quits after the summary.
+// ENGINE_GI_CHECK_SEED picks another realization of every phase
 class EngineGiCheck
 {
 public:
@@ -63,6 +66,8 @@ private:
         RestirGiModeSecondaryClamp,
         // the shipped settings without the secondary roughness floor (O9)
         RestirGiModeNoFloor,
+        // the shipped settings without ReSTIR PT's DLSS-RR profile, the set shipped before it (O11)
+        RestirGiModeNoRrProfile,
         Count,
     };
 
@@ -75,21 +80,6 @@ private:
         Compared,
     };
 
-    enum class GiSettingsSource : uint8_t
-    {
-        // RtxdiContext::convergedGiSettings
-        Converged,
-        // RtxdiContext::defaultGiSettings, shipped
-        Shipped,
-        // RtxdiContext::nvidiaGiSettings
-        Nvidia,
-        // Shipped with secondary DI resampling, the firefly clamp, or both
-        ShippedSecondary,
-        ShippedClamp,
-        ShippedSecondaryClamp,
-        ShippedNoFloor,
-    };
-
     struct PhaseInfo
     {
         const char* name;
@@ -98,13 +88,14 @@ private:
         // RtxdiContext::giReferenceBounces: > 0 traces the bounces after X2 and pauses NRC
         uint32_t referenceBounces;
         bool isGiReference;
-        GiSettingsSource settings;
+        GiSettingsSet settings;
         // frames before the first capture: reservoir history (ReSTIR GI) and training after the pause (NRC)
         uint32_t warmupFrames;
         uint32_t frames;
-        // shares of the ground truth's summed luminance; maxBias 0: logged, not gated. A compared phase's tile limit
-        // is at least kNoiseFloorTileFactor times the noise floor's tile p90; 0 on a noise floor: bias gated alone
-        double maxBias;
+        // shares of the ground truth's summed luminance, per pose (kPoses order) and set from the five-seed spread
+        // (spec/fixesM1-6/i1_check_runners.md §5); maxBias 0: logged, not gated. A compared phase's tile limit is at
+        // least kNoiseFloorTileFactor times the noise floor's tile p90; 0 on a noise floor: bias gated alone
+        std::array<double, 2> maxBias;
         double maxTileP90;
     };
 
@@ -132,50 +123,59 @@ private:
     // is noisier per tile (sun fireflies in the gallery's dim tiles): its own floor sets the tile limit
     static constexpr uint32_t kTraced = RtxdiContext::kGiGroundTruthBounces;
     static constexpr std::array<PhaseInfo, static_cast<size_t>(Phase::Count)> kPhases = {{
-        {"ground truth", Role::GroundTruth, IndirectMode::NrcRestirGi, kTraced, true, GiSettingsSource::Converged, 4,
-         2048, 0.0, 0.0},
+        {"ground truth", Role::GroundTruth, IndirectMode::NrcRestirGi, kTraced, true, GiSettingsSet::Converged, 4,
+         2048, {0.0, 0.0}, 0.0},
+        // gallery: a firefly in either 2048- or 512-frame multi-bounce estimate moves the pair by up to 2% (I1 seeds)
         {"ground truth again (noise floor)", Role::NoiseFloor, IndirectMode::NrcRestirGi, kTraced, true,
-         GiSettingsSource::Converged, 4, 512, 0.01, 0.06},
+         GiSettingsSet::Converged, 4, 512, {0.03, 0.01}, 0.06},
         {"ReSTIR GI (converged settings, traced paths)", Role::Compared, IndirectMode::NrcRestirGi, kTraced, false,
-         GiSettingsSource::Converged, 64, 512, 0.015, 0.08},
+         GiSettingsSet::Converged, 64, 512, {0.02, 0.015}, 0.08},
         // NRC retrains after the pause
         {"NRC + ReSTIR GI (converged settings)", Role::Compared, IndirectMode::NrcRestirGi, 0, false,
-         GiSettingsSource::Converged, 512, 512, 0.0, 0.0},
+         GiSettingsSet::Converged, 512, 512, {0.0, 0.0}, 0.0},
         {"NRC + ReSTIR GI (NVIDIA defaults)", Role::Compared, IndirectMode::NrcRestirGi, 0, false,
-         GiSettingsSource::Nvidia, 64, 512, 0.0, 0.0},
-        {"NRC mode", Role::Compared, IndirectMode::Nrc, 0, false, GiSettingsSource::Converged, 64, 512, 0.0, 0.0},
+         GiSettingsSet::Nvidia, 64, 512, {0.0, 0.0}, 0.0},
+        {"NRC mode", Role::Compared, IndirectMode::Nrc, 0, false, GiSettingsSet::Converged, 64, 512, {0.0, 0.0}, 0.0},
         {"one-bounce ground truth (ReSTIR GI mode, no reuse)", Role::GroundTruth, IndirectMode::RestirGi, 0, true,
-         GiSettingsSource::Converged, 4, 2048, 0.0, 0.0},
+         GiSettingsSet::Converged, 4, 2048, {0.0, 0.0}, 0.0},
         {"one-bounce ground truth again (noise floor)", Role::NoiseFloor, IndirectMode::RestirGi, 0, true,
-         GiSettingsSource::Converged, 4, 512, 0.01, 0.0},
+         GiSettingsSet::Converged, 4, 512, {0.01, 0.01}, 0.0},
         {"ReSTIR GI mode (converged settings) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
-         GiSettingsSource::Converged, 64, 512, 0.015, 0.08},
+         GiSettingsSet::Converged, 64, 512, {0.015, 0.015}, 0.08},
         // what ships, and what it replaced (spec/features/m8_optimization_and_fixes.md O1)
         {"ReSTIR GI mode (shipped defaults) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
-         GiSettingsSource::Shipped, 64, 512, 0.0, 0.0},
+         GiSettingsSet::Shipped, 64, 512, {0.0, 0.0}, 0.0},
         {"ReSTIR GI mode (NVIDIA defaults) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
-         GiSettingsSource::Nvidia, 64, 512, 0.0, 0.0},
+         GiSettingsSet::Nvidia, 64, 512, {0.0, 0.0}, 0.0},
         {"ReSTIR GI mode (shipped + secondary DI resampling) against one bounce", Role::Compared,
-         IndirectMode::RestirGi, 0, false, GiSettingsSource::ShippedSecondary, 64, 512, 0.0, 0.0},
+         IndirectMode::RestirGi, 0, false, GiSettingsSet::ShippedSecondary, 64, 512, {0.0, 0.0}, 0.0},
         {"ReSTIR GI mode (shipped + firefly clamp) against one bounce", Role::Compared, IndirectMode::RestirGi, 0,
-         false, GiSettingsSource::ShippedClamp, 64, 512, 0.0, 0.0},
+         false, GiSettingsSet::ShippedClamp, 64, 512, {0.0, 0.0}, 0.0},
         {"ReSTIR GI mode (shipped + both) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
-         GiSettingsSource::ShippedSecondaryClamp, 64, 512, 0.0, 0.0},
+         GiSettingsSet::ShippedSecondaryClamp, 64, 512, {0.0, 0.0}, 0.0},
         {"ReSTIR GI mode (shipped without secondary roughness floor) against one bounce", Role::Compared,
-         IndirectMode::RestirGi, 0, false, GiSettingsSource::ShippedNoFloor, 64, 512, 0.0, 0.0},
+         IndirectMode::RestirGi, 0, false, GiSettingsSet::ShippedNoFloor, 64, 512, {0.0, 0.0}, 0.0},
+        {"ReSTIR GI mode (shipped without DLSS-RR profile) against one bounce", Role::Compared,
+         IndirectMode::RestirGi, 0, false, GiSettingsSet::ShippedNoRrProfile, 64, 512, {0.0, 0.0}, 0.0},
     }};
     static constexpr std::array<Pose, 2> kPoses = {{
         {"gallery (startup)", true, {}, {}},
         {"courtyard", false, {6.0f, 2.5f, 1.5f}, {-10.0f, 1.0f, -1.0f}},
     }};
+    static_assert(kPoses.size() == std::tuple_size_v<decltype(PhaseInfo::maxBias)>);
+    // ENGINE_GI_CHECK_SEED=n: a whole run's realization, for the gates' spread across seeds (M8 I1)
+    static constexpr uint32_t kRunSeedStride = kPoseSeedStride * static_cast<uint32_t>(kPoses.size());
 
+    [[nodiscard]] static uint32_t readRunSeed();
     void applyPhase(RtxdiContext& rtxdi, IndirectMode& indirectMode) const;
-    [[nodiscard]] bool isGated() const noexcept { return kPhases[static_cast<size_t>(phase)].maxBias > 0.0; }
+    [[nodiscard]] double maxBias() const noexcept { return kPhases[static_cast<size_t>(phase)].maxBias[poseIndex]; }
+    [[nodiscard]] bool isGated() const noexcept { return maxBias() > 0.0; }
     // logs the phase's metrics; true when within its limits. A noise floor keeps its tile p90
     [[nodiscard]] bool evaluatePhase();
     // next phase or pose; true after the last one
     bool finishPhase();
 
+    uint32_t runSeedBase = readRunSeed() * kRunSeedStride;
     uint32_t frame = 0;
     size_t poseIndex = 0;
     Phase phase = Phase::GroundTruth;

@@ -1058,8 +1058,18 @@ struct GpuTargets
     // R8_UINT MaterialBin per pixel, written by passes/classify.slang
     uint32_t binIdsStorage = 0;
     uint32_t binIdsSampled = 0;
+    // R32F smoothed ReSTIR GI stagnancy by frame parity: this frame's written by passes/rtxdi_gi_shade.slang, last
+    // frame's sampled (m8 O11)
+    uint32_t giStagnancyStorage = 0;
+    uint32_t giStagnancyPrevious = 0;
+    // R32_UINT final ReSTIR GI sample per pixel (0: none), written by passes/rtxdi_gi_shade.slang; R32F how many of
+    // its 17x17 neighbors share it, written by passes/rtxdi_gi_duplication.slang and read by next frame's temporal
+    // pass (m8 O11)
+    uint32_t giSampleIdsStorage = 0;
+    uint32_t giDuplicationStorage = 0;
 };
-static_assert(sizeof(GpuTargets) == 216);
+static_assert(sizeof(GpuTargets) == 232);
+static_assert(offsetof(GpuTargets, giStagnancyStorage) == 216);
 static_assert(offsetof(GpuTargets, binIdsStorage) == 208);
 static_assert(offsetof(GpuTargets, current) == 32);
 

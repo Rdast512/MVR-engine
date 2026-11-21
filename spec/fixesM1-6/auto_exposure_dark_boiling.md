@@ -1,6 +1,6 @@
 # Fix: Auto-exposure boiling in shaded (indirect-only) areas
 
-**Date:** 2026-11-20 · **Status:** F1–F4 implemented and verified (§5; F3 is Option B); F5 open in M8 I5 · **Milestone:** [M8](./README.md) (fixes M3 H2 / H1 + M4 G5; finding F10 of [m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md))
+**Date:** 2026-11-20 · **Status:** F1–F4 implemented and verified (§5; F3 is Option B); F5 open in M8 I7 · **Milestone:** [M8](./README.md) (fixes M3 H2 / H1 + M4 G5; finding F10 of [m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md))
 **Why:** Turning on auto exposure in Sponza areas with no direct sunlight (the +Z gallery, under the arches) causes severe temporal boiling. In the gallery, `indirectRadiance` has a mean of ~`0.00019` linear ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §2.6): auto exposure amplifies it by ~1000× (+10 EV) and up to 65,536× (+16 EV), feeding that extreme, fluctuating gain back into DLSS-RR.
 
 **Sources checked**
@@ -75,14 +75,14 @@ Record A/B stability numbers (gallery + courtyard, auto exposure ON and OFF) bef
 
 - Replace the exposure-multiplied clamp (`luminance(radiance) * exposure > 10.0`) with a fixed scene-unit ceiling matching RTXDI's `ShadeSecondarySurfaces.hlsl:34,133-135` (`kMaxIndirectRadiance = 10.0`, independent of `exposureStorage`).
 - This removes the `exposure -> indirect.slang -> ReSTIR GI -> DLSS-RR -> exposure` feedback path when O6 is enabled (e.g. for M7/M8 many-light scenes).
-- O6 stays off by default. Its 2026-11-20 measurement ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §2.6) ran at the default manual exposure, which has a scale of 1. At that scale, the old and new clamps are identical. M8 I9 re-measures O6.
+- O6 stays off by default. Its 2026-11-20 measurement ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §2.6) ran at the default manual exposure, which has a scale of 1. At that scale, the old and new clamps are identical. M8 I12 re-measures O6.
 
 ### F5 · Longer-term signal quality in shaded Sponza (separate from exposure)
 
 Not an exposure bug, noted so expectations stay clear:
 
 - Without an environment/sky light (C-F3-5, currently unscheduled) and with 1-bounce ReSTIR GI (`NRC` paused for C-G5-3), deep shaded areas of Sponza have very sparse non-zero bounce hits.
-- Fixing C-G5-3 (M8 I5, re-enabling multi-bounce NRC) and/or adding a sky/environment light will raise shaded-area hit density by an order of magnitude, eliminating the residual low-frequency blotchiness that high exposure reveals.
+- Fixing C-G5-3 (M8 I7, re-enabling multi-bounce NRC) and/or adding a sky/environment light will raise shaded-area hit density by an order of magnitude, eliminating the residual low-frequency blotchiness that high exposure reveals.
 - The §5 gallery numbers are this residual: 4.737% deviation and 25.942% flickering pixels in the DLSS-RR output, identical for A and B and for auto and manual exposure.
 
 ---

@@ -518,6 +518,10 @@ namespace
             LAYOUT_FIELD(GpuTargets, displaySize),
             LAYOUT_FIELD(GpuTargets, binIdsStorage),
             LAYOUT_FIELD(GpuTargets, binIdsSampled),
+            LAYOUT_FIELD(GpuTargets, giStagnancyStorage),
+            LAYOUT_FIELD(GpuTargets, giStagnancyPrevious),
+            LAYOUT_FIELD(GpuTargets, giSampleIdsStorage),
+            LAYOUT_FIELD(GpuTargets, giDuplicationStorage),
         }},
         {"GpuExposureReadback", sizeof(GpuExposureReadback), {
             LAYOUT_FIELD(GpuExposureReadback, exposure),
@@ -612,6 +616,9 @@ namespace
         LAYOUT_FIELD(GpuRtxdiConstants, risEntryCount),
         LAYOUT_FIELD(GpuRtxdiConstants, lightPdf),
         LAYOUT_FIELD(GpuRtxdiConstants, lightPdfSize),
+        LAYOUT_FIELD(GpuRtxdiConstants, giDecorrelation),
+        LAYOUT_FIELD(GpuRtxdiConstants, giHistoryReductionStrength),
+        LAYOUT_FIELD(GpuRtxdiConstants, pad0),
     }};
 
     // textual mirror next to the NRC SDK's NrcConstants
@@ -657,6 +664,7 @@ namespace
         ImageFormatConstant{"kImageFormatR32f", SLANG_IMAGE_FORMAT_r32f},
         ImageFormatConstant{"kImageFormatRgba8", SLANG_IMAGE_FORMAT_rgba8},
         ImageFormatConstant{"kImageFormatRg16Snorm", SLANG_IMAGE_FORMAT_rg16_snorm},
+        ImageFormatConstant{"kImageFormatR32ui", SLANG_IMAGE_FORMAT_r32ui},
         ImageFormatConstant{"kImageFormatR8ui", SLANG_IMAGE_FORMAT_r8ui},
     };
 

@@ -21,8 +21,8 @@ public:
     // look at target from a fixed offset
     void focusOn(const glm::vec3& target, float distance = 5.0f);
 
-    // a cut; pitch is clamped to kPitchLimit
-    void lookAt(const glm::vec3& position, const glm::vec3& target);
+    // a cut unless isCut is false (camera motion: history reprojects); pitch is clamped to kPitchLimit
+    void lookAt(const glm::vec3& position, const glm::vec3& target, bool isCut = true);
 
     // keeps the orientation; a cut, so the jump is not camera motion
     void teleportTo(const glm::vec3& position);
@@ -32,6 +32,8 @@ public:
     void addFov(float deltaDegrees); // for scroll-wheel
 
     [[nodiscard]] float getFovDegrees() const { return glm::degrees(fov); }
+    // as of the last updateCameraData
+    [[nodiscard]] glm::vec3 getForward() const noexcept { return forward; }
 
     [[nodiscard]] float getNearPlane() const { return nearPlane; }
     void setNearPlane(float nearZ)
@@ -69,6 +71,9 @@ public:
     bool isJitterEnabled = true;
     // ENGINE_JITTER=1: jitter unresolved frames too, so the culling checks cover the jitter rule (engine spec §12.2)
     bool isJitterForced = false;
+    // the frame index the jitter phase follows instead of updateCameraData's: the check runners' per-step index, so a
+    // step's frames do not depend on the steps before it
+    std::optional<uint64_t> jitterPhaseOverride;
 
     // after updateCameraData: first frame, focusOn, teleportTo, a projection change, or any swapchain recreation (setRenderExtent);
     // cameraData.prevViewProj equals viewProj then

@@ -76,6 +76,14 @@ void Engine::initialize()
     if (EngineRayCheck::isRequested()) {
         rayCheck.emplace();
     }
+    if (const std::optional<EngineTemporalCheck::Kind> kind = EngineTemporalCheck::requestedKind()) {
+        // each drives the camera and the lighting settings
+        if (motionTest || guideCapture || cullCheck || giCheck) {
+            logError("temporal check ignored: another scene runner is requested", "Engine");
+        } else {
+            temporalCheck.emplace(*kind);
+        }
+    }
 
     const uint32_t defaultBenchFrames = giCheck ? kGiCheckBenchFrames : 0;
     if (const auto benchConfig = EngineBench::readConfig(defaultBenchFrames)) {
@@ -85,7 +93,7 @@ void Engine::initialize()
     swapChain = std::make_unique<SwapChain>(window, *device);
     swapChain->isUncapped =
         bench.has_value() || motionTest.has_value() || guideCapture.has_value() || cullCheck.has_value() ||
-        giCheck.has_value() || rayCheck.has_value();
+        giCheck.has_value() || rayCheck.has_value() || temporalCheck.has_value();
     swapChain->init();
 
     camera = std::make_unique<Camera>(*swapChain);
@@ -201,9 +209,10 @@ bool Engine::run()
     constexpr float kCameraSpeed = 5.0f;
     auto& deviceRef = device->vkdevice;
     // the bench, motion-test, guide-capture and cull-check views move only as they script it
-    const bool isCameraInputEnabled = !bench && !motionTest && !guideCapture && !cullCheck && !rayCheck && !giCheck;
+    const bool isCameraInputEnabled =
+        !bench && !motionTest && !guideCapture && !cullCheck && !rayCheck && !giCheck && !temporalCheck;
     // no other runner drives the camera or the scene: the ray check holds the startup view and ends the run
-    const bool isRayCheckStandalone = !bench && !motionTest && !guideCapture && !cullCheck && !giCheck;
+    const bool isRayCheckStandalone = !bench && !motionTest && !guideCapture && !cullCheck && !giCheck && !temporalCheck;
 
     // game focus captures the mouse and hides the cursor; UI focus (I key) frees both
     const auto setGameFocus = [this](bool gameFocused)
@@ -347,6 +356,10 @@ bool Engine::run()
                 isCaptureRequested = true;
                 renderer->requestDisplayCapture();
             }
+            if (temporalCheck && temporalCheck->beginFrame(*camera, *renderer).shouldCapture) {
+                isCaptureRequested = true;
+                renderer->requestDisplayCapture();
+            }
             if (isIndirectModeCycling) {
                 renderer->indirectMode = static_cast<IndirectMode>(renderer->frameNumber / kIndirectModeCycleFrames %
                                                                    std::to_underlying(IndirectMode::Count));
@@ -381,6 +394,14 @@ bool Engine::run()
                 quit = giCheck->endFrame(isCaptureRequested ? renderer->getLastDisplayCapture() : std::nullopt) ||
                     quit;
             }
+            if (temporalCheck) {
+                if (isCaptureRequested) {
+                    deviceRef.waitIdle();
+                }
+                quit = temporalCheck->endFrame(*camera, isCaptureRequested ? renderer->getLastDisplayCapture()
+                                                                           : std::nullopt) ||
+                    quit;
+            }
             if (rayCheck) {
                 deviceRef.waitIdle();
                 quit = rayCheck->endFrame(renderer->getLastRayCheck(), isRayCheckStandalone) || quit;
@@ -391,7 +412,8 @@ bool Engine::run()
         }
 
         // unfocused windows often lose vsync pacing and burn CPU/GPU; automated runners stay uncapped
-        const bool isAutomatedRunner = bench || motionTest || guideCapture || cullCheck || giCheck || rayCheck;
+        const bool isAutomatedRunner =
+            bench || motionTest || guideCapture || cullCheck || giCheck || rayCheck || temporalCheck;
         if (!windowFocused && !minimized && !quit && !isAutomatedRunner) {
             ZoneScopedN("UnfocusedFramePacing");
             const auto frameEndTime = std::chrono::high_resolution_clock::now();
@@ -427,6 +449,9 @@ bool Engine::run()
     }
     if (rayCheck) {
         isPassed = rayCheck->isPassed() && isPassed;
+    }
+    if (temporalCheck) {
+        isPassed = temporalCheck->isPassed() && isPassed;
     }
     return isPassed;
 }

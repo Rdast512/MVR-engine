@@ -32,6 +32,11 @@ public:
     static constexpr vk::Format kExposureFormat = vk::Format::eR32Sfloat;
     // MaterialBin per pixel, written by passes/classify.slang
     static constexpr vk::Format kBinIdsFormat = vk::Format::eR8Uint;
+    // smoothed ReSTIR GI stagnancy, written by passes/rtxdi_gi_shade.slang and read the next frame
+    static constexpr vk::Format kGiStagnancyFormat = vk::Format::eR32Sfloat;
+    // ReSTIR GI duplication map inputs and counts (passes/rtxdi_gi_duplication.slang)
+    static constexpr vk::Format kGiSampleIdsFormat = vk::Format::eR32Uint;
+    static constexpr vk::Format kGiDuplicationFormat = vk::Format::eR32Sfloat;
 
     // an image with the view NGX needs; the descriptor heap does not keep views
     struct ImageRef
@@ -152,6 +157,11 @@ private:
     VmaAllocation materialBinsMemory = nullptr;
     vk::DeviceAddress materialBinsDeviceAddress = 0;
     std::array<std::array<Target, kGuideImageCount>, kGuideSetCount> guideSets;
+    // by frame parity, as the guide sets
+    std::array<Target, kGuideSetCount> giStagnancy;
+    // one copy: each is read before the frame's next write to it
+    Target giSampleIds;
+    Target giDuplication;
     // sampled depth for the resolve and debug views
     uint32_t depthIndex = kNoneIndex;
     // sampler heap index; samplers are never freed

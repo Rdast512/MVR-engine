@@ -21,6 +21,27 @@ static const uint kRtxdiTile = 8; // matches src/render/vk_renderer.cpp
 
 [[vk::push_constant]] ConstantBuffer<FramePushData> push;
 
+// RTXDI_PTTemporalResampling's duplication-based history reduction (Rtxdi/PT/TemporalResampling.hlsli, RTXDI 3.1;
+// m8 O11): the more of the 17x17 neighbors shared last frame's final sample, the shorter the history. Read where
+// RTXDI_GITemporalResampling starts its neighbor search; ReSTIR PT reads it at the neighbor the search found
+uint reducedMaxHistoryLength(GpuFrameRoot root, GpuRtxdiConstants constants, uint2 pixel, float2 motion,
+                             uint maxHistoryLength)
+{
+    const float strength = constants.giHistoryReductionStrength;
+    const int2 previousPixel = int2(round(float2(pixel) + motion));
+    if (strength <= 0.0 || any(previousPixel < 0) || any(previousPixel >= int2(gRtxdiBridge.renderSize)))
+    {
+        return maxHistoryLength;
+    }
+    const uint duplication = loadTargets(root).giDuplicationStorage;
+    const float count = storageTex2D<float, kImageFormatR32f>(duplication)[previousPixel];
+    // the 17x17 window's neighbors
+    const float impoverishment = saturate(count / 288.0);
+    const float powerFactor = 0.1 * pow(2.0, 6.0 * (1.0 - strength) - 3.0);
+    const float t = pow(impoverishment, powerFactor);
+    return uint(max(1, int(lerp(float(maxHistoryLength), 1.0, t))));
+}
+
 [shader("compute")]
 [numthreads(kRtxdiTile, kRtxdiTile, 1)]
 void rtxdiGiTemporalMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_GroupThreadID)
@@ -49,6 +70,11 @@ void rtxdiGiTemporalMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_Grou
         RTXDI_GITemporalResamplingParameters temporal = constants.giTemporalResampling;
         // varied per pixel, as the sample: a disocclusion's reservoirs do not all expire on one frame
         temporal.maxReservoirAge = uint(float(temporal.maxReservoirAge) * (0.5 + RTXDI_GetNextRandom(rng) * 0.5));
+        if ((constants.giFlags & kGiFlagDuplicationHistoryReduction) != 0)
+        {
+            temporal.maxHistoryLength =
+                reducedMaxHistoryLength(root, constants, id.xy, motion.xy, temporal.maxHistoryLength);
+        }
         reservoir = RTXDI_GITemporalResampling(id.xy, surface, motion,
                                                constants.giBufferIndices.temporalResamplingInputBufferIndex, reservoir,
                                                rng, constants.runtime, constants.giReservoirBuffer, temporal);

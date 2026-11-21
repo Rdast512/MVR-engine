@@ -214,7 +214,7 @@ The spec's §16. Each step renders something testable and is measured against sp
 | M4 | **Built** on RTX 5070 (2026-11-19). `lighting/path_shading`, `indirect`, `nrc_update`, `gi/nrc_bridge`, `gi/nrc_constants`, `nrc_resolve`, `rtxdi_gi_temporal`, `rtxdi_gi_shade`, `combine` (+ indirect), indirect mode toggle (ReSTIR GI default since 2026-11-20); `raytracing/ser` and `rt_ser_check` built in G1 then shelved 2026-11-17 (C-G1-3) | bounce light under Sponza arches, GI check converges; NRC cache converges (C-G3-4); all three indirect modes switch cleanly |
 | M6 | alpha-tested bin fragment; OMM flags in `trace` | cut-outs in raster and shadows, zero ray candidates |
 | M7 | `classify`, per-bin `resolve` execution set with overlap guard; emissive-triangle lights; `rtxdi_presample` | per-bin timings; Bistro emissives lit |
-| M8 | per-pass tuning from the frame profile; GI temporal reuse merged into `indirect` (O3); packed RTXDI surface guide (O4); NRC query heuristic if I5 confirms it | per-scope table before and after; GI check gated ([spec/m8](./m8/README.md)) |
+| M8 | per-pass tuning from the frame profile; packed RTXDI surface guide (O4); NRC query heuristic if I7 confirms it | per-scope table before and after; GI check gated ([spec/m8](./m8/README.md)) |
 | M9 | none (asset pipeline) | — |
 | M10 (1.0) | per-stage tuning against spec §2.3 | Bistro at target |
 | L1–L3 (post-1.0) | LOD traversal kernels above `meshlet_cull` (node tree, `testForTraversal`, persistent traversal, reject nodes and groups); software raster into the vis buffer; RT LOD traversal and cluster BLAS builds | Bistro fully on cluster LOD (L3) |

@@ -765,6 +765,10 @@ public struct GpuTargets
     public uint2 displaySize;
     public uint binIdsStorage; // R8_UINT kMaterialBin* per pixel, written by classify
     public uint binIdsSampled;
+    public uint giStagnancyStorage;  // R32F smoothed ReSTIR GI stagnancy, this frame's; written by rtxdi_gi_shade
+    public uint giStagnancyPrevious; // last frame's, sampled
+    public uint giSampleIdsStorage;   // R32_UINT final ReSTIR GI sample per pixel, 0: none; rtxdi_gi_shade
+    public uint giDuplicationStorage; // R32F neighbors sharing it, rtxdi_gi_duplication; next frame's temporal reads
 };
 
 // exposure histogram: bin 0 includes black, bin 255 is the ceiling

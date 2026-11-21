@@ -7,6 +7,7 @@
 #include "engine_ray_check.hpp"
 #include "engine_guide_capture.hpp"
 #include "engine_motion_test.hpp"
+#include "engine_temporal_check.hpp"
 #include "texture_manager.hpp"
 #include "../render/nrc_library.hpp"
 #include "../render/vk_renderer.hpp"
@@ -71,6 +72,8 @@ class Engine
     // set from the environment: culling image check on the startup scene, quits after logging the results
     std::optional<EngineCullCheck> cullCheck;
     std::optional<EngineGiCheck> giCheck;
+    // set from the environment: one M8 I1 temporal runner (stability, light change, screen edge), quits after it
+    std::optional<EngineTemporalCheck> temporalCheck;
     // set from the environment: primary rays against the vis buffer every frame, alongside another runner or alone
     std::optional<EngineRayCheck> rayCheck;
     // ENGINE_INDIRECT_MODE=cycle: the indirect mode follows the frame number

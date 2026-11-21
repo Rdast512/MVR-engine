@@ -6,6 +6,7 @@
 
 #include <Rtxdi/ImportanceSamplingContext.h>
 #include <Rtxdi/LightSampling/RISBufferSegmentAllocator.h>
+#include <Rtxdi/PT/ReSTIRPT.h>
 #include <Rtxdi/RtxdiUtils.h>
 
 #include <algorithm>
@@ -118,6 +119,32 @@ namespace
         default:
             return "uniform";
         }
+    }
+
+    void setDecorrelation(RtxdiContext::GiSettings& settings, const RTXDI_PTDecorrelationParameters& params)
+    {
+        settings.decorrelationMode = params.decorrelationMode;
+        settings.decorrelationFactor = params.decorrelationFactor;
+        settings.decorrelationStagnancyExponent = params.decorrelationStagnancyExponent;
+        settings.decorrelationEmaFactor = params.decorrelationEmaFactor;
+        settings.isFireflyReplacementEnabled = params.fireflyReplacementFilterEnable != 0;
+        settings.fireflyReplacementStrength = params.fireflyReplacementFilterStrength;
+        settings.isFireflyReplacementBounded = params.fireflyReplacementBiasReduction != 0;
+        settings.fireflyReplacementMultiplyBound = params.fireflyReplacementMultiplyBound;
+    }
+
+    [[nodiscard]] RTXDI_PTDecorrelationParameters decorrelationParameters(const RtxdiContext::GiSettings& settings)
+    {
+        return RTXDI_PTDecorrelationParameters{
+            .decorrelationFactor = settings.decorrelationFactor,
+            .decorrelationStagnancyExponent = settings.decorrelationStagnancyExponent,
+            .decorrelationEmaFactor = settings.decorrelationEmaFactor,
+            .decorrelationMode = settings.decorrelationMode,
+            .fireflyReplacementFilterEnable = settings.isFireflyReplacementEnabled ? 1u : 0u,
+            .fireflyReplacementFilterStrength = settings.fireflyReplacementStrength,
+            .fireflyReplacementBiasReduction = settings.isFireflyReplacementBounded ? 1u : 0u,
+            .fireflyReplacementMultiplyBound = settings.fireflyReplacementMultiplyBound,
+        };
     }
 } // namespace
 
@@ -382,7 +409,7 @@ RtxdiContext::GiSettings RtxdiContext::nvidiaGiSettings()
     const RTXDI_BoilingFilterParameters boiling = rtxdi::GetDefaultReSTIRGIBoilingFilterParams();
     const RTXDI_GIFinalShadingParameters shading = rtxdi::GetDefaultReSTIRGIFinalShadingParams();
     // RTXDI Samples/FullSample UserInterface.cpp: the library defaults, which no preset changes
-    return GiSettings{
+    GiSettings settings{
         .maxHistoryLength = temporal.maxHistoryLength,
         .maxReservoirAge = temporal.maxReservoirAge,
         .temporalBiasCorrection = temporal.biasCorrectionMode,
@@ -400,16 +427,35 @@ RtxdiContext::GiSettings RtxdiContext::nvidiaGiSettings()
         // the sample's BRDF ray tracing default (LightingPasses.cpp), not a library parameter
         .isSecondaryRoughnessFloorEnabled = true,
     };
+    // ReSTIR GI has no decorrelation or history reduction: ReSTIR PT's parameters without DLSS-RR, both off
+    setDecorrelation(settings, rtxdi::GetDefaultReSTIRPTDecorrelationParams(false));
+    const RTXDI_PTTemporalResamplingParameters ptTemporal = rtxdi::GetDefaultReSTIRPTTemporalResamplingParams(false);
+    settings.isDuplicationHistoryReductionEnabled = ptTemporal.duplicationBasedHistoryReduction != 0;
+    settings.historyReductionStrength = ptTemporal.historyReductionStrength;
+    return settings;
 }
 
 RtxdiContext::GiSettings RtxdiContext::defaultGiSettings()
 {
     // Basic spatial correction darkens occluded places: -27% / -9% against the one-bounce ground truth in ReSTIR GI
-    // mode (considerations C-G5-2, spec/features/m8_optimization_and_fixes.md O1). The temporal pass's Basic
-    // correction does not; rays there cost 0.06 ms for nothing. History, age and boiling filter stay NVIDIA's:
-    // dropping all three, as RTXDI 3.1's DLSS-RR profile for ReSTIR PT does, lets fireflies through DLSS-RR
+    // mode (considerations C-G5-2, spec/fixesM1-6/m8_optimization_and_fixes.md O1). The temporal pass's Basic
+    // correction does not; rays there cost 0.06 ms for nothing
     GiSettings settings = nvidiaGiSettings();
     settings.spatialBiasCorrection = RTXDI_GIBiasCorrectionMode::Raytraced;
+    // the frame always goes through DLSS-RR: ReSTIR PT's DLSS-RR profile, which the RTXDI sample applies whenever
+    // DLSS-RR runs (O11). Stagnancy decorrelation and firefly replacement take the boiling filter's place, with 20
+    // frames of history and no age-based rejection; without the replacement those three let fireflies through (O1)
+    const RTXDI_PTTemporalResamplingParameters temporal = rtxdi::GetDefaultReSTIRPTTemporalResamplingParams(true);
+    settings.maxHistoryLength = temporal.maxHistoryLength;
+    settings.isDuplicationHistoryReductionEnabled = temporal.duplicationBasedHistoryReduction != 0;
+    settings.historyReductionStrength = temporal.historyReductionStrength;
+    settings.maxReservoirAge = temporal.enableAgeBasedRejection != 0 ? temporal.maxReservoirAge : kGiUnlimitedSampleAge;
+    settings.isBoilingFilterEnabled = rtxdi::GetDefaultReSTIRPTBoilingFilterParams(true).enableBoilingFilter != 0;
+    setDecorrelation(settings, rtxdi::GetDefaultReSTIRPTDecorrelationParams(true));
+    // two PT parts darken GI against the one-bounce ground truth (gallery / courtyard, O11): the history cap -8 / -7 pp
+    // and the bound on fresh swaps -3 / -8 pp; without both the profile reads -0.75% / -0.86%
+    settings.isDuplicationHistoryReductionEnabled = false;
+    settings.isFireflyReplacementBounded = false;
     return settings;
 }
 
@@ -552,6 +598,8 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
     } else if (giSettings != appliedGiSettings) {
         configureGi(isGiReuse);
     }
+    // a settings change resets ReSTIR GI history, so the temporal pass never reads a map this flag did not write
+    isGiDuplicationMapApplied = isGiReuseApplied && giSettings.isDuplicationHistoryReductionEnabled;
     const RTXDI_GIBufferIndices giBufferIndices = giContext.GetBufferIndices();
     // rtxdi_gi_shade reads neighbors from the temporal output and writes next frame's temporal input
     assert(giContext.GetResamplingMode() == rtxdi::ReSTIRGI_ResamplingMode::None ||
@@ -628,7 +676,10 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
                    (giSettings.isFireflyClampEnabled ? GiFlag::FireflyClamp : 0u) |
                    // without reuse the 1-sample estimate stays unbiased
                    (giSettings.isSecondaryRoughnessFloorEnabled && isGiReuseApplied ? GiFlag::SecondaryRoughnessFloor
-                                                                                    : 0u),
+                                                                                    : 0u) |
+                   // without age-based rejection, as ReSTIR PT's DLSS-RR profile
+                   (giSettings.maxReservoirAge >= kGiUnlimitedSampleAge ? GiFlag::SpatialAgeReset : 0u) |
+                   (isGiDuplicationMapApplied ? GiFlag::DuplicationHistoryReduction : 0u),
         .localLightRisBuffer = importanceSampling->GetLocalLightRISBufferSegmentParams(),
         .environmentLightRisBuffer = importanceSampling->GetEnvironmentLightRISBufferSegmentParams(),
         .regir = regirConstants,
@@ -637,6 +688,9 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
         .risEntryCount = risEntryCount,
         .lightPdf = lightPdfIndex,
         .lightPdfSize = {.width = lightPdfSide, .height = lightPdfSide},
+        .giDecorrelation = decorrelationParameters(giSettings),
+        .giHistoryReductionStrength = giSettings.historyReductionStrength,
+        .pad0 = 0,
     };
     std::memcpy(constants[frameSlot].mapped, &data, sizeof(data));
 }

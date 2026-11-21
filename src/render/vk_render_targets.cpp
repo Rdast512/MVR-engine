@@ -86,6 +86,11 @@ RenderTargets::~RenderTargets()
             destroy(guide);
         }
     }
+    for (Target& stagnancy : giStagnancy) {
+        destroy(stagnancy);
+    }
+    destroy(giSampleIds);
+    destroy(giDuplication);
     destroyVmaBuffer(vma, materialBins, materialBinsMemory);
     for (HostBuffer& buffer : frameTargets) {
         destroyHostBuffer(vma, buffer, nullptr);
@@ -221,6 +226,11 @@ void RenderTargets::destroyTargets()
             destroy(guide);
         }
     }
+    for (Target& stagnancy : giStagnancy) {
+        destroy(stagnancy);
+    }
+    destroy(giSampleIds);
+    destroy(giDuplication);
     destroyVmaBuffer(vma, materialBins, materialBinsMemory);
     materialBinsDeviceAddress = 0;
     if (depthIndex != kNoneIndex) {
@@ -259,12 +269,17 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
     createTarget(exposureTarget, kExposureFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferDst,
                  vk::ImageLayout::eGeneral, "Exposure", vk::Extent2D{1, 1});
     createTarget(binIds, kBinIdsFormat, kStorageUsage, vk::ImageLayout::eGeneral, "MaterialBinIds", extent);
+    createTarget(giSampleIds, kGiSampleIdsFormat, kStorageUsage, vk::ImageLayout::eGeneral, "GiSampleIds", extent);
+    createTarget(giDuplication, kGiDuplicationFormat, kStorageUsage, vk::ImageLayout::eGeneral, "GiDuplication",
+                 extent);
     createMaterialBins();
     for (uint32_t set = 0; set < kGuideSetCount; ++set) {
         for (size_t guide = 0; guide < kGuideImageCount; ++guide) {
             createTarget(guideSets[set][guide], kGuideFormats[guide], kStorageUsage, vk::ImageLayout::eGeneral,
                          std::format("Guide{}_{}", kGuideNames[guide], set).c_str(), extent);
         }
+        createTarget(giStagnancy[set], kGiStagnancyFormat, kStorageUsage, vk::ImageLayout::eGeneral,
+                     std::format("GiStagnancy_{}", set).c_str(), extent);
     }
     depthIndex = descriptorManager.writeImageDescriptor(
         vk::ImageViewCreateInfo{.image = *depthAttachment.image,
@@ -313,6 +328,12 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
             initialize(*guide.image, vk::ImageLayout::eGeneral, kStorageAccess);
         }
     }
+    // read only with ReSTIR GI history, which a recreate resets
+    for (Target& stagnancy : giStagnancy) {
+        initialize(*stagnancy.image, vk::ImageLayout::eGeneral, kStorageAccess);
+    }
+    initialize(*giSampleIds.image, vk::ImageLayout::eGeneral, kStorageAccess);
+    initialize(*giDuplication.image, vk::ImageLayout::eGeneral, kStorageAccess);
     submitAndWait(cmd, device.graphicsQueue);
 }
 
@@ -382,5 +403,9 @@ void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool 
         .displaySize = {displayExtent.width, displayExtent.height},
         .binIdsStorage = binIds.storageIndex,
         .binIdsSampled = binIds.sampledIndex,
+        .giStagnancyStorage = giStagnancy[current].storageIndex,
+        .giStagnancyPrevious = giStagnancy[(current + 1) % kGuideSetCount].sampledIndex,
+        .giSampleIdsStorage = giSampleIds.storageIndex,
+        .giDuplicationStorage = giDuplication.storageIndex,
     };
 }

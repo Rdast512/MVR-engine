@@ -197,7 +197,7 @@ GRAPHICS QUEUE                                          ASYNC COMPUTE QUEUE
 15 post           auto exposure → tonemap → swapchain, ImGui
 ```
 
-Stages 1–13 run at render resolution (indirect rays at half resolution on the floor tier: target, not built, considerations C-G2-1, M8 I8); 14–15 at display resolution. Stage 8 exists from M7; until then stage 9 is one tiled dispatch (§16.2 M1). No stage reads CPU-recorded per-object data.
+Stages 1–13 run at render resolution (indirect rays at half resolution on the floor tier: target, not built, considerations C-G2-1, M8 I11); 14–15 at display resolution. Stage 8 exists from M7; until then stage 9 is one tiled dispatch (§16.2 M1). No stage reads CPU-recorded per-object data.
 
 ---
 
@@ -480,8 +480,8 @@ PBR plan F1–F3, extended:
 
 ### 11.3 Indirect: one bounce + cache termination
 
-- One indirect ray per pixel from the primary surface (`sampleBrdf`, VNDF). Floor tier: half resolution, checkerboard, reconstructed by ReSTIR GI + DLSS-RR (target; not built: every tier traces every pixel until the 2060 Super is measured, considerations C-G2-1, M8 I8).
-- At the secondary hit X₂: direct light via RTXDI sampling without reuse + one visibility ray, then terminate and **query the radiance cache** for bounces 2…∞. Optional, off by default: X₂'s light resampled from the primary ReSTIR DI reservoirs where X₂ is on screen, and a firefly clamp on X₂'s radiance (`GiSettings::isSecondaryResamplingEnabled` / `isFireflyClampEnabled`; measured without gain on Sponza, re-checked with many lights in M8 I9).
+- One indirect ray per pixel from the primary surface (`sampleBrdf`, VNDF). Floor tier: half resolution, checkerboard, reconstructed by ReSTIR GI + DLSS-RR (target; not built: every tier traces every pixel until the 2060 Super is measured, considerations C-G2-1, M8 I11).
+- At the secondary hit X₂: direct light via RTXDI sampling without reuse + one visibility ray, then terminate and **query the radiance cache** for bounces 2…∞. Optional, off by default: X₂'s light resampled from the primary ReSTIR DI reservoirs where X₂ is on screen, and a firefly clamp on X₂'s radiance (`GiSettings::isSecondaryResamplingEnabled` / `isFireflyClampEnabled`; measured without gain on Sponza, re-checked with many lights in M8 I12).
 - Writes the ReSTIR GI initial sample (hit position, normal, radiance). With NRC the radiance from X₂ onward is not known in this pass: it writes the query record, and the custom resolve (§11.4) completes the sample after `QueryAndTrain`.
 - 1.0 ships ReSTIR GI mode (§11.7): the sample ends after X₂'s direct light and emission (one bounce), and no cache is queried. The cache termination above runs in the NRC comparison modes.
 
@@ -519,7 +519,7 @@ A runtime toggle picks how `indirectRadiance` is made; NRC stays initialized in 
 
 Rules: a switch happens at a frame boundary without a reload or a reconfigure, and resets ReSTIR GI and DLSS-RR history for one frame. The NRC context is never destroyed on a switch (SDK leaks, considerations C-G3-3). The self-test runners cover every mode. Defaults change only by a spec decision backed by the G7 timings and convergence numbers (P1).
 
-Built in G7 (2026-11-19): `Renderer::indirectMode`, `ENGINE_INDIRECT_MODE` (a mode id, or `cycle`). A paused cache has zeroed constants; NRC mode is RTXDI's resampling mode `None`; a change sets `FrameFlag::IndirectHistoryReset`. With `convergedGiSettings`, ReSTIR GI mode converges to the one-bounce ground truth (GI check, gated); the shipped defaults read +8.1% / +1.7% (gallery / courtyard, measured, not gated: the age limit, C-G5-1, M8 I3); the NRC modes keep NRC's bias (considerations C-G5-3). On the RTX 5070 at 1280×720: GPU total 3.3 / 2.9 / 2.7 ms for NRC → ReSTIR GI / NRC / ReSTIR GI.
+Built in G7 (2026-11-19): `Renderer::indirectMode`, `ENGINE_INDIRECT_MODE` (a mode id, or `cycle`). A paused cache has zeroed constants; NRC mode is RTXDI's resampling mode `None`; a change sets `FrameFlag::IndirectHistoryReset`. With `convergedGiSettings`, ReSTIR GI mode converges to the one-bounce ground truth (GI check, gated); the shipped defaults read +8.1% / +1.7% (gallery / courtyard, measured, not gated: the age limit, C-G5-1, M8 I5); the NRC modes keep NRC's bias (considerations C-G5-3). On the RTX 5070 at 1280×720: GPU total 3.3 / 2.9 / 2.7 ms for NRC → ReSTIR GI / NRC / ReSTIR GI.
 
 Default decision (2026-11-20, user): ReSTIR GI on both tiers. NRC reads ~10% bright against the ground truth in both NRC modes (considerations C-G5-3), while ReSTIR GI mode is within +8.1% / +1.7% of its one-bounce ground truth with the shipped settings (converged settings: gated in the GI check) and costs 0.6 ms less. NRC stays built and paused, and returns as the default only once C-G5-3 is fixed and the GI check gates it. Optimizations from the RTXDI sample and 3.1 / 3.2 are reviewed in [m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md).
 
@@ -657,7 +657,7 @@ Each milestone renders something testable and is measured against §2.3 before t
 | M5 | — | merged into M4 (2026-11-14): NRC is the only cache | — |
 | M6 | Alpha | OMM bake per primitive, attach per cluster, build (§10.5), alpha-tested raster bucket | foliage cut-outs in raster and shadows; zero ray candidates |
 | M7 | Material binning | tile classification + bin-id image (§9.1), DGC compute execution set with the overlap guard (§9.2), emissive-triangle lights, `Power_RIS` | per-bin timings; Bistro emissives lit |
-| M8 | Optimization and fixes | bias and stability of the default lighting, the NRC bias, measured perf levers across the frame, and the check runners that hold them: GI-check seeding, stability, light-change and screen-edge runners; frame profile; ReSTIR GI and DI tuning with NVIDIA's sets kept callable; NRC bias and cost; pass merges; floor tier; many-light re-check after M7; plan: [spec/m8](../spec/m8/README.md), findings: [m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md) | shipped ReSTIR GI gated in the GI check (or its bias a documented choice); NRC phases gated or C-G5-3's cause known; `Lit` stability no worse than the 2026-11-20 baseline; every lever of the frame profile landed or closed with its numbers on both tiers |
+| M8 | Optimization and fixes | bias and stability of the default lighting, the NRC bias, measured perf levers across the frame, and the check runners that hold them: GI-check seeding, stability, light-change and screen-edge runners; frame profile; ReSTIR GI and DI tuning with NVIDIA's sets kept callable; NRC bias and cost; pass merges; floor tier; many-light re-check after M7; plan: [spec/fixesM1-6](../spec/fixesM1-6/README.md) (I1–I12), findings: [m8_optimization_and_fixes.md](../spec/fixesM1-6/m8_optimization_and_fixes.md), [mg_optimizations_fixes.md](../spec/fixesM1-6/mg_optimizations_fixes.md) | shipped ReSTIR GI gated in the GI check (or its bias a documented choice); NRC phases gated or C-G5-3's cause known; `Lit` stability no worse than the 2026-11-20 baseline; every lever of the frame profile landed or closed with its numbers on both tiers |
 | M9 | Asset pipeline | §6.4 and §7.2: automatic KTX2 conversion, GDeflate cache, GPU decompression for textures and geometry; background loading on worker threads, async upload and build, deferred destruction on unload (§13.1 X3–X5) | §6.4 and §7.2 hold; Bistro load time and PCIe bytes recorded; loading a model while rendering causes no frame over budget |
 | M10 | **1.0 final goal: Bistro** | full Bistro scene, complete lighting stack (ReSTIR DI + ReSTIR GI, the NRC switch kept for comparison); fixed benchmark paths; per-stage tuning on both tiers; CPU/GPU overlap verified (§13.1) | §2.3 met on the reference tier; floor result recorded (met, or overrun list → §2.1 outcome); §13.1 done criteria met |
 
@@ -673,7 +673,7 @@ Each milestone renders something testable and is measured against §2.3 before t
 | M5 | — | merged into M4 (2026-11-14) |
 | M6 | spec planned ([spec/m6](../spec/m6/README.md), 2026-11-20) | not started |
 | M7 | — | not started |
-| M8 | spec planned ([spec/m8](../spec/m8/README.md), 2026-11-20) | not started |
+| M8 | spec planned ([spec/fixesM1-6](../spec/fixesM1-6/README.md), 2026-11-20; steps re-planned as I1–I12 on 2026-11-21) | O1, O9, O11 and F10 done ahead of the steps; I1 built 2026-11-21 (check runners; found F20) |
 | M9–M10 | — | not started |
 
 **Work added by the audit (§20.2):**
@@ -755,8 +755,8 @@ Rules:
 
 | ID | Item | Impact | Resolution |
 |---|---|---|---|
-| R3 | DLSS-RR cost on Turing | may consume most of the floor budget | 5070 measured (1.14 ms at 853×480 → 1280×720); measure on the 2060 Super (C-M0-1, M8 I8) |
-| R4 | NRC on Turing, CUDA runtime dependency | since 2026-11-20 only the NRC comparison modes depend on it (§11.7); the shipped ReSTIR GI path does not | the pinned SDK names no minimum GPU but can return `UnsupportedHardware`; 5070 measured (0.62 ms in G3); check on the 2060 Super and measure the cache row of §2.3 there (C-G3-2, M8 I8) |
+| R3 | DLSS-RR cost on Turing | may consume most of the floor budget | 5070 measured (1.14 ms at 853×480 → 1280×720); measure on the 2060 Super (C-M0-1, M8 I11) |
+| R4 | NRC on Turing, CUDA runtime dependency | since 2026-11-20 only the NRC comparison modes depend on it (§11.7); the shipped ReSTIR GI path does not | the pinned SDK names no minimum GPU but can return `UnsupportedHardware`; 5070 measured (0.62 ms in G3); check on the 2060 Super and measure the cache row of §2.3 there (C-G3-2, M8 I11) |
 | R5 | 8 GB VRAM on the floor card | benchmark scene size is limited | choose scenes that fit; LOD, BC textures and quantized streams (§6.3–6.4) |
 | R6 | No hardware SER/OMM before Ada | indirect pass slower on Turing/Ampere | floor runs indirect at half resolution (§11.3) |
 | Q3 | Vis buffer 32 vs 64 bit | 32-bit chosen (§8.3); real-runtime pros and cons not measured yet | measure resolve and raster cost after M1 on both tiers; switch only if 64-bit wins and L1's atomic path stays possible |

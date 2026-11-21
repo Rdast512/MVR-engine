@@ -15,6 +15,7 @@ public static const int kImageFormatR11g11b10f = 5;
 public static const int kImageFormatR32f = 6;
 public static const int kImageFormatRgba8 = 10;
 public static const int kImageFormatRg16Snorm = 17;
+public static const int kImageFormatR32ui = 37;
 public static const int kImageFormatR8ui = 39;
 
 // format must match the view's VkFormat

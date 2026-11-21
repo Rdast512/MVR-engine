@@ -6,6 +6,7 @@
 #include "Rtxdi/DI/ReSTIRDIParameters.h"
 #include "Rtxdi/GI/ReSTIRGIParameters.h"
 #include "Rtxdi/LightSampling/RISBufferSegmentParameters.h"
+#include "Rtxdi/PT/ReSTIRPTParameters.h"
 #include "Rtxdi/ReGIR/ReGIRParameters.h"
 
 // GpuFrameRoot.rtxdiConstants (PBR plan F1)
@@ -46,12 +47,18 @@ struct GpuRtxdiConstants
     uint risEntryCount;
     uint lightPdf;            // resource heap: sampled, full mip chain; kNoneIndex without local lights
     uint2 lightPdfSize;       // mip 0, square
+    // ReSTIR PT's DLSS-RR decorrelation, applied to ReSTIR GI by passes/rtxdi_gi_shade.slang (m8 O11)
+    RTXDI_PTDecorrelationParameters giDecorrelation;
+    float giHistoryReductionStrength; // ReSTIR PT's historyReductionStrength, with kGiFlagDuplicationHistoryReduction
+    uint pad0;
 };
 
 // GiFlag in src/render/vk_rtxdi.hpp
 static const uint kGiFlagSecondaryResampling = 1u << 0;
 static const uint kGiFlagFireflyClamp = 1u << 1;
 static const uint kGiFlagSecondaryRoughnessFloor = 1u << 2;
+static const uint kGiFlagSpatialAgeReset = 1u << 3;
+static const uint kGiFlagDuplicationHistoryReduction = 1u << 4;
 
 // RtxdiContext::kGiInitialReservoirArray: the indirect pass's initial samples, after RTXDI's two arrays
 static const uint kGiInitialReservoirArray = 2;

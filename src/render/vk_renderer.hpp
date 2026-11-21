@@ -64,6 +64,9 @@ public:
     // read once per recorded frame; a change resets ReSTIR GI and DLSS-RR history for one frame. ReSTIR GI by
     // default since 2026-11-20: NRC reads ~10% bright (considerations C-G5-3)
     IndirectMode indirectMode = IndirectMode::RestirGi;
+    // set by the check runners: exposure adaptation and DLSS-RR advance by this instead of the wall clock, so a run
+    // repeats frame for frame (spec/fixesM1-6/i1_check_runners.md)
+    std::optional<float> fixedFrameDeltaMs;
     // no NRC work this frame: ReSTIR GI mode, or ground-truth paths tracing the bounces the cache would answer
     [[nodiscard]] bool isNrcPaused() const noexcept
     {
@@ -158,7 +161,9 @@ private:
     // DebugView::HiZPyramid: covers the present pass with the pyramid of the final depth
     void recordHiZView(const vk::raii::CommandBuffer& cmd) const;
     // one thread per render pixel, FramePushData
-    void dispatchFullscreen(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader) const;
+    // tile: the shader's square workgroup size, kFullscreenTile by default
+    void dispatchFullscreen(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader,
+                            uint32_t tile = 8) const;
     [[nodiscard]] uint32_t previousFrameSlot() const noexcept
     {
         return (currentFrame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;

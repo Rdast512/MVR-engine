@@ -923,7 +923,7 @@ A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
 | M5 | merged into M4 (2026-11-14) |
 | [M6 Alpha](./m6/README.md) | D1, D2, D3, D4 (built 2026-11-20) |
 | M7 Material binning | E2 emissive triangles, F1 `Power_RIS`, resolve per bin (spec §9.1–9.2) |
-| [M8 Optimization and fixes](./m8/README.md) | I1–I9 (milestone planned 2026-11-20; findings in [m8_optimization_and_fixes.md](./features/m8_optimization_and_fixes.md)) |
+| [M8 Optimization and fixes](./fixesM1-6/README.md) | I1–I12 (milestone planned 2026-11-20, steps re-planned 2026-11-21; findings in [m8_optimization_and_fixes.md](./fixesM1-6/m8_optimization_and_fixes.md) and [mg_optimizations_fixes.md](./fixesM1-6/mg_optimizations_fixes.md)) |
 
 PR order follows the milestones. The **first lit pixel** is F3 through the H2 bring-up path.
 
