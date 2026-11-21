@@ -27,7 +27,9 @@ enum class GpuTimerScope : uint32_t
     Classify,
     // DGC preprocess and execute of the material-bin resolve shaders
     Resolve,
-    // first span of the ray command buffer: includes any wait for the TLAS build
+    // wait on computeTimeline for this frame's async light prep + PTLAS build (F4)
+    TlasWait,
+    // ReSTIR DI initial sampling (after TlasWait, F4)
     RtxdiInitial,
     RtxdiTemporal,
     // spatial resampling and shading
@@ -88,6 +90,8 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "Material classify";
     case GpuTimerScope::Resolve:
         return "Vis-buffer resolve";
+    case GpuTimerScope::TlasWait:
+        return "TLAS wait";
     case GpuTimerScope::RtxdiInitial:
         return "ReSTIR DI initial";
     case GpuTimerScope::RtxdiTemporal:
@@ -144,6 +148,13 @@ public:
     void end(const vk::raii::CommandBuffer& cmd, GpuTimerScope scope) const;
 
     [[nodiscard]] bool isSupported() const noexcept { return timestampPeriodNs > 0.0f; }
+    [[nodiscard]] float timestampPeriod() const noexcept { return timestampPeriodNs; }
+    // raw GPU clock ticks of the most recently collected frame (index 0 = begin, scope + 1 = end of scope)
+    [[nodiscard]] uint64_t lastBeginTick() const noexcept { return lastTicks[0]; }
+    [[nodiscard]] uint64_t lastEndTick(GpuTimerScope scope) const noexcept
+    {
+        return lastTicks[std::to_underlying(scope) + 1];
+    }
     [[nodiscard]] float averageMs(GpuTimerScope scope) const;
     // ring of kHistorySize samples ending at historyOffset()
     [[nodiscard]] const std::array<float, kHistorySize>& history(GpuTimerScope scope) const
@@ -160,6 +171,7 @@ private:
     uint32_t frame = 0;
     std::array<bool, MAX_FRAMES_IN_FLIGHT> isWritten{};
     std::array<std::array<float, kHistorySize>, kGpuTimerScopeCount> histories{};
+    std::array<uint64_t, kQueriesPerFrame> lastTicks{};
     size_t historyHead = 0;
     size_t historyCount = 0;
 };

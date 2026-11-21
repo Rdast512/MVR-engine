@@ -3,16 +3,20 @@
 #include "object_storage.hpp"
 #include "../render/vk_gpu_timer.hpp"
 #include "../render/vk_meshlet_culling.hpp"
+#include "../render/vk_renderer.hpp"
 #include "../render/vk_rt_scene.hpp"
+#include "../render/vk_rtxdi.hpp"
 
 #include <array>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 
 // fixed-scene GPU timing run: averages every timer scope over whole history windows, logs them, then the engine quits.
 // ENGINE_BENCH_FRAMES = measured frames (enables the run), ENGINE_BENCH_FIELD = instance-field side (0 = none),
-// ENGINE_BENCH_FIELD_MOVE = 1 translates field instances across XZ partitions each frame (C-C4-5 / I10)
+// ENGINE_BENCH_FIELD_MOVE = 1 translates field instances across XZ partitions each frame (C-C4-5 / I10),
+// ENGINE_BENCH_MODEL = startup model path override, ENGINE_BENCH_POSE = "courtyard" for sunlit Sponza pose
 class EngineBench
 {
 public:
@@ -21,11 +25,13 @@ public:
         uint32_t measuredFrames = 0;
         int fieldSide = 0;
         bool isFieldMoving = false;
+        std::string modelPath;
+        std::string pose;
     };
 
     [[nodiscard]] static std::optional<Config> readConfig(uint32_t defaultMeasuredFrames = 0);
 
-    explicit EngineBench(Config config) : config(config) {}
+    explicit EngineBench(Config config) : config(std::move(config)) {}
 
     [[nodiscard]] const Config& getConfig() const noexcept { return config; }
     void setFieldMotion(EntityId firstEntity, uint32_t entityCount, uint32_t side, float centerX,
@@ -34,13 +40,15 @@ public:
     void stepField(ObjectStorage& storage);
     // once per frame; true once the results are logged. The cull counters logged are the last frame's
     [[nodiscard]] bool onFrame(const GpuTimer& timer, const MeshletCullStats& cullStats,
-                               const RayTracingScene::Stats& rtStats);
+                               const RayTracingScene::Stats& rtStats, const RtxdiContext::LightPrepStats& lightPrep,
+                               const Renderer::CpuStats& cpuStats);
 
 private:
     // shader object warm-up and GPU clock ramp
     static constexpr uint32_t kWarmupFrames = 2 * GpuTimer::kHistorySize;
 
-    void logResults(const MeshletCullStats& cullStats, const RayTracingScene::Stats& rtStats) const;
+    void logResults(const GpuTimer& timer, const MeshletCullStats& cullStats, const RayTracingScene::Stats& rtStats,
+                    const RtxdiContext::LightPrepStats& lightPrep, const Renderer::CpuStats& cpuStats) const;
 
     Config config;
     EntityId fieldFirstEntity = 0;

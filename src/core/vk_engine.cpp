@@ -109,11 +109,16 @@ void Engine::initialize()
                                                   scene->materialStore, scene->lightStore);
 
     const glm::vec3 initialAssetPos{0.0f, 0.0f, 0.0f};
-    if (!assetsLoader->loadModel(MODEL_PATH.string(), initialAssetPos)) {
-        logError(std::format("Startup model failed to load: {}", MODEL_PATH.string()), "Engine");
+    const std::string startupModel =
+        (bench && !bench->getConfig().modelPath.empty()) ? bench->getConfig().modelPath : MODEL_PATH.string();
+    if (!assetsLoader->loadModel(startupModel, initialAssetPos)) {
+        logError(std::format("Startup model failed to load: {}", startupModel), "Engine");
     }
     // scene is visible immediately
     camera->focusOn(initialAssetPos);
+    if (bench && bench->getConfig().pose == "courtyard") {
+        camera->lookAt({6.0f, 2.5f, 1.5f}, {-10.0f, 1.0f, -1.0f});
+    }
     frameSync = std::make_unique<FrameSync>(*device);
     // flushes the startup model
     assetBuffers = std::make_unique<AssetBuffers>(*device, *allocator, *frameSync, scene->geometryStore,
@@ -436,8 +441,9 @@ bool Engine::run()
 
         lastTime = currentTime;
         FrameMark;
-        if (bench && !minimized && bench->onFrame(renderer->getGpuTimer(), renderer->getCulling().getStats(),
-                                                renderer->getRayTracingStats())) {
+        if (bench && !minimized &&
+            bench->onFrame(renderer->getGpuTimer(), renderer->getCulling().getStats(),
+                           renderer->getRayTracingStats(), renderer->getLightPrepStats(), renderer->getCpuStats())) {
             quit = true;
         }
     }

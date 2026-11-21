@@ -923,8 +923,12 @@ void EngineUi::drawCullingPanel()
     ImGui::SetItemTooltip("sum of the scopes below except Acquire wait, which is idle time until the swapchain "
                           "image is available");
     const RayTracingScene::Stats rt = context.renderer.getRayTracingStats();
-    ImGui::Text("Async compute: RT instances %.3f ms, PTLAS build %.3f ms", rt.instanceWriteMs, rt.tlasBuildMs);
-    ImGui::SetItemTooltip("compute queue, overlapping the frame above; not in the total");
+    const RtxdiContext::LightPrepStats lightPrep = context.renderer.getLightPrepStats();
+    ImGui::Text("Async compute: light prep %.3f ms, RT instances %.3f ms, PTLAS build %.3f ms", lightPrep.totalMs,
+                rt.instanceWriteMs, rt.tlasBuildMs);
+    ImGui::SetItemTooltip("compute queue, overlapping the frame above; not in the total (light prep: world %.3f, mips "
+                          "%.3f, presample %.3f ms)",
+                          lightPrep.worldLightsMs, lightPrep.pdfMipsMs, lightPrep.presampleMs);
     ImGui::Text("PTLAS instances %u / capacity %u, %u partitions, %u written", rt.instances, rt.capacity,
                 rt.partitions, rt.writtenInstances);
     ImGui::SetItemTooltip("one per node instance x primitive with meshlets; the count is exact, so it cannot "

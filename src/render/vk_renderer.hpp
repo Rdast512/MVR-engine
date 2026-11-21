@@ -88,9 +88,21 @@ public:
     {
         return debugView.view == DebugView::Lit && worldLights.hasLights();
     }
+    // rolling 120-frame averages of CPU frame work (F8, against 2 ms budget)
+    struct CpuStats
+    {
+        float drawFrameMs = 0.0f;
+        float frameDataWriteMs = 0.0f;
+        float recordCmdsMs = 0.0f;
+        float submitMs = 0.0f;
+        float waitsMs = 0.0f;
+    };
+
     [[nodiscard]] const GpuTimer& getGpuTimer() const noexcept { return gpuTimer; }
     [[nodiscard]] uint32_t getHiZMipCount() const noexcept { return hiz.mipCount(); }
     [[nodiscard]] RayTracingScene::Stats getRayTracingStats() const noexcept { return rtScene.getStats(); }
+    [[nodiscard]] RtxdiContext::LightPrepStats getLightPrepStats() const noexcept { return rtxdi.getLightPrepStats(); }
+    [[nodiscard]] CpuStats getCpuStats() const noexcept;
 
     // ENGINE_MOTION_TEST: passes/motion_check.slang runs after the debug view of every later frame
     void enableMotionCheck();
@@ -228,6 +240,10 @@ private:
     // per frame slot: the timeline value its last async compute submit signals
     std::array<uint64_t, MAX_FRAMES_IN_FLIGHT> computeTimelineValues{};
     GpuTimer gpuTimer;
+    static constexpr size_t kCpuHistorySize = GpuTimer::kHistorySize;
+    std::array<std::array<float, kCpuHistorySize>, 5> cpuHistories{};
+    size_t cpuHistoryHead = 0;
+    size_t cpuHistoryCount = 0;
     VkTracyContext* tracyContext = nullptr;
     // per frame slot; empty unless enableMotionCheck
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> motionCheckStats;

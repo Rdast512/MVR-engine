@@ -30,6 +30,9 @@ void GpuTimer::collect(uint32_t frameSlot)
     if (result != vk::Result::eSuccess) {
         return;
     }
+    for (size_t i = 0; i < kQueriesPerFrame; ++i) {
+        lastTicks[i] = ticks[i];
+    }
     for (size_t scope = 0; scope < kGpuTimerScopeCount; ++scope) {
         const float ms = static_cast<float>(ticks[scope + 1] - ticks[scope]) * timestampPeriodNs * 1e-6f;
         histories[scope][historyHead] = ms;

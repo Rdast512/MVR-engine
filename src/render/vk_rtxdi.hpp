@@ -292,7 +292,20 @@ public:
     // async compute, heaps bound, the slot's frame root written: light_world (world rows, PDF mip 0), then the PDF
     // mips and the presampling passes the applied local light sampling mode reads. The ray passes see every write
     // through the compute timeline
+    // rolling 120-frame averages of the async-compute light preparation passes (C-F1-5)
+    struct LightPrepStats
+    {
+        float worldLightsMs = 0.0f;
+        float pdfMipsMs = 0.0f;
+        float presampleMs = 0.0f;
+        float totalMs = 0.0f;
+        // raw GPU clock ticks of the most recently collected compute submit (F9 overlap)
+        uint64_t lastStartTick = 0;
+        uint64_t lastEndTick = 0;
+    };
+
     void recordLightPreparation(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot, vk::DeviceAddress frameRoot);
+    [[nodiscard]] LightPrepStats getLightPrepStats() const noexcept;
     // ReSTIR DI reference mode as applied by the last prepareFrame
     [[nodiscard]] bool isReferenceEnabled() const noexcept { return isReferenceApplied; }
     // ReSTIR GI temporal and spatial reuse as applied by the last prepareFrame
@@ -321,6 +334,11 @@ public:
 private:
     static constexpr uint32_t kReferenceLocalLightSamples = 32;
     static constexpr uint32_t kReferenceInfiniteLightSamples = 8;
+    static constexpr size_t kLightPrepHistorySize = 120;
+    // start, after light_world, after light_pdf_mips, after presample (Power_RIS / ReGIR)
+    static constexpr uint32_t kLightPrepQueriesPerFrame = 4;
+
+    void collectLightPrepResults(uint32_t frameSlot);
 
     // the ReSTIR DI and GI contexts importanceSampling owns
     [[nodiscard]] rtxdi::ReSTIRDIContext& restirDi() const;
@@ -372,6 +390,16 @@ private:
     uint32_t risEntryCount = 0;
     // ReGIR's cells as the shaders read them; only the center changes per frame
     ReGIR_Parameters regirConstants{};
+
+    // compute-queue timestamps for recordLightPreparation (C-F1-5)
+    vk::raii::QueryPool lightPrepTimestamps = nullptr;
+    float lightPrepTimestampPeriodNs = 0.0f;
+    std::array<bool, MAX_FRAMES_IN_FLIGHT> isLightPrepTimed{};
+    std::array<std::array<float, kLightPrepHistorySize>, 3> lightPrepHistories{};
+    uint64_t lastLightPrepStartTick = 0;
+    uint64_t lastLightPrepEndTick = 0;
+    size_t lightPrepHistoryHead = 0;
+    size_t lightPrepHistoryCount = 0;
 
     // R32_SFLOAT, eGeneral, concurrent between the queue families: written on async compute, read by presampling and
     // by the ray passes (RAB_EvaluateLocalLightSourcePdf). One copy, like the RIS buffers

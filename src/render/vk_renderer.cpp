@@ -10,6 +10,7 @@
 #endif
 
 #include <format>
+#include <numeric>
 #include <stdexcept>
 
 namespace
@@ -160,6 +161,14 @@ void Renderer::recreateSwapchain()
 void Renderer::drawFrame()
 {
     ZoneScopedN("Renderer::drawFrame");
+    const auto cpuFrameStart = std::chrono::steady_clock::now();
+    auto toMs = [](auto begin, auto end) {
+        return std::chrono::duration<float, std::milli>(end - begin).count();
+    };
+    float cpuWaitsMs = 0.0f;
+    float cpuRecordMs = 0.0f;
+    float cpuFrameDataWriteMs = 0.0f;
+    float cpuSubmitMs = 0.0f;
     auto& deviceRef = device.vkdevice;
     auto& graphicsQueue = device.graphicsQueue;
     auto& swapChainKHR = swapChain.swapChain;
@@ -177,19 +186,23 @@ void Renderer::drawFrame()
 
     {
         ZoneScopedN("FenceWait");
+        const auto waitStart = std::chrono::steady_clock::now();
         while (vk::Result::eTimeout == deviceRef.waitForFences(fence, vk::True, UINT64_MAX))
             ;
+        cpuWaitsMs += toMs(waitStart, std::chrono::steady_clock::now());
     }
     {
         ZoneScopedN("ComputeWait");
         // the slot's async compute work reads its node instances and owns its TLAS buffers. The ray submit waits for
         // it before the fence signals, so this returns at once; it keeps slot reuse independent of what that submit
         // records
+        const auto waitStart = std::chrono::steady_clock::now();
         const uint64_t value = computeTimelineValues[currentFrame];
         const vk::SemaphoreWaitInfo waitInfo{
             .semaphoreCount = 1, .pSemaphores = &*frameSync.computeTimeline, .pValues = &value};
         while (vk::Result::eTimeout == deviceRef.waitSemaphores(waitInfo, UINT64_MAX))
             ;
+        cpuWaitsMs += toMs(waitStart, std::chrono::steady_clock::now());
     }
     vmaSetCurrentFrameIndex(allocator.allocator, ++frameNumber);
     allocator.tracyPlotMemoryBudget();
@@ -256,13 +269,20 @@ void Renderer::drawFrame()
     frameCmd.reset();
     {
         ZoneScopedN("RecordFrameCommands");
+        const auto recStart = std::chrono::steady_clock::now();
         recordFrameCommands(frameCmd);
+        const auto finishStart = std::chrono::steady_clock::now();
+        cpuRecordMs += toMs(recStart, finishStart);
         // frame commands overlap the previous frame's NRC and DLSS-RR; the ray commands call both SDKs
         finishPreviousFrame();
+        const auto rayRecStart = std::chrono::steady_clock::now();
+        cpuWaitsMs += toMs(finishStart, rayRecStart);
         recordRayCommands();
+        cpuRecordMs += toMs(rayRecStart, std::chrono::steady_clock::now());
     }
     {
         ZoneScopedN("UpdateUBO");
+        const auto uboStart = std::chrono::steady_clock::now();
         // resize and swapchain recreation arrive as camera cuts
         const bool isHistoryReset = camera.isCut() || culling.isSceneLayoutChanged() || isLightSetChanged;
         if (isHistoryReset) {
@@ -298,23 +318,30 @@ void Renderer::drawFrame()
                             .rayDebug = rayDebugCounters[currentFrame].address,
                             .materialBins = targets.materialBinsAddress(),
                         });
+        cpuFrameDataWriteMs = toMs(uboStart, std::chrono::steady_clock::now());
     }
     // after the frame root and node instances of the slot are written
-    submitComputeCommands();
     {
-        ZoneScopedN("QueueSubmitFrame");
-        // no wait: cull, raster and compute run while the CPU acquires the image, and overlap the TLAS build
-        const vk::CommandBufferSubmitInfo frameCmdInfo{.commandBuffer = *frameCmd};
-        graphicsQueue.submit2(vk::SubmitInfo2{.commandBufferInfoCount = 1, .pCommandBufferInfos = &frameCmdInfo});
+        const auto submitStart = std::chrono::steady_clock::now();
+        submitComputeCommands();
+        {
+            ZoneScopedN("QueueSubmitFrame");
+            // no wait: cull, raster and compute run while the CPU acquires the image, and overlap the TLAS build
+            const vk::CommandBufferSubmitInfo frameCmdInfo{.commandBuffer = *frameCmd};
+            graphicsQueue.submit2(vk::SubmitInfo2{.commandBufferInfoCount = 1, .pCommandBufferInfos = &frameCmdInfo});
+        }
+        cpuSubmitMs += toMs(submitStart, std::chrono::steady_clock::now());
     }
 
     vk::Result result{};
     uint32_t imageIndex{0};
     {
         ZoneScopedN("AcquireImage");
+        const auto acqStart = std::chrono::steady_clock::now();
         auto acquired = swapChainKHR.acquireNextImage(UINT64_MAX, acquireSemaphore, nullptr);
         result = acquired.result;
         imageIndex = acquired.value;
+        cpuWaitsMs += toMs(acqStart, std::chrono::steady_clock::now());
     }
     // out of date: no present this frame; the ray submits alone signal the fence, so the slot stays usable
     const bool isImageAcquired = result != vk::Result::eErrorOutOfDateKHR;
@@ -323,14 +350,17 @@ void Renderer::drawFrame()
     }
     if (isImageAcquired) {
         ZoneScopedN("RecordPresentCommands");
+        const auto presentRecStart = std::chrono::steady_clock::now();
         presentCmd.reset();
         recordPresentCommands(presentCmd, imageIndex);
+        cpuRecordMs += toMs(presentRecStart, std::chrono::steady_clock::now());
     }
 
     const vk::Semaphore renderSemaphore =
         isImageAcquired ? *frameSync.renderFinishedSemaphore[imageIndex] : vk::Semaphore{};
     {
         ZoneScopedN("QueueSubmitRayPresent");
+        const auto submitStart = std::chrono::steady_clock::now();
         // the first stage that traces waits for this frame's TLAS (spec/features/ray_tracing_mega_geometry.md §3.5);
         // the compute submit is already queued, so the wait never precedes its signal
         std::array<vk::CommandBufferSubmitInfo, FrameSync::kRaySegmentsPerFrame> rayCmdInfos{};
@@ -368,17 +398,41 @@ void Renderer::drawFrame()
         // the ray work (NRC) shares one submit call with the present pass: no separate submit while NRC runs
         const uint32_t submitCount = isImageAcquired ? 2 : 1;
         graphicsQueue.submit2(vk::ArrayProxy<const vk::SubmitInfo2>(submitCount, submits.data()), fence);
+        cpuSubmitMs += toMs(submitStart, std::chrono::steady_clock::now());
     }
     if (isNrcRecorded) {
         nrc.endFrame(graphicsQueue);
         lastNrcRaySubmit = frameNumber;
     }
+    cpuHistories[0][cpuHistoryHead] = toMs(cpuFrameStart, std::chrono::steady_clock::now());
+    cpuHistories[1][cpuHistoryHead] = cpuFrameDataWriteMs;
+    cpuHistories[2][cpuHistoryHead] = cpuRecordMs;
+    cpuHistories[3][cpuHistoryHead] = cpuSubmitMs;
+    cpuHistories[4][cpuHistoryHead] = cpuWaitsMs;
+    cpuHistoryHead = (cpuHistoryHead + 1) % kCpuHistorySize;
+    cpuHistoryCount = std::min(cpuHistoryCount + 1, kCpuHistorySize);
     if (!isImageAcquired) {
         requestSwapchainRecreate();
         return;
     }
     pendingPresent = PendingPresent{.imageIndex = imageIndex, .renderSemaphore = renderSemaphore};
     currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+}
+
+Renderer::CpuStats Renderer::getCpuStats() const noexcept
+{
+    const auto average = [this](const std::array<float, kCpuHistorySize>& samples) {
+        return cpuHistoryCount == 0
+            ? 0.0f
+            : std::reduce(samples.begin(), samples.end(), 0.0f) / static_cast<float>(cpuHistoryCount);
+    };
+    return CpuStats{
+        .drawFrameMs = average(cpuHistories[0]),
+        .frameDataWriteMs = average(cpuHistories[1]),
+        .recordCmdsMs = average(cpuHistories[2]),
+        .submitMs = average(cpuHistories[3]),
+        .waitsMs = average(cpuHistories[4]),
+    };
 }
 
 void Renderer::finishPreviousFrame()
@@ -851,6 +905,8 @@ void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
     };
     const vk::DependencyInfo dependency{.memoryBarrierCount = 1, .pMemoryBarriers = &resamplingBarrier};
     cmd.pipelineBarrier2(dependency);
+    // the computeShader barrier + writeTimestamp2 wait on computeTimeline (tlasWait) before rtxdiInitial starts (F4)
+    gpuTimer.end(cmd, GpuTimerScope::TlasWait);
     // with no lights rtxdi_shade only writes black. Lights arrive only with a load, which resets history, so the
     // reservoirs skipped meanwhile are never reused
     const bool hasLights = worldLights.hasLights();

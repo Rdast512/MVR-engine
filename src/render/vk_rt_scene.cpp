@@ -97,6 +97,9 @@ RayTracingScene::RayTracingScene(const Device& device, const VkAllocator& alloca
     if (const char* reassignEnv = std::getenv("ENGINE_PTLAS_REASSIGN"); reassignEnv != nullptr) {
         settings.isPartitionReassignmentEnabled = std::string_view(reassignEnv) == "1";
     }
+    if (const char* fullEnv = std::getenv("ENGINE_PTLAS_FULL_BUILD"); fullEnv != nullptr) {
+        settings.isFullBuildForced = std::string_view(fullEnv) == "1";
+    }
     const vk::PhysicalDeviceLimits& limits = device.capabilities.properties2.properties.limits;
     const auto queueFamilies = device.physicalDevice.getQueueFamilyProperties2();
     if (limits.timestampPeriod > 0.0f && queueFamilies[device.computeIndex].queueFamilyProperties.timestampValidBits != 0) {
@@ -676,6 +679,8 @@ void RayTracingScene::collectResults(uint32_t frameSlot)
     const auto toMs = [this](uint64_t begin, uint64_t end) {
         return static_cast<float>(end - begin) * timestampPeriodNs * 1e-6f;
     };
+    lastStartTick = ticks[0];
+    lastEndTick = ticks[2];
     histories[0][historyHead] = toMs(ticks[0], ticks[1]);
     histories[1][historyHead] = toMs(ticks[1], ticks[2]);
     TracyPlot("RT instance write (async)", static_cast<double>(histories[0][historyHead]));
@@ -699,5 +704,7 @@ RayTracingScene::Stats RayTracingScene::getStats() const noexcept
         .partitions = templates.shape.partitions,
         .instanceWriteMs = average(histories[0]),
         .tlasBuildMs = average(histories[1]),
+        .lastStartTick = lastStartTick,
+        .lastEndTick = lastEndTick,
     };
 }

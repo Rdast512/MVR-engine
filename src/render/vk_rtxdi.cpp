@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <format>
+#include <numeric>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -169,6 +170,29 @@ RtxdiContext::RtxdiContext(const Device& device, const VkAllocator& allocator, c
         constants[slot] = createHostBuffer(sizeof(GpuRtxdiConstants), allocator.allocator, device.vkdevice,
                                            device.queueFamilyIndices, std::format("RtxdiConstants_{}", slot),
                                            "RtxdiConstants");
+    }
+    const vk::PhysicalDeviceLimits& limits = device.capabilities.properties2.properties.limits;
+    const auto queueFamilies = device.physicalDevice.getQueueFamilyProperties2();
+    if (limits.timestampPeriod > 0.0f &&
+        queueFamilies[device.computeIndex].queueFamilyProperties.timestampValidBits != 0) {
+        lightPrepTimestampPeriodNs = limits.timestampPeriod;
+        lightPrepTimestamps = vk::raii::QueryPool(
+            device.vkdevice, vk::QueryPoolCreateInfo{
+                                 .queryType = vk::QueryType::eTimestamp,
+                                 .queryCount = kLightPrepQueriesPerFrame * MAX_FRAMES_IN_FLIGHT,
+                             });
+    }
+    if (const char* text = std::getenv("ENGINE_DI_SAMPLING"); text != nullptr) {
+        const std::string_view mode(text);
+        if (mode == "regir") {
+            settings.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::ReGIR_RIS;
+        } else if (mode == "power_ris") {
+            settings.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Power_RIS;
+        } else if (mode == "uniform") {
+            settings.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Uniform;
+        } else {
+            logError(std::format("ENGINE_DI_SAMPLING='{}' is unknown; ignored", mode), "Rtxdi");
+        }
     }
 }
 
@@ -587,6 +611,7 @@ void RtxdiContext::configureGi(bool isGiReuse)
 void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool isGiReuseAllowed,
                                 const glm::vec3& cameraPosition, uint64_t lastSubmittedFrame)
 {
+    collectLightPrepResults(frameSlot);
     rtxdi::ReSTIRDIContext& context = restirDi();
     rtxdi::ReSTIRGIContext& giContext = restirGi();
     // advance before changing resampling mode so SetResamplingMode rotates from last frame's output buffer
@@ -709,6 +734,13 @@ void RtxdiContext::recordLightPreparation(const vk::raii::CommandBuffer& cmd, ui
                                           vk::DeviceAddress frameRoot)
 {
     ZoneScopedN("RtxdiContext::recordLightPreparation");
+    const uint32_t firstQuery = frameSlot * kLightPrepQueriesPerFrame;
+    const bool isTimed = lightPrepTimestampPeriodNs > 0.0f;
+    isLightPrepTimed[frameSlot] = isTimed;
+    if (isTimed) {
+        cmd.resetQueryPool(*lightPrepTimestamps, firstQuery, kLightPrepQueriesPerFrame);
+        cmd.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, *lightPrepTimestamps, firstQuery);
+    }
     if (isLightPdfLayoutPending) {
         // a new PDF holds nothing yet: light_world writes every mip 0 texel, the mips pass every other texel
         const vk::ImageMemoryBarrier2 layoutBarrier{
@@ -730,11 +762,18 @@ void RtxdiContext::recordLightPreparation(const vk::raii::CommandBuffer& cmd, ui
     worldLights.recordUpdate(cmd, frameSlot,
                              LightPdfTarget{.mip0 = hasLightPdf ? lightPdfMipIndices.front() : kNoneIndex,
                                             .texelCount = lightPdfSide * lightPdfSide});
+    if (isTimed) {
+        cmd.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, *lightPrepTimestamps, firstQuery + 1);
+    }
 
     // Uniform reads neither the PDF nor the tiles (RAB_EvaluateLocalLightSourcePdf is 1 / count then)
     const bool isUniform = restirDi().GetInitialSamplingParameters().localLightSamplingMode ==
         ReSTIRDI_LocalLightSamplingMode::Uniform;
     if (isUniform || worldLights.localLightCount() == 0) {
+        if (isTimed) {
+            cmd.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, *lightPrepTimestamps, firstQuery + 2);
+            cmd.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, *lightPrepTimestamps, firstQuery + 3);
+        }
         return;
     }
     // each pass reads what the one before wrote: PDF levels, world rows, then the local light tiles
@@ -757,6 +796,9 @@ void RtxdiContext::recordLightPreparation(const vk::raii::CommandBuffer& cmd, ui
         cmd.dispatch(divideRoundUp(side, kLightPdfMipsTile), divideRoundUp(side, kLightPdfMipsTile), 1);
         cmd.pipelineBarrier2(passDependency);
     }
+    if (isTimed) {
+        cmd.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, *lightPrepTimestamps, firstQuery + 2);
+    }
 
     const FramePushData push{.frameRoot = frameRoot};
     if (importanceSampling->IsLocalLightPowerRISEnabled()) {
@@ -773,4 +815,54 @@ void RtxdiContext::recordLightPreparation(const vk::raii::CommandBuffer& cmd, ui
                                    kRegirBuildGroupSize),
                      1, 1);
     }
+    if (isTimed) {
+        cmd.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, *lightPrepTimestamps, firstQuery + 3);
+    }
+}
+
+void RtxdiContext::collectLightPrepResults(uint32_t frameSlot)
+{
+    if (!isLightPrepTimed[frameSlot]) {
+        return;
+    }
+    isLightPrepTimed[frameSlot] = false;
+    const auto [result, ticks] = lightPrepTimestamps.getResults<uint64_t>(
+        frameSlot * kLightPrepQueriesPerFrame, kLightPrepQueriesPerFrame,
+        kLightPrepQueriesPerFrame * sizeof(uint64_t), sizeof(uint64_t), vk::QueryResultFlagBits::e64);
+    if (result != vk::Result::eSuccess) {
+        return;
+    }
+    const auto toMs = [this](uint64_t begin, uint64_t end) {
+        return static_cast<float>(end - begin) * lightPrepTimestampPeriodNs * 1e-6f;
+    };
+    lastLightPrepStartTick = ticks[0];
+    lastLightPrepEndTick = ticks[3];
+    lightPrepHistories[0][lightPrepHistoryHead] = toMs(ticks[0], ticks[1]);
+    lightPrepHistories[1][lightPrepHistoryHead] = toMs(ticks[1], ticks[2]);
+    lightPrepHistories[2][lightPrepHistoryHead] = toMs(ticks[2], ticks[3]);
+    TracyPlot("Light world (async)", static_cast<double>(lightPrepHistories[0][lightPrepHistoryHead]));
+    TracyPlot("Light PDF mips (async)", static_cast<double>(lightPrepHistories[1][lightPrepHistoryHead]));
+    TracyPlot("Light presample (async)", static_cast<double>(lightPrepHistories[2][lightPrepHistoryHead]));
+    lightPrepHistoryHead = (lightPrepHistoryHead + 1) % kLightPrepHistorySize;
+    lightPrepHistoryCount = std::min(lightPrepHistoryCount + 1, kLightPrepHistorySize);
+}
+
+RtxdiContext::LightPrepStats RtxdiContext::getLightPrepStats() const noexcept
+{
+    const auto average = [this](const std::array<float, kLightPrepHistorySize>& samples) {
+        return lightPrepHistoryCount == 0
+            ? 0.0f
+            : std::reduce(samples.begin(), samples.end(), 0.0f) / static_cast<float>(lightPrepHistoryCount);
+    };
+    const float world = average(lightPrepHistories[0]);
+    const float mips = average(lightPrepHistories[1]);
+    const float presample = average(lightPrepHistories[2]);
+    return LightPrepStats{
+        .worldLightsMs = world,
+        .pdfMipsMs = mips,
+        .presampleMs = presample,
+        .totalMs = world + mips + presample,
+        .lastStartTick = lastLightPrepStartTick,
+        .lastEndTick = lastLightPrepEndTick,
+    };
 }

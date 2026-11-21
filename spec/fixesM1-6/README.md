@@ -1,6 +1,6 @@
 # M8 · Optimization and fixes
 
-**Status** — Milestone planned on 2026-11-20; steps re-planned on 2026-11-21 as I1–I12 in execution order, covering every open finding of the three review documents. I1 ([i1_check_runners.md](./i1_check_runners.md)), I2 ([i2_shading_correctness.md](./i2_shading_correctness.md)), and I3 ([i3_mega_geometry_fixes.md](./i3_mega_geometry_fixes.md)) built 2026-11-21; next is I4.\
+**Status** — Milestone planned on 2026-11-20; steps re-planned on 2026-11-21 as I1–I12 in execution order, covering every open finding of the three review documents. I1 ([i1_check_runners.md](./i1_check_runners.md)), I2 ([i2_shading_correctness.md](./i2_shading_correctness.md)), I3 ([i3_mega_geometry_fixes.md](./i3_mega_geometry_fixes.md)), and I4 ([i4_frame_profile.md](./i4_frame_profile.md)) built 2026-11-21; I4 ranked the next steps **I6 → I5 → I10 → I9**.\
 **Scope** — Make the whole pipeline produce its best image per millisecond. That means fixing the measured bias and stability problems of the default lighting, closing or explaining the NRC bias, and landing the measured perf levers. Each step is backed by a check that keeps it fixed.
 [Engine spec](../../docs/engine_spec.md) · [Findings](./m8_optimization_and_fixes.md) · [Mega Geometry findings](./mg_optimizations_fixes.md) · [PBR plan](../pbr_implementation_plan.md) · [Considerations](../considerations.md)
 
@@ -27,7 +27,7 @@ Finding ids refer to [m8_optimization_and_fixes.md](./m8_optimization_and_fixes.
 | I1 · Check runners | [`i1_check_runners.md`](./i1_check_runners.md) (built) | F1 (spread), F2, F3 | — |
 | I2 · Shading correctness | [`i2_shading_correctness.md`](./i2_shading_correctness.md) (built) | F20, F13, F14, F15, F16, F17, F18, F19 (ND9) | I1 |
 | I3 · Mega Geometry fixes | [`i3_mega_geometry_fixes.md`](./i3_mega_geometry_fixes.md) (built) | MG-B1, MG-B2, MG-B3, MG-B4, C-C4-5 | — |
-| I4 · Frame profile | `i4_frame_profile.md` | F4, F7, F8, F9 (RTX 5070 part), F11, F12, C-F1-5 | I2, I3 |
+| I4 · Frame profile | [`i4_frame_profile.md`](./i4_frame_profile.md) (built) | F4, F7, F8, F9 (RTX 5070 part), F11, F12, C-F1-5 | I2, I3 |
 | I5 · ReSTIR GI tuning | `i5_restir_gi_tuning.md` | O11 follow-ups, age limit (§2.5), ray-traced spatial cost (§2.5), F3 (GI) | I1, I2, I4 |
 | I6 · ReSTIR DI tuning | `i6_restir_di_tuning.md` | F5, F6, O8, O10, permutation (§2.7), F3 (DI), F12 (mode choice) | I1, I2, I4 |
 | I7 · NRC bias | `i7_nrc_bias.md` | Q7, Q1, Q2 (ND5), Q3 (ND1), Q4, Q5, Q6 (ND6) | I1, I2 |
@@ -218,12 +218,14 @@ M8 is done when:
 
 ## Baseline
 
-2026-11-20, RTX 5070, 1280×720 window (853×480 render, DLSS-RR Quality), release, no layers. I1 and I4 re-record it.
+2026-11-21 (post-I2/I3/I4), RTX 5070, 1280×720 window (853×480 render, DLSS-RR Quality), release, no layers.
 
 | Item | Value |
 |---|---|
-| GPU total, ReSTIR GI mode | 2.72–2.76 ms (DLSS-RR 1.10, `Indirect` 0.52, GI shade 0.41, GI temporal 0.11, DI 0.34) |
-| GPU total, NRC + ReSTIR GI mode | 3.30 ms (2026-11-19) |
+| GPU total, ReSTIR GI mode (gallery / courtyard) | **3.33 / 3.95 ms** (DLSS-RR 1.21/1.22, GI shade 0.74/0.82, `Indirect` 0.55/0.74, DI 0.35/0.70, GI temporal 0.12/0.12, `TLAS wait` 0.017/0.016; I4) |
+| GPU total, NRC + ReSTIR GI / NRC mode (gallery / courtyard) | **3.93 / 4.72 ms** (`NRC + ReSTIR GI`), **3.06 / 3.65 ms** (`NRC`; I4) |
+| GPU total, Bistro (76K triangle lights) | **3.05 ms** (`ReGIR_RIS`, async light prep 0.48 ms, `TLAS wait` 0.39 ms) vs **2.63 ms** (`Power_RIS`, async light prep 0.06 ms, `TLAS wait` 0.04 ms; I4) |
+| Active CPU frame (`drawFrame − waits`) | **0.50 ms** Sponza (`FrameData::write` 0.001 ms), **0.56 ms** Bistro (`0.060 ms`), **1.01 ms** Field 64 (`0.444 ms`; I4) |
 | Shipped ReSTIR GI bias vs one bounce, gallery / courtyard | −0.21% / −1.48% (tile p90 21.7% / 29.6%; I2, 2026-11-21; was −0.75% / −0.86% after O11, +8.1% / +1.7% before O11) |
 | NRC mode bias, gallery / courtyard | +11.3% / +9.4% (I2, 2026-11-21; was +10.5% / +8.3%) |
 | `Lit` stability, 480 static frames (temporal std / flicker of lit px / largest 8-frame swing) | shipped: gallery 5.80% / 46.0% / 0.83%, courtyard 1.30% / 8.3% / 0.15%; NVIDIA: 7.56% / 41.8% / 1.06%, 1.41% / 13.7% / 0.15% (I2, 2026-11-21; I1 shipped was 6.14% / 48.7% / 1.16% gallery, 24.65% / 91.0% / 22.57% courtyard with F20) |

@@ -34,6 +34,9 @@ public:
         uint32_t partitions = 0;
         float instanceWriteMs = 0.0f;
         float tlasBuildMs = 0.0f;
+        // raw GPU clock ticks of the most recently collected compute submit (F9 overlap)
+        uint64_t lastStartTick = 0;
+        uint64_t lastEndTick = 0;
     };
 
     // runtime PTLAS controls, read by the next prepareFrame / recordBuild
@@ -221,6 +224,8 @@ private:
     vk::raii::QueryPool timestamps = nullptr;
     float timestampPeriodNs = 0.0f;
     std::array<std::array<float, kHistorySize>, 2> histories{};
+    uint64_t lastStartTick = 0;
+    uint64_t lastEndTick = 0;
     size_t historyHead = 0;
     size_t historyCount = 0;
 };
