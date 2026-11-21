@@ -1,0 +1,4 @@
+# Bistro (engine spec M10 scene): binary assets in Git LFS; the .gltf JSON stays in git for diffs
+models/bistro*/**/*.ktx2 filter=lfs diff=lfs merge=lfs -text
+models/bistro*/**/*.bin filter=lfs diff=lfs merge=lfs -text
+models/bistro*/**/*.png filter=lfs diff=lfs merge=lfs -text
