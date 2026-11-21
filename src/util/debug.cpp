@@ -67,6 +67,10 @@ void setDebugName(const vk::raii::Device &device, vk::Image image, std::string_v
 	setDebugNameHandle(device, reinterpret_cast<uint64_t>(static_cast<VkImage>(image)), vk::ObjectType::eImage, name);
 }
 
+void setDebugName(const vk::raii::Device &device, vk::Buffer buffer, std::string_view name) {
+	setDebugNameHandle(device, reinterpret_cast<uint64_t>(static_cast<VkBuffer>(buffer)), vk::ObjectType::eBuffer, name);
+}
+
 void setDebugName(const vk::raii::Device &device, vk::ImageView imageView, std::string_view name) {
 	setDebugNameHandle(device, reinterpret_cast<uint64_t>(static_cast<VkImageView>(imageView)), vk::ObjectType::eImageView, name);
 }

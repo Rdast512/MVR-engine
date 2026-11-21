@@ -527,21 +527,21 @@ bool RAB_GetConservativeVisibility(RAB_Surface surface, RAB_LightSample sample)
     return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(surface, sample.l), sample.l, 0.0, sample.distance);
 }
 
-// no previous TLAS: trace from currentSurface through this frame's TLAS toward the light sample, as the RTXDI sample
-// without enablePrevTLAS (RAB_VisibilityTest.hlsli)
+// no previous TLAS: trace from previousSurface through this frame's TLAS. Under permutation sampling the temporal
+// surface is another pixel, and a ray from currentSurface tests the wrong domain (m8 O2, §2.7)
 bool RAB_GetTemporalConservativeVisibility(RAB_Surface currentSurface, RAB_Surface previousSurface,
                                            RAB_LightSample sample)
 {
-    if (!RAB_IsSurfaceValid(currentSurface))
+    if (!RAB_IsSurfaceValid(previousSurface))
     {
         return false;
     }
     if (sample.distance >= kInfiniteDistance)
     {
-        return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(currentSurface, sample.l), sample.l, 0.0,
+        return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(previousSurface, sample.l), sample.l, 0.0,
                                kInfiniteDistance);
     }
-    const float3 toLight = sample.position - currentSurface.position;
+    const float3 toLight = sample.position - previousSurface.position;
     const float distance = length(toLight);
     if (distance <= 0.0)
     {
@@ -549,7 +549,7 @@ bool RAB_GetTemporalConservativeVisibility(RAB_Surface currentSurface, RAB_Surfa
     }
     const float3 l = toLight / distance;
     const float shortening = sample.solidAnglePdf > 0.0 ? kLightSampleShortening : 0.0;
-    return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(currentSurface, l), l, 0.0,
+    return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(previousSurface, l), l, 0.0,
                            distance * (1.0 - shortening));
 }
 

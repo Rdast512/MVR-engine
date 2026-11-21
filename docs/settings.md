@@ -75,9 +75,10 @@ The result is noisy by design. DLSS-RR turns it into the final image, and RR is 
 | Reuse final visibility | Skips the final visibility ray for a sample tested at most 4 frames ago within 16 render px (§3.3) | saves up to 1 ray/px | on |
 | Reference (no reuse) | 32 + 8 candidates, no reuse: the unbiased ground truth, very noisy | expensive | off |
 
-### 3.2 The two built-in sets
+### 3.2 The built-in sets
 
-- **NVIDIA defaults** (`RtxdiContext::defaultSettings`): the table's last column. ReSTIR DI total ≈ 0.35 ms on the sunlit Sponza bench (853×480 render size).
+- **Defaults** (`RtxdiContext::defaultSettings`, shipped since 2026-11-21): NVIDIA's set with `Ray traced` spatial correction. Under NVIDIA's `Basic`, the convergence check's Sponza_terminator read −53.6%: `Basic` counts neighbors whose sample is hidden from them. With `Ray traced` the convergence checks read +3.3% there and −2.2% on the lamp; the rest is permutation sampling ([m8 findings](../spec/fixesM1-6/m8_optimization_and_fixes.md) §2.7). The shade pass costs +0.003 ms on the gallery bench.
+- **NVIDIA defaults** (`RtxdiContext::nvidiaSettings`): the table's last column (the RTXDI sample's `Medium` preset). ReSTIR DI total ≈ 0.35 ms on the sunlit Sponza bench (853×480 render size).
 - **Converged** (`RtxdiContext::convergedSettings`): no spatial reuse except the disocclusion boost (history < 20), Pairwise, `Basic` temporal, no permutation, no BRDF candidate, no visibility reuse. Its raw output converges to the reference (the guide capture's convergence check runs it), but DLSS-RR flickers more on it (§3.4). ≈ 0.24 ms.
 
 ### 3.3 Known artifacts and the setting behind each
@@ -167,7 +168,7 @@ When judging stability by eye, hold the camera still for a few seconds and watch
 
 `Indirect mode` at the top of the `Indirect (M4)` section of the Ray tracing panel ([g7_indirect_modes.md](../spec/m4/g7_indirect_modes.md)): `ReSTIR GI` (default on both tiers since 2026-11-20: one bounce, NRC paused; GPU total 2.72 ms vs 3.27–3.30 ms at 1280×720, no C-G3-6 host wait), `NRC + ReSTIR GI` (both tiers; NRC reads ~10% bright, considerations C-G5-3), `NRC` (the cache samples without reuse). A switch resets ReSTIR GI and DLSS-RR history; `ENGINE_INDIRECT_MODE` sets it from the environment.
 
-The `ReSTIR GI` part of the `Indirect (M4)` section. Defaults (`RtxdiContext::defaultGiSettings`, since 2026-11-20): the library's, which the RTXDI sample uses unchanged in every preset, with ray-traced spatial bias correction. `NVIDIA defaults` (`nvidiaGiSettings`) restores the library's exactly. Why and what it costs: [m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md) §2.5.
+The `ReSTIR GI` part of the `Indirect (M4)` section. Defaults (`RtxdiContext::defaultGiSettings`, since 2026-11-20): the library's, which the RTXDI sample uses unchanged in every preset, with ray-traced spatial bias correction. `NVIDIA defaults` (`nvidiaGiSettings`) restores the library's exactly, plus the sample's secondary roughness floor. Why and what it costs: [m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md) §2.5.
 
 | Setting | Default | Converged | Effect |
 |---|---|---|---|
@@ -180,6 +181,7 @@ The `ReSTIR GI` part of the `Indirect (M4)` section. Defaults (`RtxdiContext::de
 | Final visibility, final MIS | on, on | on, on | reconnection ray; blend with the pixel's own sample on glossy lobes |
 | Secondary DI resampling | off | off | X₂'s light reuses this frame's ReSTIR DI reservoirs where X₂ is on screen (the RTXDI sample's `ShadeSecondarySurfaces`). With one light it only darkens: −23% in the courtyard, as the DI visibility shortcut keeps M for shadowed samples ([m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md) §2.6, O2) |
 | Firefly clamp | off | off | caps X₂'s luminance at 10 in scene units, matching the RTXDI sample's `c_MaxIndirectRadiance` |
+| Secondary roughness floor | on (0.5) | off | X₂ is shaded with roughness at least 0.5 while reuse runs (the RTXDI sample's `minSecondaryRoughness`): reservoirs store X₂'s radiance as non-directional, so sharp glossy lobes at X₂ become outliers that reuse spreads. Biased on glossy X₂; the NRC query keeps the raw roughness ([m8_optimization_and_fixes.md](../spec/fixesM1-6/m8_optimization_and_fixes.md) O9) |
 
 - **Ground-truth paths:** trace 8 bounces after X2 instead of querying NRC, which pauses. With `Reference (no reuse)` on as well, the `Indirect radiance` view is the ground truth, one sample per frame.
 - **Cost** (gallery, 1280×720 window (853×480 render, DLSS-RR Quality), shipped defaults, 2026-11-20 ABBA): temporal 0.11 ms, shade 0.41–0.42 ms (0.26–0.27 ms with NVIDIA's Basic spatial correction).

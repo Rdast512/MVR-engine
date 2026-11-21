@@ -11,6 +11,7 @@ void setDebugName(const vk::raii::Device &device, const vk::raii::Image &image, 
 void setDebugName(const vk::raii::Device &device, const vk::raii::Buffer &buffer, std::string_view name);
 void setDebugName(const vk::raii::Device &device, const vk::raii::ImageView &imageView, std::string_view name);
 void setDebugName(const vk::raii::Device &device, vk::Image image, std::string_view name);
+void setDebugName(const vk::raii::Device &device, vk::Buffer buffer, std::string_view name);
 void setDebugName(const vk::raii::Device &device, vk::ImageView imageView, std::string_view name);
 void setDebugName(const vk::raii::Device &device, vk::DeviceMemory memory, std::string_view name);
 void setDebugName(const vk::raii::Device &device, const vk::raii::Device &object, std::string_view name);

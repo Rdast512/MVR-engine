@@ -1,6 +1,6 @@
 # Feature: M8 optimization and fixes — RTXDI and NRC sample reviews, pipeline findings
 
-**Date:** 2026-11-20 · **Status:** review; O1 done in a changed form (§2.5), O2 and O6 built behind flags (default off) and measured (§2.6); auto-exposure boiling fixed (F10, [auto_exposure_dark_boiling.md](./auto_exposure_dark_boiling.md)) · **Milestone:** [M8](./README.md) (engine spec §16.2)
+**Date:** 2026-11-20 · **Status:** review; O1 done in a changed form (§2.5), O2 and O6 built behind flags (default off) and measured (§2.6); O2's bias traced to the shipped DI set, which now ships `Ray traced` spatial correction, with a bridge fix for permutation sampling (§2.7, 2026-11-21); O3 measured without gain and reverted (§2.8, 2026-11-21); O9 built, on by default, neutral on Sponza (§2.9, 2026-11-21); auto-exposure boiling fixed (F10, [auto_exposure_dark_boiling.md](./auto_exposure_dark_boiling.md)) · **Milestone:** [M8](./README.md) (engine spec §16.2)
 **Why:** ReSTIR GI mode became the default indirect mode on 2026-11-20 (engine spec §11.7), because NRC reads ~10% bright (§3.3, was C-G5-3). The 1.0 goal is the full RTXDI stack with NRC as a comparison switch (engine spec §1.1), with default RTXDI / DLSS-RR / RTXGI settings tuned for cost and quality against NVIDIA's sample defaults (was C-M4-2; per-variant courtyard measurements in [docs/settings.md](../../docs/settings.md)). This document merges two reviews (RTXDI sample + 3.1/3.2 library, RTXGI NRC sample) with the frame, stability, and perf findings that M8 turns into steps.
 
 **Sources**
@@ -70,13 +70,13 @@ NVIDIA's reason (ChangeLog 3.1): DLSS-RR "prefers temporally independent samples
 | Technique | Sample | Engine | Status |
 |---|---|---|---|
 | GI spatial reuse in the final shading pass | separate passes; `Doc/RestirGI.md` allows merging | `rtxdi_gi_shade.slang` does spatial + shade | has |
-| GI temporal reuse in the initial-sample shader | allowed by `Doc/RestirGI.md` ("whichever works faster"); the sample keeps it separate | separate `rtxdi_gi_temporal.slang` (0.11 ms) | candidate O3 |
+| GI temporal reuse in the initial-sample shader | allowed by `Doc/RestirGI.md` ("whichever works faster"); the sample keeps it separate | separate `rtxdi_gi_temporal.slang` (0.11 ms) | O3 measured, no gain (§2.8) |
 | Fused spatiotemporal GI | `GI/FusedResampling.hlsl`; the doc calls it "likely not great for performance" | not used | skip |
 | Per-pixel randomized `maxReservoirAge` (×0.5–1) | `FusedResampling.hlsl`, temporal pass | `rtxdi_gi_temporal.slang` | has |
 | Final MIS against the initial sample | `GI/FinalShading.hlsl` (`kMISRoughness` 0.3) | `rtxdi_gi_shade.slang` | has |
 | Secondary-surface DI resampling | `ShadeSecondarySurfaces.hlsl`: X₂ projected to the screen; if on screen, `RTXDI_DISpatialResampling` from the primary DI reservoirs there (Medium: 1 sample, normalized to 2 for stratified, radius 1 px, `Basic`; Ultra: 2, 4 px, `Raytraced`) | built 2026-11-20 behind `GiSettings::isSecondaryResamplingEnabled`, off | O2, §2.6 |
 | Firefly clamp on the X₂ radiance | luminance clamped to 10 (`c_MaxIndirectRadiance`) before the GI reservoir | built 2026-11-20 behind `GiSettings::isFireflyClampEnabled`, off | O6, §2.6 |
-| Secondary-hit roughness floor | `BrdfRayTracing.hlsl:240`: `ms.roughness = max(ms.roughness, minSecondaryRoughness)`, default `0.5` (`LightingPasses.cpp:49,572`); `Doc/RestirGI.md:47` recommends clamping secondary roughness to avoid sharp glossy caustics in non-directional GI reservoirs | none (`indirect.slang` / `rayHitSurface` keep raw `material.roughness`; [sampling audit](./rtxdi_rtxgi_sampling_audit.md)) | candidate O9 |
+| Secondary-hit roughness floor | `BrdfRayTracing.hlsl:240`: `ms.roughness = max(ms.roughness, minSecondaryRoughness)`, default `0.5` (`LightingPasses.cpp:49,572`); `Doc/RestirGI.md:47` recommends clamping secondary roughness to avoid sharp glossy caustics in non-directional GI reservoirs | `GiSettings::isSecondaryRoughnessFloorEnabled`, on in the shipped and NVIDIA sets (2026-11-21) | O9 built (§2.9) |
 | DI final visibility reuse | `ReSTIRDI.cpp:98` default `reuseFinalVisibility = true` (4 frames, 16 px; `Fast` and `Medium`); `Unbiased` and `Ultra` set `false` (`UserInterface.cpp:260,286`) | `defaultSettings()` inherits `true` (`vk_rtxdi.cpp:346`, check at `rtxdi_shade.slang:75-89`); `convergedSettings()` sets `false` (`vk_rtxdi.cpp:365`) | candidate O10 |
 | Delta / specular rays kept out of GI reservoirs | `isSpecularRay && isDeltaSurface` shaded directly | no delta materials (GGX only) | not needed |
 | Trace and shade split by a compact secondary G-buffer | `BrdfRayTracing` → `SecondaryGBufferData` (~48 B) → `ShadeSecondarySurfaces` | one compute pass traces, decodes, samples the material and the light, and traces visibility (`indirect.slang`) | removed from the candidates on 2026-11-20 (was O5) |
@@ -97,13 +97,13 @@ Each candidate lands only when three conditions hold:
 | # | Change | Expected | Result or plan | M8 step |
 |---|---|---|---|---|
 | O1 | GI settings for DLSS-RR, after 3.1's PT profile | stability under RR | **done 2026-11-20, changed:** the PT profile measured darker and flickered 3× more. The shipped GI default is NVIDIA's with ray-traced spatial bias correction (§2.5) | follow-up in I3 |
-| O2 | Secondary-surface DI resampling at X₂ (sample `Medium`) | X₂'s direct light inherits the primary DI reservoirs' light choice | **built, off:** −24% courtyard bias, no stability gain with one light (§2.6) | I9 (many-light pose) |
-| O3 | GI temporal reuse inside the indirect pass | drops one dispatch and one reservoir write + read (up to the 0.11 ms of the temporal pass) | — | I7 |
+| O2 | Secondary-surface DI resampling at X₂ (sample `Ultra`: 2 samples, 4 px, `Ray traced`) | X₂'s direct light inherits the primary DI reservoirs' light choice | **built, off:** its −38.8% courtyard bias came from the shipped DI reservoirs (`Basic` spatial + permutation). Fixed in DI, it reads +0.62% (shipped +1.90%) for +0.058 ms (§2.7) | I9 (many-light pose) |
+| O3 | GI temporal reuse inside the indirect pass | drops one dispatch and one reservoir write + read (up to the 0.11 ms of the temporal pass) | **measured 2026-11-21, reverted:** neutral within noise; the temporal work moves into `Indirect` at the same cost (§2.8) | — |
 | O4 | Compact surface loads for RTXDI: one packed guide (oct normals, roughness, f0 / albedo) and position from depth | 36 → ~20 B per neighbor surface in DI temporal / shade and GI temporal / shade | `Position` is a guide by F2's decision (both frames); rebuilding it needs exact previous view matrices with jitter | I7 |
 | O6 | Firefly clamp on the X₂ radiance at scene luminance 10 (the sample's `c_MaxIndirectRadiance`; display luminance 10 / exposure until the auto-exposure fix's F4) | stability under DLSS-RR | **built, off:** no measurable effect on Sponza (§2.6) | I9 (many-light pose) |
 | O7 | Checkerboard GI (and DI) on the floor tier | roughly halves `Indirect` and the reuse passes there | quality under DLSS-RR; floor tier only — enable `CheckerboardMode` in the GI context and trace the active field only if `Indirect` exceeds budget on the 2060 Super (was C-G2-1) | I8 |
 | O8 | Skip DI BRDF ray when no emissive triangle or environment light is present (`rtxdi_bridge.slang:564-567`), or 0 BRDF samples on `Fast` | ~0.04 ms on non-emissive scenes like Sponza | M7 E2 resolved C-R32-3 for emissive scenes, but `triangleLights.lightCount == 0` still traces an unused visibility ray when `environmentLightParams.lightPresent == 0` | I4 |
-| O9 | Secondary-hit roughness floor at X₂ (`max(roughness, 0.5)`, `BrdfRayTracing.hlsl:240`, `LightingPasses.cpp:49`) | reduces glossy-bounce fireflies and view-dependent noise in ReSTIR GI reservoirs (`Doc/RestirGI.md:47`) | biased on glossy secondary hits: apply only to ReSTIR GI's X₂ shading (not inside shared `shadeRayHit` used by `referencePathRadiance` and `nrc_update.slang`), off in `convergedGiSettings` / reference | I3 |
+| O9 | Secondary-hit roughness floor at X₂ (`max(roughness, 0.5)`, `BrdfRayTracing.hlsl:240`, `LightingPasses.cpp:49`) | reduces glossy-bounce fireflies and view-dependent noise in ReSTIR GI reservoirs (`Doc/RestirGI.md:47`) | **built 2026-11-21, on by default:** neutral on Sponza within the GI check's realization noise; courtyard per-frame RMS 113.2% → 109.6% (§2.9) | I3 (glossy scene) |
 | O10 | Fresh DI final visibility (`isFinalVisibilityReused = false`, as `convergedSettings()` and RTXDI `Unbiased`/`Ultra`) | removes ~16 px shadow-edge light leak, thin-shadow fading (Sponza poles) and visibility-reuse flicker (was C-R32-4; `rtxdi_shade.slang:75-89`) | turning it off with permutation off and Pairwise spatial gave 0.9% flickering px vs 7.5% for NVIDIA defaults on courtyard; costs ~0.7 extra shadow rays/px (`Doc/NoiseAndBias.md:63` reports reuse cuts final visibility rays to ~30%); measure cost vs stability in I4 | I4 |
 
 ### 2.5 O1 result (2026-11-20)
@@ -175,6 +175,92 @@ The max tile is a single-tile outlier that moves between runs, so it reads as no
 - **O2 is biased with the shipped DI settings.** The DI reservoirs carry the visibility shortcut: shadowed samples are dropped but their M is kept. `Basic` resampling at X₂ then counts neighbors whose sample is shadowed from X₂. With one light there is no light choice to inherit, so O2 can only lose.
 - **O6 changes nothing on Sponza.** The sun's single bounce produces no X₂ radiance above the clamp.
 - Both stay off and return in I9 on a many-light pose (M7 E2/F1 emissives + presampling are built; Bistro materials are spec-gloss, C-M7-1).
+
+### 2.7 O2's bias was the DI reservoirs' (2026-11-21)
+
+§2.6's reading of O2's bias was wrong. After M7 F1 the courtyard O2 phase read **−38.8%**. With ray-traced correction at X₂ (the RTXDI sample's `Ultra` / `Unbiased` presets) it still read −37.5%. Bisected with temporary shader variants, each one a GI-check run:
+
+| X₂ resampling variant | Courtyard O2 bias | Reading |
+|---|---|---|
+| 0 neighbor samples (plumbing) | +1.74% | the projection and re-evaluation are neutral (shipped without O2: +1.90%) |
+| neighbor's light, X₂'s own weight | +1.74% | light choice and X₂ visibility are fine |
+| `Off` correction (1/M) | −38.8% | the neighbors' stored weights average ~0.6× X₂'s own |
+| only where X₂ is the surface on screen | −37.1% | not off-surface neighbors |
+| temporal-output reservoirs (`Ray traced` / `Basic`) | −35.1% / −36.5% | not the shade pass's spatial step alone |
+| shading-input reservoirs, **converged DI settings** | **+0.47%** | the shipped DI reservoirs are biased |
+
+**The shipped DI was biased.** With NVIDIA's `Medium` set (the shipped DI defaults until this change), the guide capture's convergence checks read lamp −11.3% / p90 27.3%, **Sponza_terminator −53.6%** / 76.4%, and EmissiveStrengthTest −4.2% / 40.3%. Flipping one setting at a time to its converged value:
+
+- `Basic` spatial correction causes most of it. `Ray traced` gives −7.3% / −20.6% / −0.26%; no per-frame spatial gives −6.0% / −17.5% / −0.51%. As in GI (C-G5-2), `Basic` counts neighbors whose selected sample is hidden from them; the visibility shortcut has already dropped those samples, but their M stays.
+- Permutation sampling causes the rest: spatial off plus permutation off reads −0.04% / −0.00% / +0.19%.
+- No other single setting moved Sponza by more than 0.7 pp: BRDF candidate, ReGIR, visibility shortcut, fallback, boiling filter, final visibility reuse.
+
+**Bridge bug under permutation.** `RAB_GetTemporalConservativeVisibility` traced from the current surface. Under permutation sampling the temporal surface is another pixel, so the temporal correction ray tested the wrong domain. NVIDIA's sample has the same fallback without `enablePrevTLAS`, which its UI forces off when animations are off. It now traces from `previousSurface` through this frame's TLAS: exact on static geometry, the same staleness as before on moving geometry. NVIDIA's `Medium` then reads −5.4% / −37.9% / −4.1%. The converged gate is unchanged (permutation off: +0.030% / −0.000% / +0.063%, 3 of 3). The GI bridge's `RAB_GetTemporalConservativeVisibility` has the same shape but no shipped GI set reaches it (shipped GI temporal correction is `Basic`; converged GI turns permutation off).
+
+**Shipped DI set** (`RtxdiContext::defaultSettings`): NVIDIA's `Medium` (`nvidiaSettings`, the `NVIDIA defaults` button) with `Ray traced` spatial correction:
+
+- Convergence checks read lamp −2.2% / p90 12.2%, Sponza_terminator +3.3% / 27.4%, EmissiveStrengthTest −0.03% / 5.5%. The remainder is permutation sampling. It stays for now: docs/settings.md §3.4 measured permutation off with visibility reuse off as the most stable set under DLSS-RR, so that decision belongs with the stability runner (I1, I4).
+- Cost (ABBA, startup gallery, 3 runs each): `ReSTIR DI shade` 0.086 → 0.089 ms, GPU total 2.78 → 2.79 ms. The gallery is mostly in shadow; recheck the cost on a sunlit pose in I4.
+- Stability under DLSS-RR is unmeasured: there is no stability runner yet (F2).
+
+**O2 on the shipped DI set** (GI check, bias / 32×32 tile p90):
+
+| Variant | Gallery | Courtyard |
+|---|---|---|
+| shipped | +8.01% / 26.2% | +1.90% / 17.8% |
+| + O2 | +7.35% / 25.8% | **+0.62%** / 18.3% |
+| + O6 | +7.69% / 27.3% | +1.52% / 16.9% |
+| + O2 + O6 | +7.82% / 27.4% | +0.36% / 17.9% |
+
+8 of 8 gated phases pass. Every phase without O2 repeats its pre-change number, except NRC's, which never repeat (C-T-5).
+
+O2 costs +0.058 ms in `Indirect` (0.526 → 0.584 ms, ABBA 3 runs each; GPU total 2.79 → 2.85 ms). On Sponza it lowers the bias by about 1 pp at equal tile p90; with one light there is no light choice to inherit. **It stays off** until I9 measures it on a many-light pose. It now runs NVIDIA's `Ultra` parameters (2 samples, 4 px, `Ray traced`).
+
+### 2.8 O3 result (2026-11-21)
+
+**Build (reverted).**
+
+- `indirect.slang` ran the temporal reuse and the boiling filter after storing the initial sample, through one include shared with `rtxdi_gi_temporal.slang`.
+- The fused path took the initial sample through a pack/unpack round trip, so it resampled the same LogLuv radiance and octahedral normal the separate pass reads.
+- The out-of-bounds early return was replaced by a bounds flag, because the filter synchronizes the 8×8 group.
+- It was fused only when no NRC resolve follows the indirect pass (ReSTIR GI mode, ground-truth paths), since the resolve adds the cache term to the initial sample. In NRC + ReSTIR GI mode the separate pass ran.
+- Validation (core + sync + best practices) was clean, including `ENGINE_INDIRECT_MODE=cycle` over 36 mode switches.
+
+**Cost** (bench, startup gallery, 3000 frames per run, release, no layers, RTX 5070; mean over runs):
+
+| Variant | Runs | `Indirect` + `ReSTIR GI temporal` | GPU total |
+|---|---|---|---|
+| separate passes (shipped) | 5 | 0.658 ms | 2.910 ms |
+| fused | 5 | 0.674 ms | 2.938 ms |
+| fused, without the boiling filter | 2 | 0.651 ms | 2.85 ms |
+| fused shader, fusion off on the host | 2 | 0.646 ms | 2.81 ms |
+
+- The first round put fused at +0.03 ms. The second round had fused level with separate passes (0.657 vs 0.662 ms), and every scope read faster in later runs, so the difference is run position, not the variant.
+- Neither the filter's group barrier (third row) nor the extra code's register cost (fourth row) is measurable.
+- The dispatch, barrier and reservoir read that fusion saves come to about 0.01 ms; the temporal work itself costs the same inside `Indirect`.
+
+No gain, so O3 does not land (§2.4). Recheck only if the 2060 Super (F9) shows the separate pass's fixed cost.
+
+### 2.9 O9 result (2026-11-21)
+
+**Build.**
+
+- `indirect.slang` shades X₂ with `max(roughness, 0.5)` (`kMinSecondaryRoughness`, the RTXDI sample's `minSecondaryRoughness`), for its direct light and, with ground-truth paths, for the bounce leaving X₂. `shadeRayHit` is unchanged.
+- The NRC query at X₂ keeps the raw roughness, which is what the cache trains on (`nrc_update.slang`).
+- Flag: `GiFlag::SecondaryRoughnessFloor`, set from `GiSettings::isSecondaryRoughnessFloorEnabled` only while GI reuse runs, so the reference and both ground truths stay unbiased.
+- On in `nvidiaGiSettings` (the sample's default) and so in the shipped set; off in `convergedGiSettings`. UI: `Secondary roughness floor`.
+- The GI check measures the shipped set without it as its last phase. Validation (core + sync + best practices, `ENGINE_INDIRECT_MODE=cycle`) is clean.
+
+**Measured** (GI check, ReSTIR GI mode against one bounce; bias / 32×32 tile p90 / per-frame RMS error):
+
+| Variant | Gallery | Courtyard |
+|---|---|---|
+| shipped (floor on) | +8.06% / 27.9% / 243.0% | +1.73% / 17.0% / 109.6% |
+| shipped without the floor | +7.95% / 27.0% / 242.8% | +1.91% / 17.7% / 113.2% |
+
+- 8 of 8 gated phases pass; they run the converged set, without the floor.
+- The two phases differ by less than a realization's spread (up to ~0.5 pp on traced-path phases). Sponza's X₂ surfaces are almost all rougher than 0.5, so the floor neither biases nor stabilizes it measurably.
+- It is not the cause of the GI boiling seen under DLSS-RR on Sponza. Its case is glossy X₂ (Bistro, spec-gloss materials, C-M7-1); measure it there in I3 once the stability runner exists (F2).
 
 ## 3. NRC
 

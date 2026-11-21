@@ -311,7 +311,7 @@ void RtxdiContext::recreate(vk::Extent2D renderExtent)
             "Rtxdi");
 }
 
-RtxdiContext::Settings RtxdiContext::defaultSettings()
+RtxdiContext::Settings RtxdiContext::nvidiaSettings()
 {
     const RTXDI_DIInitialSamplingParameters initial = rtxdi::GetDefaultReSTIRDIInitialSamplingParams();
     const RTXDI_DITemporalResamplingParameters temporal = rtxdi::GetDefaultReSTIRDITemporalResamplingParams();
@@ -347,6 +347,15 @@ RtxdiContext::Settings RtxdiContext::defaultSettings()
     };
 }
 
+RtxdiContext::Settings RtxdiContext::defaultSettings()
+{
+    // Basic spatial correction counts neighbors whose sample is hidden from them: -53.6% on the convergence check's
+    // Sponza_terminator, and X2 reusing the reservoirs (O2) inherits it (spec/fixesM1-6/m8_optimization_and_fixes.md
+    // §2.7). Permutation, fallback, boiling filter and final visibility reuse stay NVIDIA's
+    Settings settings = nvidiaSettings();
+    settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
+    return settings;
+}
 RtxdiContext::Settings RtxdiContext::convergedSettings()
 {
     Settings converged = defaultSettings();
@@ -388,6 +397,8 @@ RtxdiContext::GiSettings RtxdiContext::nvidiaGiSettings()
         .boilingFilterStrength = boiling.boilingFilterStrength,
         .isFinalVisibilityEnabled = shading.enableFinalVisibility != 0,
         .isFinalMisEnabled = shading.enableFinalMIS != 0,
+        // the sample's BRDF ray tracing default (LightingPasses.cpp), not a library parameter
+        .isSecondaryRoughnessFloorEnabled = true,
     };
 }
 
@@ -414,6 +425,8 @@ RtxdiContext::GiSettings RtxdiContext::convergedGiSettings()
     converged.isFallbackSamplingEnabled = false;
     converged.isPermutationSamplingEnabled = false;
     converged.isBoilingFilterEnabled = false;
+    // darkens or brightens glossy X2 against the traced BRDF
+    converged.isSecondaryRoughnessFloorEnabled = false;
     return converged;
 }
 
@@ -612,7 +625,10 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
         .giFinalShading = giContext.GetFinalShadingParameters(),
         .giReferenceBounces = giReferenceBounces,
         .giFlags = (giSettings.isSecondaryResamplingEnabled ? GiFlag::SecondaryResampling : 0u) |
-                   (giSettings.isFireflyClampEnabled ? GiFlag::FireflyClamp : 0u),
+                   (giSettings.isFireflyClampEnabled ? GiFlag::FireflyClamp : 0u) |
+                   // without reuse the 1-sample estimate stays unbiased
+                   (giSettings.isSecondaryRoughnessFloorEnabled && isGiReuseApplied ? GiFlag::SecondaryRoughnessFloor
+                                                                                    : 0u),
         .localLightRisBuffer = importanceSampling->GetLocalLightRISBufferSegmentParams(),
         .environmentLightRisBuffer = importanceSampling->GetEnvironmentLightRISBufferSegmentParams(),
         .regir = regirConstants,

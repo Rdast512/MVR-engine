@@ -18,10 +18,104 @@
     #include <algorithm>
     #include <cmath>
     #include <format>
+    #include <stdexcept>
+    #include <string_view>
     #include <utility>
+    #include <vector>
 
 namespace
 {
+    // ImGui's backend allocates its own buffers, images and memory, outside VMA. Built with
+    // IMGUI_IMPL_VULKAN_NO_PROTOTYPES, it loads every entry point through imGuiVulkanFunction, which wraps creation to
+    // name each object before it is bound and to give its memory a priority.
+    // The wrapped calls carry no user data, so their state is file-scope; ImGui runs on the main thread only
+    struct ImGuiVulkanHooks
+    {
+        const vk::raii::Device* device = nullptr;
+        vk::PhysicalDeviceMemoryProperties memoryProperties;
+        PFN_vkCreateBuffer createBuffer = nullptr;
+        PFN_vkCreateImage createImage = nullptr;
+        PFN_vkAllocateMemory allocateMemory = nullptr;
+    };
+    ImGuiVulkanHooks imGuiHooks;
+
+    VKAPI_ATTR VkResult VKAPI_CALL createImGuiBuffer(VkDevice device, const VkBufferCreateInfo* info,
+                                                     const VkAllocationCallbacks* allocator, VkBuffer* buffer)
+    {
+        const VkResult result = imGuiHooks.createBuffer(device, info, allocator, buffer);
+        if (result == VK_SUCCESS) {
+            const char* name = (info->usage & VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) != 0 ? "ImGuiVertexBuffer"
+                : (info->usage & VK_BUFFER_USAGE_INDEX_BUFFER_BIT) != 0                ? "ImGuiIndexBuffer"
+                                                                                       : "ImGuiTextureUpload";
+            setDebugName(*imGuiHooks.device, vk::Buffer{*buffer}, name);
+        }
+        return result;
+    }
+
+    VKAPI_ATTR VkResult VKAPI_CALL createImGuiImage(VkDevice device, const VkImageCreateInfo* info,
+                                                    const VkAllocationCallbacks* allocator, VkImage* image)
+    {
+        const VkResult result = imGuiHooks.createImage(device, info, allocator, image);
+        if (result == VK_SUCCESS) {
+            setDebugName(*imGuiHooks.device, vk::Image{*image}, "ImGuiTexture");
+        }
+        return result;
+    }
+
+    // the engine's VMA priorities: host-visible 0.25; ImGui's only device-local memory is its textures, 0.9 as images
+    VKAPI_ATTR VkResult VKAPI_CALL allocateImGuiMemory(VkDevice device, const VkMemoryAllocateInfo* info,
+                                                       const VkAllocationCallbacks* allocator, VkDeviceMemory* memory)
+    {
+        const vk::MemoryPropertyFlags flags =
+            imGuiHooks.memoryProperties.memoryTypes[info->memoryTypeIndex].propertyFlags;
+        const bool isHostVisible = static_cast<bool>(flags & vk::MemoryPropertyFlagBits::eHostVisible);
+        const VkMemoryPriorityAllocateInfoEXT priority{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT,
+            .pNext = info->pNext,
+            .priority = isHostVisible ? 0.25f : 0.9f,
+        };
+        VkMemoryAllocateInfo prioritized = *info;
+        prioritized.pNext = &priority;
+        const VkResult result = imGuiHooks.allocateMemory(device, &prioritized, allocator, memory);
+        if (result == VK_SUCCESS) {
+            setDebugName(*imGuiHooks.device, vk::DeviceMemory{*memory}, "ImGuiMemory");
+        }
+        return result;
+    }
+
+    PFN_vkVoidFunction imGuiVulkanFunction(const char* name, void* userData)
+    {
+        const std::string_view function{name};
+        if (function == "vkCreateBuffer") {
+            return reinterpret_cast<PFN_vkVoidFunction>(&createImGuiBuffer);
+        }
+        if (function == "vkCreateImage") {
+            return reinterpret_cast<PFN_vkVoidFunction>(&createImGuiImage);
+        }
+        if (function == "vkAllocateMemory") {
+            return reinterpret_cast<PFN_vkVoidFunction>(&allocateImGuiMemory);
+        }
+        // the map mixes instance- and device-level functions; vkGetDeviceProcAddr rejects the former
+        const vk::raii::Instance& instance = *static_cast<const vk::raii::Instance*>(userData);
+        return instance.getDispatcher()->vkGetInstanceProcAddr(*instance, name);
+    }
+
+    void loadImGuiVulkanFunctions(const Device& device)
+    {
+        const auto* dispatcher = device.vkdevice.getDispatcher();
+        imGuiHooks = ImGuiVulkanHooks{
+            .device = &device.vkdevice,
+            .memoryProperties = device.physicalDevice.getMemoryProperties(),
+            .createBuffer = dispatcher->vkCreateBuffer,
+            .createImage = dispatcher->vkCreateImage,
+            .allocateMemory = dispatcher->vkAllocateMemory,
+        };
+        if (!ImGui_ImplVulkan_LoadFunctions(VK_API_VERSION_1_4, imGuiVulkanFunction,
+                                            const_cast<vk::raii::Instance*>(&device.instance))) {
+            throw std::runtime_error("ImGui_ImplVulkan_LoadFunctions failed");
+        }
+    }
+
     [[nodiscard]] double toMiB(vk::DeviceSize bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); }
 
     // the swapchain is *_SRGB, so ImGui's sRGB-authored colors must be stored linear
@@ -193,6 +287,8 @@ EngineUi::EngineUi(const UiContext& context) : context(context)
 
         const Device& device = context.device;
         ImGui_ImplSDL3_InitForVulkan(context.window);
+        loadImGuiVulkanFunctions(device);
+        // one allocation per buffer and image: small-dedicated-allocation warnings accepted (considerations C-T-4)
         ImGui_ImplVulkan_InitInfo initInfo = {};
         initInfo.ApiVersion = VK_API_VERSION_1_4;
         initInfo.Instance = *device.instance;
@@ -947,8 +1043,13 @@ void EngineUi::drawRayTracingPanel()
     ImGui::Checkbox("Reuse final visibility", &di.isFinalVisibilityReused);
     ImGui::SetItemTooltip("skip the shading ray for a sample tested at most 4 frames ago within 16 px; stale on "
                           "moving geometry");
-    if (ImGui::Button("NVIDIA defaults")) {
+    if (ImGui::Button("Defaults##di")) {
         di = RtxdiContext::defaultSettings();
+    }
+    ImGui::SetItemTooltip("shipped: NVIDIA's with ray-traced spatial bias correction");
+    ImGui::SameLine();
+    if (ImGui::Button("NVIDIA defaults")) {
+        di = RtxdiContext::nvidiaSettings();
     }
     ImGui::SetItemTooltip("the RTXDI sample's Medium preset");
     ImGui::SameLine();
@@ -1084,6 +1185,9 @@ void EngineUi::drawRayTracingPanel()
     ImGui::SameLine();
     ImGui::Checkbox("Firefly clamp", &gi.isFireflyClampEnabled);
     ImGui::SetItemTooltip("clamps X2's radiance in display units; biased");
+    ImGui::Checkbox("Secondary roughness floor", &gi.isSecondaryRoughnessFloorEnabled);
+    ImGui::SetItemTooltip("shades X2 with roughness at least 0.5: no glossy caustics in the reused samples; biased on "
+                          "glossy X2");
     if (ImGui::Button("Defaults##gi")) {
         gi = RtxdiContext::defaultGiSettings();
     }

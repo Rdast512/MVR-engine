@@ -61,6 +61,8 @@ private:
         RestirGiModeSecondary,
         RestirGiModeClamp,
         RestirGiModeSecondaryClamp,
+        // the shipped settings without the secondary roughness floor (O9)
+        RestirGiModeNoFloor,
         Count,
     };
 
@@ -85,6 +87,7 @@ private:
         ShippedSecondary,
         ShippedClamp,
         ShippedSecondaryClamp,
+        ShippedNoFloor,
     };
 
     struct PhaseInfo
@@ -158,6 +161,8 @@ private:
          false, GiSettingsSource::ShippedClamp, 64, 512, 0.0, 0.0},
         {"ReSTIR GI mode (shipped + both) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
          GiSettingsSource::ShippedSecondaryClamp, 64, 512, 0.0, 0.0},
+        {"ReSTIR GI mode (shipped without secondary roughness floor) against one bounce", Role::Compared,
+         IndirectMode::RestirGi, 0, false, GiSettingsSource::ShippedNoFloor, 64, 512, 0.0, 0.0},
     }};
     static constexpr std::array<Pose, 2> kPoses = {{
         {"gallery (startup)", true, {}, {}},

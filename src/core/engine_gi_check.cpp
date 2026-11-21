@@ -38,6 +38,10 @@ void EngineGiCheck::applyPhase(RtxdiContext& rtxdi, IndirectMode& indirectMode) 
         rtxdi.giSettings.isSecondaryResamplingEnabled = info.settings != GiSettingsSource::ShippedClamp;
         rtxdi.giSettings.isFireflyClampEnabled = info.settings != GiSettingsSource::ShippedSecondary;
         break;
+    case GiSettingsSource::ShippedNoFloor:
+        rtxdi.giSettings = RtxdiContext::defaultGiSettings();
+        rtxdi.giSettings.isSecondaryRoughnessFloorEnabled = false;
+        break;
     }
 }
 

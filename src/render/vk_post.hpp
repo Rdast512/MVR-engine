@@ -19,7 +19,7 @@ class PostProcess
 public:
     struct Settings
     {
-        bool isAutoExposure = false;
+        bool isAutoExposure = true;
         // added to the auto exposure, in stops
         float compensationEv = 0.0f;
         // log2 of the exposure scale while auto exposure is off

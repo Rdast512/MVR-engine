@@ -51,6 +51,7 @@ struct GpuRtxdiConstants
 // GiFlag in src/render/vk_rtxdi.hpp
 static const uint kGiFlagSecondaryResampling = 1u << 0;
 static const uint kGiFlagFireflyClamp = 1u << 1;
+static const uint kGiFlagSecondaryRoughnessFloor = 1u << 2;
 
 // RtxdiContext::kGiInitialReservoirArray: the indirect pass's initial samples, after RTXDI's two arrays
 static const uint kGiInitialReservoirArray = 2;

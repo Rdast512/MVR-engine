@@ -534,6 +534,9 @@ target_link_libraries(imgui PUBLIC
         SDL3::SDL3
         Vulkan::Vulkan
 )
+# the engine loads the Vulkan backend's entry points (src/ui/engine_ui.cpp imGuiVulkanFunction) to name ImGui's own
+# buffers, images and memory and give the memory a priority
+target_compile_definitions(imgui PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES)
 
 
 # ------------------------------------------------------------------------------

@@ -67,15 +67,15 @@ PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
     return bounce;
 }
 
-// RTXDI sample secondarySurfaceReSTIRDIParams (2 samples for the stratified walk, Basic); radius 4 px (Ultra preset)
-// because int2(snormOffset * 1.0) truncates all 8192 offsets to (0, 0). Off by default (m8 O2)
+// RTXDI sample Ultra preset secondarySurfaceReSTIRDIParams: 2 samples, 4 px (1 px truncates all 8192 offsets to
+// (0, 0)), ray-traced. Unbiased only on unbiased DI reservoirs: NVIDIA's Medium DI darkens them (m8 O2, §2.7)
 RTXDI_DISpatialResamplingParameters secondaryResamplingParams(GpuRtxdiConstants constants)
 {
     RTXDI_DISpatialResamplingParameters params = constants.spatialResampling;
     params.numSamples = 2;
     params.numDisocclusionBoostSamples = 0;
     params.samplingRadius = 4.0;
-    params.biasCorrectionMode = RTXDI_BIAS_CORRECTION_BASIC;
+    params.biasCorrectionMode = RTXDI_BIAS_CORRECTION_RAY_TRACED;
     params.depthThreshold = 0.1;
     params.normalThreshold = 0.9;
     params.enableMaterialSimilarityTest = 0;
@@ -126,6 +126,8 @@ float3 secondaryDirectLight(GpuFrameRoot root, RAB_Surface surface, HitOrigin or
 
 // RTXDI sample c_MaxIndirectRadiance (10) as displayed luminance: scene luminance times last frame's exposure
 static const float kMaxIndirectRadiance = 10.0;
+// RTXDI sample minSecondaryRoughness (LightingPasses.cpp)
+static const float kMinSecondaryRoughness = 0.5;
 
 // the query sits on the path's first cache vertex: the termination heuristic is off in this pass's copy of the
 // constants (one ray per pixel, spec §11.3)
@@ -174,13 +176,21 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
             RTXDI_SECONDARY_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
         HitOrigin origin;
         origin.hit = hit;
+        // m8 O9: the reservoir stores X2's radiance as non-directional, so a sharp glossy lobe at X2 becomes a
+        // caustic outlier that reuse spreads (Doc/RestirGI.md). X2's own shading only: the NRC query keeps the
+        // roughness the cache trains on
+        RAB_Surface shadedSecondary = secondary.surface;
+        if ((constants.giFlags & kGiFlagSecondaryRoughnessFloor) != 0)
+        {
+            shadedSecondary.roughness = max(shadedSecondary.roughness, kMinSecondaryRoughness);
+        }
         float3 radiance =
-            secondary.emissive + secondaryDirectLight(root, secondary.surface, origin, constants, rng, coherentRng);
+            secondary.emissive + secondaryDirectLight(root, shadedSecondary, origin, constants, rng, coherentRng);
         if (constants.giReferenceBounces > 0)
         {
             RTXDI_RandomSamplerState pathRng =
                 RTXDI_InitRandomSampler(pixel, constants.runtime.frameIndex, kReferencePathSeed);
-            radiance += referencePathRadiance(root, secondary.surface, origin, constants.giReferenceBounces,
+            radiance += referencePathRadiance(root, shadedSecondary, origin, constants.giReferenceBounces,
                                               length(ray.Origin - gRtxdiBridge.cameraPos) + hit.t, constants, pathRng,
                                               rng, coherentRng);
         }

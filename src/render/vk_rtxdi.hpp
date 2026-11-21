@@ -88,6 +88,7 @@ namespace GiFlag
 {
     inline constexpr uint32_t SecondaryResampling = 1u << 0;
     inline constexpr uint32_t FireflyClamp = 1u << 1;
+    inline constexpr uint32_t SecondaryRoughnessFloor = 1u << 2;
 } // namespace GiFlag
 static_assert(sizeof(ReGIR_Parameters) == 1296);
 static_assert(sizeof(GpuRtxdiConstants) == 1856);
@@ -202,11 +203,16 @@ public:
         bool isSecondaryResamplingEnabled = false;
         // X2's radiance clamped in display units (RTXDI sample c_MaxIndirectRadiance; O6); biased
         bool isFireflyClampEnabled = false;
+        // X2 shaded with roughness at least 0.5 while GI reuse runs (RTXDI sample minSecondaryRoughness; O9): keeps
+        // view-dependent glossy outliers out of the non-directional reservoirs; biased on glossy X2
+        bool isSecondaryRoughnessFloorEnabled = false;
 
         bool operator==(const GiSettings&) const = default;
     };
 
     // the RTXDI sample's default Medium preset (spec/features/rtxdi_3_2_update.md §3.3)
+    [[nodiscard]] static Settings nvidiaSettings();
+    // shipped: NVIDIA's with ray-traced spatial bias correction (spec/fixesM1-6/m8_optimization_and_fixes.md §2.7)
     [[nodiscard]] static Settings defaultSettings();
     // the RTXDI sample's ReSTIR GI settings: the library defaults, temporal and spatial (spec/m4/g5_restir_gi.md §1)
     [[nodiscard]] static GiSettings nvidiaGiSettings();
