@@ -371,7 +371,7 @@ Two sets, ping-ponged by frame parity, for temporal resampling. The resolve writ
 
 ### 9.4 Material model
 
-glTF 2.0 metallic-roughness, `KHR_lights_punctual`, `KHR_texture_transform`, `KHR_materials_emissive_strength`; further KHR PBR extensions become separate bins when added. One BRDF: glTF Appendix B GGX with VNDF sampling (PBR plan B2). Neural materials (cooperative vectors) are optional (§15).
+glTF 2.0 metallic-roughness, `KHR_lights_punctual`, `KHR_texture_transform`, `KHR_materials_emissive_strength`, and `KHR_materials_pbrSpecularGlossiness` (a row flag inside the `Standard` bin: its diffuse and specular-glossiness textures use the base-color and metal-rough slots, and `sampleMaterial` returns the extension's `cDiff` and `F0` directly; Bistro's materials). Further KHR PBR extensions become separate bins when added. One BRDF: glTF Appendix B GGX with VNDF sampling (PBR plan B2). Neural materials (cooperative vectors) are optional (§15).
 
 ---
 
@@ -890,6 +890,7 @@ Root cause of the drift: the same facts (vis-buffer format, the §9.3 guide tabl
 
 | Date | Change |
 |---|---|
+| 2026-11-21 | §9.4: `KHR_materials_pbrSpecularGlossiness` is read (Bistro, C-M7-1); `GpuMaterial` keeps 240 B, its pads now hold `specularFactor` and `glossinessFactor` |
 | 2026-11-20 | Consistency pass: §11.7 separates the gated converged ReSTIR GI settings from the shipped ones (+8.1% / +1.7%); the floor-tier half-resolution indirect marked as target, not built (§5, §11.3, C-G2-1); §11.3 names the off-by-default X₂ options (O2, O6) |
 | 2026-11-20 | Doc sync across `engine_spec.md`, `pbr_implementation_plan.md`, `shader_architecture_plan.md`, `resource_architecture.md` and `considerations.md`: updated M4 built status, §16.1/§16.2, §17 SER shelving, §11.6/§11.7 order, §1.1/§4 S6/§8.1 A6/§18 rows, actual shader/host layouts and struct sizes (`GpuFrameRoot` 192 B, `GpuTargets` 208 B, `GpuRtxdiConstants` 496 B, `GpuNrcConstants` 168 B) |
 | 2026-11-20 | New milestone M8 "Optimization and fixes" (§16.2, [spec/m8](../spec/m8/README.md)): the RTXDI and NRC sample reviews merged into [m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md). Asset pipeline moves to M9, the 1.0 goal (Bistro) to M10; earlier changelog rows keep the old numbers |

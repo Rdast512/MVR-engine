@@ -65,8 +65,8 @@ Missing texture = `1`. The row stores `kNoneIndex` for it; fetch through `sample
 
 | Slot | Space | Channels | Format |
 |---|---|---|---|
-| baseColor | sRGB RGB, linear A | albedo / metal F0; A coverage | `*_SRGB` |
-| metallicRoughness | linear | **B metal, G roughness**; ignore R,A | `*_UNORM` |
+| baseColor | sRGB RGB, linear A | albedo / metal F0 (spec-gloss: diffuse); A coverage | `*_SRGB` |
+| metallicRoughness | linear | **B metal, G roughness**; ignore R,A (spec-gloss: sRGB RGB specular, linear A glossiness, `*_SRGB`) | `*_UNORM` |
 | normal | linear | RGB; ignore A | `*_UNORM` |
 | occlusion | linear | **R only** | `*_UNORM` |
 | emissive | sRGB | RGB; ignore A | `*_SRGB` |
@@ -85,7 +85,17 @@ emissive  = emissiveFactor * emissiveStrength * sample_srgb(emissiveTex).rgb   /
 
 UV: stored as in the file, with no flip (glTF and Vulkan share a top-left origin). Normal: OpenGL +Y up, `scale` on XY then normalize, `B = cross(N,T)*tangent.w`. Missing `TANGENT` on a normal-mapped primitive is generated at load (MikkTSpace-compatible `meshopt_generateTangents`, plan A4); missing `NORMAL` becomes flat normals. A4 generates both at load; the resolve's fallbacks remain only as guards. Normals and tangents are mesh-local: use the node instance's normal matrix and negate `tangent.w` on mirrored placements (`FlipWinding`).
 
-**Unlit (`KHR_materials_unlit`):** `sampleMaterial` returns `baseColor = 0`, `metallic = 0` and puts the color into `emissive`, so every consumer handles unlit with no special case.
+**Unlit (`KHR_materials_unlit`):** `sampleMaterial` returns `cDiff = 0`, `f0 = 0.04` with a zero specular weight, and puts the color into `emissive`, so every consumer handles unlit with no special case.
+
+**Specular-glossiness (`KHR_materials_pbrSpecularGlossiness`):** it replaces metallic-roughness when present, as the extension specifies. The loader puts `diffuseFactor` and `diffuseTexture` in the base-color slot, so coverage, alpha test, OMM and the alpha raster bin are unchanged. `specularGlossinessTexture` goes in the metal-rough slot (sRGB RGB specular, linear A glossiness), and the row flag `kMaterialFlagSpecularGlossiness` switches `sampleMaterial` to the extension's own model, which metallic and base color cannot express:
+
+```
+F0        = saturate(specularFactor * sg.rgb)
+cDiff     = diffuse * (1 - max(F0.r, F0.g, F0.b))
+roughness = saturate(1 - glossinessFactor * sg.a)
+```
+
+`SampledMaterial` therefore carries `cDiff` and `f0`, not base color and metallic; `fromMaterial` passes them through. NVIDIA's vk_gltf_renderer instead converts per pixel to metallic-roughness with a metal threshold on the specular color, which loses the diffuse color of any surface it calls metal. `SpecGlossVsMetalRough` in the guide capture holds both workflows side by side.
 
 Defaults if `pbrMetallicRoughness` omitted: **metallic 1, roughness 1, white**. That is a rough metal, not grey plastic.
 

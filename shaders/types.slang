@@ -174,6 +174,7 @@ public static const uint kMaterialFlagUvTransformMetalRough = 1u << 5;
 public static const uint kMaterialFlagUvTransformNormal = 1u << 6;
 public static const uint kMaterialFlagUvTransformOcclusion = 1u << 7;
 public static const uint kMaterialFlagUvTransformEmissive = 1u << 8;
+public static const uint kMaterialFlagSpecularGlossiness = 1u << 9;
 public static const uint kMaterialUvSlotCount = 5;
 
 // one meshlet cull work item: one GpuMeshletGroup of one primitive placed by one node instance
@@ -364,11 +365,14 @@ public struct GpuMaterial
     public uint8_t pad0;
     public uint8_t pad1;
     public uint8_t pad2;
-    public uint3 pad3;
+    // read only under kMaterialFlagSpecularGlossiness
+    public float3 specularFactor;
 
     // valid only where the slot's kMaterialFlagUvTransform* bit is set
     public GpuUvMatrix uvMatrices[kMaterialUvSlotCount];
-    public uint2 pad4;
+    // read only under kMaterialFlagSpecularGlossiness
+    public float glossinessFactor;
+    public uint pad4;
 };
 
 // GpuFrameRoot.lights: model space, placed by passes/light_world.slang into GpuFrameRoot.worldLights each frame

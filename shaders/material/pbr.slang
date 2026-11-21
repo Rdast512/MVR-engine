@@ -4,7 +4,11 @@ import types;
 import core.binding;
 import geometry.surface;
 
-// glTF metallic-roughness material at a surface (spec/pbr_implementation_plan.md B1)
+// glTF metallic-roughness material at a surface (spec/pbr_implementation_plan.md B1), or a
+// KHR_materials_pbrSpecularGlossiness one in the same slots
+
+// dielectric reflectance at normal incidence
+public static const float kDielectricF0 = 0.04;
 
 // index GpuMaterial.uvMatrices; same order as the kMaterialFlagUvTransform* bits
 static const uint kUvSlotBaseColor = 0;
@@ -15,9 +19,10 @@ static const uint kUvSlotEmissive = 4;
 
 public struct SampledMaterial
 {
-    public float3 baseColor; // linear, x COLOR_0
+    // glTF appendix B: spec-gloss sets both directly, which metallic and base color cannot express
+    public float3 cDiff; // linear, x COLOR_0
+    public float3 f0;
     public float opacity;
-    public float metallic;
     public float roughness; // perceptual
     public float3 emissive;
     public float ao;
@@ -158,18 +163,29 @@ public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, flo
     const float4 baseColor = material.baseColorFactor * float4(surface.color, 1.0) *
         sampleSlot(material, kUvSlotBaseColor, material.baseColorTex, material.baseColorSamp, material.baseColorUv,
                    surface, lodBias, one);
-    // B metal, G rough
-    const float4 metalRough = sampleSlot(material, kUvSlotMetalRough, material.metalRoughTex, material.metalRoughSamp,
+    // metal-rough: B metal, G rough; spec-gloss: RGB specular (sRGB view), A glossiness
+    const float4 parameters = sampleSlot(material, kUvSlotMetalRough, material.metalRoughTex, material.metalRoughSamp,
                                          material.metalRoughUv, surface, lodBias, one);
     const float occlusion = sampleSlot(material, kUvSlotOcclusion, material.occlusionTex, material.occlusionSamp,
                                        material.occlusionUv, surface, lodBias, one).r;
     const float3 emissive = sampleEmissive(material, surface, lodBias);
 
     SampledMaterial result;
-    result.baseColor = baseColor.rgb;
     result.opacity = baseColor.a;
-    result.metallic = saturate(material.metallicFactor * metalRough.b);
-    result.roughness = saturate(material.roughnessFactor * metalRough.g);
+    if ((material.flags & kMaterialFlagSpecularGlossiness) != 0)
+    {
+        // the extension's model: F0 = specular, cDiff = diffuse (1 - max(specular)), roughness = 1 - glossiness
+        result.f0 = saturate(material.specularFactor * parameters.rgb);
+        result.cDiff = baseColor.rgb * (1.0 - max(result.f0.r, max(result.f0.g, result.f0.b)));
+        result.roughness = saturate(1.0 - material.glossinessFactor * parameters.a);
+    }
+    else
+    {
+        const float metallic = saturate(material.metallicFactor * parameters.b);
+        result.cDiff = baseColor.rgb * (1.0 - metallic);
+        result.f0 = lerp(float3(kDielectricF0, kDielectricF0, kDielectricF0), baseColor.rgb, metallic);
+        result.roughness = saturate(material.roughnessFactor * parameters.g);
+    }
     result.ao = lerp(1.0, occlusion, material.occlusionStrength);
     result.emissive = emissive;
     result.n = surface.normal;
@@ -208,9 +224,9 @@ public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, flo
     // unlit: no diffuse or specular response, the color is all emission
     if (isUnlit)
     {
-        result.emissive = result.baseColor;
-        result.baseColor = float3(0.0, 0.0, 0.0);
-        result.metallic = 0.0;
+        result.emissive = baseColor.rgb;
+        result.cDiff = float3(0.0, 0.0, 0.0);
+        result.f0 = float3(kDielectricF0, kDielectricF0, kDielectricF0);
         result.specularWeight = 0.0;
     }
     return result;

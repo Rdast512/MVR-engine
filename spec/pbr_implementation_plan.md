@@ -104,7 +104,7 @@ Every ray pass reads the TLAS address from `GpuFrameRoot.tlas`: the one PTLAS (C
 | 16 | **Geometry processing:** meshoptimizer v1.3 for missing tangents (`meshopt_generateTangents`, `meshopt_TangentCompatible`), missing normals and clusters (`clusterlod.h` level 0). OMM baking is the NVIDIA OMM SDK's CPU baker. No homegrown version of any of these |
 | 17 | **Static geometry only** (spec §7.3): no skinning or morph targets. The animation code is removed in M0, before A4 |
 | 18 | **Texture LOD:** the resolve uses `SampleGrad` with analytic barycentric gradients; ray hits use ray-cone gradients through the same function. LOD bias `log2(render / display)` from M3. Implicit-LOD `Sample` only in the alpha-tested fragment shader |
-| 19 | **Material model** (spec §9.4): glTF metallic-roughness, `KHR_texture_transform`, `KHR_materials_emissive_strength`. Further KHR PBR extensions become separate material bins (M7+) |
+| 19 | **Material model** (spec §9.4): glTF metallic-roughness, `KHR_texture_transform`, `KHR_materials_emissive_strength`, and `KHR_materials_pbrSpecularGlossiness` as a row flag in the `Standard` bin (2026-11-21, Bistro). Further KHR PBR extensions become separate material bins (M7+) |
 
 ---
 

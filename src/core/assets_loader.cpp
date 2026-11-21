@@ -740,6 +740,27 @@ namespace
                 valueAsFloat(&value->array_data[2], fallback.z)};
     }
 
+    static glm::vec4 valueAsVec4(const tg3_value* value, glm::vec4 fallback)
+    {
+        if (value == nullptr || value->type != TG3_VALUE_ARRAY || value->array_data == nullptr || value->array_count < 4) {
+            return fallback;
+        }
+        return {valueAsFloat(&value->array_data[0], fallback.x), valueAsFloat(&value->array_data[1], fallback.y),
+                valueAsFloat(&value->array_data[2], fallback.z), valueAsFloat(&value->array_data[3], fallback.w)};
+    }
+
+    constexpr std::string_view kSpecularGlossinessExtension = "KHR_materials_pbrSpecularGlossiness";
+
+    // the glTF texture the base-color slot samples (alpha test, OMM): spec-gloss diffuse replaces the core one, as in
+    // parseGltfMaterialPbrExtensions
+    static int32_t baseColorTextureIndex(const tg3_material& material)
+    {
+        if (const tg3_value* specularGlossiness = findExtensionValue(material.ext, kSpecularGlossinessExtension)) {
+            return valueAsInt(objectField(objectField(specularGlossiness, "diffuseTexture"), "index"), -1);
+        }
+        return material.pbr_metallic_roughness.base_color_texture.index;
+    }
+
     static void parseTextureTransform(const tg3_value* transform, uint8_t& uv, MaterialUvTransform& xform)
     {
         if (transform == nullptr) {
@@ -805,6 +826,29 @@ namespace
                 ext.flags |= MaterialExtFlag::Unlit;
                 gpu.flags |= GpuMaterialFlag::Unlit;
                 logDebug(std::format("glTF {} KHR_materials_unlit", owner), "AssetLoader");
+            } else if (name == kSpecularGlossinessExtension) {
+                // replaces metal-rough (the spec's precedence): diffuse takes the base-color slot, so alpha test, OMM
+                // and the alpha raster bin read it unchanged; specularGlossinessTexture takes the metal-rough slot
+                gpu.flags |= GpuMaterialFlag::SpecularGlossiness;
+                gpu.baseColorFactor = valueAsVec4(objectField(value, "diffuseFactor"), glm::vec4{1.0f});
+                gpu.specularFactor = valueAsVec3(objectField(value, "specularFactor"), glm::vec3{1.0f});
+                gpu.glossinessFactor = valueAsFloat(objectField(value, "glossinessFactor"), 1.0f);
+                const MaterialTextureRef diffuse = parseExtensionTexture(ctx, value, "diffuseTexture", owner);
+                gpu.baseColorTex = diffuse.tex;
+                gpu.baseColorSamp = diffuse.samp;
+                gpu.baseColorUv = diffuse.uv;
+                ext.baseColorUv = diffuse.uvXform;
+                const MaterialTextureRef specularGlossiness =
+                    parseExtensionTexture(ctx, value, "specularGlossinessTexture", owner);
+                gpu.metalRoughTex = specularGlossiness.tex;
+                gpu.metalRoughSamp = specularGlossiness.samp;
+                gpu.metalRoughUv = specularGlossiness.uv;
+                ext.metalRoughUv = specularGlossiness.uvXform;
+                logDebug(std::format("glTF {} {} diffuse=({}, {}, {}, {}) specular=({}, {}, {}) glossiness={}", owner,
+                                      name, gpu.baseColorFactor.r, gpu.baseColorFactor.g, gpu.baseColorFactor.b,
+                                      gpu.baseColorFactor.a, gpu.specularFactor.r, gpu.specularFactor.g,
+                                      gpu.specularFactor.b, gpu.glossinessFactor),
+                          "AssetLoader");
             } else if (name == "KHR_materials_emissive_strength") {
                 ext.flags |= MaterialExtFlag::EmissiveStrength;
                 ext.emissiveStrength = valueAsFloat(objectField(value, "emissiveStrength"), 1.0f);
@@ -1203,7 +1247,7 @@ namespace
                                       gltfTextureSlotColorSpace("occlusionTexture"));
             (void)resolveTextureImage(ctx, material.emissive_texture.index,
                                       gltfTextureSlotColorSpace("emissiveTexture"));
-            if (const std::optional<uint32_t> imageRow = textureImageRow(ctx, pbr.base_color_texture.index);
+            if (const std::optional<uint32_t> imageRow = textureImageRow(ctx, baseColorTextureIndex(material));
                 imageRow && hasAlphaMode(material)) {
                 ctx.images[*imageRow].needsAlpha = true;
             }
@@ -1903,7 +1947,7 @@ namespace
         if (gltfMaterial < 0 || static_cast<uint32_t>(gltfMaterial) >= model.materials_count) {
             return std::nullopt;
         }
-        const int32_t texture = model.materials[gltfMaterial].pbr_metallic_roughness.base_color_texture.index;
+        const int32_t texture = baseColorTextureIndex(model.materials[gltfMaterial]);
         const std::optional<uint32_t> image = textureImageRow(ctx, texture);
         if (!image) {
             return std::nullopt;

@@ -153,6 +153,8 @@ namespace GpuMaterialFlag
     inline constexpr uint32_t UvTransformNormal = 1u << 6;
     inline constexpr uint32_t UvTransformOcclusion = 1u << 7;
     inline constexpr uint32_t UvTransformEmissive = 1u << 8;
+    // KHR_materials_pbrSpecularGlossiness: the base-color slot holds diffuse, the metal-rough slot specular-glossiness
+    inline constexpr uint32_t SpecularGlossiness = 1u << 9;
 } // namespace GpuMaterialFlag
 
 inline constexpr uint32_t kMaterialUvSlotCount = 5;
@@ -199,11 +201,14 @@ struct alignas(16) GpuMaterial
     uint8_t pad0 = 0;
     uint8_t pad1 = 0;
     uint8_t pad2 = 0;
-    std::array<uint32_t, 3> pad3{};
+    // read only under GpuMaterialFlag::SpecularGlossiness
+    glm::vec3 specularFactor{1.0f};
 
     // base color, metal-rough, normal, occlusion, emissive; valid only where the GpuMaterialFlag::UvTransform* bit is set
     std::array<GpuUvMatrix, kMaterialUvSlotCount> uvMatrices{};
-    std::array<uint32_t, 2> pad4{};
+    // read only under GpuMaterialFlag::SpecularGlossiness
+    float glossinessFactor = 1.0f;
+    uint32_t pad4 = 0;
 
     bool operator==(const GpuMaterial&) const = default;
 };
@@ -234,9 +239,10 @@ static_assert(offsetof(GpuMaterial, emissiveUv) == 96);
 static_assert(offsetof(GpuMaterial, pad0) == 97);
 static_assert(offsetof(GpuMaterial, pad1) == 98);
 static_assert(offsetof(GpuMaterial, pad2) == 99);
-static_assert(offsetof(GpuMaterial, pad3) == 100);
+static_assert(offsetof(GpuMaterial, specularFactor) == 100);
 static_assert(offsetof(GpuMaterial, uvMatrices) == 112);
-static_assert(offsetof(GpuMaterial, pad4) == 232);
+static_assert(offsetof(GpuMaterial, glossinessFactor) == 232);
+static_assert(offsetof(GpuMaterial, pad4) == 236);
 
 // GPU mirror of one primitive. Values are relative to the owning model's slices (GpuModel)
 struct GpuPrimitive

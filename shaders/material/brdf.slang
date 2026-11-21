@@ -5,9 +5,6 @@ import material.pbr;
 
 // glTF appendix B metallic-roughness brdf with vndf sampling; pixels, hits and sdk bridges all call these
 
-// dielectric reflectance at normal incidence
-public static const float kDielectricF0 = 0.04;
-
 // at a2 = 1e-8 float rounds a2 - 1 to -1 and D(nDotH = 1) is inf
 static const float kMinAlpha = 1e-3;
 static const float kMinNDotV = 1e-4;
@@ -22,8 +19,8 @@ public struct BrdfInputs
 public BrdfInputs fromMaterial(SampledMaterial material)
 {
     BrdfInputs inputs;
-    inputs.cDiff = material.baseColor * (1.0 - material.metallic);
-    inputs.f0 = lerp(float3(kDielectricF0, kDielectricF0, kDielectricF0), material.baseColor, material.metallic);
+    inputs.cDiff = material.cDiff;
+    inputs.f0 = material.f0;
     return inputs;
 }
 

@@ -1274,7 +1274,13 @@ void EngineUi::drawAssetsPanel() const
             if (isOpen) {
                 propertyRow("Base color", "({:.2f}, {:.2f}, {:.2f}, {:.2f})", m.baseColorFactor.r,
                             m.baseColorFactor.g, m.baseColorFactor.b, m.baseColorFactor.a);
-                propertyRow("Metallic / roughness", "{:.2f} / {:.2f}", m.metallicFactor, m.roughnessFactor);
+                const bool isSpecularGlossiness = (m.flags & GpuMaterialFlag::SpecularGlossiness) != 0;
+                if (isSpecularGlossiness) {
+                    propertyRow("Specular / glossiness", "({:.2f}, {:.2f}, {:.2f}) / {:.2f}", m.specularFactor.r,
+                                m.specularFactor.g, m.specularFactor.b, m.glossinessFactor);
+                } else {
+                    propertyRow("Metallic / roughness", "{:.2f} / {:.2f}", m.metallicFactor, m.roughnessFactor);
+                }
                 propertyRow("Emissive", "({:.2f}, {:.2f}, {:.2f})", m.emissiveFactor.r, m.emissiveFactor.g,
                             m.emissiveFactor.b);
                 propertyRow("Normal scale", "{:.2f}", m.normalScale);
@@ -1282,7 +1288,8 @@ void EngineUi::drawAssetsPanel() const
                 propertyRow("Alpha", "{}, cutoff {:.2f}{}", alphaModeName(m.flags), m.alphaCutoff,
                             (m.flags & GpuMaterialFlag::DoubleSided) != 0 ? ", double sided" : "");
                 textureRow(context.textures, "Albedo", m.baseColorTex);
-                textureRow(context.textures, "Metallic-roughness", m.metalRoughTex);
+                textureRow(context.textures, isSpecularGlossiness ? "Specular-glossiness" : "Metallic-roughness",
+                           m.metalRoughTex);
                 textureRow(context.textures, "Normal", m.normalTex);
                 textureRow(context.textures, "Occlusion", m.occlusionTex);
                 textureRow(context.textures, "Emissive map", m.emissiveTex);

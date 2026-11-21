@@ -16,12 +16,15 @@ enum class TextureColorSpace : uint8_t
 // glTF texture-info key -> sampling color space; every slot not listed holds linear data
 [[nodiscard]] constexpr TextureColorSpace gltfTextureSlotColorSpace(std::string_view slot) noexcept
 {
-    constexpr std::array<std::string_view, 5> kSrgbSlots{
+    constexpr std::array<std::string_view, 7> kSrgbSlots{
         "baseColorTexture",
         "emissiveTexture",
         "specularColorTexture",
         "sheenColorTexture",
         "diffuseTransmissionColorTexture",
+        // KHR_materials_pbrSpecularGlossiness; its alpha (glossiness) stays linear in sRGB formats
+        "diffuseTexture",
+        "specularGlossinessTexture",
     };
     return std::ranges::find(kSrgbSlots, slot) != kSrgbSlots.end() ? TextureColorSpace::Srgb
                                                                    : TextureColorSpace::Linear;

@@ -259,8 +259,9 @@ namespace
             LAYOUT_FIELD(GpuMaterial, pad0),
             LAYOUT_FIELD(GpuMaterial, pad1),
             LAYOUT_FIELD(GpuMaterial, pad2),
-            LAYOUT_FIELD(GpuMaterial, pad3),
+            LAYOUT_FIELD(GpuMaterial, specularFactor),
             LAYOUT_FIELD(GpuMaterial, uvMatrices),
+            LAYOUT_FIELD(GpuMaterial, glossinessFactor),
             LAYOUT_FIELD(GpuMaterial, pad4),
         }},
         {"GpuLight", sizeof(GpuLight), {

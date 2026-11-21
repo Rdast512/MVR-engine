@@ -104,7 +104,7 @@ private:
     static constexpr size_t kMirrorShippedShot = 4;
     static constexpr size_t kMirrorGeneratedShot = 5;
     static constexpr size_t kFlatNormalsShot = 7;
-    static constexpr std::array<Shot, 17> kShots = {{
+    static constexpr std::array<Shot, 18> kShots = {{
         {"gltf/2.0/MetalRoughSpheres/glTF", "MetalRoughSpheres_front", Variant::AsShipped, kFront},
         // the plane lies in xz with its normal +y
         {"gltf/2.0/TwoSidedPlane/glTF", "TwoSidedPlane_top", Variant::AsShipped, {0.0f, 0.8f, 0.6f}},
@@ -141,6 +141,9 @@ private:
         // then a textured emitter
         {"gltf/2.0/EmissiveStrengthTest/glTF", "EmissiveStrengthTest_front", Variant::AsShipped, kFront},
         {"gltf/2.0/DamagedHelmet/glTF", "DamagedHelmet_front", Variant::AsShipped, kFront},
+        // KHR_materials_pbrSpecularGlossiness: the right bottle and label are spec-gloss, the left ones metal-rough;
+        // the sample's contract is that both look almost the same
+        {"gltf/2.0/SpecGlossVsMetalRough/glTF", "SpecGlossVsMetalRough_front", Variant::AsShipped, kFront},
     }};
     static constexpr std::array<NormalCheck, 2> kNormalChecks = {{
         {"A4 generated tangents match the shipped ones (NormalTangentMirrorTest shading normal)", kMirrorGeneratedShot,

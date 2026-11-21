@@ -10,6 +10,11 @@
 // -> UASTC encode (libktx/Basis) -> transcode to BC7 -> zstd -> write. BC7 needs no transcoding at load:
 // the engine's KTX path uploads it as-is.
 //
+// DDS sources (DX10 header, BCn) are already compressed with their own mips: their blocks are copied into
+// the KTX2 unchanged (lossless), and only the sRGB/UNORM variant follows the material usage. A texture's
+// MSFT_texture_dds image becomes its source and the extension is dropped; images left unreferenced by that
+// are removed.
+//
 // Color space comes from how materials sample the image (rules shared with the engine loader). An image
 // sampled as both sRGB and linear gets two files, and the linear uses are pointed at a cloned image.
 
@@ -28,11 +33,13 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -42,6 +49,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -188,6 +196,7 @@ namespace
         bool usedSrgb = false;
         bool usedLinear = false;
         bool usedAsNormal = false;
+        bool isDds = false; // repacked, not decoded
         std::string label; // for logs
         std::string stem; // output base name
         std::optional<fs::path> file; // URI image
@@ -215,6 +224,13 @@ namespace
         return lower == "image/png" || lower == "image/jpeg" || lower == ".png" || lower == ".jpg" || lower == ".jpeg";
     }
 
+    bool isDdsExtension(std::string_view ext)
+    {
+        return ext.size() == 4 && ext[0] == '.' && std::tolower(static_cast<unsigned char>(ext[1])) == 'd' &&
+            std::tolower(static_cast<unsigned char>(ext[2])) == 'd' &&
+            std::tolower(static_cast<unsigned char>(ext[3])) == 's';
+    }
+
     std::vector<uint8_t> readFile(const fs::path& path)
     {
         std::ifstream file(path, std::ios::binary);
@@ -222,6 +238,101 @@ namespace
             throw std::runtime_error("cannot open " + path.string());
         }
         return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    }
+
+    // ── DDS source ───────────────────────────────────────────────
+
+    struct BcFormat
+    {
+        uint32_t dxgiUnorm = 0;
+        uint32_t dxgiSrgb = 0; // 0: no sRGB variant
+        VkFormat unorm = VK_FORMAT_UNDEFINED;
+        VkFormat srgb = VK_FORMAT_UNDEFINED;
+        uint32_t blockBytes = 0;
+    };
+
+    // DXGI_FORMAT values of the DX10 header; sRGB and UNORM variants share the block encoding
+    constexpr std::array<BcFormat, 5> kBcFormats{{
+        {71, 72, VK_FORMAT_BC1_RGBA_UNORM_BLOCK, VK_FORMAT_BC1_RGBA_SRGB_BLOCK, 8},
+        {77, 78, VK_FORMAT_BC3_UNORM_BLOCK, VK_FORMAT_BC3_SRGB_BLOCK, 16},
+        {80, 0, VK_FORMAT_BC4_UNORM_BLOCK, VK_FORMAT_UNDEFINED, 8},
+        {83, 0, VK_FORMAT_BC5_UNORM_BLOCK, VK_FORMAT_UNDEFINED, 16},
+        {98, 99, VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_BC7_SRGB_BLOCK, 16},
+    }};
+
+    // magic + DDS_HEADER + DDS_HEADER_DXT10
+    constexpr size_t kDdsHeaderBytes = 4 + 124 + 20;
+
+    struct DdsImage
+    {
+        const BcFormat* format = nullptr;
+        bool labelledSrgb = false;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t levels = 0;
+    };
+
+    uint32_t readU32(std::span<const uint8_t> bytes, size_t offset)
+    {
+        uint32_t value = 0;
+        std::memcpy(&value, bytes.data() + offset, sizeof(value));
+        return value;
+    }
+
+    uint64_t bcLevelBytes(const BcFormat& format, uint32_t width, uint32_t height, uint32_t level)
+    {
+        const uint64_t blocksX = (std::max(1u, width >> level) + 3) / 4;
+        const uint64_t blocksY = (std::max(1u, height >> level) + 3) / 4;
+        return blocksX * blocksY * format.blockBytes;
+    }
+
+    // a single 2D BCn image with a DX10 header whose mips fit in fileBytes; nullopt otherwise
+    std::optional<DdsImage> parseDds(std::span<const uint8_t> header, uint64_t fileBytes)
+    {
+        constexpr uint32_t kDdsMagic = 0x20534444; // "DDS "
+        constexpr uint32_t kFourCcDx10 = 0x30315844; // "DX10"
+        constexpr uint32_t kPixelFormatFourCc = 0x4;
+        constexpr uint32_t kFlagMipMapCount = 0x20000;
+        constexpr uint32_t kDimensionTexture2D = 3;
+        constexpr uint32_t kMiscTextureCube = 0x4;
+        if (header.size() < kDdsHeaderBytes || readU32(header, 0) != kDdsMagic || readU32(header, 4) != 124 ||
+            (readU32(header, 80) & kPixelFormatFourCc) == 0 || readU32(header, 84) != kFourCcDx10 ||
+            readU32(header, 132) != kDimensionTexture2D || (readU32(header, 136) & kMiscTextureCube) != 0 ||
+            readU32(header, 140) != 1) {
+            return std::nullopt;
+        }
+        const uint32_t dxgi = readU32(header, 128);
+        const auto format =
+            std::ranges::find_if(kBcFormats, [&](const BcFormat& f) { return f.dxgiUnorm == dxgi || f.dxgiSrgb == dxgi; });
+        DdsImage image{.format = format == kBcFormats.end() ? nullptr : &*format,
+                       .labelledSrgb = format != kBcFormats.end() && format->dxgiSrgb == dxgi,
+                       .width = readU32(header, 16),
+                       .height = readU32(header, 12),
+                       .levels = (readU32(header, 8) & kFlagMipMapCount) != 0 ? std::max(1u, readU32(header, 28)) : 1u};
+        if (image.format == nullptr || image.width == 0 || image.height == 0 ||
+            image.levels > static_cast<uint32_t>(std::bit_width(std::max(image.width, image.height)))) {
+            return std::nullopt;
+        }
+        uint64_t dataBytes = 0;
+        for (uint32_t level = 0; level < image.levels; ++level) {
+            dataBytes += bcLevelBytes(*image.format, image.width, image.height, level);
+        }
+        if (kDdsHeaderBytes + dataBytes > fileBytes) {
+            return std::nullopt;
+        }
+        return image;
+    }
+
+    std::optional<DdsImage> readDdsHeader(const fs::path& path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        std::array<uint8_t, kDdsHeaderBytes> header{};
+        if (!file.read(reinterpret_cast<char*>(header.data()), header.size())) {
+            return std::nullopt;
+        }
+        std::error_code ec;
+        const uint64_t fileBytes = fs::file_size(path, ec);
+        return ec ? std::nullopt : parseDds(header, fileBytes);
     }
 
     // ── mip chain ────────────────────────────────────────────────
@@ -311,16 +422,15 @@ namespace
         }
     }
 
-    // mip chain -> UASTC -> BC7 (sRGB or UNORM from the DFD) -> zstd
-    KtxPtr encodeBc7(const std::vector<Level>& levels, Space space, const Options& options)
+    KtxPtr createKtx(VkFormat format, uint32_t width, uint32_t height, uint32_t levels)
     {
         ktxTextureCreateInfo createInfo{};
-        createInfo.vkFormat = space == Space::Srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-        createInfo.baseWidth = levels[0].width;
-        createInfo.baseHeight = levels[0].height;
+        createInfo.vkFormat = format;
+        createInfo.baseWidth = width;
+        createInfo.baseHeight = height;
         createInfo.baseDepth = 1;
         createInfo.numDimensions = 2;
-        createInfo.numLevels = static_cast<uint32_t>(levels.size());
+        createInfo.numLevels = levels;
         createInfo.numLayers = 1;
         createInfo.numFaces = 1;
         createInfo.isArray = KTX_FALSE;
@@ -328,7 +438,14 @@ namespace
 
         ktxTexture2* raw = nullptr;
         check(ktxTexture2_Create(&createInfo, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &raw), "ktxTexture2_Create");
-        KtxPtr texture(raw);
+        return KtxPtr(raw);
+    }
+
+    // mip chain -> UASTC -> BC7 (sRGB or UNORM from the DFD) -> zstd
+    KtxPtr encodeBc7(const std::vector<Level>& levels, Space space, const Options& options)
+    {
+        KtxPtr texture = createKtx(space == Space::Srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM,
+                                   levels[0].width, levels[0].height, static_cast<uint32_t>(levels.size()));
         for (uint32_t level = 0; level < levels.size(); ++level) {
             check(ktxTexture_SetImageFromMemory(ktxTexture(texture.get()), level, 0, 0, levels[level].rgba.data(),
                                                 levels[level].rgba.size()),
@@ -371,16 +488,43 @@ namespace
         uint64_t fileBytes = 0;
     };
 
-    Result convert(const ImageInfo& image, const Job& job, const Options& options)
+    // BCn blocks copied unchanged; the sRGB/UNORM variant follows the material usage, not the DDS label
+    KtxPtr repackDds(const fs::path& path, Space space, const Options& options, Result& result)
     {
-        Result result{};
-        std::error_code ec;
-        if (!options.force && fs::exists(job.output, ec) && fs::last_write_time(job.output, ec) >= image.sourceTime) {
-            result.skipped = true;
-            result.fileBytes = fs::file_size(job.output, ec);
-            return result;
+        const std::vector<uint8_t> bytes = readFile(path);
+        const std::optional<DdsImage> dds = parseDds(bytes, bytes.size());
+        if (!dds) {
+            throw std::runtime_error("unsupported DDS (expected one 2D BC1/3/4/5/7 image with a DX10 header)");
+        }
+        const VkFormat format = space == Space::Srgb ? dds->format->srgb : dds->format->unorm;
+        if (format == VK_FORMAT_UNDEFINED) {
+            throw std::runtime_error("sampled as sRGB, but its BC format has no sRGB variant");
         }
 
+        KtxPtr texture = createKtx(format, dds->width, dds->height, dds->levels);
+        size_t offset = kDdsHeaderBytes;
+        for (uint32_t level = 0; level < dds->levels; ++level) {
+            const uint64_t levelBytes = bcLevelBytes(*dds->format, dds->width, dds->height, level);
+            check(ktxTexture_SetImageFromMemory(ktxTexture(texture.get()), level, 0, 0, bytes.data() + offset,
+                                                levelBytes),
+                  "ktxTexture_SetImageFromMemory");
+            offset += levelBytes;
+            result.sourceBytes +=
+                uint64_t{std::max(1u, dds->width >> level)} * std::max(1u, dds->height >> level) * 4u;
+            result.gpuBytes += levelBytes;
+        }
+        if (options.zstdLevel > 0) {
+            check(ktxTexture2_DeflateZstd(texture.get(), options.zstdLevel), "ktxTexture2_DeflateZstd");
+        }
+        const bool relabelled = dds->labelledSrgb != (space == Space::Srgb);
+        result.message = std::format("{}x{} {} mips, DDS repacked{}", dds->width, dds->height, dds->levels,
+                                     relabelled ? (dds->labelledSrgb ? " (labelled sRGB)" : " (labelled UNORM)") : "");
+        return texture;
+    }
+
+    // decode -> CPU mip chain -> BC7
+    KtxPtr encodeDecoded(const ImageInfo& image, const Job& job, const Options& options, Result& result)
+    {
         int width = 0;
         int height = 0;
         int channels = 0;
@@ -389,9 +533,7 @@ namespace
             : stbi_load_from_memory(image.bytes.data(), static_cast<int>(image.bytes.size()), &width, &height,
                                     &channels, STBI_rgb_alpha);
         if (pixels == nullptr) {
-            result.failed = true;
-            result.message = std::format("decode failed: {}", stbi_failure_reason());
-            return result;
+            throw std::runtime_error(std::format("decode failed: {}", stbi_failure_reason()));
         }
         std::vector<Level> levels;
         levels.push_back({.width = static_cast<uint32_t>(width),
@@ -408,15 +550,28 @@ namespace
             // BC7: 16 B per 4x4 block
             result.gpuBytes += static_cast<uint64_t>((level.width + 3) / 4) * ((level.height + 3) / 4) * 16u;
         }
+        result.message = std::format("{}x{} {} mips", width, height, levels.size());
+        return encodeBc7(levels, job.space, options);
+    }
 
-        KtxPtr texture = encodeBc7(levels, job.space, options);
+    Result convert(const ImageInfo& image, const Job& job, const Options& options)
+    {
+        Result result{};
+        std::error_code ec;
+        if (!options.force && fs::exists(job.output, ec) && fs::last_write_time(job.output, ec) >= image.sourceTime) {
+            result.skipped = true;
+            result.fileBytes = fs::file_size(job.output, ec);
+            return result;
+        }
+
+        const KtxPtr texture = image.isDds ? repackDds(*image.file, job.space, options, result)
+                                           : encodeDecoded(image, job, options, result);
         const fs::path temp = fs::path(job.output).concat(".tmp");
         check(ktxTexture_WriteToNamedFile(ktxTexture(texture.get()), temp.string().c_str()),
               "ktxTexture_WriteToNamedFile");
         fs::remove(job.output, ec);
         fs::rename(temp, job.output);
         result.fileBytes = fs::file_size(job.output, ec);
-        result.message = std::format("{}x{} {} mips", width, height, levels.size());
         return result;
     }
 
@@ -461,6 +616,111 @@ namespace
         return cache.emplace(index, std::move(bytes)).first->second;
     }
 
+    // every images[] index a texture names: its source and each image extension's source
+    template <typename Visit>
+    void forEachImageRef(Json& textures, const Visit& visit)
+    {
+        for (Json& texture : textures) {
+            if (texture.contains("source") && texture["source"].is_number_integer()) {
+                visit(texture["source"]);
+            }
+            if (!texture.contains("extensions") || !texture["extensions"].is_object()) {
+                continue;
+            }
+            for (auto it = texture["extensions"].begin(); it != texture["extensions"].end(); ++it) {
+                Json& extension = it.value();
+                if (extension.is_object() && extension.contains("source") && extension["source"].is_number_integer()) {
+                    visit(extension["source"]);
+                }
+            }
+        }
+    }
+
+    // MSFT_texture_dds: a repackable DDS replaces the texture's fallback source and the extension goes; fallback
+    // images no texture names any more are removed
+    void adoptDdsSources(Json& gltf, const fs::path& modelDir)
+    {
+        constexpr const char* kDdsExtension = "MSFT_texture_dds";
+        if (!gltf.contains("images") || !gltf["images"].is_array() || !gltf.contains("textures") ||
+            !gltf["textures"].is_array()) {
+            return;
+        }
+        Json& images = gltf["images"];
+        Json& textures = gltf["textures"];
+        std::set<int64_t> replaced;
+        bool isExtensionLeft = false;
+        for (Json& texture : textures) {
+            if (!texture.contains("extensions") || !texture["extensions"].is_object() ||
+                !texture["extensions"].contains(kDdsExtension)) {
+                continue;
+            }
+            Json& extensions = texture["extensions"];
+            const Json& dds = extensions[kDdsExtension];
+            const int64_t source =
+                dds.is_object() && dds.contains("source") && dds["source"].is_number_integer() ? dds["source"].get<int64_t>()
+                                                                                                : -1;
+            const std::string uri = source >= 0 && static_cast<size_t>(source) < images.size()
+                ? images[static_cast<size_t>(source)].value("uri", "")
+                : std::string();
+            if (uri.empty() || isDataUri(uri) || hasScheme(uri) ||
+                !readDdsHeader(modelDir / fs::path(percentDecode(uri)))) {
+                isExtensionLeft = true;
+                continue;
+            }
+            if (texture.contains("source") && texture["source"].is_number_integer()) {
+                replaced.insert(texture["source"].get<int64_t>());
+            }
+            texture["source"] = source;
+            extensions.erase(kDdsExtension);
+            if (extensions.empty()) {
+                texture.erase("extensions");
+            }
+        }
+
+        std::set<int64_t> referenced;
+        forEachImageRef(textures, [&](const Json& ref) { referenced.insert(ref.get<int64_t>()); });
+        std::vector<int64_t> remap(images.size());
+        Json kept = Json::array();
+        for (size_t i = 0; i < images.size(); ++i) {
+            const auto index = static_cast<int64_t>(i);
+            remap[i] = replaced.contains(index) && !referenced.contains(index) ? -1 : static_cast<int64_t>(kept.size());
+            if (remap[i] >= 0) {
+                kept.push_back(images[i]);
+            }
+        }
+        if (kept.size() != images.size()) {
+            images = std::move(kept);
+            forEachImageRef(textures,
+                            [&](Json& ref)
+                            {
+                                const auto index = ref.get<int64_t>();
+                                if (index >= 0 && static_cast<size_t>(index) < remap.size()) {
+                                    ref = remap[static_cast<size_t>(index)];
+                                }
+                            });
+        }
+
+        if (isExtensionLeft) {
+            return;
+        }
+        for (const char* key : {"extensionsUsed", "extensionsRequired"}) {
+            if (!gltf.contains(key) || !gltf[key].is_array()) {
+                continue;
+            }
+            Json rest = Json::array();
+            for (const Json& name : gltf[key]) {
+                if (name != kDdsExtension) {
+                    rest.push_back(name);
+                }
+            }
+            if (rest.empty()) {
+                gltf.erase(key);
+            } else {
+                gltf[key] = std::move(rest);
+            }
+        }
+    }
+
     int run(const Options& options)
     {
         const fs::path modelPath = fs::absolute(resolveModel(options.input)).make_preferred();
@@ -474,6 +734,7 @@ namespace
         const std::vector<uint8_t> gltfBytes = readFile(modelPath);
         Json gltf = Json::parse(std::string(gltfBytes.begin(), gltfBytes.end()));
         const Json original = gltf;
+        adoptDdsSources(gltf, modelDir);
         Json& images = gltf["images"];
         Json& textures = gltf["textures"];
         if (!images.is_array() || !textures.is_array()) {
@@ -554,7 +815,9 @@ namespace
                 }
                 const fs::path file = modelDir / fs::path(percentDecode(sourceUri));
                 std::error_code ec;
-                if (!isPngOrJpeg(file.extension().string()) || !fs::exists(file, ec)) {
+                const std::string extension = file.extension().string();
+                info.isDds = isDdsExtension(extension);
+                if ((!isPngOrJpeg(extension) && !info.isDds) || !fs::exists(file, ec)) {
                     continue; // already KTX2 / other format, or an embedded source that is gone
                 }
                 info.file = file;
@@ -724,7 +987,7 @@ namespace
         std::cout << std::format("\n{} textures ({} converted, {} up-to-date, {} failed) in {:.1f} s on {} threads\n",
                                  jobs.size(), jobs.size() - skipped - failed, skipped, failed, seconds, threadCount);
         if (sourceBytes > 0) {
-            std::cout << std::format("GPU memory for converted textures: RGBA8 {:.1f} MiB -> BC7 {:.1f} MiB\n",
+            std::cout << std::format("GPU memory for converted textures: RGBA8 {:.1f} MiB -> BC {:.1f} MiB\n",
                                      sourceBytes / kMiB, gpuBytes / kMiB);
         }
         std::cout << std::format("KTX2 files: {:.1f} MiB\n{} {}\n", fileBytes / kMiB,
@@ -736,7 +999,8 @@ namespace
     {
         std::cout << "usage: gltf_ktx2 <model.gltf | model folder> [--force] [--jobs N] [--uastc-level 0-4] "
                      "[--zstd 0-22]\n"
-                     "  Converts PNG/JPEG textures to BC7 KTX2 next to their source images and updates the .gltf\n"
+                     "  Converts PNG/JPEG textures to BC7 KTX2 (DDS: BCn repacked) next to their source images and\n"
+                     "  updates the .gltf\n"
                      "  in place (the first change keeps <name>.gltf.bak).\n"
                      "  --force        reconvert even when the .ktx2 is newer than its source\n"
                      "  --jobs N       worker threads (default: all cores)\n"

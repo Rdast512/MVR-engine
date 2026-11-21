@@ -4,6 +4,8 @@ Converts the PNG/JPEG textures of a `.gltf` model to **BC7 KTX2** files with a f
 
 The engine then uploads the textures without decoding them or generating mips at load time. They also use about 4× less GPU memory. For Sponza, texture memory drops from 363 MiB to 91 MiB.
 
+DDS sources are already block-compressed. Their blocks and mips are copied into the KTX2 unchanged, so there is no quality loss and no re-encode. For Bistro, 338 DDS files (2.2 GB) become 843 MiB of KTX2 in about 35 s.
+
 ## Build
 
 The tool is a normal target in the engine's CMake project:
@@ -24,7 +26,12 @@ gltf_ktx2 <model.gltf | model folder> [options]
 build/windows-clang-release/gltf_ktx2.exe models/Sponza
 ```
 
-If you pass a folder, the tool uses the first `.gltf` inside it.
+If you pass a folder, the tool uses the first `.gltf` inside it. A folder with several `.gltf` files that share textures (Bistro) needs each file passed by path; the later runs find the textures up to date:
+
+```sh
+build/windows-clang-release/gltf_ktx2.exe models/bistro/bistro.gltf
+build/windows-clang-release/gltf_ktx2.exe models/bistro/bistro_without_paintings.gltf
+```
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -42,6 +49,7 @@ The exit code is `0` on success, `1` if any texture failed, and `2` for bad argu
 - **A backup is kept.** The first time the file changes, the original is saved as `<name>.gltf.bak`. To undo the conversion, copy the `.bak` back over the `.gltf`.
 - **The original URI is recorded.** Each converted image gets `extras.gltf_ktx2 = { "source": "<original uri>", "colorSpace": "srgb" | "linear" }`. Later runs use this to find the PNG/JPEG again.
 - **Source images are not deleted.** They are needed to reconvert.
+- **`MSFT_texture_dds` is resolved.** When a texture's DDS image can be repacked, it becomes the texture's `source`, and the extension is removed from the texture and from `extensionsUsed`. The fallback PNG/JPEG images that no texture references any more are removed from `images`. The tool prefers the DDS even when the fallback file exists, as the extension intends.
 
 ## Running it again
 
@@ -58,8 +66,10 @@ Embedded images can only be converted once, because their PNG/JPEG data is no lo
 
 The format of each texture depends on how the materials sample it. These are the same rules the engine loader uses:
 
-- **sRGB (`BC7_SRGB`):** `baseColorTexture`, `emissiveTexture`, `specularColorTexture`, `sheenColorTexture`, `diffuseTransmissionColorTexture`.
+- **sRGB (`BC7_SRGB`):** `baseColorTexture`, `emissiveTexture`, `specularColorTexture`, `sheenColorTexture`, `diffuseTransmissionColorTexture`, and `KHR_materials_pbrSpecularGlossiness`'s `diffuseTexture` and `specularGlossinessTexture`.
 - **Linear (`BC7_UNORM`):** every other `*Texture`, including those inside material extensions.
+
+A DDS keeps its block format (BC1, BC3, BC4, BC5 or BC7). Only the sRGB or UNORM variant follows these rules, not the DDS file's own label; the log says `(labelled …)` when the two differ. BC4 and BC5 have no sRGB variant, so sampling one as sRGB fails that texture.
 
 If one image is used both ways, the tool writes two files (`<name>_srgb.ktx2` and `<name>_linear.ktx2`). The linear uses are pointed at a new image and texture entry.
 
@@ -68,7 +78,7 @@ Mips are filtered in linear light for sRGB textures. Normal maps (`normalTexture
 ## Limitations
 
 - **Only `.gltf` files**, not `.glb`.
-- **Only PNG and JPEG sources.** Other formats and images that are already KTX2 are left alone.
+- **Only PNG, JPEG and DDS sources.** Other formats and images that are already KTX2 are left alone. A DDS must be a single 2D image with a DX10 header in BC1, BC3, BC4, BC5 or BC7; legacy FourCC headers, arrays, cube maps and embedded DDS are not read.
 - **The output only loads in this engine.** Standard glTF only allows KTX2 through `KHR_texture_basisu`, which requires Basis payloads, not BC7. Other viewers will not load the converted file.
 - **Normal maps are stored as BC7.** BC5 would be a better fit but isn't supported yet.
 - **The engine needs `textureCompressionBC`**, which it enables. All desktop GPUs support it.

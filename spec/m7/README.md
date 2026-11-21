@@ -34,7 +34,7 @@ M7 is done when:
 - `ENGINE_RT_CHECK`, `ENGINE_CULL_CHECK`, `ENGINE_MOTION_TEST`, `ENGINE_GUIDE_CAPTURE` and `ENGINE_GI_CHECK` pass, and validation and GPU-AV are clean;
 - C-F3-4, C-R32-3 and C-F3-5's emissive and presampling parts are closed.
 
-Engine spec §16.2 also names "Bistro emissives lit". Bistro is not in the repository (C-M7-1), so the acceptance above uses the glTF samples; Bistro is checked when the asset is added.
+Engine spec §16.2 also names "Bistro emissives lit". Bistro was not in the repository when M7 was planned, so the acceptance above uses the glTF samples. Since 2026-11-21 it is in `models/bistro` (untracked) with KTX2 textures, and its spec-gloss materials are read (C-M7-1, resolved); the "Bistro emissives lit" check is still to be run.
 
 ## Facts established while planning (2026-11-20)
 
