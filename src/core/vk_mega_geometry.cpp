@@ -152,25 +152,36 @@ MegaGeometry::MegaGeometry(const Device& device, const VkAllocator& allocator, F
 }
 
 MegaGeometry::OwnedBuffer MegaGeometry::createOwnedBuffer(vk::DeviceSize bytes, vk::DeviceSize alignment,
-                                                          vk::BufferUsageFlags2 usage, bool isHostVisible,
+                                                          vk::BufferUsageFlags2 usage, BufferMemory memoryMode,
                                                           std::string_view debugName) const
 {
     OwnedBuffer target;
     target.allocator = allocator.allocator;
-    // the slack lets the start move up to the alignment the cluster properties ask for
-    const vk::MemoryPropertyFlags properties = isHostVisible
-        ? vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
-        : vk::MemoryPropertyFlagBits::eDeviceLocal;
-    createBuffer(bytes + alignment - 1, usage | vk::BufferUsageFlagBits2::eShaderDeviceAddress, properties,
-                 target.buffer, target.memory, allocator.allocator, device, queueFamilyIndices, debugName,
-                 isHostVisible ? VMA_ALLOCATION_CREATE_MAPPED_BIT : 0);
+    vk::MemoryPropertyFlags properties = vk::MemoryPropertyFlagBits::eDeviceLocal;
+    VmaAllocationCreateFlags allocFlags = 0;
+    if (memoryMode == BufferMemory::HostWrite) {
+        properties = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent;
+        allocFlags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    } else if (memoryMode == BufferMemory::HostReadback) {
+        properties = vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent |
+                     vk::MemoryPropertyFlagBits::eHostCached;
+        allocFlags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    }
+    // MG-B1: align the buffer allocation directly via VMA so offset 0 satisfies hardware and VUID alignment
+    createBuffer(std::max<vk::DeviceSize>(bytes, 1), usage | vk::BufferUsageFlagBits2::eShaderDeviceAddress, properties,
+                 target.buffer, target.memory, allocator.allocator, device, queueFamilyIndices, debugName, allocFlags,
+                 alignment);
     const vk::DeviceAddress base = device.getBufferAddress({.buffer = *target.buffer});
-    target.address = alignUp(base, alignment);
+    if (alignment > 1 && base % alignment != 0) {
+        throw std::runtime_error(
+            std::format("MegaGeometry: {} address {:#x} is not {}-byte aligned", debugName, base, alignment));
+    }
+    target.address = base;
     target.bytes = bytes;
-    if (isHostVisible) {
+    if (memoryMode != BufferMemory::DeviceLocal) {
         VmaAllocationInfo info{};
         vmaGetAllocationInfo(allocator.allocator, target.memory, &info);
-        target.mapped = static_cast<std::byte*>(info.pMappedData) + (target.address - base);
+        target.mapped = static_cast<std::byte*>(info.pMappedData);
     }
     return target;
 }
@@ -343,7 +354,6 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
     const vk::DeviceSize blasInfosOffset = layout.add(sizeof(BottomLevelInfo) * blasCount);
     const vk::DeviceSize clasAddressesOffset = layout.add(sizeof(vk::DeviceAddress) * clusterCount);
     const vk::DeviceSize blasAddressesOffset = layout.add(sizeof(vk::DeviceAddress) * blasCount);
-    const vk::DeviceSize sizesOffset = layout.add(sizeof(uint32_t) * std::max(clusterCount, blasCount));
     // cluster-local positions, parallel to meshletVertices; indices are the raster's 8-bit corners in raster order
     const vk::DeviceSize positionsOffset = layout.add(sizeof(glm::vec3) * geometry.meshletVertices.size());
     const vk::DeviceSize trianglesOffset = layout.add(geometry.meshletTriangles.size_bytes());
@@ -359,27 +369,33 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
         layout.bytes(), kMicromapAlignment,
         vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eAccelerationStructureBuildInputReadOnlyKHR |
             vk::BufferUsageFlagBits2::eMicromapBuildInputReadOnlyEXT,
-        true, "ClusterAsInputs");
+        BufferMemory::HostWrite, "ClusterAsInputs");
+    // MG-B2: GPU -> CPU size readback in host-cached memory instead of uncached WC VRAM
+    OwnedBuffer sizesReadback =
+        createOwnedBuffer(sizeof(uint32_t) * std::max(clusterCount, blasCount), alignof(uint32_t),
+                          vk::BufferUsageFlagBits2::eStorageBuffer, BufferMemory::HostReadback,
+                          "ClusterAsSizesReadback");
     // the micromap builds and every cluster pass take turns on one scratch buffer
     OwnedBuffer scratch = createOwnedBuffer(std::max(scratchBytes, micromapScratchBytes),
                                             std::max<vk::DeviceSize>(limits.clusterScratchByteAlignment,
                                                                      scratchOffsetAlignment),
-                                            vk::BufferUsageFlagBits2::eStorageBuffer, false, "ClusterAsScratch");
+                                            vk::BufferUsageFlagBits2::eStorageBuffer, BufferMemory::DeviceLocal,
+                                            "ClusterAsScratch");
     const auto inputAddress = [&inputs](vk::DeviceSize offset) { return inputs.address + offset; };
 
     std::vector<vk::DeviceAddress> micromapAddresses;
     if (!micromapPlans.empty()) {
         const std::string storageName = std::format("MicromapStorage_{}", models.size());
         model.micromapStorage = createOwnedBuffer(micromapStorageBytes, kMicromapAlignment,
-                                                  vk::BufferUsageFlagBits2::eMicromapStorageEXT, false, storageName);
-        // VkMicromapCreateInfoEXT::offset counts from the buffer start, before the aligned start
-        const vk::DeviceSize storageStart =
-            model.micromapStorage.address - device.getBufferAddress({.buffer = *model.micromapStorage.buffer});
+                                                  vk::BufferUsageFlagBits2::eMicromapStorageEXT,
+                                                  BufferMemory::DeviceLocal, storageName);
         model.micromaps.reserve(micromapPlans.size());
         for (const MicromapPlan& plan : micromapPlans) {
+            // MG-B1: storage starts 256 B aligned and plan.storageOffset is a multiple of 256 B
+            // (VUID-VkMicromapCreateInfoEXT-offset-07438)
             model.micromaps.emplace_back(device, vk::MicromapCreateInfoEXT{
                                                      .buffer = *model.micromapStorage.buffer,
-                                                     .offset = storageStart + plan.storageOffset,
+                                                     .offset = plan.storageOffset,
                                                      .size = plan.sizes.micromapSize,
                                                      .type = vk::MicromapTypeEXT::eOpacityMicromap,
                                                  });
@@ -459,7 +475,7 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
         };
         info.input.opMode = mode;
         if (mode == vk::ClusterAccelerationStructureOpModeNV::eComputeSizes) {
-            info.dstSizesArray = stridedRegion(inputAddress(sizesOffset), sizeof(uint32_t), count);
+            info.dstSizesArray = stridedRegion(sizesReadback.address, sizeof(uint32_t), count);
         } else {
             info.dstAddressesArray =
                 stridedRegion(inputAddress(addressesOffset), sizeof(vk::DeviceAddress), count);
@@ -467,20 +483,26 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
         return info;
     };
     const auto readSizes = [&](uint32_t count) {
-        vmaInvalidateAllocation(allocator.allocator, inputs.memory, 0, VK_WHOLE_SIZE);
-        const uint32_t* sizes = reinterpret_cast<const uint32_t*>(inputs.mapped + sizesOffset);
+        vmaInvalidateAllocation(allocator.allocator, sizesReadback.memory, 0, VK_WHOLE_SIZE);
+        const auto* sizes = reinterpret_cast<const uint32_t*>(sizesReadback.mapped);
         return std::vector<uint32_t>(sizes, sizes + count);
     };
     // exact sizes: the host estimates are several times too large (clas_allocation.md)
     const auto placeStructures = [&](std::span<const uint32_t> sizes, vk::DeviceSize alignment,
-                                     vk::DeviceSize addressesOffset, std::string_view name) {
+                                     vk::DeviceSize addressesOffset, std::string_view name,
+                                     std::vector<vk::DeviceAddress>* outAddresses = nullptr) {
         std::vector<vk::DeviceSize> offsets;
         const vk::DeviceSize bytes = packOffsets(sizes, alignment, offsets);
         OwnedBuffer target = createOwnedBuffer(bytes, alignment,
-                                               vk::BufferUsageFlagBits2::eAccelerationStructureStorageKHR, false, name);
-        auto* addresses = reinterpret_cast<vk::DeviceAddress*>(inputs.mapped + addressesOffset);
+                                               vk::BufferUsageFlagBits2::eAccelerationStructureStorageKHR,
+                                               BufferMemory::DeviceLocal, name);
+        std::vector<vk::DeviceAddress> addresses(offsets.size());
         for (size_t i = 0; i < offsets.size(); ++i) {
             addresses[i] = target.address + offsets[i];
+        }
+        std::memcpy(inputs.mapped + addressesOffset, addresses.data(), std::span(addresses).size_bytes());
+        if (outAddresses != nullptr) {
+            *outAddresses = std::move(addresses);
         }
         return target;
     };
@@ -522,17 +544,17 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
             commandsInfo(blasInput, kComputeSizes, blasInfosOffset, sizeof(BottomLevelInfo), 0, blasCount));
         buildBarrier(cmd, vk::PipelineStageFlagBits2::eHost, vk::AccessFlagBits2::eHostRead);
     });
-    model.blas =
-        placeStructures(readSizes(blasCount), limits.clusterBottomLevelByteAlignment, blasAddressesOffset, "ClusterBlas");
+    std::vector<vk::DeviceAddress> builtBlasAddresses;
+    model.blas = placeStructures(readSizes(blasCount), limits.clusterBottomLevelByteAlignment, blasAddressesOffset,
+                                 "ClusterBlas", &builtBlasAddresses);
 
     submit([&](const vk::raii::CommandBuffer& cmd) {
         cmd.buildClusterAccelerationStructureIndirectNV(commandsInfo(
             blasInput, kExplicit, blasInfosOffset, sizeof(BottomLevelInfo), blasAddressesOffset, blasCount));
     });
 
-    const auto* blasAddresses = reinterpret_cast<const vk::DeviceAddress*>(inputs.mapped + blasAddressesOffset);
     for (uint32_t i = 0; i < blasCount; ++i) {
-        model.blasAddresses[blasPrimitives[i]] = blasAddresses[i];
+        model.blasAddresses[blasPrimitives[i]] = builtBlasAddresses[i];
     }
     // host preparation and the waited submits
     const double buildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();

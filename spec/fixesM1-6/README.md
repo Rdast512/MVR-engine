@@ -1,6 +1,6 @@
 # M8 · Optimization and fixes
 
-**Status** — Milestone planned on 2026-11-20; steps re-planned on 2026-11-21 as I1–I12 in execution order, covering every open finding of the three review documents. I1 built 2026-11-21 ([i1_check_runners.md](./i1_check_runners.md)); I2 built 2026-11-21 ([i2_shading_correctness.md](./i2_shading_correctness.md)), fixing F20 and F13–F19.\
+**Status** — Milestone planned on 2026-11-20; steps re-planned on 2026-11-21 as I1–I12 in execution order, covering every open finding of the three review documents. I1 ([i1_check_runners.md](./i1_check_runners.md)), I2 ([i2_shading_correctness.md](./i2_shading_correctness.md)), and I3 ([i3_mega_geometry_fixes.md](./i3_mega_geometry_fixes.md)) built 2026-11-21; next is I4.\
 **Scope** — Make the whole pipeline produce its best image per millisecond. That means fixing the measured bias and stability problems of the default lighting, closing or explaining the NRC bias, and landing the measured perf levers. Each step is backed by a check that keeps it fixed.
 [Engine spec](../../docs/engine_spec.md) · [Findings](./m8_optimization_and_fixes.md) · [Mega Geometry findings](./mg_optimizations_fixes.md) · [PBR plan](../pbr_implementation_plan.md) · [Considerations](../considerations.md)
 
@@ -26,7 +26,7 @@ Finding ids refer to [m8_optimization_and_fixes.md](./m8_optimization_and_fixes.
 |---|---|---|---|
 | I1 · Check runners | [`i1_check_runners.md`](./i1_check_runners.md) (built) | F1 (spread), F2, F3 | — |
 | I2 · Shading correctness | [`i2_shading_correctness.md`](./i2_shading_correctness.md) (built) | F20, F13, F14, F15, F16, F17, F18, F19 (ND9) | I1 |
-| I3 · Mega Geometry fixes | `i3_mega_geometry_fixes.md` | MG-B1, MG-B2, MG-B3, MG-B4, C-C4-5 | — |
+| I3 · Mega Geometry fixes | [`i3_mega_geometry_fixes.md`](./i3_mega_geometry_fixes.md) (built) | MG-B1, MG-B2, MG-B3, MG-B4, C-C4-5 | — |
 | I4 · Frame profile | `i4_frame_profile.md` | F4, F7, F8, F9 (RTX 5070 part), F11, F12, C-F1-5 | I2, I3 |
 | I5 · ReSTIR GI tuning | `i5_restir_gi_tuning.md` | O11 follow-ups, age limit (§2.5), ray-traced spatial cost (§2.5), F3 (GI) | I1, I2, I4 |
 | I6 · ReSTIR DI tuning | `i6_restir_di_tuning.md` | F5, F6, O8, O10, permutation (§2.7), F3 (DI), F12 (mode choice) | I1, I2, I4 |

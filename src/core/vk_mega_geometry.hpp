@@ -57,7 +57,7 @@ public:
     [[nodiscard]] vk::DeviceSize totalBytes() const noexcept;
 
 private:
-    // VMA buffer freed with its owner; address and mapped point at an aligned start inside it
+    // VMA buffer freed with its owner; address and mapped point at the aligned buffer start (MG-B1)
     struct OwnedBuffer {
         VmaAllocator allocator = nullptr;
         vk::raii::Buffer buffer = nullptr;
@@ -86,8 +86,14 @@ private:
         std::vector<uint8_t> micromapFlags;
     };
 
+    enum class BufferMemory : uint8_t {
+        DeviceLocal,
+        HostWrite,
+        HostReadback,
+    };
+
     [[nodiscard]] OwnedBuffer createOwnedBuffer(vk::DeviceSize bytes, vk::DeviceSize alignment,
-                                                vk::BufferUsageFlags2 usage, bool isHostVisible,
+                                                vk::BufferUsageFlags2 usage, BufferMemory memoryMode,
                                                 std::string_view debugName) const;
     // one submit on the build queue, waited on
     template <typename Record>

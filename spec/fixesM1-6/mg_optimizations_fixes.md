@@ -1,6 +1,6 @@
 # Feature: RTX Mega Geometry — bugs, spec issues, and performance improvements
 
-**Date:** 2026-11-21 · **Status:** review; none implemented yet; bugs in M8 I3, perf levers in M8 I10 · **Milestone:** [M8](./README.md) (follows [M2](../m2/) C1–C4, [M6](../m6/) D1–D4, and [mega_geometry_comparison.md](../../reference/mega_geometry_comparison.md))
+**Date:** 2026-11-21 · **Status:** §2 bugs (MG-B1–MG-B4 + C-C4-5) fixed in M8 I3 ([i3_mega_geometry_fixes.md](./i3_mega_geometry_fixes.md), 2026-11-21); §3 perf levers wait for M8 I10 · **Milestone:** [M8](./README.md) (follows [M2](../m2/) C1–C4, [M6](../m6/) D1–D4, and [mega_geometry_comparison.md](../../reference/mega_geometry_comparison.md))
 **Why:** Audit of the engine's RTX Mega Geometry stack (CLAS, Cluster BLAS, OMM integration, PTLAS, and ray-hit decode) against Vulkan 1.4.363 VUIDs and NVIDIA's local `RTXMG` and `vk_lod_clusters` references.
 
 **Sources**
@@ -33,10 +33,10 @@
 
 | # | Severity | Issue | Location | Fix |
 |---|---|---|---|---|
-| MG-B1 | High (VUID) | `VkMicromapCreateInfoEXT::offset` can violate 256-byte alignment (`VUID-VkMicromapCreateInfoEXT-offset-07438`) | `vk_mega_geometry.cpp:164, 373-385`, `vk_rt_scene.cpp:385` | Pass `minAlignment = alignment` to `createBuffer` (`vmaCreateBufferWithAlignment`), drop `+ alignment - 1` slack, assert `base % alignment == 0` |
-| MG-B2 | Medium (perf bug) | CPU readbacks read from uncached write-combined ReBAR VRAM (`HOST_ACCESS_SEQUENTIAL_WRITE_BIT`) | `vk_mega_geometry.cpp:161-166, 469-473, 533-536`, `vk_rt_scene.cpp:353-355, 483` | Use `eHostCached` (`HOST_ACCESS_RANDOM_BIT`) for GPU→CPU readbacks; return `blasAddresses` from CPU without reading mapped VRAM |
-| MG-B3 | Low (edge case) | PTLAS growth can exceed `maxInstanceCount`; log narrows `vk::DeviceSize` to `uint32_t` | `vk_rt_scene.cpp:298-302, 316-317` | Clamp `sized.instances` to `maxInstanceCount`; divide 64-bit `vk::DeviceSize` directly |
-| MG-B4 | Medium (correctness on motion) | `templates.sceneBounds` (NRC bounds) and PTLAS partition assignments are frozen at layout time | `vk_rt_scene.cpp:129, 185-195, 230-236`, `vk_renderer.cpp:217` | Update/expand bounds when entities move beyond layout bounds (and reassign partitions when moving scenes need it, `C-C4-5`) |
+| MG-B1 | High (VUID) | `VkMicromapCreateInfoEXT::offset` can violate 256-byte alignment (`VUID-VkMicromapCreateInfoEXT-offset-07438`) | `vk_mega_geometry.cpp`, `vk_rt_scene.cpp` | **Fixed in I3 (2026-11-21):** `minAlignment = alignment` passed to `createBuffer`, `+ alignment - 1` slack removed, `base % alignment == 0` checked at runtime, `.offset = plan.storageOffset` |
+| MG-B2 | Medium (perf bug) | CPU readbacks read from uncached write-combined ReBAR VRAM (`HOST_ACCESS_SEQUENTIAL_WRITE_BIT`) | `vk_mega_geometry.cpp`, `vk_rt_scene.cpp` | **Fixed in I3 (2026-11-21):** `eHostCached` `ClusterAsSizesReadback` and `PtlasArgCountReadback` (via 4 B `copyBuffer2`); `blasAddresses` returned from CPU in `placeStructures()` |
+| MG-B3 | Low (edge case) | PTLAS growth can exceed `maxInstanceCount`; log narrows `vk::DeviceSize` to `uint32_t` | `vk_rt_scene.cpp` | **Fixed in I3 (2026-11-21):** `uint64_t` growth clamped to `maxInstanceCount`, `std::unsigned_integral` `divideRoundUp` logs 64-bit `vk::DeviceSize` directly |
+| MG-B4 | Medium (correctness on motion) | `templates.sceneBounds` (NRC bounds) and PTLAS partition assignments are frozen at layout time | `vk_rt_scene.{hpp,cpp}`, `object_storage.hpp` | **Fixed in I3 (2026-11-21):** dynamic `sceneBounds` grows monotonically with 25% / 1 m headroom on moved entities; partition reassignment shipped on by default (−26.6% PTLAS build, −0.031 ms GPU total on moving field 64; closes `C-C4-5`) |
 
 ### MG-B1 · `VkMicromapCreateInfoEXT::offset` alignment (`VUID-VkMicromapCreateInfoEXT-offset-07438`)
 

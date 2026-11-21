@@ -37,7 +37,50 @@ std::optional<EngineBench::Config> EngineBench::readConfig(uint32_t defaultMeasu
     return Config{
         .measuredFrames = frames,
         .fieldSide = readEnvNumber<int>("ENGINE_BENCH_FIELD").value_or(0),
+        .isFieldMoving = readEnvNumber<int>("ENGINE_BENCH_FIELD_MOVE").value_or(0) != 0,
     };
+}
+
+void EngineBench::setFieldMotion(EntityId firstEntity, uint32_t entityCount, uint32_t side, float centerX,
+                                 float cellSize) noexcept
+{
+    fieldFirstEntity = firstEntity;
+    fieldEntityCount = entityCount;
+    fieldSide = side;
+    fieldCenterX = centerX;
+    fieldCellSize = cellSize;
+}
+
+void EngineBench::stepField(ObjectStorage& storage)
+{
+    if (!config.isFieldMoving || fieldEntityCount == 0 || fieldSide == 0 || fieldCellSize <= 0.0f) {
+        return;
+    }
+    const float span = static_cast<float>(fieldSide) * fieldCellSize;
+    const float minX = fieldCenterX - 0.5f * span;
+    const float maxX = fieldCenterX + 0.5f * span;
+    const float step = 0.25f * fieldCellSize;
+    for (uint32_t i = 0; i < fieldEntityCount; ++i) {
+        const EntityId id = fieldFirstEntity + i;
+        if (id >= storage.size()) {
+            break;
+        }
+        const uint32_t row = i / fieldSide;
+        const float dir = (row & 1u) == 0 ? 1.0f : -1.0f;
+        float& x = storage.transforms[id].position.x;
+        x += dir * step;
+        bool wrapped = false;
+        if (x > maxX) {
+            x -= span;
+            wrapped = true;
+        } else if (x < minX) {
+            x += span;
+            wrapped = true;
+        }
+        if (wrapped) {
+            storage.prevModelMatrices[id] = computeModelMatrix(storage.transforms[id]);
+        }
+    }
 }
 
 bool EngineBench::onFrame(const GpuTimer& timer, const MeshletCullStats& cullStats,
@@ -63,8 +106,8 @@ bool EngineBench::onFrame(const GpuTimer& timer, const MeshletCullStats& cullSta
 
 void EngineBench::logResults(const MeshletCullStats& cullStats, const RayTracingScene::Stats& rtStats) const
 {
-    logInfo(std::format("Bench: field side {}, {} windows of {} frames after {} warm-up frames", config.fieldSide,
-                        windowCount, GpuTimer::kHistorySize, kWarmupFrames),
+    logInfo(std::format("Bench: field side {}{}, {} windows of {} frames after {} warm-up frames", config.fieldSide,
+                        config.isFieldMoving ? " (moving)" : "", windowCount, GpuTimer::kHistorySize, kWarmupFrames),
             "Bench");
     double total = 0.0;
     for (size_t i = 0; i < kGpuTimerScopeCount; ++i) {

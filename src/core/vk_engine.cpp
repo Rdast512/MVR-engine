@@ -181,10 +181,18 @@ void Engine::initialize()
 
     if (bench && bench->getConfig().fieldSide > 0) {
         constexpr float kBenchFieldSpacing = 1.5f;
+        const EntityId firstFieldEntity = scene->objectStorage.size();
         const SceneActionStatus status = spawnInstanceField(initialAssetPos, bench->getConfig().fieldSide,
                                                             kBenchFieldSpacing);
         if (status.isError) {
             throw std::runtime_error(status.text);
+        }
+        const uint32_t fieldCount = scene->objectStorage.size() - firstFieldEntity;
+        if (fieldCount > 0) {
+            const ModelId fieldModel = scene->objectStorage.modelIds[firstFieldEntity];
+            const float cellSize = kBenchFieldSpacing * 2.0f * assetBuffers->models()[fieldModel].localBounds.w;
+            bench->setFieldMotion(firstFieldEntity, fieldCount, static_cast<uint32_t>(bench->getConfig().fieldSide),
+                                  initialAssetPos.x, cellSize);
         }
         logInfo(status.text, "Bench");
     }
@@ -359,6 +367,9 @@ bool Engine::run()
             if (temporalCheck && temporalCheck->beginFrame(*camera, *renderer).shouldCapture) {
                 isCaptureRequested = true;
                 renderer->requestDisplayCapture();
+            }
+            if (bench) {
+                bench->stepField(scene->objectStorage);
             }
             if (isIndirectModeCycling) {
                 renderer->indirectMode = static_cast<IndirectMode>(renderer->frameNumber / kIndirectModeCycleFrames %

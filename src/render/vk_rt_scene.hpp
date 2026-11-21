@@ -44,6 +44,8 @@ public:
         uint32_t instancesPerPartition = 64;
         // every frame writes every instance into an empty PTLAS: the full-build cost, for comparison
         bool isFullBuildForced = false;
+        // reassign moved instances to their current XZ grid cell instead of keeping layout-time partitions (C-C4-5)
+        bool isPartitionReassignmentEnabled = true;
     };
 
     RayTracingScene(const Device& device, const VkAllocator& allocator, const FrameSync& frameSync, const Scene& scene,
@@ -105,28 +107,48 @@ private:
         uint32_t maxPerPartition = 0;
     };
 
+    // per-entity dynamic tracking for sceneBounds growth (MG-B4) and partition reassignment (C-C4-5)
+    struct DynamicEntity
+    {
+        EntityId id = 0;
+        BoundingBox localBounds;
+        Transform lastTransform;
+        uint32_t firstRow = 0;
+        uint32_t rowCount = 0;
+    };
+
     // ray instances of one scene layout
     struct Templates
     {
         std::vector<GpuRayInstance> rows;
         // parallel to rows
         std::vector<GpuRayInstanceBuild> builds;
+        // parallel to rows: primitive center in entity space (before entityMatrix), for partition reassignment
+        std::vector<glm::vec3> rowLocalCenters;
         // parallel to rows: first triangle-region row, kNoneIndex unless the primitive's material emits
         std::vector<uint32_t> firstLights;
         // one per emissive row, in row order
         std::vector<GpuTriangleLightTask> lightTasks;
+        std::vector<DynamicEntity> dynamicEntities;
+        std::vector<uint32_t> partitionOccupancy;
+        glm::vec2 gridLower{0.0f};
+        glm::vec2 gridExtent{1.0f};
+        uint32_t gridAxis = 1;
         uint32_t triangleLightCount = 0;
         PtlasShape shape;
         // FrameData::layoutGeneration and the grid density they were built for
         uint32_t layoutGeneration = ~0u;
         uint32_t instancesPerPartition = 0;
+        bool isPartitionReassignmentEnabled = false;
         // bumped by every build; slots and the PTLAS compare against it
         uint32_t version = 0;
-        // world box of the instances, from the transforms at build time
+        // bumped when builds[].partition updates in place without rebuilding the layout
+        uint32_t buildsVersion = 0;
+        // world box of the instances; grows monotonically if an entity leaves it (MG-B4)
         BoundingBox sceneBounds;
     };
 
-    // device-local buffer whose address is aligned up inside a slack allocation
+    // device-local buffer aligned at creation via VMA minAlignment (MG-B1)
     struct AlignedBuffer
     {
         vk::raii::Buffer buffer = nullptr;
@@ -144,12 +166,15 @@ private:
         HostBuffer triangleLightTasks;
         // host-reset per frame, GPU-appended: the build's one write-instance op and its op count
         HostBuffer operation;
+        // host-cached 4-byte readback of operation.argCount (MG-B2)
+        HostBuffer argCountReadback;
         // GPU-written VkPartitionedAccelerationStructureWriteInstanceDataNV[capacity]
         AlignedBuffer writeInfos;
         uint32_t capacity = 0;
         uint32_t count = 0;
         // template version uploaded
         uint32_t version = ~0u;
+        uint32_t buildsVersion = ~0u;
         bool isTimed = false;
         bool isSubmitted = false;
     };
@@ -167,6 +192,7 @@ private:
     };
 
     void buildTemplates();
+    void updateDynamicEntities();
     void uploadTemplates(uint32_t frameSlot);
     // every frame in flight has finished with the PTLAS: replaces it with one for the templates' shape
     void createPtlas(uint64_t lastSubmittedFrame);

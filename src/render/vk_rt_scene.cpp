@@ -7,11 +7,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <concepts>
+#include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <format>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 namespace
@@ -21,6 +25,7 @@ namespace
     constexpr const char* kRayInstanceLightsTracyName = "GPU/RayInstanceLights";
     constexpr const char* kTriangleLightTasksTracyName = "GPU/TriangleLightTasks";
     constexpr const char* kPtlasOperationTracyName = "GPU/PtlasOperation";
+    constexpr const char* kPtlasArgCountReadbackTracyName = "GPU/PtlasArgCountReadback";
     // first allocation, in instances
     constexpr uint32_t kMinCapacity = 64;
     // matches shaders/passes/rt_instances.slang
@@ -35,13 +40,38 @@ namespace
     // srcInfos / srcInfosCount of the build: one write-instance op, then its count
     constexpr vk::DeviceSize kOpCountOffset = sizeof(vk::BuildPartitionedAccelerationStructureIndirectCommandNV);
     constexpr vk::DeviceSize kOperationBytes = kOpCountOffset + sizeof(uint32_t);
+    constexpr vk::DeviceSize kArgCountOffset =
+        offsetof(VkBuildPartitionedAccelerationStructureIndirectCommandNV, argCount);
+    // MG-B4: geometric growth margin when a moving entity exceeds sceneBounds (avoids per-frame NRC reconfigures)
+    constexpr float kDynamicBoundsGrowthFraction = 0.25f;
+    constexpr float kDynamicBoundsMinMargin = 1.0f;
 
-    [[nodiscard]] constexpr vk::DeviceSize alignUp(vk::DeviceSize size, vk::DeviceSize alignment)
+    template <std::unsigned_integral T>
+    constexpr T divideRoundUp(T value, T divisor)
     {
-        return (size + alignment - 1) / alignment * alignment;
+        return (value + divisor - 1) / divisor;
     }
 
-    constexpr uint32_t divideRoundUp(uint32_t value, uint32_t divisor) { return (value + divisor - 1) / divisor; }
+    // transforms an AABB's 8 corners by matrix and merges them into target
+    void expandBounds(BoundingBox& target, const glm::mat4& matrix, const BoundingBox& box)
+    {
+        for (uint32_t corner = 0; corner < 8; ++corner) {
+            const glm::vec3 local{(corner & 1u) != 0 ? box.bboxMax.x : box.bboxMin.x,
+                                  (corner & 2u) != 0 ? box.bboxMax.y : box.bboxMin.y,
+                                  (corner & 4u) != 0 ? box.bboxMax.z : box.bboxMin.z};
+            const glm::vec3 position = glm::vec3(matrix * glm::vec4(local, 1.0f));
+            target.bboxMin = glm::min(target.bboxMin, position);
+            target.bboxMax = glm::max(target.bboxMax, position);
+        }
+    }
+
+    [[nodiscard]] uint32_t partitionForCenter(glm::vec2 center, glm::vec2 lower, glm::vec2 extent, uint32_t axis)
+    {
+        const glm::vec2 normalized = (center - lower) / extent * static_cast<float>(axis);
+        const glm::ivec2 cell = glm::clamp(glm::ivec2(glm::floor(normalized)), glm::ivec2(0),
+                                           glm::ivec2(static_cast<int32_t>(axis - 1)));
+        return static_cast<uint32_t>(cell.y) * axis + static_cast<uint32_t>(cell.x);
+    }
 
     // mesh-space box of a primitive's meshlet groups
     [[nodiscard]] BoundingBox primitiveBounds(const GeometryStore& geometry, const PrimitiveDraw& primitive)
@@ -64,6 +94,9 @@ RayTracingScene::RayTracingScene(const Device& device, const VkAllocator& alloca
 {
     static_assert(sizeof(vk::PartitionedAccelerationStructureWriteInstanceDataNV) == 104);
     static_assert(sizeof(vk::BuildPartitionedAccelerationStructureIndirectCommandNV) == 24);
+    if (const char* reassignEnv = std::getenv("ENGINE_PTLAS_REASSIGN"); reassignEnv != nullptr) {
+        settings.isPartitionReassignmentEnabled = std::string_view(reassignEnv) == "1";
+    }
     const vk::PhysicalDeviceLimits& limits = device.capabilities.properties2.properties.limits;
     const auto queueFamilies = device.physicalDevice.getQueueFamilyProperties2();
     if (limits.timestampPeriod > 0.0f && queueFamilies[device.computeIndex].queueFamilyProperties.timestampValidBits != 0) {
@@ -88,8 +121,11 @@ void RayTracingScene::prepareFrame(uint32_t frameSlot, uint64_t lastSubmittedFra
     ZoneScopedN("RayTracingScene::prepareFrame");
     collectResults(frameSlot);
     if (templates.layoutGeneration != frameData.layoutGeneration() ||
-        templates.instancesPerPartition != settings.instancesPerPartition) {
+        templates.instancesPerPartition != settings.instancesPerPartition ||
+        templates.isPartitionReassignmentEnabled != settings.isPartitionReassignmentEnabled) {
         buildTemplates();
+    } else {
+        updateDynamicEntities();
     }
     const PtlasShape& shape = templates.shape;
     const PtlasShape& sized = ptlas.sizedFor;
@@ -99,6 +135,9 @@ void RayTracingScene::prepareFrame(uint32_t frameSlot, uint64_t lastSubmittedFra
     }
     if (frames[frameSlot].version != templates.version) {
         uploadTemplates(frameSlot);
+    } else if (frames[frameSlot].buildsVersion != templates.buildsVersion) {
+        std::memcpy(frames[frameSlot].builds.mapped, templates.builds.data(), std::span(templates.builds).size_bytes());
+        frames[frameSlot].buildsVersion = templates.buildsVersion;
     }
     // the GPU appends to argCount; the slot's last build has completed
     auto* operation = static_cast<std::byte*>(frames[frameSlot].operation.mapped);
@@ -111,6 +150,7 @@ void RayTracingScene::prepareFrame(uint32_t frameSlot, uint64_t lastSubmittedFra
     constexpr uint32_t kOpCount = 1;
     std::memcpy(operation, &writeOp, sizeof(writeOp));
     std::memcpy(operation + kOpCountOffset, &kOpCount, sizeof(kOpCount));
+    *static_cast<uint32_t*>(frames[frameSlot].argCountReadback.mapped) = 0;
 }
 
 // same entity filter as the cull templates (MeshletCulling::buildTemplates): one row per drawn primitive. Each row's
@@ -120,12 +160,17 @@ void RayTracingScene::buildTemplates()
     ZoneScopedN("RayTracingScene::buildTemplates");
     templates.rows.clear();
     templates.builds.clear();
+    templates.rowLocalCenters.clear();
     templates.firstLights.clear();
     templates.lightTasks.clear();
+    templates.dynamicEntities.clear();
+    templates.partitionOccupancy.clear();
     templates.triangleLightCount = 0;
     templates.layoutGeneration = frameData.layoutGeneration();
     templates.instancesPerPartition = settings.instancesPerPartition;
+    templates.isPartitionReassignmentEnabled = settings.isPartitionReassignmentEnabled;
     ++templates.version;
+    templates.buildsVersion = templates.version;
     templates.sceneBounds = BoundingBox{.bboxMin = glm::vec3(std::numeric_limits<float>::max()),
                                         .bboxMax = glm::vec3(std::numeric_limits<float>::lowest())};
 
@@ -154,6 +199,9 @@ void RayTracingScene::buildTemplates()
         const std::span<const vk::DeviceAddress> blas = assets.rayGeometry().blasAddresses(modelId);
         const std::span<const uint8_t> micromapped = assets.rayGeometry().micromapFlags(modelId);
         const glm::mat4 entityMatrix = computeModelMatrix(storage.transforms[id]);
+        const auto firstRow = static_cast<uint32_t>(templates.rows.size());
+        BoundingBox entityLocalBounds{.bboxMin = glm::vec3(std::numeric_limits<float>::max()),
+                                      .bboxMax = glm::vec3(std::numeric_limits<float>::lowest())};
         for (uint32_t k = 0; k < model.nodes.count; ++k) {
             const NodeDraw& node = geometry.nodeDraws[model.nodes.first + k];
             const glm::mat4 world = entityMatrix * node.localToModel;
@@ -183,17 +231,24 @@ void RayTracingScene::buildTemplates()
                     templates.firstLights.push_back(kNoneIndex);
                 }
                 const BoundingBox box = primitiveBounds(geometry, geometry.primitiveDraws[p]);
-                const glm::vec4 center = world * glm::vec4(0.5f * (box.bboxMin + box.bboxMax), 1.0f);
+                const glm::vec3 localCenter =
+                    glm::vec3(node.localToModel * glm::vec4(0.5f * (box.bboxMin + box.bboxMax), 1.0f));
+                templates.rowLocalCenters.push_back(localCenter);
+                const glm::vec4 center = entityMatrix * glm::vec4(localCenter, 1.0f);
                 centers.emplace_back(center.x, center.z);
-                for (uint32_t corner = 0; corner < 8; ++corner) {
-                    const glm::vec3 local{(corner & 1u) != 0 ? box.bboxMax.x : box.bboxMin.x,
-                                          (corner & 2u) != 0 ? box.bboxMax.y : box.bboxMin.y,
-                                          (corner & 4u) != 0 ? box.bboxMax.z : box.bboxMin.z};
-                    const glm::vec3 position = glm::vec3(world * glm::vec4(local, 1.0f));
-                    templates.sceneBounds.bboxMin = glm::min(templates.sceneBounds.bboxMin, position);
-                    templates.sceneBounds.bboxMax = glm::max(templates.sceneBounds.bboxMax, position);
-                }
+                expandBounds(entityLocalBounds, node.localToModel, box);
+                expandBounds(templates.sceneBounds, world, box);
             }
+        }
+        const auto rowCount = static_cast<uint32_t>(templates.rows.size()) - firstRow;
+        if (rowCount > 0) {
+            templates.dynamicEntities.push_back(DynamicEntity{
+                .id = id,
+                .localBounds = entityLocalBounds,
+                .lastTransform = storage.transforms[id],
+                .firstRow = firstRow,
+                .rowCount = rowCount,
+            });
         }
     }
 
@@ -226,19 +281,20 @@ void RayTracingScene::buildTemplates()
         upper = glm::max(upper, center);
     }
     const glm::vec2 extent = glm::max(upper - lower, glm::vec2(std::numeric_limits<float>::min()));
-    std::vector<uint32_t> occupancy(static_cast<size_t>(axis) * axis, 0);
+    templates.gridLower = lower;
+    templates.gridExtent = extent;
+    templates.gridAxis = axis;
+    templates.partitionOccupancy.assign(static_cast<size_t>(axis) * axis, 0);
     for (uint32_t row = 0; row < count; ++row) {
-        const glm::uvec2 cell =
-            glm::min(glm::uvec2((centers[row] - lower) / extent * static_cast<float>(axis)), glm::uvec2(axis - 1));
-        const uint32_t partition = cell.y * axis + cell.x;
+        const uint32_t partition = partitionForCenter(centers[row], lower, extent, axis);
         templates.builds[row].partition = partition;
-        ++occupancy[partition];
+        ++templates.partitionOccupancy[partition];
     }
     const uint32_t partitions = axis * axis;
     templates.shape = PtlasShape{
         .instances = std::max(count, 1u),
         .partitions = partitions,
-        .maxPerPartition = std::max(*std::ranges::max_element(occupancy), 1u),
+        .maxPerPartition = std::max(*std::ranges::max_element(templates.partitionOccupancy), 1u),
     };
     logInfo(std::format("rt templates: {} instances, {}x{} partitions, at most {} per partition; {} triangle lights in "
                         "{} emissive instances",
@@ -247,13 +303,86 @@ void RayTracingScene::buildTemplates()
             "RayTracingScene");
 }
 
+void RayTracingScene::updateDynamicEntities()
+{
+    ZoneScopedN("RayTracingScene::updateDynamicEntities");
+    const ObjectStorage& storage = scene.objectStorage;
+    const bool shouldReassignPartitions = settings.isPartitionReassignmentEnabled && templates.gridAxis > 1;
+    bool boundsGrew = false;
+    bool partitionsChanged = false;
+    for (DynamicEntity& entity : templates.dynamicEntities) {
+        if (entity.id >= storage.size() || (storage.flags[entity.id] & EntityFlag::Active) == 0) {
+            continue;
+        }
+        const Transform& current = storage.transforms[entity.id];
+        if (current == entity.lastTransform) {
+            continue;
+        }
+        entity.lastTransform = current;
+        const glm::mat4 entityMatrix = computeModelMatrix(current);
+
+        // MG-B4: grow sceneBounds monotonically with hysteresis when a moved entity leaves its layout box
+        BoundingBox worldBox{.bboxMin = glm::vec3(std::numeric_limits<float>::max()),
+                             .bboxMax = glm::vec3(std::numeric_limits<float>::lowest())};
+        expandBounds(worldBox, entityMatrix, entity.localBounds);
+        if (glm::any(glm::lessThan(worldBox.bboxMin, templates.sceneBounds.bboxMin)) ||
+            glm::any(glm::greaterThan(worldBox.bboxMax, templates.sceneBounds.bboxMax))) {
+            const glm::vec3 extent =
+                glm::max(templates.sceneBounds.bboxMax - templates.sceneBounds.bboxMin, glm::vec3(1.0f));
+            const glm::vec3 margin = glm::max(extent * kDynamicBoundsGrowthFraction, glm::vec3(kDynamicBoundsMinMargin));
+            for (int axis = 0; axis < 3; ++axis) {
+                if (worldBox.bboxMin[axis] < templates.sceneBounds.bboxMin[axis]) {
+                    templates.sceneBounds.bboxMin[axis] = worldBox.bboxMin[axis] - margin[axis];
+                }
+                if (worldBox.bboxMax[axis] > templates.sceneBounds.bboxMax[axis]) {
+                    templates.sceneBounds.bboxMax[axis] = worldBox.bboxMax[axis] + margin[axis];
+                }
+            }
+            boundsGrew = true;
+        }
+
+        // C-C4-5: reassign moved rows to their current XZ grid cell
+        if (shouldReassignPartitions) {
+            for (uint32_t row = entity.firstRow; row < entity.firstRow + entity.rowCount; ++row) {
+                const glm::vec4 center = entityMatrix * glm::vec4(templates.rowLocalCenters[row], 1.0f);
+                const uint32_t newPartition =
+                    partitionForCenter({center.x, center.z}, templates.gridLower, templates.gridExtent,
+                                       templates.gridAxis);
+                uint32_t& oldPartition = templates.builds[row].partition;
+                if (newPartition != oldPartition) {
+                    --templates.partitionOccupancy[oldPartition];
+                    ++templates.partitionOccupancy[newPartition];
+                    oldPartition = newPartition;
+                    partitionsChanged = true;
+                    templates.shape.maxPerPartition =
+                        std::max(templates.shape.maxPerPartition, templates.partitionOccupancy[newPartition]);
+                }
+            }
+        }
+    }
+    if (boundsGrew) {
+        logInfo(std::format("expanded dynamic scene bounds to ({:.1f}, {:.1f}, {:.1f})-({:.1f}, {:.1f}, {:.1f})",
+                            templates.sceneBounds.bboxMin.x, templates.sceneBounds.bboxMin.y,
+                            templates.sceneBounds.bboxMin.z, templates.sceneBounds.bboxMax.x,
+                            templates.sceneBounds.bboxMax.y, templates.sceneBounds.bboxMax.z),
+                "RayTracingScene");
+    }
+    if (partitionsChanged) {
+        ++templates.buildsVersion;
+    }
+}
+
 void RayTracingScene::uploadTemplates(uint32_t frameSlot)
 {
     ZoneScopedN("RayTracingScene::uploadTemplates");
     FrameBuffers& buffers = frames[frameSlot];
     const auto count = static_cast<uint32_t>(templates.rows.size());
     if (count > buffers.capacity || buffers.rayInstances.memory == nullptr) {
-        createFrameBuffers(frameSlot, std::max({count, buffers.capacity * 2, kMinCapacity}));
+        const uint64_t maxInstances = std::min<uint64_t>(device.capabilities.accelerationStructure.maxInstanceCount,
+                                                         std::numeric_limits<uint32_t>::max());
+        const uint64_t grownCapacity =
+            std::max<uint64_t>({count, static_cast<uint64_t>(buffers.capacity) * 2, kMinCapacity});
+        createFrameBuffers(frameSlot, static_cast<uint32_t>(std::min(grownCapacity, maxInstances)));
     }
     // write-combined memory: whole arrays, never read back
     std::memcpy(buffers.rayInstances.mapped, templates.rows.data(), std::span(templates.rows).size_bytes());
@@ -264,6 +393,7 @@ void RayTracingScene::uploadTemplates(uint32_t frameSlot)
                 std::span(templates.lightTasks).size_bytes());
     buffers.count = count;
     buffers.version = templates.version;
+    buffers.buildsVersion = templates.buildsVersion;
     TracyPlot("RT/Instances", static_cast<double>(count));
 }
 
@@ -294,11 +424,22 @@ void RayTracingScene::createPtlas(uint64_t lastSubmittedFrame)
     const PtlasShape previous = ptlas.sizedFor;
     destroyPtlas();
 
-    // monotonic, with headroom on the instance count, so loading models one by one does not reallocate each time
+    // MG-B3: monotonic with headroom, clamped to maxInstanceCount so growth never exceeds the device limit; only
+    // double instances when the instance count itself grew (not when maxPerPartition alone grew)
+    const uint64_t maxInstances = std::min<uint64_t>(device.capabilities.accelerationStructure.maxInstanceCount,
+                                                     std::numeric_limits<uint32_t>::max());
+    const uint64_t grownInstances = templates.shape.instances > previous.instances
+        ? std::max<uint64_t>({templates.shape.instances, static_cast<uint64_t>(previous.instances) * 2, kMinCapacity})
+        : std::max<uint64_t>({templates.shape.instances, previous.instances, kMinCapacity});
+    const uint32_t sizedInstances = static_cast<uint32_t>(std::min(grownInstances, maxInstances));
+    const uint32_t sizedMaxPerPartition = templates.shape.maxPerPartition > previous.maxPerPartition &&
+                                          previous.maxPerPartition > 0
+        ? std::min(std::max(templates.shape.maxPerPartition, previous.maxPerPartition * 2), sizedInstances)
+        : std::max(templates.shape.maxPerPartition, previous.maxPerPartition);
     const PtlasShape sized{
-        .instances = std::max({templates.shape.instances, previous.instances * 2, kMinCapacity}),
+        .instances = sizedInstances,
         .partitions = std::max(templates.shape.partitions, previous.partitions),
-        .maxPerPartition = std::max(templates.shape.maxPerPartition, previous.maxPerPartition),
+        .maxPerPartition = sizedMaxPerPartition,
     };
     const vk::AccelerationStructureBuildSizesInfoKHR sizes =
         device.vkdevice.getPartitionedAccelerationStructuresBuildSizesNV(buildInput(sized));
@@ -313,8 +454,8 @@ void RayTracingScene::createPtlas(uint64_t lastSubmittedFrame)
     ptlas.version = ~0u;
     logInfo(std::format("PTLAS for {} instances, {} partitions, {} per partition: {} KiB, scratch {} KiB",
                         sized.instances, sized.partitions, sized.maxPerPartition,
-                        divideRoundUp(static_cast<uint32_t>(sizes.accelerationStructureSize), 1024),
-                        divideRoundUp(static_cast<uint32_t>(sizes.buildScratchSize), 1024)),
+                        divideRoundUp(sizes.accelerationStructureSize, vk::DeviceSize{1024}),
+                        divideRoundUp(sizes.buildScratchSize, vk::DeviceSize{1024})),
             "RayTracingScene");
 }
 
@@ -349,10 +490,26 @@ void RayTracingScene::createFrameBuffers(uint32_t frameSlot, uint32_t capacity)
                                                   device.vkdevice, device.queueFamilyIndices,
                                                   std::format("TriangleLightTasks_{}", frameSlot),
                                                   kTriangleLightTasksTracyName);
-    // the build reads the op and its count as build input
+    // the build reads the op and its count as build input; argCount is copied to argCountReadback for CPU telemetry
     buffers.operation = createHostBuffer(kOperationBytes, vma, device.vkdevice, device.queueFamilyIndices,
                                          std::format("PtlasOperation_{}", frameSlot), kPtlasOperationTracyName,
-                                         vk::BufferUsageFlagBits2::eAccelerationStructureBuildInputReadOnlyKHR);
+                                         vk::BufferUsageFlagBits2::eAccelerationStructureBuildInputReadOnlyKHR |
+                                             vk::BufferUsageFlagBits2::eTransferSrc);
+    // MG-B2: host-cached readback buffer avoids uncached WC VRAM reads in collectResults
+    createBuffer(sizeof(uint32_t), vk::BufferUsageFlagBits2::eTransferDst,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent |
+                     vk::MemoryPropertyFlagBits::eHostCached,
+                 buffers.argCountReadback.buffer, buffers.argCountReadback.memory, vma, device.vkdevice,
+                 device.queueFamilyIndices, std::format("PtlasArgCountReadback_{}", frameSlot),
+                 VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    {
+        VmaAllocationInfo readbackInfo{};
+        vmaGetAllocationInfo(vma, buffers.argCountReadback.memory, &readbackInfo);
+        buffers.argCountReadback.mapped = readbackInfo.pMappedData;
+        *static_cast<uint32_t*>(buffers.argCountReadback.mapped) = 0;
+        tracyResourceAlloc(static_cast<VkBuffer>(*buffers.argCountReadback.buffer), sizeof(uint32_t),
+                           kPtlasArgCountReadbackTracyName);
+    }
     buffers.writeInfos =
         createAlignedBuffer(sizeof(vk::PartitionedAccelerationStructureWriteInstanceDataNV) * vk::DeviceSize{capacity},
                             alignof(vk::DeviceAddress),
@@ -369,10 +526,12 @@ void RayTracingScene::destroyFrameBuffers(FrameBuffers& buffers)
     destroyHostBuffer(allocator.allocator, buffers.rayInstanceLights, kRayInstanceLightsTracyName);
     destroyHostBuffer(allocator.allocator, buffers.triangleLightTasks, kTriangleLightTasksTracyName);
     destroyHostBuffer(allocator.allocator, buffers.operation, kPtlasOperationTracyName);
+    destroyHostBuffer(allocator.allocator, buffers.argCountReadback, kPtlasArgCountReadbackTracyName);
     destroyAlignedBuffer(buffers.writeInfos);
     buffers.capacity = 0;
     buffers.count = 0;
     buffers.version = ~0u;
+    buffers.buildsVersion = ~0u;
     buffers.isSubmitted = false;
 }
 
@@ -381,11 +540,16 @@ RayTracingScene::AlignedBuffer RayTracingScene::createAlignedBuffer(vk::DeviceSi
                                                                     std::string_view debugName) const
 {
     AlignedBuffer target;
-    // the slack lets the start move up to the alignment the build asks for
-    createBuffer(bytes + alignment - 1, usage | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
+    // MG-B1: align the buffer allocation directly via VMA minAlignment
+    createBuffer(std::max<vk::DeviceSize>(bytes, 1), usage | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                  vk::MemoryPropertyFlagBits::eDeviceLocal, target.buffer, target.memory, allocator.allocator,
-                 device.vkdevice, device.queueFamilyIndices, debugName);
-    target.address = alignUp(device.vkdevice.getBufferAddress({.buffer = *target.buffer}), alignment);
+                 device.vkdevice, device.queueFamilyIndices, debugName, 0, alignment);
+    target.address = device.vkdevice.getBufferAddress({.buffer = *target.buffer});
+    if (alignment > 1 && target.address % alignment != 0) {
+        throw std::runtime_error(
+            std::format("RayTracingScene: {} address {:#x} is not {}-byte aligned", debugName, target.address,
+                        alignment));
+    }
     return target;
 }
 
@@ -436,12 +600,13 @@ void RayTracingScene::recordBuild(const vk::raii::CommandBuffer& cmd, uint32_t f
         ShaderObjects::bindComputeShader(cmd, shaderObjects.rtShaders.writeInstances);
         cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
         cmd.dispatch(divideRoundUp(buffers.count, kRtInstancesGroupSize), 1, 1);
-        // the write infos and the op's argument count are build input
+        // the write infos and the op's argument count are build input (and argCount is copied for host telemetry)
         const vk::MemoryBarrier2 instanceBarrier{
             .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
             .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-            .dstStageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
-            .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
+            .dstStageMask =
+                vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR | vk::PipelineStageFlagBits2::eCopy,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead,
         };
         cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &instanceBarrier});
     }
@@ -464,14 +629,27 @@ void RayTracingScene::recordBuild(const vk::raii::CommandBuffer& cmd, uint32_t f
     if (buffers.isTimed) {
         cmd.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, *timestamps, firstQuery + 2);
     }
-    // collectResults reads the op's argument count after the slot's timeline wait
-    const vk::MemoryBarrier2 hostBarrier{
-        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
-        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
-    };
-    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &hostBarrier});
+    if (buffers.count > 0) {
+        // MG-B2: copy the 4-byte argCount into host-cached memory for collectResults
+        const vk::BufferCopy2 copyRegion{
+            .srcOffset = kArgCountOffset,
+            .dstOffset = 0,
+            .size = sizeof(uint32_t),
+        };
+        cmd.copyBuffer2(vk::CopyBufferInfo2{
+            .srcBuffer = *buffers.operation.buffer,
+            .dstBuffer = *buffers.argCountReadback.buffer,
+            .regionCount = 1,
+            .pRegions = &copyRegion,
+        });
+        const vk::MemoryBarrier2 hostBarrier{
+            .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+            .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+            .dstAccessMask = vk::AccessFlagBits2::eHostRead,
+        };
+        cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &hostBarrier});
+    }
 }
 
 void RayTracingScene::collectResults(uint32_t frameSlot)
@@ -479,10 +657,10 @@ void RayTracingScene::collectResults(uint32_t frameSlot)
     FrameBuffers& buffers = frames[frameSlot];
     if (buffers.isSubmitted) {
         buffers.isSubmitted = false;
-        vk::BuildPartitionedAccelerationStructureIndirectCommandNV op{};
-        std::memcpy(&op, buffers.operation.mapped, sizeof(op));
-        lastWrittenInstances = op.argCount;
-        TracyPlot("RT/PTLAS instance writes", static_cast<double>(op.argCount));
+        uint32_t argCount = 0;
+        std::memcpy(&argCount, buffers.argCountReadback.mapped, sizeof(argCount));
+        lastWrittenInstances = argCount;
+        TracyPlot("RT/PTLAS instance writes", static_cast<double>(argCount));
     }
     if (!buffers.isTimed) {
         return;

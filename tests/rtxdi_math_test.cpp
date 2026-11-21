@@ -222,18 +222,19 @@ int main()
         {
             float input;
             bool expectedValid;
-            float expectedClamped;
+            float expectedValue;
         };
+        // M8 I2 F20: unclamped symmetric [1/3, 3] rejection (preserves multi-hop Jacobian telescoping)
         const std::vector<JacobianCase> jacobianCases{
             {0.0f, false, 0.0f},
-            {0.099f, false, 0.099f},
-            {0.101f, true, 1.0f / 3.0f},
-            {0.25f, true, 1.0f / 3.0f},
+            {0.25f, false, 0.25f},
+            {0.33f, false, 0.33f},
+            {1.0f / 3.0f, true, 1.0f / 3.0f},
             {0.5f, true, 0.5f},
             {1.0f, true, 1.0f},
             {2.5f, true, 2.5f},
-            {5.0f, true, 3.0f},
-            {9.99f, true, 3.0f},
+            {3.0f, true, 3.0f},
+            {3.01f, false, 3.01f},
             {10.01f, false, 10.01f},
         };
 
@@ -332,13 +333,13 @@ int main()
             check(ok, "  LogLuv GI reservoir round-trip within 4%");
         }
 
-        // 2. Jacobian validation bounds
+        // 2. Jacobian validation bounds (unclamped symmetric [1/3, 3], M8 I2 F20)
         const auto* jacOutPtr = static_cast<const Vec4*>(jacOut.mapped);
         for (size_t i = 0; i < jacobianCases.size(); ++i) {
             const bool valid = jacOutPtr[i].x > 0.5f;
             const bool ok = valid == jacobianCases[i].expectedValid &&
-                (!valid || relClose(jacOutPtr[i].y, jacobianCases[i].expectedClamped, 1e-5f));
-            check(ok, "  RAB_ValidateGISampleWithJacobian matches NVIDIA bounds");
+                (!valid || relClose(jacOutPtr[i].y, jacobianCases[i].expectedValue, 1e-5f));
+            check(ok, "  RAB_ValidateGISampleWithJacobian matches symmetric [1/3, 3] bounds");
         }
 
         // 3. shadeGiSample and target PDF
