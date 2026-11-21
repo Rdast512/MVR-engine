@@ -51,6 +51,7 @@ struct GpuRtxdiConstants
     RTXDI_PTDecorrelationParameters giDecorrelation;
     float giHistoryReductionStrength; // ReSTIR PT's historyReductionStrength, with kGiFlagDuplicationHistoryReduction
     uint pad0;
+    uint64_t diNeighborOffsets; // float2[neighborOffsetMask + 1], StratifiedLowDiscrepancy for DI (m8 I2 F16)
 };
 
 // GiFlag in src/render/vk_rtxdi.hpp
@@ -59,6 +60,7 @@ static const uint kGiFlagFireflyClamp = 1u << 1;
 static const uint kGiFlagSecondaryRoughnessFloor = 1u << 2;
 static const uint kGiFlagSpatialAgeReset = 1u << 3;
 static const uint kGiFlagDuplicationHistoryReduction = 1u << 4;
+static const uint kGiFlagFullTileBoilingFilter = 1u << 5;
 
 // RtxdiContext::kGiInitialReservoirArray: the indirect pass's initial samples, after RTXDI's two arrays
 static const uint kGiInitialReservoirArray = 2;

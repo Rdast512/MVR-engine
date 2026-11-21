@@ -26,11 +26,6 @@ void nrcResolveMain(uint3 id : SV_DispatchThreadID)
         return;
     }
     const float3 cached = nrcQueryResult(loadNrcConstants(root), id.xy);
-    if (all(cached <= 0.0))
-    {
-        return;
-    }
-    const float ao = tex2D(gRtxdiBridge.current.sampled[kGuideDiffuseAlbedo]).Load(int3(int2(id.xy), 0)).a;
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
     const uint2 reservoirPos = RTXDI_PixelPosToReservoirPos(id.xy, constants.runtime.activeCheckerboardField);
     RTXDI_GIReservoir reservoir =
@@ -39,6 +34,37 @@ void nrcResolveMain(uint3 id : SV_DispatchThreadID)
     {
         return;
     }
-    reservoir.radiance += cached * ao;
-    RTXDI_StoreGIReservoir(reservoir, constants.giReservoirBuffer, reservoirPos, kGiInitialReservoirArray);
+    bool shouldStore = false;
+    if (any(cached > 0.0))
+    {
+        const float ao = tex2D(gRtxdiBridge.current.sampled[kGuideDiffuseAlbedo]).Load(int3(int2(id.xy), 0)).a;
+        const float3 added = cached * ao;
+        if (any(added > 0.0))
+        {
+            reservoir.radiance += added;
+            shouldStore = true;
+        }
+    }
+    // m8 I2 F13: indirect kept X2's true position while an NRC query was pending; if radiance is still zero after
+    // resolve, replace it with the far miss placeholder so dark reservoirs keep Jacobian ~1 during reuse
+    if (all(reservoir.radiance <= 0.0))
+    {
+        const RAB_Surface primary = RAB_GetGBufferSurface(int2(id.xy), false);
+        if (RAB_IsSurfaceValid(primary))
+        {
+            const float3 toSample = reservoir.position - primary.position;
+            const float distSq = dot(toSample, toSample);
+            if (distSq > 0.0 && distSq < 0.25 * kMissDistance * kMissDistance)
+            {
+                const float3 dir = toSample * rsqrt(distSq);
+                reservoir.position = primary.position + dir * kMissDistance;
+                reservoir.normal = -dir;
+                shouldStore = true;
+            }
+        }
+    }
+    if (shouldStore)
+    {
+        RTXDI_StoreGIReservoir(reservoir, constants.giReservoirBuffer, reservoirPos, kGiInitialReservoirArray);
+    }
 }

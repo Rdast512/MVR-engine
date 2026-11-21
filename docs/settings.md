@@ -181,7 +181,8 @@ The `ReSTIR GI` part of the `Indirect (M4)` section. Defaults (`RtxdiContext::de
 | Boiling filter | off (NVIDIA: on, 0.2) | off | drops reservoirs after temporal reuse that are far brighter than their 8×8 group; the DLSS-RR profile replaces it with firefly replacement |
 | Decorrelation, factor, stagnancy exponent / EMA | Stagnancy, 0.4, 0.5 / 0.2 (NVIDIA: None) | None | final shading shades the pixel's initial sample instead of the reused one with probability 4 · factor · stagnancy^exponent; stagnancy = min(sample age / 40, 1), smoothed against last frame's 5×5 map. The stored reservoirs keep their history. Raw `Indirect radiance` gets noisier per frame (per-frame RMS 241% → 485% gallery) and less correlated over time; GI shade +0.07 ms |
 | Firefly replacement, strength | on, 0.7 (NVIDIA: off) | off | the boiling filter's test on the final reservoir; a detected one is always swapped for the initial sample |
-| Bound fresh swaps, swap bound | off, 15× (PT: on) | off | a swap where the final sample is fresh keeps at most 15× its weight. Darkens GI: −3 / −8 pp gallery / courtyard |
+| Full-tile firefly test | on (NVIDIA: off) | off | averages the firefly test's 8×8 tile weight over all in-bounds lanes instead of nonzero lanes only (M8 I2 F15), so isolated fireflies in dark tiles are still caught; temporal boiling keeps NVIDIA's nonzero-lane filter |
+| Bound fresh swaps, swap bound | off, 15× (PT: on) | off | a swap where the final sample is fresh keeps at most 15× its weight (gated on `weightSum > 0` since I2 F14). Darkens GI: −5.6 / −2.3 pp gallery / courtyard |
 | Duplication history reduction, strength | off, 0.5 (PT: on) | off | caps temporal history where many of the 17×17 neighbors shared last frame's sample (one more pass, `rtxdi_gi_duplication`). Darkens GI: −8 / −7 pp |
 | Final visibility, final MIS | on, on | on, on | reconnection ray; blend with the pixel's own sample on glossy lobes |
 | Secondary DI resampling | off | off | X₂'s light reuses this frame's ReSTIR DI reservoirs where X₂ is on screen (the RTXDI sample's `ShadeSecondarySurfaces`). With one light it only darkens: −23% in the courtyard, as the DI visibility shortcut keeps M for shadowed samples ([m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md) §2.6, O2) |
@@ -190,7 +191,7 @@ The `ReSTIR GI` part of the `Indirect (M4)` section. Defaults (`RtxdiContext::de
 
 - **Ground-truth paths:** trace 8 bounces after X2 instead of querying NRC, which pauses. With `Reference (no reuse)` on as well, the `Indirect radiance` view is the ground truth, one sample per frame.
 - **Cost** (gallery, 1280×720 window (853×480 render, DLSS-RR Quality), 2026-11-20 ABBA): temporal 0.11 ms, shade 0.41–0.42 ms with the shipped defaults of that day (0.26–0.27 ms with NVIDIA's Basic spatial correction). The DLSS-RR profile adds 0.07 ms to the shade (2026-11-21 ABBA, 3 runs each).
-- **Bias** against one bounce (ReSTIR GI mode, 2026-11-21): shipped −0.75% gallery / −0.86% courtyard (tile p90 21.4% / 27.4%); without the DLSS-RR profile +7.7% / +1.8% (23.4% / 19.3%). Stability under DLSS-RR has no runner yet (m8 F2): judge `Lit` on screen.
+- **Bias and stability** (ReSTIR GI mode, after M8 I2, 2026-11-21): bias against one bounce is −0.21% gallery / −1.48% courtyard (tile p90 21.7% / 29.6%); `Lit` stability over 480 static frames (`ENGINE_STABILITY_CHECK`) is 5.80% temporal std / 46.0% flickering px / 0.83% swing in the gallery and 1.30% / 8.3% / 0.15% in the courtyard ([i2_shading_correctness.md](../spec/fixesM1-6/i2_shading_correctness.md)).
 
 ### 7.1 NRC
 

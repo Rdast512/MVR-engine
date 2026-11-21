@@ -132,8 +132,9 @@ namespace
                                                       extent.height, isWritten);
     }
 
-    // DLSS takes row-major, left-multiply matrices; glm is column-major, right-multiply
-    [[nodiscard]] glm::mat4 ngxRowMajor(const glm::mat4& matrix) { return glm::transpose(matrix); }
+    // DLSS takes row-major, left-multiply matrices (v * M^T); glm is column-major, right-multiply (M * v), which
+    // shares the identical 16-float memory layout ((M^T)^T = M; reference/vk_denoise_dlssrr/dlss_rr/src/dlssrr_wrapper.cpp:379-385)
+    [[nodiscard]] glm::mat4 ngxMatrix(const glm::mat4& matrix) { return matrix; }
 } // namespace
 
 SdkExtensions Dlss::requiredExtensions()
@@ -276,8 +277,8 @@ void Dlss::evaluate(const vk::raii::CommandBuffer& cmd, const Frame& frame) cons
     NVSDK_NGX_Resource_VK specularAlbedo = ngxResource(frame.specularAlbedo, renderExtent, false);
     NVSDK_NGX_Resource_VK normalRoughness = ngxResource(frame.normalRoughness, renderExtent, false);
     NVSDK_NGX_Resource_VK output = ngxResource(frame.output, displayExtent, true);
-    glm::mat4 worldToView = ngxRowMajor(frame.view);
-    glm::mat4 viewToClip = ngxRowMajor(frame.proj);
+    glm::mat4 worldToView = ngxMatrix(frame.view);
+    glm::mat4 viewToClip = ngxMatrix(frame.proj);
 
     NVSDK_NGX_VK_DLSSD_Eval_Params eval{};
     eval.pInColor = &color;

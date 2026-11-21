@@ -6,10 +6,6 @@
 // lighting/rtxdi_bridge.slang
 #include "Rtxdi/DI/InitialSampling.hlsli"
 
-// a miss stays a sample with zero radiance this far along the ray: M counts it for ReSTIR GI's normalization. No
-// environment light before M7
-static const float kMissDistance = 1.0e5;
-
 // where a vertex's rays start: the traced triangle or the raster pixel
 interface IRayOrigin
 {
@@ -37,6 +33,9 @@ RTXDI_DIReservoir sampleLightsAt(RAB_Surface surface, GpuRtxdiConstants constant
 {
     RTXDI_DIInitialSamplingParameters sampling = constants.initialSampling;
     sampling.numBrdfSamples = 0;
+    // m8 I2 F18: shadeLightReservoir traces visibility from origin.spawn (safeSpawnPoint for ray hits); leaving
+    // enableInitialVisibility on traces an extra ray from rasterRayOrigin (RTXDI sample LightingPasses.cpp:64)
+    sampling.enableInitialVisibility = 0;
     return RTXDI_SampleLightsForSurface(rng, coherentRng, surface, sampling, constants.lightBuffer,
                                         constants.localLightRisBuffer, constants.environmentLightRisBuffer,
                                         regirParameters(), lightSample);

@@ -24,6 +24,38 @@ static const uint kRtxdiTile = 8; // matches src/render/vk_renderer.cpp
 
 [[vk::push_constant]] ConstantBuffer<FramePushData> push;
 
+// full-tile firefly test (m8 I2 F15): averages weight across all in-bounds lanes of the 8x8 group instead of nonzero
+// lanes only
+groupshared float gFullTileWeights[2];
+groupshared uint gFullTileCounts[2];
+
+bool fullTileBoilingFilter(uint2 localIndex, float filterStrength, float weight, bool isInBounds)
+{
+    const float multiplier = 10.0 / clamp(filterStrength, 1e-6, 1.0) - 9.0;
+    const float waveWeight = WaveActiveSum(isInBounds ? weight : 0.0);
+    const uint waveCount = WaveActiveCountBits(isInBounds);
+    const uint linearThread = localIndex.x + localIndex.y * kRtxdiTile;
+    const uint waveIndex = linearThread / WaveGetLaneCount();
+    if (WaveIsFirstLane())
+    {
+        gFullTileWeights[waveIndex] = waveWeight;
+        gFullTileCounts[waveIndex] = waveCount;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    const uint waveCountTotal = (kRtxdiTile * kRtxdiTile + WaveGetLaneCount() - 1) / WaveGetLaneCount();
+    if (linearThread < waveCountTotal)
+    {
+        const float totalWeight = WaveActiveSum(gFullTileWeights[linearThread]);
+        const uint totalCount = WaveActiveSum(gFullTileCounts[linearThread]);
+        if (linearThread == 0)
+        {
+            gFullTileWeights[0] = totalCount > 0 ? totalWeight / float(totalCount) : 0.0;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    return isInBounds && weight > gFullTileWeights[0] * multiplier;
+}
+
 // the RTXDI sample's FinalShading.hlsl
 static const float kMisRoughness = 0.3;
 static const float kMaxBrdfValue = 1.0e4;
@@ -229,10 +261,16 @@ void rtxdiGiShadeMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_GroupTh
                 ? RAB_GetGISampleTargetPdfForSurface(reservoir.position, reservoir.radiance, surface) *
                     reservoir.weightSum
                 : 0.0;
-            isFirefly = RTXDI_BoilingFilterInternal(localId.xy, decorrelation.fireflyReplacementFilterStrength,
-                                                    fireflyWeight);
+            isFirefly = (constants.giFlags & kGiFlagFullTileBoilingFilter) != 0
+                ? fullTileBoilingFilter(localId.xy, decorrelation.fireflyReplacementFilterStrength, fireflyWeight,
+                                        isInBounds)
+                : RTXDI_BoilingFilterInternal(localId.xy, decorrelation.fireflyReplacementFilterStrength,
+                                              fireflyWeight);
         }
-        const float stagnancy = min(float(reservoir.age) * kStagnancyAgeScale, 1.0);
+        // m8 I2 F14: GI's Combine uses <=, so zero-weight reservoirs inherit and increment age (unlike PT's <); keep
+        // stagnancy at 0 when the reservoir carries no sample weight
+        const float stagnancy =
+            reservoir.weightSum > 0.0 ? min(float(reservoir.age) * kStagnancyAgeScale, 1.0) : 0.0;
         float smoothedStagnancy = 0.0;
         if (isDecorrelated && decorrelation.decorrelationMode == RTXDI_PT_DECORRELATION_MODE_STAGNANCY && isInBounds)
         {
@@ -250,8 +288,9 @@ void rtxdiGiShadeMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_GroupTh
         }
         if (isReplaced)
         {
-            // a fresh final sample won this frame: its swap keeps at most the bound times its weight
-            if (decorrelation.fireflyReplacementBiasReduction != 0 && stagnancy == 0.0)
+            // a fresh final sample won this frame: its swap keeps at most the bound times its weight; never clamp to
+            // 0 when spatial visibility zeroed the final reservoir (m8 I2 F14)
+            if (decorrelation.fireflyReplacementBiasReduction != 0 && stagnancy == 0.0 && reservoir.weightSum > 0.0)
             {
                 initial.weightSum =
                     min(decorrelation.fireflyReplacementMultiplyBound * reservoir.weightSum, initial.weightSum);

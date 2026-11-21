@@ -63,10 +63,10 @@ namespace
         float y;
     };
 
-    std::vector<NeighborOffset> makeNeighborOffsets()
+    std::vector<NeighborOffset> makeNeighborOffsets(ReSTIRDI_SpatialSamplingMode mode)
     {
         std::vector<uint8_t> packed(static_cast<size_t>(kNeighborOffsetCount) * 2);
-        rtxdi::FillNeighborOffsetBuffer(packed.data(), kNeighborOffsetCount, kNeighborSamplingMode);
+        rtxdi::FillNeighborOffsetBuffer(packed.data(), kNeighborOffsetCount, mode);
         std::vector<NeighborOffset> offsets(kNeighborOffsetCount);
         for (uint32_t i = 0; i < kNeighborOffsetCount; ++i) {
             offsets[i] = {.x = static_cast<float>(static_cast<int8_t>(packed[i * 2])) * kSnormScale,
@@ -154,11 +154,17 @@ RtxdiContext::RtxdiContext(const Device& device, const VkAllocator& allocator, c
     device(device), allocator(allocator), frameSync(frameSync), descriptorManager(descriptorManager),
     shaderObjects(shaderObjects), worldLights(worldLights)
 {
-    const std::vector<NeighborOffset> offsets = makeNeighborOffsets();
-    const vk::DeviceSize offsetBytes = offsets.size() * sizeof(NeighborOffset);
+    // two tables, as NVIDIA's FullSample (RtxdiResources.cpp:209-214, m8 I2 F16): LowDiscrepancy for GI's linear
+    // spatial walk, StratifiedLowDiscrepancy for DI's stratified walk
+    const std::vector<NeighborOffset> giOffsets = makeNeighborOffsets(ReSTIRDI_SpatialSamplingMode::LowDiscrepancy);
+    const vk::DeviceSize offsetBytes = giOffsets.size() * sizeof(NeighborOffset);
     neighborOffsets = createHostBuffer(offsetBytes, allocator.allocator, device.vkdevice, device.queueFamilyIndices,
                                        "RtxdiNeighborOffsets", "RtxdiNeighborOffsets");
-    std::memcpy(neighborOffsets.mapped, offsets.data(), offsetBytes);
+    std::memcpy(neighborOffsets.mapped, giOffsets.data(), offsetBytes);
+    const std::vector<NeighborOffset> diOffsets = makeNeighborOffsets(kNeighborSamplingMode);
+    diNeighborOffsets = createHostBuffer(offsetBytes, allocator.allocator, device.vkdevice, device.queueFamilyIndices,
+                                         "RtxdiDiNeighborOffsets", "RtxdiDiNeighborOffsets");
+    std::memcpy(diNeighborOffsets.mapped, diOffsets.data(), offsetBytes);
     for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
         constants[slot] = createHostBuffer(sizeof(GpuRtxdiConstants), allocator.allocator, device.vkdevice,
                                            device.queueFamilyIndices, std::format("RtxdiConstants_{}", slot),
@@ -174,6 +180,7 @@ RtxdiContext::~RtxdiContext()
     destroyVmaBuffer(allocator.allocator, risLightData, risLightDataMemory);
     destroyVmaImage(allocator.allocator, lightPdf, lightPdfMemory);
     destroyHostBuffer(allocator.allocator, neighborOffsets, "RtxdiNeighborOffsets");
+    destroyHostBuffer(allocator.allocator, diNeighborOffsets, "RtxdiDiNeighborOffsets");
     for (HostBuffer& slot : constants) {
         destroyHostBuffer(allocator.allocator, slot, "RtxdiConstants");
     }
@@ -456,6 +463,7 @@ RtxdiContext::GiSettings RtxdiContext::defaultGiSettings()
     // and the bound on fresh swaps -3 / -8 pp; without both the profile reads -0.75% / -0.86%
     settings.isDuplicationHistoryReductionEnabled = false;
     settings.isFireflyReplacementBounded = false;
+    settings.isFullTileBoilingFilterEnabled = true;
     return settings;
 }
 
@@ -679,7 +687,8 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
                                                                                     : 0u) |
                    // without age-based rejection, as ReSTIR PT's DLSS-RR profile
                    (giSettings.maxReservoirAge >= kGiUnlimitedSampleAge ? GiFlag::SpatialAgeReset : 0u) |
-                   (isGiDuplicationMapApplied ? GiFlag::DuplicationHistoryReduction : 0u),
+                   (isGiDuplicationMapApplied ? GiFlag::DuplicationHistoryReduction : 0u) |
+                   (giSettings.isFullTileBoilingFilterEnabled ? GiFlag::FullTileBoilingFilter : 0u),
         .localLightRisBuffer = importanceSampling->GetLocalLightRISBufferSegmentParams(),
         .environmentLightRisBuffer = importanceSampling->GetEnvironmentLightRISBufferSegmentParams(),
         .regir = regirConstants,
@@ -691,6 +700,7 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
         .giDecorrelation = decorrelationParameters(giSettings),
         .giHistoryReductionStrength = giSettings.historyReductionStrength,
         .pad0 = 0,
+        .diNeighborOffsets = diNeighborOffsets.address,
     };
     std::memcpy(constants[frameSlot].mapped, &data, sizeof(data));
 }

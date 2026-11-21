@@ -45,7 +45,7 @@ struct GpuRtxdiConstants {
     RTXDI_ShadingParameters shading;
     // RTXDI_PackedDIReservoir[c_NumReSTIRDIReservoirBuffers * reservoirArrayPitch]
     vk::DeviceAddress reservoirs;
-    // float2[neighborOffsetCount], RTXDI_NEIGHBOR_OFFSETS_BUFFER
+    // float2[neighborOffsetCount], RTXDI_NEIGHBOR_OFFSETS_BUFFER (LowDiscrepancy for GI; m8 I2 F16)
     vk::DeviceAddress neighborOffsets;
     // rtxdi::ReSTIRDI_ResamplingMode, tested as bits by the passes: bit 0 temporal, bit 1 spatial
     uint32_t resamplingMode;
@@ -88,6 +88,8 @@ struct GpuRtxdiConstants {
     // RTXDI_PTTemporalResamplingParameters::historyReductionStrength, with GiFlag::DuplicationHistoryReduction
     float giHistoryReductionStrength;
     uint32_t pad0;
+    // float2[neighborOffsetCount], RTXDI_DI_NEIGHBOR_OFFSETS_BUFFER (StratifiedLowDiscrepancy for DI; m8 I2 F16)
+    vk::DeviceAddress diNeighborOffsets;
 };
 // GpuRtxdiConstants::giFlags; mirrored in shaders/lighting/rtxdi_constants.slang
 namespace GiFlag
@@ -101,11 +103,14 @@ namespace GiFlag
     // the temporal pass caps history where last frame's final sample was shared by many pixels; the shade pass writes
     // the sample ids and rtxdi_gi_duplication counts them (ReSTIR PT's duplication-based history reduction)
     inline constexpr uint32_t DuplicationHistoryReduction = 1u << 4;
+    // average boiling / firefly weights over all in-bounds 8x8 tile lanes instead of nonzero lanes only (m8 I2 F15)
+    inline constexpr uint32_t FullTileBoilingFilter = 1u << 5;
 } // namespace GiFlag
 static_assert(sizeof(ReGIR_Parameters) == 1296);
 static_assert(sizeof(RTXDI_PTDecorrelationParameters) == 32);
-static_assert(sizeof(GpuRtxdiConstants) == 1896);
+static_assert(sizeof(GpuRtxdiConstants) == 1904);
 static_assert(offsetof(GpuRtxdiConstants, giDecorrelation) == 1856);
+static_assert(offsetof(GpuRtxdiConstants, diNeighborOffsets) == 1896);
 static_assert(offsetof(GpuRtxdiConstants, reservoirs) == 304);
 static_assert(offsetof(GpuRtxdiConstants, giReservoirBuffer) == 328);
 static_assert(offsetof(GpuRtxdiConstants, giReservoirs) == 376);
@@ -208,6 +213,8 @@ public:
         float normalThreshold = 0.0f;
         bool isBoilingFilterEnabled = false;
         float boilingFilterStrength = 0.0f;
+        // average the 8x8 boiling/firefly weight across all in-bounds lanes instead of nonzero lanes (m8 I2 F15)
+        bool isFullTileBoilingFilterEnabled = false;
         // a reconnection ray from the primary to the final sample
         bool isFinalVisibilityEnabled = false;
         // the final sample and the pixel's initial sample, weighted by how glossy their BRDF lobes are
@@ -352,6 +359,7 @@ private:
     vk::DeviceAddress giReservoirAddress = 0;
     uint32_t giReservoirCount = 0;
     HostBuffer neighborOffsets;
+    HostBuffer diNeighborOffsets;
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> constants;
 
     // one copy: the compute submit that rewrites them waits for the previous frame's ray passes (C-F2-1)

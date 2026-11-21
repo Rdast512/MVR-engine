@@ -220,6 +220,11 @@ public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, flo
         }
         result.n = normalize(tangentNormal.x * t + tangentNormal.y * b + tangentNormal.z * surface.normal);
     }
+    // m8 I2 F19 (ND9): keep the shading normal in the geometric normal's hemisphere (RTXGI Pathtracer.hlsl:421, 469)
+    if (dot(surface.geoNormal, result.n) < 0.0)
+    {
+        result.n = -result.n;
+    }
 
     // unlit: no diffuse or specular response, the color is all emission
     if (isUnlit)

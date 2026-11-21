@@ -1200,6 +1200,8 @@ void EngineUi::drawRayTracingPanel()
     ImGui::BeginDisabled(!gi.isFireflyReplacementEnabled);
     ImGui::SliderFloat("Firefly strength", &gi.fireflyReplacementStrength, 0.0f, 1.0f, "%.2f",
                        ImGuiSliderFlags_AlwaysClamp);
+    ImGui::Checkbox("Full-tile firefly test", &gi.isFullTileBoilingFilterEnabled);
+    ImGui::SetItemTooltip("average the 8x8 tile firefly weight over all in-bounds lanes instead of nonzero lanes only");
     ImGui::Checkbox("Bound fresh swaps", &gi.isFireflyReplacementBounded);
     ImGui::SetItemTooltip("where the final sample is fresh, a swap keeps at most this multiple of its weight");
     ImGui::BeginDisabled(!gi.isFireflyReplacementBounded);

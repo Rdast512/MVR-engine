@@ -203,9 +203,16 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
                 radiance *= kMaxIndirectRadiance / secondaryLuminance;
             }
         }
-        reservoir = RTXDI_MakeGIReservoir(secondary.surface.position, secondary.surface.geoNormal, radiance, pdf);
         // an unlit X2 reflects no light, so the cache has nothing to add
-        if (!isCacheView && secondary.surface.isLit && gNrcBridge.isActive)
+        const bool hasNrcQuery = !isCacheView && secondary.surface.isLit && gNrcBridge.isActive;
+        // m8 I2 F13: zero-radiance hits with no pending NRC cache term store the far miss placeholder so their
+        // Jacobian stays ~1 and dark neighbors/history never fail validation and drop their M from piSum
+        const bool isZeroPlaceholder = all(radiance <= 0.0) && !hasNrcQuery;
+        const float3 samplePos =
+            isZeroPlaceholder ? ray.Origin + ray.Direction * kMissDistance : secondary.surface.position;
+        const float3 sampleNormal = isZeroPlaceholder ? -ray.Direction : secondary.surface.geoNormal;
+        reservoir = RTXDI_MakeGIReservoir(samplePos, sampleNormal, radiance, pdf);
+        if (hasNrcQuery)
         {
             const RAB_Surface s = secondary.surface;
             NrcUpdateOnHit(nrc, nrcPath,

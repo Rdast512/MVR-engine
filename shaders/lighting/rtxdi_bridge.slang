@@ -40,6 +40,7 @@ import raytracing.trace;
 #define RTXDI_LIGHT_RESERVOIR_BUFFER gRtxdiBridge.reservoirs
 #define RTXDI_GI_RESERVOIR_BUFFER gRtxdiBridge.giReservoirs
 #define RTXDI_NEIGHBOR_OFFSETS_BUFFER bdaPtr<float2>(gRtxdiBridge.neighborOffsets)
+#define RTXDI_DI_NEIGHBOR_OFFSETS_BUFFER bdaPtr<float2>(gRtxdiBridge.diNeighborOffsets)
 #define RTXDI_RIS_BUFFER gRtxdiBridge.risBuffer
 
 // RTXDI's HLSL converts uint to bool implicitly (E30081): units that include this file compile with
@@ -109,6 +110,7 @@ struct RtxdiBridgeState
     CheckedBuffer<RTXDI_PackedDIReservoir> reservoirs;
     CheckedBuffer<RTXDI_PackedGIReservoir> giReservoirs;
     uint64_t neighborOffsets;
+    uint64_t diNeighborOffsets;
     uint localLightCount;
     TriangleLightTable triangleLights;
     ReSTIRDI_LocalLightSamplingMode localLightSamplingMode;
@@ -143,6 +145,7 @@ void rtxdiBridgeInit(GpuFrameRoot root)
     gRtxdiBridge.giReservoirs.address = constants[0].giReservoirs;
     gRtxdiBridge.giReservoirs.count = constants[0].giReservoirCount;
     gRtxdiBridge.neighborOffsets = constants[0].neighborOffsets;
+    gRtxdiBridge.diNeighborOffsets = constants[0].diNeighborOffsets;
     gRtxdiBridge.localLightCount = constants[0].lightBuffer.localLightBufferRegion.numLights;
     gRtxdiBridge.triangleLights = loadTriangleLightTable(root);
     gRtxdiBridge.localLightSamplingMode = constants[0].initialSampling.localLightSamplingMode;
@@ -593,6 +596,10 @@ bool RAB_TraceRayForLocalLight(float3 origin, float3 direction, float tMin, floa
 // surface that traced it
 //
 
+// a miss (or zero-radiance GI hit, m8 I2 F13) sits this far along the ray: M counts it for ReSTIR GI's normalization
+// with Jacobian ~1. No environment light before M7
+static const float kMissDistance = 1.0e5;
+
 // evalBrdf · Lo(X2) · NdotL toward the sample: the GI target function's color, and the final shading
 float3 shadeGiSample(RAB_Surface surface, float3 samplePosition, float3 sampleRadiance)
 {
@@ -622,16 +629,12 @@ float RAB_GetGISampleTargetPdfForSurface(float3 samplePosition, float3 sampleRad
     return luminance(shadeGiSample(surface, samplePosition, sampleRadiance));
 }
 
-// the RTXDI sample's bridge (RAB_SpatialHelpers.hlsli): a solid-angle ratio past 10x rejects the reuse, past 3x it is
-// clamped. The clamp is a bias the GI check measures
+// symmetric solid-angle ratio reject without clamping (m8 I2 F20): NVIDIA's sample accepts [0.1, 10] and clamps to
+// [1/3, 3], which breaks Jacobian telescoping around multi-hop cycles (J_01 * J_12 * J_20 > 1) and pumps reservoir
+// weights to +inf under jitter when maxReservoirAge is unlimited. Symmetric [1/3, 3] rejection keeps telescoping exact
 bool RAB_ValidateGISampleWithJacobian(inout float jacobian)
 {
-    if (jacobian > 10.0 || jacobian < 0.1)
-    {
-        return false;
-    }
-    jacobian = clamp(jacobian, 1.0 / 3.0, 3.0);
-    return true;
+    return jacobian <= 3.0 && jacobian >= 1.0 / 3.0;
 }
 
 // the ray ends this share of the distance short of X2, which lies on the triangle that traced it

@@ -619,6 +619,7 @@ namespace
         LAYOUT_FIELD(GpuRtxdiConstants, giDecorrelation),
         LAYOUT_FIELD(GpuRtxdiConstants, giHistoryReductionStrength),
         LAYOUT_FIELD(GpuRtxdiConstants, pad0),
+        LAYOUT_FIELD(GpuRtxdiConstants, diNeighborOffsets),
     }};
 
     // textual mirror next to the NRC SDK's NrcConstants
