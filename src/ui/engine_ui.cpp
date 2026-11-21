@@ -1050,7 +1050,8 @@ void EngineUi::drawRayTracingPanel()
     if (ImGui::Button("Defaults##di")) {
         di = RtxdiContext::defaultSettings();
     }
-    ImGui::SetItemTooltip("shipped: NVIDIA's with ray-traced spatial bias correction");
+    ImGui::SetItemTooltip("shipped: Power_RIS, fresh final visibility, no permutation, ray-traced disocclusion boost "
+                          "(8 samples while M < 4)");
     ImGui::SameLine();
     if (ImGui::Button("NVIDIA defaults")) {
         di = RtxdiContext::nvidiaSettings();

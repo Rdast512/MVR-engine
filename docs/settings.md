@@ -19,9 +19,9 @@ The defaults are the ones NVIDIA ships in its own samples, so the engine's cost 
 | CLAS, cluster BLAS | `vk_lod_clusters` | fast trace, minimum position truncation |
 | PTLAS | `vk_partitioned_tlas` | fast trace |
 
-Deviations, where the engine lacks the feature:
-- **ReGIR.** RTXDI's `Medium` preset uses ReGIR for local-light sampling, which needs light presampling (M7). Until then the engine samples local lights uniformly, with the same candidate count (8).
-- **ReSTIR GI spatial bias correction.** Ray traced instead of NVIDIA's `Basic`, which darkens occluded places (§7, considerations C-G5-2). `NVIDIA defaults` in the ReSTIR GI section restores the library's set.
+Deviations from NVIDIA's sample defaults:
+- **ReSTIR DI (`RtxdiContext::defaultSettings`).** Uses `Power_RIS` instead of `ReGIR_RIS` (removes Bistro's async presample stall and the ReGIR/BRDF PDF mismatch), fresh final visibility (`Reuse final visibility` off, removing shadow-edge light leak), no temporal permutation, and `Spatial samples = 0` with ray-traced disocclusion boost (`8` samples while `M < 4`). `NVIDIA defaults` restores NVIDIA's `Medium` preset ([i6_restir_di_tuning.md](../spec/fixesM1-6/i6_restir_di_tuning.md)).
+- **ReSTIR GI (`RtxdiContext::defaultGiSettings`).** Ray-traced spatial bias correction (`1` sample, radius `32`) instead of NVIDIA's `Basic` (which darkens occluded places, §7, C-G5-2), plus ReSTIR PT's DLSS-RR decorrelation and full-tile firefly replacement profile without history reduction or swap bound ([i5_restir_gi_tuning.md](../spec/fixesM1-6/i5_restir_gi_tuning.md)). `NVIDIA defaults` in the ReSTIR GI section restores the library's set.
 - **Indirect mode.** ReSTIR GI mode (one bounce, NRC paused) is the default; NVIDIA's NRC sample corresponds to the `NRC` mode (§7, considerations C-G5-3).
 - **Resolution.** The RTXDI sample renders at native resolution, which is DLSS-RR's DLAA mode in the engine. Set the mode to DLAA before comparing images or costs with that sample.
 
@@ -77,9 +77,9 @@ The result is noisy by design. DLSS-RR turns it into the final image, and RR is 
 
 ### 3.2 The built-in sets
 
-- **Defaults** (`RtxdiContext::defaultSettings`, shipped since 2026-11-21): NVIDIA's set with `Ray traced` spatial correction. Under NVIDIA's `Basic`, the convergence check's Sponza_terminator read −53.6%: `Basic` counts neighbors whose sample is hidden from them. With `Ray traced` the convergence checks read +3.3% there and −2.2% on the lamp; the rest is permutation sampling ([m8 findings](../spec/fixesM1-6/m8_optimization_and_fixes.md) §2.7). The shade pass costs +0.003 ms on the gallery bench.
-- **NVIDIA defaults** (`RtxdiContext::nvidiaSettings`): the table's last column (the RTXDI sample's `Medium` preset). ReSTIR DI total ≈ 0.35 ms on the sunlit Sponza bench (853×480 render size).
-- **Converged** (`RtxdiContext::convergedSettings`): no spatial reuse except the disocclusion boost (history < 20), Pairwise, `Basic` temporal, no permutation, no BRDF candidate, no visibility reuse. Its raw output converges to the reference (the guide capture's convergence check runs it), but DLSS-RR flickers more on it (§3.4). ≈ 0.24 ms.
+- **Defaults** (`RtxdiContext::defaultSettings`, tuned in M8 I6, 2026-11-21): `Power_RIS` local-light sampling (avoids ReGIR's async presample stall on Bistro and its PDF mismatch with BRDF candidates), fresh final visibility (`Reuse final visibility` off, removing shadow-edge light leak and activating the temporal visibility shortcut every frame), no temporal permutation, and `Spatial samples = 0` with ray-traced disocclusion boost (`8` samples while `M < 4`, fallback on). Passes all three DI convergence checks at shipped defaults (`+0.084% / −0.000% / +0.077%`, 0 dark leak) while cutting Sponza DI time −36.9% gallery / −40.3% courtyard and improving courtyard `Lit` stability (`0.99%` std / `0.06%` swing, [i6_restir_di_tuning.md](../spec/fixesM1-6/i6_restir_di_tuning.md)).
+- **NVIDIA defaults** (`RtxdiContext::nvidiaSettings`): the table's last column (the RTXDI sample's `Medium` preset: `ReGIR_RIS`, `Basic` spatial, permutation on, reuse final visibility on).
+- **Converged** (`RtxdiContext::convergedSettings`): `Power_RIS`, ray-traced temporal/spatial bias correction, no visibility shortcut, no fallback, no permutation, no spatial reuse (`0`, boost `0`), no boiling filter, no BRDF candidate, no visibility reuse. The guide capture's convergence check runs it.
 
 ### 3.3 Known artifacts and the setting behind each
 
@@ -118,7 +118,7 @@ Setup:
 - **The BRDF candidate changes nothing** in these numbers: no light can be hit yet.
 - **RR is not perfectly still even on a perfect input.** With Converged settings and jitter off, its output still varies 1.6% (1.5% of pixels flicker).
 
-Re-measure after M4 (GI) and M6 (OMM). With soft indirect light the NVIDIA defaults may come out ahead.
+Re-measured after M4 (GI) and M6 (OMM) in M8 I6 (2026-11-21, [i6_restir_di_tuning.md](../spec/fixesM1-6/i6_restir_di_tuning.md)): with soft GI and OMM leaf shadows, `spatialSamples = 0` + `disocclusionHistoryLength = 4` + no permutation + fresh final visibility beats NVIDIA `Medium` on courtyard `Lit` (`0.99%` std / `0.06%` swing vs `1.32%` / `0.13%`), passes all three DI convergence checks, and cuts Sponza DI time by 37–40%. `Pairwise` spatial was closed due to severe darkening bias (−56% on `Sponza_terminator`) under `enableVisibilityShortcut`.
 
 ---
 

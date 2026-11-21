@@ -145,11 +145,6 @@ std::vector<EngineTemporalCheck::Step> EngineTemporalCheck::buildSteps(Kind kind
             break;
         }
     }
-    if (isVariableSet("ENGINE_I6_ONLY_SHIPPED")) {
-        std::erase_if(steps, [](const Step& step) {
-            return step.type != StepType::Depth && step.set != GiSettingsSet::Shipped;
-        });
-    }
     return steps;
 }
 

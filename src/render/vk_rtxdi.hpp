@@ -254,7 +254,7 @@ public:
 
     // the RTXDI sample's default Medium preset (spec/features/rtxdi_3_2_update.md §3.3)
     [[nodiscard]] static Settings nvidiaSettings();
-    // shipped: NVIDIA's with ray-traced spatial bias correction (spec/fixesM1-6/m8_optimization_and_fixes.md §2.7)
+    // shipped: Power_RIS, fresh final visibility, ray-traced disocclusion boost only (spec/fixesM1-6/i6_restir_di_tuning.md)
     [[nodiscard]] static Settings defaultSettings();
     // the RTXDI sample's ReSTIR GI settings: the library defaults, temporal and spatial (spec/m4/g5_restir_gi.md §1)
     [[nodiscard]] static GiSettings nvidiaGiSettings();

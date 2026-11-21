@@ -407,74 +407,20 @@ RtxdiContext::Settings RtxdiContext::nvidiaSettings()
 
 RtxdiContext::Settings RtxdiContext::defaultSettings()
 {
-    // Basic spatial correction counts neighbors whose sample is hidden from them: -53.6% on the convergence check's
-    // Sponza_terminator, and X2 reusing the reservoirs (O2) inherits it (spec/fixesM1-6/m8_optimization_and_fixes.md
-    // §2.7). Permutation, fallback, boiling filter and final visibility reuse stay NVIDIA's
+    // M8 I6 tuned defaults over NVIDIA's Medium preset (spec/fixesM1-6/i6_restir_di_tuning.md):
+    // - Power_RIS removes ReGIR's async presample stall on multi-light scenes (F12) and its PDF mismatch with BRDF
+    //   candidates
+    // - Fresh final visibility (isFinalVisibilityReused = false, O10) eliminates shadow-edge light leak and keeps
+    //   reservoir age at 0 so the temporal visibility shortcut fires every frame
+    // - Steady-state spatial resampling off (spatialSamples = 0) with ray-traced disocclusion boost (8 samples while
+    //   M < 4, F3) and no temporal permutation (F5/F6) cuts shading cost and passes all three DI convergence checks
     Settings settings = nvidiaSettings();
+    settings.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Power_RIS;
+    settings.isPermutationSamplingEnabled = false;
+    settings.spatialSamples = 0;
+    settings.disocclusionHistoryLength = 4;
     settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
-    // TEMPORARY I6 probe overrides (remove before finalizing I6)
-    if (const char* v = std::getenv("ENGINE_I6_DI_PRESET")) {
-        const std::string_view preset(v);
-        if (preset == "nvidia") {
-            return nvidiaSettings();
-        }
-        if (preset == "converged") {
-            return convergedSettings();
-        }
-    }
-    if (const char* v = std::getenv("ENGINE_I6_DI_INIT_VIS")) {
-        settings.isInitialVisibilityEnabled = std::string_view(v) == "1";
-    }
-    if (const char* v = std::getenv("ENGINE_I6_DI_TEMP_BIAS")) {
-        const std::string_view m(v);
-        if (m == "off") {
-            settings.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Off;
-        } else if (m == "basic") {
-            settings.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Basic;
-        } else if (m == "raytraced") {
-            settings.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Raytraced;
-        }
-    }
-    if (const char* v = std::getenv("ENGINE_I6_DI_SHORTCUT")) {
-        settings.isVisibilityShortcutEnabled = std::string_view(v) == "1";
-    }
-    if (const char* v = std::getenv("ENGINE_I6_DI_PERM")) {
-        settings.isPermutationSamplingEnabled = std::string_view(v) == "1";
-    }
-    if (const char* v = std::getenv("ENGINE_I6_DI_FALLBACK")) {
-        settings.isFallbackSamplingEnabled = std::string_view(v) == "1";
-    }
-    if (const char* v = std::getenv("ENGINE_I6_DI_SPATIAL")) {
-        settings.spatialSamples = static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
-    }
-    if (const char* v = std::getenv("ENGINE_I6_DI_SPATIAL_BIAS")) {
-        const std::string_view m(v);
-        if (m == "off") {
-            settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Off;
-        } else if (m == "basic") {
-            settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Basic;
-        } else if (m == "pairwise") {
-            settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Pairwise;
-        } else if (m == "raytraced") {
-            settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
-        }
-    }
-    if (const char* v = std::getenv("ENGINE_I6_DI_REUSE_VIS")) {
-        settings.isFinalVisibilityReused = std::string_view(v) == "1";
-    }
-    if (const char* v = std::getenv("ENGINE_I6_DI_BOOST_SAMPLES")) {
-        settings.disocclusionBoostSamples = static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
-    }
-    if (const char* v = std::getenv("ENGINE_I6_DI_BOOST_HIST")) {
-        settings.disocclusionHistoryLength = static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
-    }
-    if (const char* v = std::getenv("ENGINE_I6_DI_BRDF")) {
-        settings.brdfSamples = static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
-    }
-    if (const char* v = std::getenv("ENGINE_I6_DI_LOCAL")) {
-        const uint32_t n = static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
-        settings.localLightSamples = {n, n, n};
-    }
+    settings.isFinalVisibilityReused = false;
     return settings;
 }
 RtxdiContext::Settings RtxdiContext::convergedSettings()
