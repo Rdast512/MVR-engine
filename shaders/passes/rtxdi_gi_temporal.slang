@@ -22,8 +22,8 @@ static const uint kRtxdiTile = 8; // matches src/render/vk_renderer.cpp
 [[vk::push_constant]] ConstantBuffer<FramePushData> push;
 
 // RTXDI_PTTemporalResampling's duplication-based history reduction (Rtxdi/PT/TemporalResampling.hlsli, RTXDI 3.1;
-// m8 O11): the more of the 17x17 neighbors shared last frame's final sample, the shorter the history. Read where
-// RTXDI_GITemporalResampling starts its neighbor search; ReSTIR PT reads it at the neighbor the search found
+// m8 O11): the more of the 17x17 neighbors shared last frame's final sample, the shorter the history. Read at the
+// reprojected pixel prevPos, matching RTXDI_PTTemporalResampling (FindTemporalNeighbor takes prevPos by value)
 uint reducedMaxHistoryLength(GpuFrameRoot root, GpuRtxdiConstants constants, uint2 pixel, float2 motion,
                              uint maxHistoryLength)
 {

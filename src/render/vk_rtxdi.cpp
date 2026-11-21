@@ -412,6 +412,69 @@ RtxdiContext::Settings RtxdiContext::defaultSettings()
     // §2.7). Permutation, fallback, boiling filter and final visibility reuse stay NVIDIA's
     Settings settings = nvidiaSettings();
     settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
+    // TEMPORARY I6 probe overrides (remove before finalizing I6)
+    if (const char* v = std::getenv("ENGINE_I6_DI_PRESET")) {
+        const std::string_view preset(v);
+        if (preset == "nvidia") {
+            return nvidiaSettings();
+        }
+        if (preset == "converged") {
+            return convergedSettings();
+        }
+    }
+    if (const char* v = std::getenv("ENGINE_I6_DI_INIT_VIS")) {
+        settings.isInitialVisibilityEnabled = std::string_view(v) == "1";
+    }
+    if (const char* v = std::getenv("ENGINE_I6_DI_TEMP_BIAS")) {
+        const std::string_view m(v);
+        if (m == "off") {
+            settings.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Off;
+        } else if (m == "basic") {
+            settings.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Basic;
+        } else if (m == "raytraced") {
+            settings.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Raytraced;
+        }
+    }
+    if (const char* v = std::getenv("ENGINE_I6_DI_SHORTCUT")) {
+        settings.isVisibilityShortcutEnabled = std::string_view(v) == "1";
+    }
+    if (const char* v = std::getenv("ENGINE_I6_DI_PERM")) {
+        settings.isPermutationSamplingEnabled = std::string_view(v) == "1";
+    }
+    if (const char* v = std::getenv("ENGINE_I6_DI_FALLBACK")) {
+        settings.isFallbackSamplingEnabled = std::string_view(v) == "1";
+    }
+    if (const char* v = std::getenv("ENGINE_I6_DI_SPATIAL")) {
+        settings.spatialSamples = static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
+    }
+    if (const char* v = std::getenv("ENGINE_I6_DI_SPATIAL_BIAS")) {
+        const std::string_view m(v);
+        if (m == "off") {
+            settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Off;
+        } else if (m == "basic") {
+            settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Basic;
+        } else if (m == "pairwise") {
+            settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Pairwise;
+        } else if (m == "raytraced") {
+            settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
+        }
+    }
+    if (const char* v = std::getenv("ENGINE_I6_DI_REUSE_VIS")) {
+        settings.isFinalVisibilityReused = std::string_view(v) == "1";
+    }
+    if (const char* v = std::getenv("ENGINE_I6_DI_BOOST_SAMPLES")) {
+        settings.disocclusionBoostSamples = static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
+    }
+    if (const char* v = std::getenv("ENGINE_I6_DI_BOOST_HIST")) {
+        settings.disocclusionHistoryLength = static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
+    }
+    if (const char* v = std::getenv("ENGINE_I6_DI_BRDF")) {
+        settings.brdfSamples = static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
+    }
+    if (const char* v = std::getenv("ENGINE_I6_DI_LOCAL")) {
+        const uint32_t n = static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
+        settings.localLightSamples = {n, n, n};
+    }
     return settings;
 }
 RtxdiContext::Settings RtxdiContext::convergedSettings()
@@ -483,8 +546,11 @@ RtxdiContext::GiSettings RtxdiContext::defaultGiSettings()
     settings.maxReservoirAge = temporal.enableAgeBasedRejection != 0 ? temporal.maxReservoirAge : kGiUnlimitedSampleAge;
     settings.isBoilingFilterEnabled = rtxdi::GetDefaultReSTIRPTBoilingFilterParams(true).enableBoilingFilter != 0;
     setDecorrelation(settings, rtxdi::GetDefaultReSTIRPTDecorrelationParams(true));
-    // two PT parts darken GI against the one-bounce ground truth (gallery / courtyard, O11): the history cap -8 / -7 pp
-    // and the bound on fresh swaps -3 / -8 pp; without both the profile reads -0.75% / -0.86%
+    // two PT parts darken GI against the one-bounce ground truth (gallery / courtyard, O11 / I5): duplication history
+    // reduction (-5.6% / -7.6%, sample-correlated M cap) and the fresh-swap bound (-7.1% / -3.9%, clamps 1/pdf against
+    // small resampled weightSum); without both and with PT's 1 spatial sample (I5, -0.23 ms ray-traced spatial cost),
+    // shipped GI stays within +-1.5% on both poses while improving DLSS-RR stability
+    settings.spatialSamples = rtxdi::GetDefaultReSTIRPTSpatialResamplingParams(true).numSpatialSamples;
     settings.isDuplicationHistoryReductionEnabled = false;
     settings.isFireflyReplacementBounded = false;
     settings.isFullTileBoilingFilterEnabled = true;

@@ -563,9 +563,15 @@ bool RAB_TraceRayForLocalLight(float3 origin, float3 direction, float tMin, floa
 {
     lightIndex = RTXDI_InvalidLightIndex;
     randXY = float2(0.0, 0.0);
-    // no hit can name a light: the first hit answers whether anything blocks the ray, at a fraction of the cost
+    // no hit can name a light: without an environment light the return value is unused (InitialSampling.hlsli:554;
+    // m8 I6 O8); with one, a first-hit visibility query answers whether the sky is blocked
     if (gRtxdiBridge.triangleLights.lightCount == 0)
     {
+        if (bdaPtr<GpuRtxdiConstants>(gRtxdiBridge.rtxdiConstants)->lightBuffer.environmentLightParams.lightPresent ==
+            0)
+        {
+            return true;
+        }
         return !traceVisibility(gRtxdiBridge.rays, origin, direction, tMin, tMax);
     }
     RayDesc ray;

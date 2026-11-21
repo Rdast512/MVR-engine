@@ -37,11 +37,18 @@ void rtxdiInitialMain(uint3 id : SV_DispatchThreadID)
     RTXDI_DIReservoir reservoir = RTXDI_EmptyDIReservoir();
     if (RAB_IsSurfaceValid(surface))
     {
+        RTXDI_DIInitialSamplingParameters sampling = constants.initialSampling;
+        // m8 I6 O8: without emissive triangles or an environment light no BRDF ray can hit a light
+        if (gRtxdiBridge.triangleLights.lightCount == 0 &&
+            constants.lightBuffer.environmentLightParams.lightPresent == 0)
+        {
+            sampling.numBrdfSamples = 0;
+        }
         RAB_LightSample lightSample;
         // RTXDI_SampleLightsForSurface already traces initial visibility when enableInitialVisibility is set
-        reservoir = RTXDI_SampleLightsForSurface(rng, coherentRng, surface, constants.initialSampling,
-                                                 constants.lightBuffer, constants.localLightRisBuffer,
-                                                 constants.environmentLightRisBuffer, regirParameters(), lightSample);
+        reservoir = RTXDI_SampleLightsForSurface(rng, coherentRng, surface, sampling, constants.lightBuffer,
+                                                 constants.localLightRisBuffer, constants.environmentLightRisBuffer,
+                                                 regirParameters(), lightSample);
     }
     // empty pixels too: rtxdi_shade loads every pixel's reservoir
     RTXDI_StoreDIReservoir(reservoir, constants.reservoirBuffer,

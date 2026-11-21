@@ -27,9 +27,10 @@ enum class GpuTimerScope : uint32_t
     Classify,
     // DGC preprocess and execute of the material-bin resolve shaders
     Resolve,
-    // wait on computeTimeline for this frame's async light prep + PTLAS build (F4)
-    TlasWait,
-    // ReSTIR DI initial sampling (after TlasWait, F4)
+    // resolve end to the ray command buffer's first pass: the gap until the CPU submits the ray work plus its
+    // computeTimeline wait for this frame's light prep and PTLAS build (F4). Not the TLAS stall alone
+    RayStartWait,
+    // ReSTIR DI initial sampling (after RayStartWait, F4)
     RtxdiInitial,
     RtxdiTemporal,
     // spatial resampling and shading
@@ -90,8 +91,8 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "Material classify";
     case GpuTimerScope::Resolve:
         return "Vis-buffer resolve";
-    case GpuTimerScope::TlasWait:
-        return "TLAS wait";
+    case GpuTimerScope::RayStartWait:
+        return "Ray start wait";
     case GpuTimerScope::RtxdiInitial:
         return "ReSTIR DI initial";
     case GpuTimerScope::RtxdiTemporal:

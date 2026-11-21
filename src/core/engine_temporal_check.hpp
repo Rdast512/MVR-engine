@@ -1,5 +1,6 @@
 #pragma once
 
+#include "check_poses.hpp"
 #include "gi_settings_sets.hpp"
 #include "render/debug_view.hpp"
 #include "render/vk_renderer.hpp"
@@ -154,9 +155,6 @@ private:
     // a point this much farther than the initial view's surface there was hidden behind it
     static constexpr float kDisocclusionScale = 1.02f;
     static constexpr float kDisocclusionOffsetMeters = 0.02f;
-    // the GI check's courtyard; the gallery is the startup camera
-    static constexpr glm::vec3 kCourtyardPosition{6.0f, 2.5f, 1.5f};
-    static constexpr glm::vec3 kCourtyardTarget{-10.0f, 1.0f, -1.0f};
     static constexpr std::array<const char*, 2> kPoseNames = {"gallery (startup)", "courtyard"};
 
     [[nodiscard]] static std::vector<Step> buildSteps(Kind kind);

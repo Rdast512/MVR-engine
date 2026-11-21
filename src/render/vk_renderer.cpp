@@ -905,8 +905,8 @@ void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
     };
     const vk::DependencyInfo dependency{.memoryBarrierCount = 1, .pMemoryBarriers = &resamplingBarrier};
     cmd.pipelineBarrier2(dependency);
-    // the computeShader barrier + writeTimestamp2 wait on computeTimeline (tlasWait) before rtxdiInitial starts (F4)
-    gpuTimer.end(cmd, GpuTimerScope::TlasWait);
+    // first ray pass: the span since resolve covers the ray submit gap and the computeTimeline wait (F4)
+    gpuTimer.end(cmd, GpuTimerScope::RayStartWait);
     // with no lights rtxdi_shade only writes black. Lights arrive only with a load, which resets history, so the
     // reservoirs skipped meanwhile are never reused
     const bool hasLights = worldLights.hasLights();

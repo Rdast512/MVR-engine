@@ -1,5 +1,6 @@
 #pragma once
 
+#include "check_poses.hpp"
 #include "gi_settings_sets.hpp"
 #include "render/debug_view.hpp"
 #include "render/vk_renderer.hpp"
@@ -142,9 +143,10 @@ private:
          GiSettingsSet::Converged, 4, 512, {0.01, 0.01}, 0.0},
         {"ReSTIR GI mode (converged settings) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
          GiSettingsSet::Converged, 64, 512, {0.015, 0.015}, 0.08},
-        // what ships, and what it replaced (spec/features/m8_optimization_and_fixes.md O1)
+        // what ships, and what it replaced (spec/fixesM1-6/m8_optimization_and_fixes.md O1, I5): gated from five-seed
+        // spread (+0.67..+1.09% gallery / -1.36..-0.90% courtyard, tile p90 22.0..28.8% vs NVIDIA's 52..70%)
         {"ReSTIR GI mode (shipped defaults) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
-         GiSettingsSet::Shipped, 64, 512, {0.0, 0.0}, 0.0},
+         GiSettingsSet::Shipped, 64, 512, {0.02, 0.02}, 0.35},
         {"ReSTIR GI mode (NVIDIA defaults) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
          GiSettingsSet::Nvidia, 64, 512, {0.0, 0.0}, 0.0},
         {"ReSTIR GI mode (shipped + secondary DI resampling) against one bounce", Role::Compared,
@@ -160,7 +162,7 @@ private:
     }};
     static constexpr std::array<Pose, 2> kPoses = {{
         {"gallery (startup)", true, {}, {}},
-        {"courtyard", false, {6.0f, 2.5f, 1.5f}, {-10.0f, 1.0f, -1.0f}},
+        {"courtyard", false, kCourtyardPose.position, kCourtyardPose.target},
     }};
     static_assert(kPoses.size() == std::tuple_size_v<decltype(PhaseInfo::maxBias)>);
     // ENGINE_GI_CHECK_SEED=n: a whole run's realization, for the gates' spread across seeds (M8 I1)

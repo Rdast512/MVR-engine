@@ -78,7 +78,9 @@ enum class GiSettingsSet : uint8_t
         settings.isSecondaryRoughnessFloorEnabled = false;
         break;
     case GiSettingsSet::ShippedNoRrProfile:
-        // history, age limit, boiling filter, decorrelation and history reduction stay NVIDIA's ReSTIR GI defaults
+        // spatial count, history, age limit, boiling filter, decorrelation and history reduction stay NVIDIA's ReSTIR
+        // GI defaults
+        settings.spatialSamples = nvidia.spatialSamples;
         settings.maxHistoryLength = nvidia.maxHistoryLength;
         settings.maxReservoirAge = nvidia.maxReservoirAge;
         settings.isBoilingFilterEnabled = nvidia.isBoilingFilterEnabled;

@@ -103,7 +103,8 @@ namespace GiFlag
     // the temporal pass caps history where last frame's final sample was shared by many pixels; the shade pass writes
     // the sample ids and rtxdi_gi_duplication counts them (ReSTIR PT's duplication-based history reduction)
     inline constexpr uint32_t DuplicationHistoryReduction = 1u << 4;
-    // average boiling / firefly weights over all in-bounds 8x8 tile lanes instead of nonzero lanes only (m8 I2 F15)
+    // the firefly replacement test averages its 8x8 tile weight over all in-bounds lanes instead of nonzero lanes only;
+    // the temporal boiling filter keeps NVIDIA's (m8 I2 F15)
     inline constexpr uint32_t FullTileBoilingFilter = 1u << 5;
 } // namespace GiFlag
 static_assert(sizeof(ReGIR_Parameters) == 1296);
@@ -213,7 +214,7 @@ public:
         float normalThreshold = 0.0f;
         bool isBoilingFilterEnabled = false;
         float boilingFilterStrength = 0.0f;
-        // average the 8x8 boiling/firefly weight across all in-bounds lanes instead of nonzero lanes (m8 I2 F15)
+        // firefly replacement only: average the 8x8 tile weight over all in-bounds lanes, not nonzero lanes (m8 I2 F15)
         bool isFullTileBoilingFilterEnabled = false;
         // a reconnection ray from the primary to the final sample
         bool isFinalVisibilityEnabled = false;

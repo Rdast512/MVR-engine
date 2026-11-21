@@ -1,4 +1,5 @@
 #include "vk_engine.hpp"
+#include "check_poses.hpp"
 #include "../Constants.h"
 #include "../static_headers/logger.hpp"
 #include "../util/debug.hpp"
@@ -117,7 +118,7 @@ void Engine::initialize()
     // scene is visible immediately
     camera->focusOn(initialAssetPos);
     if (bench && bench->getConfig().pose == "courtyard") {
-        camera->lookAt({6.0f, 2.5f, 1.5f}, {-10.0f, 1.0f, -1.0f});
+        camera->lookAt(kCourtyardPose.position, kCourtyardPose.target);
     }
     frameSync = std::make_unique<FrameSync>(*device);
     // flushes the startup model

@@ -1,6 +1,6 @@
 # M8 · Optimization and fixes
 
-**Status** — Milestone planned on 2026-11-20; steps re-planned on 2026-11-21 as I1–I12 in execution order, covering every open finding of the three review documents. I1 ([i1_check_runners.md](./i1_check_runners.md)), I2 ([i2_shading_correctness.md](./i2_shading_correctness.md)), I3 ([i3_mega_geometry_fixes.md](./i3_mega_geometry_fixes.md)), and I4 ([i4_frame_profile.md](./i4_frame_profile.md)) built 2026-11-21; I4 ranked the next steps **I6 → I5 → I10 → I9**.\
+**Status** — Milestone planned on 2026-11-20; steps re-planned on 2026-11-21 as I1–I12 in execution order, covering every open finding of the three review documents. I1 ([i1_check_runners.md](./i1_check_runners.md)), I2 ([i2_shading_correctness.md](./i2_shading_correctness.md)), I3 ([i3_mega_geometry_fixes.md](./i3_mega_geometry_fixes.md)), I4 ([i4_frame_profile.md](./i4_frame_profile.md)), and I5 ([i5_restir_gi_tuning.md](./i5_restir_gi_tuning.md)) built 2026-11-21; remaining I4-ranked steps: **I6 → I10 → I9**.\
 **Scope** — Make the whole pipeline produce its best image per millisecond. That means fixing the measured bias and stability problems of the default lighting, closing or explaining the NRC bias, and landing the measured perf levers. Each step is backed by a check that keeps it fixed.
 [Engine spec](../../docs/engine_spec.md) · [Findings](./m8_optimization_and_fixes.md) · [Mega Geometry findings](./mg_optimizations_fixes.md) · [PBR plan](../pbr_implementation_plan.md) · [Considerations](../considerations.md)
 
@@ -28,7 +28,7 @@ Finding ids refer to [m8_optimization_and_fixes.md](./m8_optimization_and_fixes.
 | I2 · Shading correctness | [`i2_shading_correctness.md`](./i2_shading_correctness.md) (built) | F20, F13, F14, F15, F16, F17, F18, F19 (ND9) | I1 |
 | I3 · Mega Geometry fixes | [`i3_mega_geometry_fixes.md`](./i3_mega_geometry_fixes.md) (built) | MG-B1, MG-B2, MG-B3, MG-B4, C-C4-5 | — |
 | I4 · Frame profile | [`i4_frame_profile.md`](./i4_frame_profile.md) (built) | F4, F7, F8, F9 (RTX 5070 part), F11, F12, C-F1-5 | I2, I3 |
-| I5 · ReSTIR GI tuning | `i5_restir_gi_tuning.md` | O11 follow-ups, age limit (§2.5), ray-traced spatial cost (§2.5), F3 (GI) | I1, I2, I4 |
+| I5 · ReSTIR GI tuning | [`i5_restir_gi_tuning.md`](./i5_restir_gi_tuning.md) (built) | O11 follow-ups, age limit (§2.5), ray-traced spatial cost (§2.5), F3 (GI) | I1, I2, I4 |
 | I6 · ReSTIR DI tuning | `i6_restir_di_tuning.md` | F5, F6, O8, O10, permutation (§2.7), F3 (DI), F12 (mode choice) | I1, I2, I4 |
 | I7 · NRC bias | `i7_nrc_bias.md` | Q7, Q1, Q2 (ND5), Q3 (ND1), Q4, Q5, Q6 (ND6) | I1, I2 |
 | I8 · NRC cost | `i8_nrc_cost.md` | NP1 (ND7), NP2, NP4, NP5 | I7 |
@@ -218,19 +218,19 @@ M8 is done when:
 
 ## Baseline
 
-2026-11-21 (post-I2/I3/I4), RTX 5070, 1280×720 window (853×480 render, DLSS-RR Quality), release, no layers.
+2026-11-21 (post-I5), RTX 5070, 1280×720 window (853×480 render, DLSS-RR Quality), release, no layers.
 
 | Item | Value |
 |---|---|
-| GPU total, ReSTIR GI mode (gallery / courtyard) | **3.33 / 3.95 ms** (DLSS-RR 1.21/1.22, GI shade 0.74/0.82, `Indirect` 0.55/0.74, DI 0.35/0.70, GI temporal 0.12/0.12, `TLAS wait` 0.017/0.016; I4) |
+| GPU total, ReSTIR GI mode (gallery / courtyard) | **2.99 / 3.61 ms** (GI shade **0.50 / 0.57**, down −0.24 ms from I4's 0.74/0.82; ABBA total −0.31 / −0.27 ms; I5) |
 | GPU total, NRC + ReSTIR GI / NRC mode (gallery / courtyard) | **3.93 / 4.72 ms** (`NRC + ReSTIR GI`), **3.06 / 3.65 ms** (`NRC`; I4) |
-| GPU total, Bistro (76K triangle lights) | **3.05 ms** (`ReGIR_RIS`, async light prep 0.48 ms, `TLAS wait` 0.39 ms) vs **2.63 ms** (`Power_RIS`, async light prep 0.06 ms, `TLAS wait` 0.04 ms; I4) |
+| GPU total, Bistro (76K triangle lights) | **3.05 ms** (`ReGIR_RIS`, async light prep 0.48 ms, `Ray start wait` 0.39 ms; I4) vs **2.39 ms** (`Power_RIS`, GI shade 0.21 ms, −0.19 ms from I5) |
 | Active CPU frame (`drawFrame − waits`) | **0.50 ms** Sponza (`FrameData::write` 0.001 ms), **0.56 ms** Bistro (`0.060 ms`), **1.01 ms** Field 64 (`0.444 ms`; I4) |
-| Shipped ReSTIR GI bias vs one bounce, gallery / courtyard | −0.21% / −1.48% (tile p90 21.7% / 29.6%; I2, 2026-11-21; was −0.75% / −0.86% after O11, +8.1% / +1.7% before O11) |
+| Shipped ReSTIR GI bias vs one bounce, gallery / courtyard | **+1.09% / −1.21%** (seed 0; 5-seed spread `+0.67…+1.09%` / `−1.36…−0.90%`, tile p90 23.6% / 27.7%; **gated ±2.0% / 35% p90** in I5) |
 | NRC mode bias, gallery / courtyard | +11.3% / +9.4% (I2, 2026-11-21; was +10.5% / +8.3%) |
-| `Lit` stability, 480 static frames (temporal std / flicker of lit px / largest 8-frame swing) | shipped: gallery 5.80% / 46.0% / 0.83%, courtyard 1.30% / 8.3% / 0.15%; NVIDIA: 7.56% / 41.8% / 1.06%, 1.41% / 13.7% / 0.15% (I2, 2026-11-21; I1 shipped was 6.14% / 48.7% / 1.16% gallery, 24.65% / 91.0% / 22.57% courtyard with F20) |
-| Courtyard sun move, frames until `Indirect radiance` settles | shipped 56, shipped + age limit 16, NVIDIA 24, converged 32 (I2, 2026-11-21; I1 shipped was 400 with F20) |
-| GI check | 8 of 8 gated phases pass (I2: converged 1-bounce −0.11% gallery / +0.05% courtyard, traced +0.50% / +0.80%; I1 verified 5 seeds) |
+| `Lit` stability, 480 static frames (temporal std / flicker of lit px / largest 8-frame swing) | shipped: gallery **5.55% / 38.9% / 1.09%**, courtyard **1.28% / 7.98% / 0.13%** (I5; I2 was 5.80% / 46.0% / 0.83%, 1.30% / 8.3% / 0.15%); NVIDIA: 7.56% / 41.8% / 1.06%, 1.41% / 13.7% / 0.15% |
+| Courtyard sun move, frames until `Indirect radiance` settles | shipped 56 (+22.6% at 16f; toggle **8**), shipped + age limit 16, NVIDIA 24, converged 32 (I5) |
+| GI check | **10 of 10** gated phases pass (8 converged/floor + 2 shipped ReSTIR GI; 5 seeds verified in I5) |
 
 ## References
 

@@ -139,15 +139,24 @@ EngineGuideCapture::Request EngineGuideCapture::beginFrame(Camera& camera, Debug
                                                            RtxdiContext::Settings& rtxdi,
                                                            std::optional<glm::vec4> modelBounds)
 {
+    // TEMPORARY I6 probe: test shipped DI on the 3 convergence shots alone
+    const char* shippedProbe = std::getenv("ENGINE_I6_CONVERGENCE_SHIPPED");
+    const bool isShippedProbe = shippedProbe != nullptr && std::string_view(shippedProbe) == "1";
+    if (isShippedProbe) {
+        while (shotIndex < kShots.size() && !isConvergenceShot(shotIndex)) {
+            ++shotIndex;
+        }
+    }
     // the check gates the ReSTIR DI port, not the defaults: the NVIDIA defaults fail it (spec rtxdi_3_2_update §6.1)
     const bool isConverging = isConvergenceShot(shotIndex);
     if (isConverging && !heldRtxdiSettings) {
-        heldRtxdiSettings = std::exchange(rtxdi, RtxdiContext::convergedSettings());
+        heldRtxdiSettings = std::exchange(
+            rtxdi, isShippedProbe ? RtxdiContext::defaultSettings() : RtxdiContext::convergedSettings());
     } else if (!isConverging && heldRtxdiSettings) {
         rtxdi = *heldRtxdiSettings;
         heldRtxdiSettings.reset();
     }
-    if (isConverging) {
+    if (isConverging && !isShippedProbe) {
         rtxdi.brdfSamples = findConvergenceShot(shotIndex)->brdfSamples;
     }
     Request request;

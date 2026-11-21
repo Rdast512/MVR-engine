@@ -68,7 +68,7 @@ static const float kStagnancyAgeScale = 1.0 / 40.0;
 static const int kStagnancyFilterStep = 2;
 
 // RTXDI_PTComputeSmoothedDuplicationMap, with the sample's ComputeSmoothedDuplicationMap.hlsl reprojection: this
-// frame's stagnancy blended into last frame's smoothed map around the reprojected pixel
+// frame's stagnancy blended into last frame's 5x5 dilated average around the reprojected pixel
 float smoothStagnancy(GpuFrameRoot root, GpuTargets targets, uint2 pixel, float current, float emaFactor)
 {
     if (!hasIndirectHistory(root))
@@ -85,17 +85,34 @@ float smoothStagnancy(GpuFrameRoot root, GpuTargets targets, uint2 pixel, float 
     const Texture2D previousMap = tex2D(targets.giStagnancyPrevious);
     float sum = 0.0;
     float count = 0.0;
-    [unroll]
-    for (int dy = -2; dy <= 2; ++dy)
+    const int radius = 2 * kStagnancyFilterStep;
+    if (all(previousPixel >= radius) && all(previousPixel < size - radius))
     {
         [unroll]
-        for (int dx = -2; dx <= 2; ++dx)
+        for (int dy = -2; dy <= 2; ++dy)
         {
-            const int2 tap = previousPixel + int2(dx, dy) * kStagnancyFilterStep;
-            if (all(tap >= 0) && all(tap < size))
+            [unroll]
+            for (int dx = -2; dx <= 2; ++dx)
             {
-                sum += previousMap.Load(int3(tap, 0)).x;
-                count += 1.0;
+                sum += previousMap.Load(int3(previousPixel + int2(dx, dy) * kStagnancyFilterStep, 0)).x;
+            }
+        }
+        count = 25.0;
+    }
+    else
+    {
+        [unroll]
+        for (int dy = -2; dy <= 2; ++dy)
+        {
+            [unroll]
+            for (int dx = -2; dx <= 2; ++dx)
+            {
+                const int2 tap = previousPixel + int2(dx, dy) * kStagnancyFilterStep;
+                if (all(tap >= 0) && all(tap < size))
+                {
+                    sum += previousMap.Load(int3(tap, 0)).x;
+                    count += 1.0;
+                }
             }
         }
     }

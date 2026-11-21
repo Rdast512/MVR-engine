@@ -3,8 +3,8 @@ import core.binding;
 
 // PTLAS instance writes (PBR plan C4, spec/features/ray_tracing_mega_geometry.md §3.6). One thread per ray instance.
 // A full build writes every row; otherwise a row writes only when its transform differs from the one the PTLAS
-// holds. Instances stay in their grid partition: the global partition measured slower on the 5070 (§3.6). Runs on
-// the async compute queue before the PTLAS build
+// holds. A row's partition is its current XZ grid cell, reassigned on the CPU when it moves (m8 I3, C-C4-5); the
+// global partition measured slower on the 5070 (§3.6). Runs on the async compute queue before the PTLAS build
 
 static const uint kRtInstancesGroupSize = 64; // matches src/render/vk_rt_scene.cpp
 static const uint kInstanceMaskAll = 0xFFu;

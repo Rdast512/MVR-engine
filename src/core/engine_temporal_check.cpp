@@ -145,6 +145,11 @@ std::vector<EngineTemporalCheck::Step> EngineTemporalCheck::buildSteps(Kind kind
             break;
         }
     }
+    if (isVariableSet("ENGINE_I6_ONLY_SHIPPED")) {
+        std::erase_if(steps, [](const Step& step) {
+            return step.type != StepType::Depth && step.set != GiSettingsSet::Shipped;
+        });
+    }
     return steps;
 }
 
@@ -261,7 +266,7 @@ EngineTemporalCheck::Request EngineTemporalCheck::beginFrame(Camera& camera, Ren
     if (!hasStartupPose) {
         // the startup camera after its first frames: forward is current
         poses[0] = {camera.cameraData.cameraPos, camera.cameraData.cameraPos + camera.getForward()};
-        poses[1] = {kCourtyardPosition, kCourtyardTarget};
+        poses[1] = {kCourtyardPose.position, kCourtyardPose.target};
         hasStartupPose = true;
     }
     const Step& step = steps[stepIndex];
