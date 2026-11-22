@@ -1138,6 +1138,12 @@ void EngineUi::drawRayTracingPanel()
     NrcCache::Settings& nrc = nrcCache.settings;
     ImGui::Checkbox("Train NRC", &nrc.isTrainingEnabled);
     ImGui::SetItemTooltip("off freezes the cache and skips the training paths");
+    int idleFrames = static_cast<int>(nrc.idleTrainingFrames);
+    if (ImGui::SliderInt("NRC idle train frames", &idleFrames, 0, 1024)) {
+        nrc.idleTrainingFrames = static_cast<uint32_t>(idleFrames);
+    }
+    ImGui::SetItemTooltip("train for this many frames after a camera, light or scene change, then freeze until the "
+                          "next change (0 = train every frame)");
     int iterations = static_cast<int>(nrc.trainingIterations);
     if (ImGui::SliderInt("NRC training iterations", &iterations, 1, 4)) {
         nrc.trainingIterations = static_cast<uint32_t>(iterations);
@@ -1150,10 +1156,18 @@ void EngineUi::drawRayTracingPanel()
     ImGui::SetItemTooltip("AddQueryResultToOutput runs the custom GI reservoir resolve; any other mode runs NRC's SDK "
                           "debug resolve into Indirect radiance (view under Debug -> Indirect radiance)");
     const vk::Extent2D training = nrcCache.getTrainingExtent();
-    const char* nrcState = !nrcCache.isActive()          ? "no scene"
-                           : context.renderer.isNrcPaused() ? "paused"
-                                                            : "active";
-    ImGui::TextDisabled("%s, training paths %ux%u", nrcState, training.width, training.height);
+    if (!nrcCache.isActive()) {
+        ImGui::TextDisabled("no scene, training paths %ux%u", training.width, training.height);
+    } else if (context.renderer.isNrcPaused()) {
+        ImGui::TextDisabled("paused, training paths %ux%u", training.width, training.height);
+    } else if (!nrcCache.isTrainingActive()) {
+        ImGui::TextDisabled("active (idle, inference only)");
+    } else if (nrc.idleTrainingFrames > 0) {
+        ImGui::TextDisabled("active (training, %u left), paths %ux%u", nrcCache.getTrainingFramesRemaining(),
+                            training.width, training.height);
+    } else {
+        ImGui::TextDisabled("active, training paths %ux%u", training.width, training.height);
+    }
 
     // spec/m4/g5_restir_gi.md
     ImGui::SeparatorText("ReSTIR GI");

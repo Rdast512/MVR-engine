@@ -53,6 +53,9 @@ public:
     {
         // FrameSettings::trainTheCache: off freezes the cache and skips the update paths
         bool isTrainingEnabled = true;
+        // NP2: train for this many frames after a camera, light, scene or mode change (annealing Adam LR over the
+        // final <= 128 frames), then freeze until the next change. 0 trains every frame (continuous, NVIDIA's default)
+        uint32_t idleTrainingFrames = 512;
         // FrameSettings::numTrainingIterations, 16K training records each; the RTXGI sample trains once per frame
         uint32_t trainingIterations = 1;
         // AddQueryResultToOutput uses the custom GI reservoir resolve (passes/nrc_resolve.slang); any other mode runs
@@ -73,10 +76,14 @@ public:
     void recreate(vk::Extent2D renderExtent);
     // the slot is not in flight. New scene bounds wait for the device and reconfigure. Without a configured cache, or
     // paused (no NRC work this frame), the slot's constants are zero: the query pass then makes no queries. A pause
-    // keeps context, buffers and weights, and defers new bounds to the resume (one Configure)
-    void prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, bool isPaused);
+    // keeps context, buffers and weights, and defers new bounds to the resume (one Configure).
+    // isSceneChanged: true when camera, lights, dynamic entities, layout or indirect mode changed (restarts NP2 countdown)
+    void prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, bool isPaused, bool isSceneChanged);
     // false until a scene with ray instances is configured: the NRC passes are skipped
     [[nodiscard]] bool isActive() const noexcept { return isConfigured; }
+    // true if this frame runs training paths and weight updates (false when frozen or NP2 idle)
+    [[nodiscard]] bool isTrainingActive() const noexcept { return isTrainingFrame; }
+    [[nodiscard]] uint32_t getTrainingFramesRemaining() const noexcept { return trainingFramesRemaining; }
 
     // ray command buffer: BeginFrame, then the slot's constants. Binds the driver's descriptor heap; the caller
     // rebinds the engine heaps. isCacheView: the query pass queries at the primary, the resolve is skipped
@@ -142,4 +149,11 @@ private:
     GpuNrcConstants bufferRows{};
     vk::Extent2D usedTrainingExtent{};
     bool isConfigured = false;
+    // NP2 adaptive training state
+    uint32_t trainingFramesRemaining = 0;
+    bool isTrainingFrame = true;
+    bool wasPaused = true;
+    bool lastIsTrainingEnabled = true;
+    uint32_t lastTrainingIterations = 1;
+    uint32_t lastIdleTrainingFrames = 0;
 };

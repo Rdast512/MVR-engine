@@ -94,6 +94,8 @@ public:
     // world box of every ray instance as of the last prepareFrame: what a ray can hit (NRC scene bounds, M4 G3);
     // empty (bboxMin > bboxMax) without instances
     [[nodiscard]] const BoundingBox& getSceneBounds() const noexcept { return templates.sceneBounds; }
+    // true if the last prepareFrame rebuilt the layout or observed any dynamic entity (geometry or light) transform change
+    [[nodiscard]] bool hasSceneChanged() const noexcept { return isSceneChangedThisFrame; }
 
     Settings settings;
 
@@ -228,4 +230,5 @@ private:
     uint64_t lastEndTick = 0;
     size_t historyHead = 0;
     size_t historyCount = 0;
+    bool isSceneChangedThisFrame = false;
 };

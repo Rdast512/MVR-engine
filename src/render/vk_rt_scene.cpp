@@ -123,9 +123,13 @@ void RayTracingScene::prepareFrame(uint32_t frameSlot, uint64_t lastSubmittedFra
 {
     ZoneScopedN("RayTracingScene::prepareFrame");
     collectResults(frameSlot);
+    isSceneChangedThisFrame = false;
     if (templates.layoutGeneration != frameData.layoutGeneration() ||
         templates.instancesPerPartition != settings.instancesPerPartition ||
         templates.isPartitionReassignmentEnabled != settings.isPartitionReassignmentEnabled) {
+        if (templates.layoutGeneration != frameData.layoutGeneration()) {
+            isSceneChangedThisFrame = true;
+        }
         buildTemplates();
     } else {
         updateDynamicEntities();
@@ -244,7 +248,7 @@ void RayTracingScene::buildTemplates()
             }
         }
         const auto rowCount = static_cast<uint32_t>(templates.rows.size()) - firstRow;
-        if (rowCount > 0) {
+        if (rowCount > 0 || !model.lights.empty()) {
             templates.dynamicEntities.push_back(DynamicEntity{
                 .id = id,
                 .localBounds = entityLocalBounds,
@@ -322,6 +326,10 @@ void RayTracingScene::updateDynamicEntities()
             continue;
         }
         entity.lastTransform = current;
+        isSceneChangedThisFrame = true;
+        if (entity.rowCount == 0) {
+            continue;
+        }
         const glm::mat4 entityMatrix = computeModelMatrix(current);
 
         // MG-B4: grow sceneBounds monotonically with hysteresis when a moved entity leaves its layout box

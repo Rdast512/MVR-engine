@@ -220,6 +220,14 @@ private:
     uint32_t raySegmentCount = 0;
     // FrameSync::rayTimeline value of the last ray submit with NRC commands; 0 before the first
     uint64_t lastNrcRaySubmit = 0;
+    // C-G3-6 (NP1): isolated SDK command buffers (recordIsolated) avoid the device loss without a host wait;
+    // ENGINE_NRC_HOST_WAIT=1 re-enables the wait as a fallback if a driver regresses
+    bool isNrcHostWaitEnabled = false;
+    // NP2 change detection: unjittered camera and sun state of the last frame NRC ran
+    glm::mat4 lastNrcViewProj{0.0f};
+    glm::vec3 lastNrcCameraPos{0.0f};
+    WorldLights::Sun lastNrcSun{};
+    bool hasNrcChangeBaseline = false;
     // a frame's present, issued once the next frame's frame commands are recorded (finishPreviousFrame)
     struct PendingPresent
     {

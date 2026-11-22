@@ -336,7 +336,7 @@ None: G3 used the current SDK and sample. RTXGI 2.9.0's changelog items that con
 | ND4 | Query samples per pixel | 1–16 (UI) | 1; ReSTIR GI reuses instead | design |
 | ND5 | Debug resolve modes | every `NrcResolveMode`: training bounce heat map, primary / secondary vertex training radiance (raw and smoothed), query index, direct cache view | **Built in I7 (2026-11-22):** `enableDebugBuffers = true`, lazy `RGBA32F` resolve target blitted to `indirectRadiance`, ImGui `NRC resolve mode` combo (`GetImGuiResolveModeComboString()`) | all 11 SDK debug resolve views available at zero memory cost when unused |
 | ND6 | Training root surface | `CreateRootSurface`: the material evaluated like a traced hit | the guides: 8-bit albedo and f0, RGBA16F normal and roughness | **Closed in I7 (2026-11-22):** vertex 0 (`proportionPrimarySegmentsToTrainOn = 0.02`) did not affect bias (`zero_b0` and `prim = 0.0 / 0.2` neutral) |
-| ND7 | Submit around NRC | no host wait | C-G3-6 host wait before the next frame's ray commands (device loss otherwise), +11% frame time at 1280×720 | perf only (NP1) |
+| ND7 | Submit around NRC | no host wait | **Resolved in I8 (2026-11-22, [i8_nrc_cost.md](./i8_nrc_cost.md)):** isolated SDK command buffers (`recordIsolated`) survived 18,000 uncapped stress frames (1280×720 + 2560×1369 Sponza, Bistro, `cycle`) with 0 device losses; host wait now off by default (`ENGINE_NRC_HOST_WAIT=1` fallback), cutting wall `drawFrame` by **−0.560 ms (−13.6%)** at 1280×720 | resolved (NP1) |
 | ND8 | Miss radiance | sky color on a miss | none (no environment light yet) | none until an environment light exists (M7, C-F3-5) |
 | ND9 | Shading-normal hemisphere | flips `shadingNormal` if `dot(geometryNormal, shadingNormal) < 0` (`Pathtracer.hlsl:420-424, 468-471`) | leaves `shadingNormal` unflipped (`surface.slang:139-140`, `pbr.slang:221`) | curved normal-mapped geometry (Sponza arches/columns) produces more `dot(geoNormal, l) <= 0` rejections: more black initial GI samples and more `BRDFAbsorption` training exits (F19, Q7) |
 
@@ -383,11 +383,11 @@ With NRC paused (the default since 2026-11-20), the cache costs nothing per fram
 
 | # | Lever | Gain | Cost / risk |
 |---|---|---|---|
-| NP1 | Remove the C-G3-6 host wait (driver fix, or an NVIDIA answer on `VK_NVX_binary_import` work and queue operations) | ~11% frame time at 1280×720 (2.87 → 3.20 ms) | not in the engine's hands; recheck per driver |
-| NP2 | Train less on still frames: `trainTheCache` off after N still frames, on at any camera, light or scene change | up to the 0.42 ms train | stale cache after slow changes; needs a change detector |
-| NP3 | Lower `usedTrainingDimensions` on the floor tier | train and update scale with records | quality (Q4 measures it) |
-| NP4 | SER for the update and query passes, once C-G1-3 lifts | the sample's 2.9.0 path. The SER update pass measured slower in G3 (fixed trip count), so a variable-length loop is needed | Slang |
-| NP5 | Query only where needed: skip `NrcUpdateOnHit` at X₂ when the throughput to the camera is tiny (the sample's `throughputThreshold` 0.01, query side) | fewer queries for train / resolve | small |
+| NP1 | **Landed in I8 (2026-11-22, [i8_nrc_cost.md](./i8_nrc_cost.md)):** disable the C-G3-6 host wait by default (`recordIsolated` alone survived 18,000 uncapped stress frames across 1280×720 and 2560×1369 Sponza + Bistro + `cycle`, 0 device losses); `ENGINE_NRC_HOST_WAIT=1` kept as fallback, `lastNrcRaySubmit` cleared after waiting | **−0.560 ms (−13.6%)** wall `drawFrame` at 1280×720 | isolation stays required; report to NVIDIA |
+| NP2 | **Landed in I8 (2026-11-22, [i8_nrc_cost.md](./i8_nrc_cost.md)):** `NrcCache::Settings::idleTrainingFrames = 512` (`0` = continuous), annealing Adam `learningRate` `1e-2 → 5e-4` over the final `≤ 128` frames, then `trainTheCache = false` + skipping `nrc_update.slang` until any camera, sun, light-set, layout, or dynamic-entity change (`RayTracingScene::hasSceneChanged()`) | **−0.288 ms (−8.3%)** Sponza gallery, **−0.375 ms (−9.6%)** courtyard, **−0.412 ms (−14.0%)** Bistro GPU total (combined NP1+NP2 wall `drawFrame` **−24.0% / −24.4% / −31.7%**) | 3-seed GI check `14/14` pass (`0..2`); moving scenes (`Field 64`) stay training every frame |
+| NP3 | Lower `usedTrainingDimensions` on the floor tier | train and update scale with records | deferred to I11 (RTX 2060 Super) |
+| NP4 | SER for the update and query passes, once C-G1-3 lifts | deferred in I8 (`slangc` still `2026.22`, C-G1-3 open) | Slang (post-1.0 V1) |
+| NP5 | **Closed in I8 (2026-11-22, [i8_nrc_cost.md](./i8_nrc_cost.md)):** skip X₂ queries below throughput `0.01` (`NrcIndirectDiffuse.hlsli:223`). Primary-only and secondary-only `< 0.01` measured `0.000 ms`; full `X1 · X2 < 0.01` saved only `−0.017 ms` Sponza / `−0.028 ms` Bistro while darkening gallery dim tiles `−7 to −10 pp` (`−2.1% → −11.7%`) | closed (no gain / dim bias) | — |
 
 ## 4. Pipeline and check findings
 

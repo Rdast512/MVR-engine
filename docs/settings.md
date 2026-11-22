@@ -202,11 +202,12 @@ The NRC controls under `Indirect mode` act only in the NRC modes; ReSTIR GI mode
 | Setting | Default | Effect |
 |---|---|---|
 | Train NRC | on | off freezes the cache and skips the training paths |
+| NRC idle train frames | 512 (M8 I8; `0` = continuous, NVIDIA's default) | trains for this many frames after any camera, sun, light-set, layout, or dynamic-entity change (annealing Adam LR `1e-2 → 5e-4` over the final `≤ 128` frames), then freezes (`trainTheCache = false`, skips `nrc_update.slang`) until the next change. Env override: `ENGINE_NRC_IDLE_FRAMES=n`; lab switch: `nrc.idleTrainingFrames` |
 | NRC training iterations | 1 (the sample's; the SDK default is 4) | 16K training records each; the training paths grow with it |
 | NRC resolve mode | `AddQueryResultToOutput` | default runs the custom GI reservoir resolve (`passes/nrc_resolve.slang`); any other mode runs NRC's SDK debug resolve (training radiance, bounce heat map, query index, etc.) into `Indirect radiance` (ND5, M8 I7) |
 
-- **Cost** (NRC + ReSTIR GI mode, gallery, 1280×720 window (853×480 render, DLSS-RR Quality), 2026-11-22): update 0.0195 ms, train 0.406 ms, resolve 0.042 ms, `Indirect` 0.666 ms, plus the C-G3-6 host wait (0.57–0.62 ms frame time).
-- **Bias** (after M8 I7, 2026-11-22, [i7_nrc_bias.md](../spec/fixesM1-6/i7_nrc_bias.md)): C-G5-3 resolved via the sentinel zero-continuation workaround for NRC 0.16's `hasExitedScene` direct-light leak (C-G3-7). Both NRC phases are gated in `ENGINE_GI_CHECK=1` (`14 of 14` pass): 5-seed spread is `−3.63…−0.98%` gallery / `−0.21…−0.06%` courtyard for `NRC mode` and `−3.93…−1.74%` / `+0.80…+1.07%` for `NRC + ReSTIR GI (converged settings)`.
+- **Cost** (NRC + ReSTIR GI mode, 1280×720 window (853×480 render, DLSS-RR Quality), post-I8 2026-11-22, [i8_nrc_cost.md](../spec/fixesM1-6/i8_nrc_cost.md)): `C-G3-6` host wait disabled by default (`recordIsolated` alone survived 18,000 uncapped stress frames across 1280×720 and 2560×1369; `ENGINE_NRC_HOST_WAIT=1` fallback kept), cutting wall `drawFrame` by **−0.560 ms (−13.6%)**; idle training cuts steady-state GPU total by **−0.288 ms (−8.3%)** Sponza gallery (`drawFrame` `4.468 → 3.396 ms`, −24.0%), **−0.375 ms (−9.6%)** courtyard (`4.827 → 3.649 ms`, −24.4%), and **−0.412 ms (−14.0%)** Bistro street (`4.042 → 2.762 ms`, −31.7%, only `+0.274 ms` above 1-bounce `ReSTIR GI` mode).
+- **Bias** (after M8 I7–I8, 2026-11-22, [i7_nrc_bias.md](../spec/fixesM1-6/i7_nrc_bias.md), [i8_nrc_cost.md](../spec/fixesM1-6/i8_nrc_cost.md)): C-G5-3 resolved via the sentinel zero-continuation workaround for NRC 0.16's `hasExitedScene` direct-light leak (C-G3-7). Both NRC phases stay gated in `ENGINE_GI_CHECK=1` (`14 of 14` pass on seeds 0–2 with `idleTrainingFrames = 512`: gallery `NRC+GI −3.88…−2.64%` / `NRC mode −4.96…−3.83%`, courtyard `+0.59…+0.61%` / `−0.69…−0.36%`).
 
 ## 8. Components not built yet
 

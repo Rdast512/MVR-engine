@@ -6,6 +6,7 @@
 #include "../util/vk_tracy.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -23,6 +24,30 @@ namespace
     constexpr uint32_t kIndirectModeCycleFrames = 64;
     constexpr std::string_view kIndirectModeCycle = "cycle";
     constexpr uint32_t kGiCheckBenchFrames = 50'000;
+
+    // ENGINE_WINDOW_SIZE=WxH (e.g. 2560x1369 for C-G3-6 stress runs)
+    [[nodiscard]] std::pair<int, int> requestedWindowSize()
+    {
+        const char* text = std::getenv("ENGINE_WINDOW_SIZE");
+        if (text == nullptr || *text == '\0') {
+            return {static_cast<int>(WIDTH), static_cast<int>(HEIGHT)};
+        }
+        const std::string_view view(text);
+        const size_t sep = view.find_first_of("xX");
+        uint32_t w = 0;
+        uint32_t h = 0;
+        if (sep != std::string_view::npos) {
+            const auto rw = std::from_chars(view.data(), view.data() + sep, w);
+            const auto rh = std::from_chars(view.data() + sep + 1, view.data() + view.size(), h);
+            if (rw.ec == std::errc{} && rw.ptr == view.data() + sep && rh.ec == std::errc{} &&
+                rh.ptr == view.data() + view.size() && w >= 64 && h >= 64) {
+                return {static_cast<int>(w), static_cast<int>(h)};
+            }
+        }
+        logError(std::format("ENGINE_WINDOW_SIZE='{}' invalid (expected WxH); using {}x{}", view, WIDTH, HEIGHT),
+                 "Engine");
+        return {static_cast<int>(WIDTH), static_cast<int>(HEIGHT)};
+    }
 } // namespace
 
 Engine::~Engine() { cleanup(); }
@@ -33,8 +58,8 @@ void Engine::initialize()
         throw std::runtime_error("Failed to initialize SDL: " + std::string(SDL_GetError()));
     }
 
-    window = SDL_CreateWindow("Vulkan", static_cast<int>(WIDTH), static_cast<int>(HEIGHT),
-                              SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+    const auto [windowWidth, windowHeight] = requestedWindowSize();
+    window = SDL_CreateWindow("Vulkan", windowWidth, windowHeight, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
 
     if (window == nullptr) {
         throw std::runtime_error("Failed to create window");

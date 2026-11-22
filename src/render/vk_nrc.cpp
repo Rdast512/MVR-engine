@@ -5,10 +5,14 @@
 #include "static_headers/logger.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <format>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace
 {
@@ -36,6 +40,11 @@ namespace
         std::string_view text(message);
         while (!text.empty() && (text.back() == '\n' || text.back() == ' ')) {
             text.remove_suffix(1);
+        }
+        // QueryAndTrain is the only Vulkan inference entry point; with trainTheCache = false (NP2 idle or Train NRC
+        // off) NRC 0.16 logs this every frame, flooding the log file and adding CPU I/O
+        if (text.contains("trainTheCache is `false`")) {
+            return;
         }
         if (level == nrc::LogLevel::Error || level == nrc::LogLevel::Warning) {
             logError(text, kSubsystem);
@@ -89,6 +98,20 @@ NrcCache::NrcCache(const Device& device, const VkAllocator& allocator, const Nrc
         constants[slot] = createHostBuffer(sizeof(GpuNrcConstants), allocator.allocator, device.vkdevice,
                                            device.queueFamilyIndices, std::format("NrcConstants_{}", slot), nullptr);
     }
+    if (const char* idleEnv = std::getenv("ENGINE_NRC_IDLE_FRAMES"); idleEnv != nullptr && *idleEnv != '\0') {
+        uint32_t frames = 0;
+        const std::string_view view(idleEnv);
+        const auto [ptr, ec] = std::from_chars(view.data(), view.data() + view.size(), frames);
+        if (ec == std::errc{} && ptr == view.data() + view.size()) {
+            settings.idleTrainingFrames = frames;
+            logInfo(std::format("NRC idle training frames (NP2): {}", frames), kSubsystem);
+        } else {
+            logError(std::format("ENGINE_NRC_IDLE_FRAMES='{}' invalid; ignored", view), kSubsystem);
+        }
+    }
+    lastIsTrainingEnabled = settings.isTrainingEnabled;
+    lastTrainingIterations = settings.trainingIterations;
+    lastIdleTrainingFrames = settings.idleTrainingFrames;
 }
 
 NrcCache::~NrcCache()
@@ -117,17 +140,29 @@ void NrcCache::recreate(vk::Extent2D extent)
     }
 }
 
-void NrcCache::prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, bool isPaused)
+void NrcCache::prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, bool isPaused, bool isSceneChanged)
 {
     if (isPaused) {
+        wasPaused = true;
+        isTrainingFrame = false;
         std::memset(constants[frameSlot].mapped, 0, sizeof(GpuNrcConstants));
         return;
     }
     const bool isNewScene = isValid(sceneBounds) &&
                             (sceneBounds.bboxMin != configuredBounds.bboxMin ||
                              sceneBounds.bboxMax != configuredBounds.bboxMax);
-    if (!isNewScene) {
+    if (isNewScene) {
+        // Configure may reallocate the buffers every frame in flight uses; a layout change is a load. No requestReset:
+        // NRC 0.16 keeps the weights with it (measured, considerations C-G3-5); the network adapts to the new bounds
+        device.vkdevice.waitIdle();
+        configuredBounds = sceneBounds;
+        configure();
+        if (isDebugResolveActive()) {
+            ensureDebugResolveTarget();
+        }
+    } else {
         if (!isConfigured) {
+            isTrainingFrame = false;
             std::memset(constants[frameSlot].mapped, 0, sizeof(GpuNrcConstants));
             return;
         }
@@ -137,16 +172,19 @@ void NrcCache::prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, 
             device.vkdevice.waitIdle();
             ensureDebugResolveTarget();
         }
-        return;
     }
-    // Configure may reallocate the buffers every frame in flight uses; a layout change is a load. No requestReset:
-    // NRC 0.16 keeps the weights with it (measured, considerations C-G3-5); the network adapts to the new bounds
-    device.vkdevice.waitIdle();
-    configuredBounds = sceneBounds;
-    configure();
-    if (isDebugResolveActive()) {
-        ensureDebugResolveTarget();
+    const bool shouldReloadTraining = isNewScene || wasPaused || isSceneChanged ||
+        (settings.isTrainingEnabled && !lastIsTrainingEnabled) ||
+        settings.trainingIterations != lastTrainingIterations ||
+        settings.idleTrainingFrames != lastIdleTrainingFrames;
+    if (shouldReloadTraining) {
+        trainingFramesRemaining = settings.idleTrainingFrames;
     }
+    wasPaused = false;
+    lastIsTrainingEnabled = settings.isTrainingEnabled;
+    lastTrainingIterations = settings.trainingIterations;
+    lastIdleTrainingFrames = settings.idleTrainingFrames;
+    isTrainingFrame = settings.isTrainingEnabled && (settings.idleTrainingFrames == 0 || trainingFramesRemaining > 0);
 }
 
 void NrcCache::configure()
@@ -301,11 +339,23 @@ nrc::FrameSettings NrcCache::frameSettings() const
     frame.maxExpectedAverageRadianceValue = kMaxExpectedAverageRadiance;
     frame.terminationHeuristicThreshold = kTerminationHeuristicThreshold;
     frame.trainingTerminationHeuristicThreshold = kTerminationHeuristicThreshold;
-    frame.trainTheCache = settings.isTrainingEnabled;
+    frame.trainTheCache = isTrainingFrame;
     frame.proportionPrimarySegmentsToTrainOn = kPrimarySegmentsToTrainOn;
     frame.skipDeltaVertices = true;
     frame.numTrainingIterations = std::max(settings.trainingIterations, 1u);
     frame.resolveMode = settings.resolveMode;
+    // NP2: anneal Adam learning rate over the final <= 128 frames of the idle countdown so the frozen snapshot
+    // settles into the mean instead of locking in a noisy 1e-2 mini-batch bounce (NrcCommon.h: [0.0001, 0.01])
+    constexpr float kBaseLearningRate = 1e-2f;
+    constexpr float kFinalLearningRate = 5e-4f;
+    constexpr uint32_t kMaxAnnealFrames = 128;
+    if (isTrainingFrame && settings.idleTrainingFrames >= 4) {
+        const uint32_t annealFrames = std::max(std::min(settings.idleTrainingFrames / 2, kMaxAnnealFrames), 1u);
+        if (trainingFramesRemaining <= annealFrames) {
+            const float progress = 1.0f - static_cast<float>(trainingFramesRemaining - 1) / static_cast<float>(annealFrames);
+            frame.learningRate = kBaseLearningRate * std::pow(kFinalLearningRate / kBaseLearningRate, progress);
+        }
+    }
     // from the render extent: a grown-only frame must not train more paths than the image has
     const nrc_uint2 used = api.computeIdealTrainingDimensions({renderExtent.width, renderExtent.height},
                                                               frame.numTrainingIterations, 0.0f);
@@ -317,6 +367,9 @@ nrc::FrameSettings NrcCache::frameSettings() const
 void NrcCache::recordBeginFrame(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot, bool isCacheView)
 {
     const nrc::FrameSettings frame = frameSettings();
+    if (isTrainingFrame && settings.idleTrainingFrames > 0 && trainingFramesRemaining > 0) {
+        --trainingFramesRemaining;
+    }
     usedTrainingExtent = vk::Extent2D{frame.usedTrainingDimensions.x, frame.usedTrainingDimensions.y};
     // the previous frame's resolve and debug-view reads -> BeginFrame's counter reset
     nrcBoundary(cmd);
@@ -335,7 +388,7 @@ void NrcCache::recordBeginFrame(const vk::raii::CommandBuffer& cmd, uint32_t fra
 void NrcCache::recordUpdate(const vk::raii::CommandBuffer& cmd, vk::DeviceAddress frameRoot,
                             const vk::raii::ShaderEXT& updateShader) const
 {
-    if (!settings.isTrainingEnabled) {
+    if (!isTrainingFrame) {
         return;
     }
     ShaderObjects::bindComputeShader(cmd, updateShader);

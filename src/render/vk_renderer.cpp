@@ -46,6 +46,10 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
             std::format("push data of {} B exceeds the device's maxPushDataSize of {} B", kMaxPushDataBytes, maxPushData));
     }
     dgc.init();
+    if (const char* waitEnv = std::getenv("ENGINE_NRC_HOST_WAIT"); waitEnv != nullptr && *waitEnv != '\0') {
+        isNrcHostWaitEnabled = std::string_view(waitEnv) != "0";
+        logInfo(std::format("NRC host wait (C-G3-6): {}", isNrcHostWaitEnabled ? "on" : "off"), "Renderer");
+    }
     if constexpr (kDebugRays) {
         for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
             rayDebugCounters[slot] =
@@ -228,13 +232,25 @@ void Renderer::drawFrame()
         }
         appliedIndirect = indirect;
     }
-    // after the RT scene followed a new layout: its bounds are NRC's
-    nrc.prepareFrame(currentFrame, rtScene.getSceneBounds(), isNrcPaused());
+    // after the RT scene followed a new layout: world lights and NRC both read its layout and dynamic-motion state
     worldLights.prepareFrame(currentFrame, frameNumber - 1);
     isLightSetChanged = worldLights.lightCount() != lastLightCount ||
         worldLights.areTriangleLightsSampled != wereTriangleLightsSampled;
     lastLightCount = worldLights.lightCount();
     wereTriangleLightsSampled = worldLights.areTriangleLightsSampled;
+    // NP2: camera, sun, light set, scene layout or dynamic transforms invalidate the cache; switching between
+    // NRC+ReSTIR GI and NRC (or changing GI reuse settings) does not alter NRC's training target (unpausing NRC
+    // already reloads the countdown via NrcCache::wasPaused)
+    const bool isNrcSceneChanged = !hasNrcChangeBaseline || camera.isCut() ||
+        camera.cameraData.viewProj != lastNrcViewProj || camera.cameraData.cameraPos != lastNrcCameraPos ||
+        worldLights.sun != lastNrcSun || isLightSetChanged || rtScene.hasSceneChanged();
+    if (!isNrcPaused()) {
+        lastNrcViewProj = camera.cameraData.viewProj;
+        lastNrcCameraPos = camera.cameraData.cameraPos;
+        lastNrcSun = worldLights.sun;
+        hasNrcChangeBaseline = true;
+    }
+    nrc.prepareFrame(currentFrame, rtScene.getSceneBounds(), isNrcPaused(), isNrcSceneChanged);
     if (rtxdi.isReference != rtxdi.isReferenceEnabled()) {
         // direct-light noise profile changes abruptly across reference/reuse switches
         isDlssHistoryValid = false;
@@ -437,11 +453,12 @@ Renderer::CpuStats Renderer::getCpuStats() const noexcept
 
 void Renderer::finishPreviousFrame()
 {
-    if (lastNrcRaySubmit != 0) {
+    if (isNrcHostWaitEnabled && lastNrcRaySubmit != 0) {
         ZoneScopedN("NrcWait");
         const vk::SemaphoreWaitInfo nrcWait{
             .semaphoreCount = 1, .pSemaphores = &*frameSync.rayTimeline, .pValues = &lastNrcRaySubmit};
         (void)device.vkdevice.waitSemaphores(nrcWait, UINT64_MAX);
+        lastNrcRaySubmit = 0;
     }
     if (!pendingPresent) {
         return;

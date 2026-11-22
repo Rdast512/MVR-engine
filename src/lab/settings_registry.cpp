@@ -16,7 +16,7 @@
 // until it does
 static_assert(sizeof(RtxdiContext::Settings) == 84, "a new RtxdiContext::Settings field needs a lab switch");
 static_assert(sizeof(RtxdiContext::GiSettings) == 92, "a new RtxdiContext::GiSettings field needs a lab switch");
-static_assert(sizeof(NrcCache::Settings) == 12, "a new NrcCache::Settings field needs a lab switch");
+static_assert(sizeof(NrcCache::Settings) == 16, "a new NrcCache::Settings field needs a lab switch");
 static_assert(sizeof(Dlss::Settings) == 2, "a new Dlss::Settings field needs a lab switch");
 
 namespace
@@ -226,6 +226,12 @@ namespace
              "DLSS-RR integration guide"},
             {"nrc.training", LabSwitchType::Bool, {}, [](const LabConfig& config) { return toDouble(config.nrc.isTrainingEnabled); },
              [](LabConfig& config, double value) { config.nrc.isTrainingEnabled = value != 0.0; }, "NrcGuide.md"},
+            {"nrc.idleTrainingFrames", LabSwitchType::Uint, {},
+             [](const LabConfig& config) { return toDouble(config.nrc.idleTrainingFrames); },
+             [](LabConfig& config, double value) {
+                 config.nrc.idleTrainingFrames = static_cast<uint32_t>(std::llround(value));
+             },
+             kEngineOnly},
             {"nrc.iterations", LabSwitchType::Uint, {},
              [](const LabConfig& config) { return toDouble(config.nrc.trainingIterations); },
              [](LabConfig& config, double value) {
