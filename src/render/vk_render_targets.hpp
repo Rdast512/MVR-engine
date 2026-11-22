@@ -83,6 +83,7 @@ public:
     }
     [[nodiscard]] vk::Image getDepthImage() const noexcept { return *depthAttachment.image; }
     [[nodiscard]] vk::ImageView getDepthView() const noexcept { return *depthAttachment.view; }
+    [[nodiscard]] vk::Image getIndirectRadianceImage() const noexcept { return *indirectRadiance.image; }
     [[nodiscard]] vk::Format getDepthFormat() const noexcept { return depthFormat; }
     [[nodiscard]] vk::Image getVisBufferImage() const noexcept { return *visBuffer.image; }
     [[nodiscard]] vk::ImageView getVisBufferView() const noexcept { return *visBufferView; }

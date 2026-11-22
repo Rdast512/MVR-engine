@@ -79,7 +79,8 @@ NrcCache::NrcCache(const Device& device, const VkAllocator& allocator, const Nrc
     // the engine allocates the SDK's buffers: SDK-allocated ones are unnamed dedicated blocks without a priority, and
     // Configure / Destroy leak them (considerations C-G3-3)
     globalSettings.enableGPUMemoryAllocation = false;
-    globalSettings.enableDebugBuffers = false;
+    // allocates DebugTrainingRadiance (~0.25 MiB at 853x480, VMA-owned) for SDK Resolve debug views (ND5)
+    globalSettings.enableDebugBuffers = true;
     globalSettings.maxNumFramesInFlight = MAX_FRAMES_IN_FLIGHT;
     checkNrc(api.initialize(globalSettings), "Initialize");
     checkNrc(api.createContext(*device.vkdevice, *device.physicalDevice, *device.instance, context), "Context::Create");
@@ -92,6 +93,7 @@ NrcCache::NrcCache(const Device& device, const VkAllocator& allocator, const Nrc
 
 NrcCache::~NrcCache()
 {
+    destroyDebugResolveTarget();
     for (HostBuffer& slot : constants) {
         destroyHostBuffer(allocator.allocator, slot, nullptr);
     }
@@ -110,6 +112,9 @@ void NrcCache::recreate(vk::Extent2D extent)
     if (isValid(configuredBounds) && !(isConfigured && isFrameLargeEnough)) {
         configure();
     }
+    if (isConfigured && isDebugResolveActive()) {
+        ensureDebugResolveTarget();
+    }
 }
 
 void NrcCache::prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, bool isPaused)
@@ -124,6 +129,13 @@ void NrcCache::prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, 
     if (!isNewScene) {
         if (!isConfigured) {
             std::memset(constants[frameSlot].mapped, 0, sizeof(GpuNrcConstants));
+            return;
+        }
+        if (isDebugResolveActive() &&
+            (!*debugResolveImage || debugResolveExtent.width != contextSettings.frameDimensions.x ||
+             debugResolveExtent.height != contextSettings.frameDimensions.y)) {
+            device.vkdevice.waitIdle();
+            ensureDebugResolveTarget();
         }
         return;
     }
@@ -132,6 +144,9 @@ void NrcCache::prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, 
     device.vkdevice.waitIdle();
     configuredBounds = sceneBounds;
     configure();
+    if (isDebugResolveActive()) {
+        ensureDebugResolveTarget();
+    }
 }
 
 void NrcCache::configure()
@@ -244,6 +259,42 @@ void NrcCache::destroySdkBuffers()
     sdkBufferInfo = {};
 }
 
+void NrcCache::ensureDebugResolveTarget()
+{
+    const vk::Extent2D targetExtent{contextSettings.frameDimensions.x, contextSettings.frameDimensions.y};
+    if (targetExtent.width == 0 || targetExtent.height == 0 ||
+        (*debugResolveImage && debugResolveExtent == targetExtent)) {
+        return;
+    }
+    destroyDebugResolveTarget();
+    constexpr vk::Format kDebugResolveFormat = vk::Format::eR32G32B32A32Sfloat;
+    allocator.createImage2D(targetExtent.width, targetExtent.height, 1, vk::SampleCountFlagBits::e1,
+                            kDebugResolveFormat,
+                            vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferSrc, debugResolveImage,
+                            debugResolveMemory, "NrcDebugResolveMemory");
+    setDebugName(device.vkdevice, debugResolveImage, "NrcDebugResolve");
+    debugResolveView = vk::raii::ImageView(device.vkdevice,
+                                           vk::ImageViewCreateInfo{
+                                               .image = *debugResolveImage,
+                                               .viewType = vk::ImageViewType::e2D,
+                                               .format = kDebugResolveFormat,
+                                               .subresourceRange = {.aspectMask = vk::ImageAspectFlagBits::eColor,
+                                                                    .levelCount = 1,
+                                                                    .layerCount = 1},
+                                           });
+    setDebugName(device.vkdevice, debugResolveView, "NrcDebugResolveView");
+    debugResolveExtent = targetExtent;
+    isDebugResolveInitialized = false;
+}
+
+void NrcCache::destroyDebugResolveTarget()
+{
+    debugResolveView = nullptr;
+    destroyVmaImage(allocator.allocator, debugResolveImage, debugResolveMemory);
+    debugResolveExtent = {};
+    isDebugResolveInitialized = false;
+}
+
 nrc::FrameSettings NrcCache::frameSettings() const
 {
     nrc::FrameSettings frame{};
@@ -254,6 +305,7 @@ nrc::FrameSettings NrcCache::frameSettings() const
     frame.proportionPrimarySegmentsToTrainOn = kPrimarySegmentsToTrainOn;
     frame.skipDeltaVertices = true;
     frame.numTrainingIterations = std::max(settings.trainingIterations, 1u);
+    frame.resolveMode = settings.resolveMode;
     // from the render extent: a grown-only frame must not train more paths than the image has
     const nrc_uint2 used = api.computeIdealTrainingDimensions({renderExtent.width, renderExtent.height},
                                                               frame.numTrainingIterations, 0.0f);
@@ -303,6 +355,114 @@ void NrcCache::recordTrain(const vk::raii::CommandBuffer& cmd)
     checkNrc(api.queryAndTrain(context, *cmd, nullptr), "QueryAndTrain");
     // query radiance -> the resolve and debug view
     nrcBoundary(cmd);
+}
+
+bool NrcCache::isDebugResolveActive() const noexcept
+{
+    return settings.resolveMode != NrcResolveMode::AddQueryResultToOutput;
+}
+
+void NrcCache::recordDebugResolve(const vk::raii::CommandBuffer& cmd, vk::Image indirectRadiance, vk::Extent2D extent)
+{
+    if (!*debugResolveImage) {
+        return;
+    }
+    constexpr vk::ImageSubresourceRange kColorRange{
+        .aspectMask = vk::ImageAspectFlagBits::eColor, .levelCount = 1, .layerCount = 1};
+    if (!isDebugResolveInitialized) {
+        const vk::ImageMemoryBarrier2 toGeneral{
+            .srcStageMask = vk::PipelineStageFlagBits2::eNone,
+            .srcAccessMask = vk::AccessFlagBits2::eNone,
+            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+            .oldLayout = vk::ImageLayout::eUndefined,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .image = *debugResolveImage,
+            .subresourceRange = kColorRange,
+        };
+        cmd.pipelineBarrier2(vk::DependencyInfo{.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &toGeneral});
+        isDebugResolveInitialized = true;
+    } else {
+        const vk::ImageMemoryBarrier2 reuseBarrier{
+            .srcStageMask = vk::PipelineStageFlagBits2::eBlit,
+            .srcAccessMask = vk::AccessFlagBits2::eTransferRead,
+            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+            .oldLayout = vk::ImageLayout::eGeneral,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .image = *debugResolveImage,
+            .subresourceRange = kColorRange,
+        };
+        cmd.pipelineBarrier2(vk::DependencyInfo{.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &reuseBarrier});
+    }
+    nrcBoundary(cmd);
+    driverHeap.bind(cmd);
+    checkNrc(api.resolve(context, *cmd, *debugResolveView), "Resolve");
+
+    const std::array preBlitBarriers{
+        vk::ImageMemoryBarrier2{
+            .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+            .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eBlit,
+            .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
+            .oldLayout = vk::ImageLayout::eGeneral,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .image = *debugResolveImage,
+            .subresourceRange = kColorRange,
+        },
+        vk::ImageMemoryBarrier2{
+            .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+            .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eBlit,
+            .dstAccessMask = vk::AccessFlagBits2::eTransferWrite,
+            .oldLayout = vk::ImageLayout::eGeneral,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .image = indirectRadiance,
+            .subresourceRange = kColorRange,
+        },
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{
+        .imageMemoryBarrierCount = static_cast<uint32_t>(preBlitBarriers.size()),
+        .pImageMemoryBarriers = preBlitBarriers.data(),
+    });
+    const vk::Extent2D copyExtent{std::min(extent.width, debugResolveExtent.width),
+                                  std::min(extent.height, debugResolveExtent.height)};
+    const vk::ImageBlit2 region{
+        .srcSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor, .layerCount = 1},
+        .srcOffsets = std::array{vk::Offset3D{0, 0, 0},
+                                 vk::Offset3D{static_cast<int32_t>(copyExtent.width),
+                                              static_cast<int32_t>(copyExtent.height), 1}},
+        .dstSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor, .layerCount = 1},
+        .dstOffsets = std::array{vk::Offset3D{0, 0, 0},
+                                 vk::Offset3D{static_cast<int32_t>(copyExtent.width),
+                                              static_cast<int32_t>(copyExtent.height), 1}},
+    };
+    cmd.blitImage2(vk::BlitImageInfo2{
+        .srcImage = *debugResolveImage,
+        .srcImageLayout = vk::ImageLayout::eGeneral,
+        .dstImage = indirectRadiance,
+        .dstImageLayout = vk::ImageLayout::eGeneral,
+        .regionCount = 1,
+        .pRegions = &region,
+        .filter = vk::Filter::eNearest,
+    });
+    const vk::ImageMemoryBarrier2 postBlitBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eBlit,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
+        .oldLayout = vk::ImageLayout::eGeneral,
+        .newLayout = vk::ImageLayout::eGeneral,
+        .image = indirectRadiance,
+        .subresourceRange = kColorRange,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &postBlitBarrier});
+    nrcBoundary(cmd);
+}
+
+const char* NrcCache::resolveModeComboString() const
+{
+    return api.getImGuiResolveModeComboString();
 }
 
 void NrcCache::endFrame(const vk::raii::Queue& queue)

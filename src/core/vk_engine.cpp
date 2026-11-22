@@ -110,8 +110,12 @@ void Engine::initialize()
                                                   scene->materialStore, scene->lightStore);
 
     const glm::vec3 initialAssetPos{0.0f, 0.0f, 0.0f};
-    const std::string startupModel =
-        (bench && !bench->getConfig().modelPath.empty()) ? bench->getConfig().modelPath : MODEL_PATH.string();
+    // a check scene (ENGINE_CHECK_SCENE) selects the model of the GI and temporal checks
+    const char* checkModel = (giCheck || temporalCheck) ? checkSceneModel(readCheckScene()) : nullptr;
+    const std::string startupModel = checkModel != nullptr
+        ? (std::filesystem::path(ENGINE_MODELS_DIR) / checkModel).string()
+        : (bench && !bench->getConfig().modelPath.empty()) ? bench->getConfig().modelPath
+                                                           : MODEL_PATH.string();
     if (!assetsLoader->loadModel(startupModel, initialAssetPos)) {
         logError(std::format("Startup model failed to load: {}", startupModel), "Engine");
     }

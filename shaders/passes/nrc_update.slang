@@ -39,14 +39,38 @@ NrcSurfaceAttributes attributesOf(NrcConstants constants, RAB_Surface surface)
                                 surface.diffuseAlbedo, surface.specularF0);
 }
 
+// m8 I7 (C-G5-3): under includeDirectLighting = false, NRC_Vulkan.dll 0.16 trains the final vertex of a
+// hasExitedScene path on v[last].radiance, leaking that vertex's own direct lighting into its indirect radiance target
+// (+10% bias on Sponza). Appending a zero-radiance sentinel vertex at the padded scene-bounds corner (encoded 0,0,0,
+// outside all scene geometry) finalizes v[last] as an interior vertex — preserving D_last for v[last-1] while training
+// v[last] on w_last * 0 = 0 — and puts hasExitedScene on the sentinel vertex with zero radiance. Used for both sky
+// misses and BRDFAbsorption (Q7), where continuation radiance is zero under the one-emission rule
+void terminateZeroContinuation(NrcContext nrc, inout NrcPathState path, uint bounce, inout float3 throughput,
+                               inout float3 radiance, NrcDebugPathTerminationReason reason)
+{
+    NrcSurfaceAttributes sentinel;
+    sentinel.encodedPosition = NrcEncodedPosition(0.0, 0.0, 0.0);
+    sentinel.roughness = 1.0;
+    sentinel.specularF0 = float3(0.0, 0.0, 0.0);
+    sentinel.diffuseReflectance = float3(1.0, 1.0, 1.0);
+    sentinel.shadingNormal = float3(0.0, 1.0, 0.0);
+    sentinel.viewVector = float3(0.0, 1.0, 0.0);
+    sentinel.isDeltaLobe = false;
+    NrcUpdateOnHit(nrc, path, sentinel, kMissDistance, bounce, throughput, radiance);
+    NrcUpdateOnMiss(path);
+    NrcSetDebugPathTerminationReason(path, reason);
+}
+
 // the next segment from a lit vertex; false: absorbed
-bool scatter<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, inout RTXDI_RandomSamplerState rng,
-                                   inout float3 throughput, inout NrcPathState path, inout RayDesc ray)
+bool scatter<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, NrcContext nrc, uint nextBounce,
+                                   inout RTXDI_RandomSamplerState rng, inout float3 throughput, inout float3 radiance,
+                                   inout NrcPathState path, inout RayDesc ray)
 {
     float pdf;
     if (!scatterBrdf(surface, origin, rng, throughput, ray, pdf))
     {
-        NrcSetDebugPathTerminationReason(path, NrcDebugPathTerminationReason::BRDFAbsorption);
+        terminateZeroContinuation(nrc, path, nextBounce, throughput, radiance,
+                                  NrcDebugPathTerminationReason::BRDFAbsorption);
         return false;
     }
     // the heuristic grows the path spread at the next hit from this pdf
@@ -112,7 +136,7 @@ void nrcUpdateMain(uint3 id : SV_DispatchThreadID)
             radiance += throughput * (emissive + directLightAt(primary, origin, rtxdiConstants, lightRng, coherentRng));
             if (progress == NrcProgressState::Continue)
             {
-                isActive = scatter(primary, origin, rng, throughput, path, ray);
+                isActive = scatter(primary, origin, nrc, 1, rng, throughput, radiance, path, ray);
             }
         }
     }
@@ -122,7 +146,8 @@ void nrcUpdateMain(uint3 id : SV_DispatchThreadID)
         RayHit hit;
         if (!traceClosest(root, ray, hit))
         {
-            NrcUpdateOnMiss(path);
+            terminateZeroContinuation(nrc, path, bounce, throughput, radiance,
+                                      NrcDebugPathTerminationReason::PathMissExit);
             break;
         }
         const PathHit vertex = shadeRayHit(root, hit, ray, pathLength);
@@ -147,7 +172,7 @@ void nrcUpdateMain(uint3 id : SV_DispatchThreadID)
             NrcSetDebugPathTerminationReason(path, NrcDebugPathTerminationReason::MaxPathVertices);
             break;
         }
-        isActive = scatter(vertex.surface, origin, rng, throughput, path, ray);
+        isActive = scatter(vertex.surface, origin, nrc, bounce + 1, rng, throughput, radiance, path, ray);
     }
 
     NrcWriteFinalPathInfo(nrc, path, throughput, radiance);

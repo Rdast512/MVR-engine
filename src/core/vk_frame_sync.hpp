@@ -9,8 +9,9 @@
 // fences, semaphores and command buffers of the frame slots, plus the command buffer for load-time work
 class FrameSync {
 public:
-    // ray segments per frame slot: four engine segments around NRC BeginFrame, NRC QueryAndTrain and DLSS-RR
-    static constexpr uint32_t kRaySegmentsPerFrame = 7;
+    // ray segments per frame slot: five engine segments around NRC BeginFrame, QueryAndTrain, optional debug Resolve,
+    // and DLSS-RR
+    static constexpr uint32_t kRaySegmentsPerFrame = 9;
 
     // command buffer and the queue it is submitted to
     struct OneTimeCommands {

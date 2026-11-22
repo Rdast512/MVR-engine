@@ -1133,6 +1133,12 @@ void EngineUi::drawRayTracingPanel()
         nrc.trainingIterations = static_cast<uint32_t>(iterations);
     }
     ImGui::SetItemTooltip("16K training records each; the training paths grow with it");
+    int resolveMode = static_cast<int>(nrc.resolveMode);
+    if (ImGui::Combo("NRC resolve mode", &resolveMode, nrcCache.resolveModeComboString())) {
+        nrc.resolveMode = static_cast<NrcResolveMode>(resolveMode);
+    }
+    ImGui::SetItemTooltip("AddQueryResultToOutput runs the custom GI reservoir resolve; any other mode runs NRC's SDK "
+                          "debug resolve into Indirect radiance (view under Debug -> Indirect radiance)");
     const vk::Extent2D training = nrcCache.getTrainingExtent();
     const char* nrcState = !nrcCache.isActive()          ? "no scene"
                            : context.renderer.isNrcPaused() ? "paused"

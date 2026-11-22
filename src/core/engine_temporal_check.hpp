@@ -16,7 +16,10 @@
 // MEASURED; a run fails only on missing captures or non-finite pixels. One kind per run, the engine quits after it:
 //   ENGINE_STABILITY_CHECK=1: Lit and Indirect radiance temporal noise of a static camera per GI settings set;
 //   ENGINE_LIGHT_CHANGE_CHECK=1: frames until Indirect radiance settles after a sun move and a sun toggle;
-//   ENGINE_SCREEN_EDGE_CHECK=1: frames until the band a pan or a backward dolly reveals converges
+//   ENGINE_SCREEN_EDGE_CHECK=1: frames until the band a pan or a backward dolly reveals converges.
+// ENGINE_CHECK_SCENE=bistro_cafe runs them in Bistro's café, where stability also covers the DI sets, the NRC modes
+// and Direct lighting against RTXDI's reference (bias and dark leak). ENGINE_CHECK_STEPS=a|b keeps the stability
+// steps whose label contains a or b; ENGINE_CHECK_PNG=1 writes each stability step's first frame, mean and noise map
 class EngineTemporalCheck
 {
 public:
@@ -75,6 +78,23 @@ private:
         Dolly,
     };
 
+    // ReSTIR DI settings of a step
+    enum class DiSet : uint8_t
+    {
+        Shipped,
+        Nvidia,
+        Converged,
+        // RTXDI without reuse (RtxdiContext::isReference): Direct lighting's reference
+        Reference,
+        // shipped with one of NVIDIA's choices that I6 turned off: steady-state spatial reuse (NVIDIA's sample count,
+        // ray-traced correction), temporal permutation sampling, ReGIR presampling
+        ShippedSpatial,
+        ShippedPermutation,
+        ShippedRegir,
+        // spatial reuse and permutation: I6's p1_r0_RT
+        ShippedSpatialPermutation,
+    };
+
     struct Step
     {
         StepType type;
@@ -92,6 +112,8 @@ private:
         uint32_t frames;
         // the captured frame that first shows the change; kNoChange: none
         uint32_t changeAt;
+        DiSet di = DiSet::Shipped;
+        IndirectMode mode = IndirectMode::RestirGi;
     };
 
     struct PoseView
@@ -155,9 +177,15 @@ private:
     // a point this much farther than the initial view's surface there was hidden behind it
     static constexpr float kDisocclusionScale = 1.02f;
     static constexpr float kDisocclusionOffsetMeters = 0.02f;
-    static constexpr std::array<const char*, 2> kPoseNames = {"gallery (startup)", "courtyard"};
+    // Direct lighting's reference: longer than a step, RTXDI's reference is one sample per light candidate
+    static constexpr uint32_t kDirectReferenceFrames = 1024;
+    // tiles of the Direct lighting comparison, as the guide capture's convergence check
+    static constexpr uint32_t kDirectTileSize = 16;
 
-    [[nodiscard]] static std::vector<Step> buildSteps(Kind kind);
+    [[nodiscard]] static std::vector<Step> buildSteps(Kind kind, CheckScene scene);
+    [[nodiscard]] static const char* diSetName(DiSet set);
+    // shipped: the startup settings
+    [[nodiscard]] static RtxdiContext::Settings diSettingsFor(DiSet set, const RtxdiContext::Settings& shipped);
     // frame index base of the step's RTXDI seeds
     [[nodiscard]] static uint32_t stepSeed(const Step& step);
     [[nodiscard]] static WorldLights::Sun sunFor(SunState state);
@@ -172,11 +200,14 @@ private:
     void buildMasks();
     void finishStep();
     void logStability(const Step& step);
+    // Direct lighting against the pose's DI reference step
+    void logDirectBias(const Step& step, const std::vector<double>& mean);
     void logLightChange(const Step& step);
     void logEdgeMove(const Step& step);
     void fail(const std::string& text);
 
     Kind kind;
+    CheckScene scene = readCheckScene();
     std::vector<Step> steps;
     size_t stepIndex = 0;
     uint32_t stepFrame = 0;
@@ -186,6 +217,11 @@ private:
     uint32_t failedCount = 0;
     std::array<PoseView, 2> poses{};
     bool hasStartupPose = false;
+    // the DI settings at the first step: DiSet::Shipped restores them (ENGINE_DI_SAMPLING included)
+    std::optional<RtxdiContext::Settings> startupDiSettings;
+    // the last DI reference step's mean Direct lighting and its pose
+    std::vector<double> directReference;
+    uint8_t directReferencePose = UINT8_MAX;
 
     // the current step's captures
     vk::Extent2D extent{};

@@ -15,12 +15,12 @@
 // ReSTIR GI convergence check on the startup Sponza (spec/m4/g5_restir_gi.md §3, engine spec §14). Per pose, on a
 // static frame: the ground truth (RtxdiContext::kGiGroundTruthBounces traced after X2, NRC paused, no reuse) averaged
 // over many frames; then the same estimator again (the check's own noise floor) and ReSTIR GI on the same paths with
-// convergedGiSettings, each averaged and compared with it on the Indirect radiance view. The shipped pipeline (NRC,
-// then ReSTIR GI) is measured and logged, not gated, with convergedGiSettings and with the NVIDIA defaults: NRC's bias
-// and RTXDI's heuristics (considerations C-G5-1 to C-G5-3). Per indirect mode (spec/m4/g7_indirect_modes.md): NRC mode
-// is measured against the same ground truth; ReSTIR GI mode is gated against a one-bounce ground truth (its own paths
-// without reuse), and measured there with the shipped and the NVIDIA settings. ENGINE_GI_CHECK=1 enables the run; the engine quits after the summary.
-// ENGINE_GI_CHECK_SEED picks another realization of every phase
+// convergedGiSettings, each averaged and compared with it on the Indirect radiance view. Both NRC phases (NRC + ReSTIR
+// GI with convergedGiSettings, and NRC mode without reuse) are gated against the same multi-bounce ground truth (M8 I7,
+// after fixing C-G5-3); the NVIDIA-defaults phase stays measured for RTXDI's heuristic bias (C-G5-1). Per indirect mode
+// (spec/m4/g7_indirect_modes.md): ReSTIR GI mode is gated against a one-bounce ground truth (its own paths without
+// reuse) with both converged and shipped settings, and measured with NVIDIA's settings. ENGINE_GI_CHECK=1 enables the
+// run; the engine quits after the summary. ENGINE_GI_CHECK_SEED picks another realization of every phase
 class EngineGiCheck
 {
 public:
@@ -93,20 +93,11 @@ private:
         // frames before the first capture: reservoir history (ReSTIR GI) and training after the pause (NRC)
         uint32_t warmupFrames;
         uint32_t frames;
-        // shares of the ground truth's summed luminance, per pose (kPoses order) and set from the five-seed spread
+        // shares of the ground truth's summed luminance, per pose (kSponzaCheckPoses order) and set from the five-seed spread
         // (spec/fixesM1-6/i1_check_runners.md §5); maxBias 0: logged, not gated. A compared phase's tile limit is at
         // least kNoiseFloorTileFactor times the noise floor's tile p90; 0 on a noise floor: bias gated alone
         std::array<double, 2> maxBias;
         double maxTileP90;
-    };
-
-    struct Pose
-    {
-        const char* name;
-        // the startup camera, else lookAt(position, target)
-        bool isStartup;
-        glm::vec3 position;
-        glm::vec3 target;
     };
 
     static constexpr uint32_t kStartupFrames = 8;
@@ -131,12 +122,15 @@ private:
          GiSettingsSet::Converged, 4, 512, {0.03, 0.01}, 0.06},
         {"ReSTIR GI (converged settings, traced paths)", Role::Compared, IndirectMode::NrcRestirGi, kTraced, false,
          GiSettingsSet::Converged, 64, 512, {0.02, 0.015}, 0.08},
-        // NRC retrains after the pause
+        // NRC retrains after the pause; gated from five-seed spread after M8 I7's sentinel zero-continuation fix
+        // (gallery -3.93..-1.74% / p90 11.6..17.9%, courtyard +0.74..+1.07% / p90 7.6..12.5%; NRC non-deterministic C-T-5)
         {"NRC + ReSTIR GI (converged settings)", Role::Compared, IndirectMode::NrcRestirGi, 0, false,
-         GiSettingsSet::Converged, 512, 512, {0.0, 0.0}, 0.0},
+         GiSettingsSet::Converged, 512, 512, {0.05, 0.02}, 0.22},
         {"NRC + ReSTIR GI (NVIDIA defaults)", Role::Compared, IndirectMode::NrcRestirGi, 0, false,
          GiSettingsSet::Nvidia, 64, 512, {0.0, 0.0}, 0.0},
-        {"NRC mode", Role::Compared, IndirectMode::Nrc, 0, false, GiSettingsSet::Converged, 64, 512, {0.0, 0.0}, 0.0},
+        // five-seed spread: gallery -3.63..-0.98% / p90 6.1..13.1%, courtyard -0.44..-0.06% / p90 3.3..9.0%
+        {"NRC mode", Role::Compared, IndirectMode::Nrc, 0, false, GiSettingsSet::Converged, 64, 512, {0.05, 0.015},
+         0.18},
         {"one-bounce ground truth (ReSTIR GI mode, no reuse)", Role::GroundTruth, IndirectMode::RestirGi, 0, true,
          GiSettingsSet::Converged, 4, 2048, {0.0, 0.0}, 0.0},
         {"one-bounce ground truth again (noise floor)", Role::NoiseFloor, IndirectMode::RestirGi, 0, true,
@@ -160,23 +154,26 @@ private:
         {"ReSTIR GI mode (shipped without DLSS-RR profile) against one bounce", Role::Compared,
          IndirectMode::RestirGi, 0, false, GiSettingsSet::ShippedNoRrProfile, 64, 512, {0.0, 0.0}, 0.0},
     }};
-    static constexpr std::array<Pose, 2> kPoses = {{
-        {"gallery (startup)", true, {}, {}},
-        {"courtyard", false, kCourtyardPose.position, kCourtyardPose.target},
-    }};
-    static_assert(kPoses.size() == std::tuple_size_v<decltype(PhaseInfo::maxBias)>);
+    static_assert(kSponzaCheckPoses.size() == std::tuple_size_v<decltype(PhaseInfo::maxBias)>);
+    static_assert(kBistroCafeCheckPoses.size() == kSponzaCheckPoses.size());
     // ENGINE_GI_CHECK_SEED=n: a whole run's realization, for the gates' spread across seeds (M8 I1)
-    static constexpr uint32_t kRunSeedStride = kPoseSeedStride * static_cast<uint32_t>(kPoses.size());
+    static constexpr uint32_t kRunSeedStride = kPoseSeedStride * static_cast<uint32_t>(kSponzaCheckPoses.size());
 
     [[nodiscard]] static uint32_t readRunSeed();
     void applyPhase(RtxdiContext& rtxdi, IndirectMode& indirectMode) const;
-    [[nodiscard]] double maxBias() const noexcept { return kPhases[static_cast<size_t>(phase)].maxBias[poseIndex]; }
+    // the limits are Sponza's; another check scene is measured, not gated
+    [[nodiscard]] double maxBias() const noexcept
+    {
+        return scene == CheckScene::Sponza ? kPhases[static_cast<size_t>(phase)].maxBias[poseIndex] : 0.0;
+    }
+    [[nodiscard]] const std::array<CheckPose, 2>& poses() const noexcept { return checkPoses(scene); }
     [[nodiscard]] bool isGated() const noexcept { return maxBias() > 0.0; }
     // logs the phase's metrics; true when within its limits. A noise floor keeps its tile p90
     [[nodiscard]] bool evaluatePhase();
     // next phase or pose; true after the last one
     bool finishPhase();
 
+    CheckScene scene = readCheckScene();
     uint32_t runSeedBase = readRunSeed() * kRunSeedStride;
     uint32_t frame = 0;
     size_t poseIndex = 0;
@@ -195,6 +192,8 @@ private:
     uint64_t nonFinitePixels = 0;
     uint64_t negativePixels = 0;
     std::vector<double> groundTruth;
+    // ENGINE_CHECK_PNG: the ground truth's scale, shared by the pose's phase images
+    double pngScale = 1.0;
     std::array<double, 3> groundTruthRgb{0.0, 0.0, 0.0};
     uint64_t groundTruthNonFinite = 0;
     uint64_t groundTruthNegative = 0;

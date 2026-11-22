@@ -257,8 +257,8 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
                  vk::ImageLayout::eGeneral, "DisplayColor", extent);
     createTarget(directRadiance, kDirectRadianceFormat, kStorageUsage, vk::ImageLayout::eGeneral, "DirectRadiance",
                  extent);
-    createTarget(indirectRadiance, kIndirectRadianceFormat, kStorageUsage, vk::ImageLayout::eGeneral,
-                 "IndirectRadiance", extent);
+    createTarget(indirectRadiance, kIndirectRadianceFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferDst,
+                 vk::ImageLayout::eGeneral, "IndirectRadiance", extent);
     createTarget(noisyColorTarget, kNoisyColorFormat, kStorageUsage, vk::ImageLayout::eGeneral, "NoisyColor", extent);
     createTarget(upscaledTarget, kUpscaledFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferSrc,
                  vk::ImageLayout::eGeneral, "DlssOutput", displayExtent);

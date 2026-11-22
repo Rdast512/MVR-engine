@@ -979,6 +979,11 @@ const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandB
     }
     gpuTimer.end(*cmd, GpuTimerScope::NrcResolve);
     recordIndirectResampling(*cmd);
+    if (isNrcRecorded && nrc.isDebugResolveActive()) {
+        cmd = &recordIsolated(*cmd, [&](const vk::raii::CommandBuffer& sdkCmd) {
+            nrc.recordDebugResolve(sdkCmd, targets.getIndirectRadianceImage(), targets.getExtent());
+        });
+    }
     return *cmd;
 }
 

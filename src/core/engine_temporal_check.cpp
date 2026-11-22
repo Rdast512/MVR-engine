@@ -1,11 +1,13 @@
 #include "engine_temporal_check.hpp"
 #include "../static_headers/logger.hpp"
+#include "check_images.hpp"
 #include "convergence_metrics.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <format>
+#include <ranges>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -92,18 +94,124 @@ const char* EngineTemporalCheck::kindName(Kind kind)
     return "";
 }
 
-EngineTemporalCheck::EngineTemporalCheck(Kind kind) : kind(kind), steps(buildSteps(kind))
+EngineTemporalCheck::EngineTemporalCheck(Kind kind) : kind(kind), steps(buildSteps(kind, scene))
 {
+    // a filter keeps the stability steps whose label contains one of its '|'-separated parts; the other kinds' steps
+    // depend on each other
+    if (const char* filter = std::getenv("ENGINE_CHECK_STEPS"); filter != nullptr && kind == Kind::Stability) {
+        std::erase_if(steps, [&](const Step& step) {
+            const std::string label = stepLabel(step);
+            for (const auto part : std::views::split(std::string_view(filter), '|')) {
+                if (label.contains(std::string_view(part))) {
+                    return false;
+                }
+            }
+            return true;
+        });
+    }
     logInfo(std::format("{} check: {} steps, results follow", kindName(kind), steps.size()), "TemporalCheck");
 }
 
-std::vector<EngineTemporalCheck::Step> EngineTemporalCheck::buildSteps(Kind kind)
+const char* EngineTemporalCheck::diSetName(DiSet set)
+{
+    switch (set) {
+    case DiSet::Shipped:
+        return "shipped";
+    case DiSet::Nvidia:
+        return "NVIDIA";
+    case DiSet::Converged:
+        return "converged";
+    case DiSet::Reference:
+        return "reference";
+    case DiSet::ShippedSpatial:
+        return "shipped + spatial reuse";
+    case DiSet::ShippedPermutation:
+        return "shipped + permutation";
+    case DiSet::ShippedRegir:
+        return "shipped + ReGIR";
+    case DiSet::ShippedSpatialPermutation:
+        return "shipped + spatial reuse + permutation";
+    }
+    return "";
+}
+
+RtxdiContext::Settings EngineTemporalCheck::diSettingsFor(DiSet set, const RtxdiContext::Settings& shipped)
+{
+    RtxdiContext::Settings settings = shipped;
+    switch (set) {
+    case DiSet::Shipped:
+    case DiSet::Reference:
+        break;
+    case DiSet::Nvidia:
+        return RtxdiContext::nvidiaSettings();
+    case DiSet::Converged:
+        return RtxdiContext::convergedSettings();
+    case DiSet::ShippedSpatial:
+        settings.spatialSamples = RtxdiContext::nvidiaSettings().spatialSamples;
+        break;
+    case DiSet::ShippedPermutation:
+        settings.isPermutationSamplingEnabled = true;
+        break;
+    case DiSet::ShippedRegir:
+        settings.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::ReGIR_RIS;
+        break;
+    case DiSet::ShippedSpatialPermutation:
+        settings.spatialSamples = RtxdiContext::nvidiaSettings().spatialSamples;
+        settings.isPermutationSamplingEnabled = true;
+        break;
+    }
+    return settings;
+}
+
+std::vector<EngineTemporalCheck::Step> EngineTemporalCheck::buildSteps(Kind kind, CheckScene scene)
 {
     std::vector<Step> steps;
     const auto add = [&steps](Step step) { steps.push_back(step); };
-    for (uint8_t pose = 0; pose < kPoseNames.size(); ++pose) {
+    const auto stability = [&add](uint8_t pose, GiSettingsSet set, DebugView view, DiSet di = DiSet::Shipped,
+                                  IndirectMode mode = IndirectMode::RestirGi) {
+        add({StepType::Stability, pose, set, view, SunState::Default, SunState::Default, Motion::Pan, false, 300,
+             di == DiSet::Reference ? kDirectReferenceFrames : 480, kNoChange, di, mode});
+    };
+    for (uint8_t pose = 0; pose < checkPoses(scene).size(); ++pose) {
         switch (kind) {
         case Kind::Stability:
+            if (scene == CheckScene::BistroCafe) {
+                // DI first: its reference, then each DI set against it, then through DLSS-RR
+                stability(pose, GiSettingsSet::Shipped, DebugView::DirectLighting, DiSet::Reference);
+                for (const DiSet di : {DiSet::Shipped, DiSet::Nvidia, DiSet::Converged}) {
+                    stability(pose, GiSettingsSet::Shipped, DebugView::DirectLighting, di);
+                }
+                stability(pose, GiSettingsSet::Shipped, DebugView::Lit, DiSet::Nvidia);
+                stability(pose, GiSettingsSet::Nvidia, DebugView::Lit, DiSet::Nvidia);
+                // which of I6's changes to NVIDIA's DI the Lit noise comes from
+                for (const DiSet di : {DiSet::ShippedSpatial, DiSet::ShippedPermutation, DiSet::ShippedRegir,
+                                       DiSet::ShippedSpatialPermutation}) {
+                    for (const DebugView view : {DebugView::DirectLighting, DebugView::Lit}) {
+                        stability(pose, GiSettingsSet::Shipped, view, di);
+                    }
+                }
+                // the GI part of the Lit noise once DI is decorrelated
+                for (const GiSettingsSet set : {GiSettingsSet::ShippedNoDecorrelation, GiSettingsSet::Nvidia}) {
+                    stability(pose, set, DebugView::Lit, DiSet::ShippedSpatialPermutation);
+                }
+                for (const IndirectMode mode : {IndirectMode::NrcRestirGi, IndirectMode::Nrc}) {
+                    stability(pose, GiSettingsSet::Shipped, DebugView::Lit, DiSet::ShippedSpatialPermutation, mode);
+                }
+                for (const GiSettingsSet set :
+                     {GiSettingsSet::Shipped, GiSettingsSet::ShippedNoDecorrelation,
+                      GiSettingsSet::ShippedNoFireflyReplacement, GiSettingsSet::ShippedAgeLimit, GiSettingsSet::Nvidia,
+                      GiSettingsSet::Converged}) {
+                    for (const DebugView view : {DebugView::Lit, DebugView::IndirectRadiance}) {
+                        stability(pose, set, view);
+                    }
+                }
+                for (const IndirectMode mode : {IndirectMode::NrcRestirGi, IndirectMode::Nrc}) {
+                    for (const DebugView view : {DebugView::Lit, DebugView::IndirectRadiance}) {
+                        stability(pose, GiSettingsSet::Shipped, view, DiSet::Shipped, mode);
+                    }
+                }
+                break;
+            }
             for (const GiSettingsSet set :
                  {GiSettingsSet::Shipped, GiSettingsSet::ShippedNoDecorrelation, GiSettingsSet::ShippedNoFireflyReplacement,
                   GiSettingsSet::ShippedNoRrProfile, GiSettingsSet::ShippedAgeLimit, GiSettingsSet::Nvidia,
@@ -158,6 +266,10 @@ uint32_t EngineTemporalCheck::stepSeed(const Step& step)
           uint64_t{std::to_underlying(step.motion)}, uint64_t{step.isFinalPose}}) {
         key = key * 64 + field;
     }
+    // only when set: the steps before the DI sets and modes keep their seeds
+    if (step.di != DiSet::Shipped || step.mode != IndirectMode::RestirGi) {
+        key = (key * 64 + std::to_underlying(step.di)) * 64 + std::to_underlying(step.mode);
+    }
     // murmur3 finalizer
     key ^= key >> 33;
     key *= 0xff51afd7ed558ccdull;
@@ -196,17 +308,23 @@ EngineTemporalCheck::PoseView EngineTemporalCheck::startPose(const PoseView& pos
 std::string EngineTemporalCheck::stepLabel(const Step& step) const
 {
     const char* view = kDebugViews[std::to_underlying(step.view)].name;
+    const char* pose = checkPoses(scene)[step.pose].name;
     switch (step.type) {
-    case StepType::Stability:
-        return std::format("stability, {}, {}, {}", kPoseNames[step.pose], giSettingsSetName(step.set), view);
+    case StepType::Stability: {
+        const std::string di = step.di == DiSet::Shipped ? std::string() : std::format(", DI {}", diSetName(step.di));
+        const std::string mode = step.mode == IndirectMode::RestirGi
+            ? std::string()
+            : std::format(", {}", indirectModeInfo(step.mode).label);
+        return std::format("stability, {}, {}{}{}, {}", pose, giSettingsSetName(step.set), di, mode, view);
+    }
     case StepType::LightReference:
     case StepType::LightChange:
-        return std::format("light change, {}, {}, {}", kPoseNames[step.pose], giSettingsSetName(step.set),
+        return std::format("light change, {}, {}, {}", pose, giSettingsSetName(step.set),
                            step.sun == SunState::Off ? "sun toggle (off -> on)" : "sun move (azimuth +30 deg)");
     case StepType::Depth:
     case StepType::EdgeReference:
     case StepType::EdgeMove:
-        return std::format("screen edge, {}, {}, {}, {}", kPoseNames[step.pose],
+        return std::format("screen edge, {}, {}, {}, {}", pose,
                            step.motion == Motion::Pan ? "pan 10 deg" : "dolly back 1 m", giSettingsSetName(step.set),
                            view);
     }
@@ -217,7 +335,12 @@ void EngineTemporalCheck::startStep(Camera& camera, Renderer& renderer)
 {
     const Step& step = steps[stepIndex];
     RtxdiContext& rtxdi = renderer.getRtxdi();
-    renderer.indirectMode = IndirectMode::RestirGi;
+    if (!startupDiSettings) {
+        startupDiSettings = rtxdi.settings;
+    }
+    renderer.indirectMode = step.mode;
+    rtxdi.isReference = step.di == DiSet::Reference;
+    rtxdi.settings = diSettingsFor(step.di, *startupDiSettings);
     rtxdi.isGiReference = false;
     rtxdi.giReferenceBounces = 0;
     rtxdi.giSettings = giSettingsFor(step.set);
@@ -260,8 +383,12 @@ EngineTemporalCheck::Request EngineTemporalCheck::beginFrame(Camera& camera, Ren
     }
     if (!hasStartupPose) {
         // the startup camera after its first frames: forward is current
-        poses[0] = {camera.cameraData.cameraPos, camera.cameraData.cameraPos + camera.getForward()};
-        poses[1] = {kCourtyardPose.position, kCourtyardPose.target};
+        for (size_t index = 0; index < poses.size(); ++index) {
+            const CheckPose& pose = checkPoses(scene)[index];
+            poses[index] = pose.isStartup
+                ? PoseView{camera.cameraData.cameraPos, camera.cameraData.cameraPos + camera.getForward()}
+                : PoseView{pose.position, pose.target};
+        }
         hasStartupPose = true;
     }
     const Step& step = steps[stepIndex];
@@ -327,6 +454,9 @@ void EngineTemporalCheck::accumulate(const Camera& camera, const Renderer::Displ
     const size_t texels = decoded.luminance.size();
     if (capturedFrames == 0) {
         extent = capture.extent;
+        if (step.type == StepType::Stability && isCheckPngRequested()) {
+            writeCheckCapturePng(std::format("{} frame", stepLabel(step)), capture);
+        }
     }
     nonFinitePixels += decoded.nonFinitePixels;
     double frameSum = 0.0;
@@ -537,14 +667,26 @@ void EngineTemporalCheck::logStability(const Step& step)
     double deviation = 0.0;
     size_t litPixels = 0;
     size_t flickeringPixels = 0;
+    std::vector<double> means(sum.size());
+    std::vector<double> variation(sum.size(), 0.0);
     for (size_t texel = 0; texel < sum.size(); ++texel) {
         const double mean = sum[texel] / frames;
         const double pixelDeviation = std::sqrt(std::max(squaredSum[texel] / frames - mean * mean, 0.0));
+        means[texel] = mean;
         deviation += pixelDeviation;
         if (mean > litCutoff) {
             ++litPixels;
             flickeringPixels += pixelDeviation > kFlickerCv * mean ? 1 : 0;
+            variation[texel] = pixelDeviation / mean;
         }
+    }
+    if (isCheckPngRequested()) {
+        writeCheckLuminancePng(std::format("{} mean", stepLabel(step)), extent, means, checkPngScale(means));
+        // coefficient of variation of lit pixels, white at 100%
+        writeCheckUnitPng(std::format("{} cv", stepLabel(step)), extent, variation);
+    }
+    if (step.view == DebugView::DirectLighting) {
+        logDirectBias(step, means);
     }
     const double change = signal > 0.0 ? frameChange / (frames - 1.0) / signal : 0.0;
     // a bright or dark event of a static view: the block mean farthest from the step's mean
@@ -567,6 +709,38 @@ void EngineTemporalCheck::logStability(const Step& step)
                         100.0 * kFlickerCv, 100.0 * static_cast<double>(litPixels) / static_cast<double>(sum.size()),
                         cutoff, 100.0 * change, kBlockFrames, frameMean > 0.0 ? 100.0 * largestSwing / frameMean : 0.0),
             "TemporalCheck");
+}
+
+void EngineTemporalCheck::logDirectBias(const Step& step, const std::vector<double>& mean)
+{
+    if (step.di == DiSet::Reference) {
+        directReference = mean;
+        directReferencePose = step.pose;
+        return;
+    }
+    if (directReferencePose != step.pose || directReference.size() != mean.size()) {
+        return;
+    }
+    double meanTotal = 0.0;
+    double referenceTotal = 0.0;
+    for (size_t texel = 0; texel < mean.size(); ++texel) {
+        meanTotal += mean[texel];
+        referenceTotal += directReference[texel];
+    }
+    if (referenceTotal <= 0.0) {
+        return;
+    }
+    const TileErrors tiles = compareTiles(mean, directReference, extent, kDirectTileSize);
+    logInfo(std::format("MEASURED {} against DI reference: bias {:+.2f}%, {}x{} tiles median {:.2f}% / p90 {:.2f}% / "
+                        "max {:.2f}% ({} tiles, dark leak {:.3f}% in {} tiles, dim bias {:+.2f}% in {} tiles)",
+                        stepLabel(step), (meanTotal - referenceTotal) / referenceTotal * 100.0, kDirectTileSize,
+                        kDirectTileSize, tiles.median * 100.0, tiles.p90 * 100.0, tiles.max * 100.0, tiles.count,
+                        tiles.zeroRefLeak * 100.0, tiles.zeroRefLeakTiles, tiles.dimBias * 100.0, tiles.dimTiles),
+            "TemporalCheck");
+    if (isCheckPngRequested()) {
+        writeCheckErrorPng(std::format("{} error", stepLabel(step)), extent, mean, directReference,
+                           checkPngScale(directReference));
+    }
 }
 
 void EngineTemporalCheck::logLightChange(const Step& step)

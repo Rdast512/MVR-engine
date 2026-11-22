@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 DecodedFrame decodeFrame(const Renderer::DisplayCapture& capture)
 {
@@ -48,6 +49,8 @@ TileErrors compareTiles(std::span<const double> mean, std::span<const double> re
                         uint32_t tileSize)
 {
     std::vector<double> shares;
+    // reference and mean sums of the lit tiles
+    std::vector<std::pair<double, double>> litTiles;
     double referenceTotal = 0.0;
     double zeroRefLeakSum = 0.0;
     size_t zeroRefLeakTiles = 0;
@@ -65,6 +68,7 @@ TileErrors compareTiles(std::span<const double> mean, std::span<const double> re
             referenceTotal += referenceSum;
             if (referenceSum > 0.0) {
                 shares.push_back(std::abs(meanSum - referenceSum) / referenceSum);
+                litTiles.emplace_back(referenceSum, meanSum);
             } else if (meanSum > 0.0) {
                 zeroRefLeakSum += meanSum;
                 ++zeroRefLeakTiles;
@@ -74,6 +78,17 @@ TileErrors compareTiles(std::span<const double> mean, std::span<const double> re
     const double zeroRefLeak = referenceTotal > 0.0 ? zeroRefLeakSum / referenceTotal : 0.0;
     if (shares.empty()) {
         return {.zeroRefLeak = zeroRefLeak, .zeroRefLeakTiles = zeroRefLeakTiles};
+    }
+    const double dimCutoff = kDimTileShare * referenceTotal / static_cast<double>(litTiles.size());
+    double dimReference = 0.0;
+    double dimMean = 0.0;
+    size_t dimTiles = 0;
+    for (const auto& [referenceSum, meanSum] : litTiles) {
+        if (referenceSum < dimCutoff) {
+            dimReference += referenceSum;
+            dimMean += meanSum;
+            ++dimTiles;
+        }
     }
     std::ranges::sort(shares);
     const auto quantile = [&](double q) {
@@ -86,5 +101,7 @@ TileErrors compareTiles(std::span<const double> mean, std::span<const double> re
         .count = shares.size(),
         .zeroRefLeak = zeroRefLeak,
         .zeroRefLeakTiles = zeroRefLeakTiles,
+        .dimBias = dimReference > 0.0 ? (dimMean - dimReference) / dimReference : 0.0,
+        .dimTiles = dimTiles,
     };
 }

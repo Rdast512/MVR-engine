@@ -1,5 +1,6 @@
 #include "engine_gi_check.hpp"
 #include "../static_headers/logger.hpp"
+#include "check_images.hpp"
 #include "convergence_metrics.hpp"
 
 #include <algorithm>
@@ -55,7 +56,7 @@ EngineGiCheck::Request EngineGiCheck::beginFrame(Camera& camera, RtxdiContext& r
     }
     debugView.view = DebugView::IndirectRadiance;
     if (phaseFrame == 0) {
-        const Pose& pose = kPoses[poseIndex];
+        const CheckPose& pose = poses()[poseIndex];
         if (phase == Phase::GroundTruth && !pose.isStartup) {
             camera.lookAt(pose.position, pose.target);
         }
@@ -113,7 +114,7 @@ bool EngineGiCheck::endFrame(const std::optional<Renderer::DisplayCapture>& capt
 bool EngineGiCheck::evaluatePhase()
 {
     const PhaseInfo& info = kPhases[std::to_underlying(phase)];
-    const std::string label = std::format("ReSTIR GI convergence, {}, {}", kPoses[poseIndex].name, info.name);
+    const std::string label = std::format("ReSTIR GI convergence, {}, {}", poses()[poseIndex].name, info.name);
     if (isCaptureMissing || capturedFrames == 0 || groundTruth.size() != sum.size()) {
         logError(std::format("FAIL {}: capture missing or resized", label), "GiCheck");
         return false;
@@ -137,16 +138,21 @@ bool EngineGiCheck::evaluatePhase()
     const std::array<double, 3> rgbBias = computeChannelBias(meanRgb, groundTruthRgb, groundTruthTotal);
     const double maxRgbBias = std::max({std::abs(rgbBias[0]), std::abs(rgbBias[1]), std::abs(rgbBias[2])});
     const TileErrors tiles = compareTiles(mean, groundTruth, extent, kTileSize);
+    if (isCheckPngRequested()) {
+        writeCheckLuminancePng(std::format("gi {} mean", label), extent, mean, pngScale);
+        writeCheckErrorPng(std::format("gi {} error", label), extent, mean, groundTruth, pngScale);
+    }
     const double bias = (meanTotal - groundTruthTotal) / groundTruthTotal;
     const uint64_t totalNonFinite = nonFinitePixels + groundTruthNonFinite;
     const uint64_t totalNegative = negativePixels + groundTruthNegative;
     const std::string detail = std::format(
         "{} frames after {}: bias {:+.2f}% (RGB {:+.2f}/{:+.2f}/{:+.2f}%), {}x{} tiles median {:.2f}% / p90 {:.2f}% / "
-        "max {:.2f}% ({} tiles, dark leak {:.3f}% in {} tiles), per-frame RMS error {:.1f}% against 1-sample noise "
-        "{:.1f}%, nonFinite {} neg {}",
+        "max {:.2f}% ({} tiles, dark leak {:.3f}% in {} tiles, dim bias {:+.2f}% in {} tiles), per-frame RMS error {:.1f}% "
+        "against 1-sample noise {:.1f}%, nonFinite {} neg {}",
         capturedFrames, info.warmupFrames, bias * 100.0, rgbBias[0] * 100.0, rgbBias[1] * 100.0, rgbBias[2] * 100.0,
         kTileSize, kTileSize, tiles.median * 100.0, tiles.p90 * 100.0, tiles.max * 100.0, tiles.count,
-        tiles.zeroRefLeak * 100.0, tiles.zeroRefLeakTiles, rmsTotal / groundTruthTotal * 100.0,
+        tiles.zeroRefLeak * 100.0, tiles.zeroRefLeakTiles, tiles.dimBias * 100.0, tiles.dimTiles,
+        rmsTotal / groundTruthTotal * 100.0,
         groundTruthNoise * 100.0, totalNonFinite, totalNegative);
     if (!isGated()) {
         logInfo(std::format("MEASURED {} ({})", label, detail), "GiCheck");
@@ -194,10 +200,15 @@ bool EngineGiCheck::finishPhase()
         groundTruthNonFinite = nonFinitePixels;
         groundTruthNegative = negativePixels;
         groundTruthNoise = total > 0.0 ? noise / total : 0.0;
+        pngScale = checkPngScale(groundTruth);
+        if (isCheckPngRequested()) {
+            writeCheckLuminancePng(std::format("gi ReSTIR GI convergence, {}, {}", poses()[poseIndex].name, info.name),
+                                   extent, groundTruth, pngScale);
+        }
         noiseFloorTileP90 = 0.0;
         logInfo(std::format("ReSTIR GI {}, {}: {} frames, {} bounces after X2, summed luminance {:.4g}, 1-sample "
                             "noise {:.1f}%, nonFinite {} neg {}",
-                            info.name, kPoses[poseIndex].name, capturedFrames, info.referenceBounces, total,
+                            info.name, poses()[poseIndex].name, capturedFrames, info.referenceBounces, total,
                             groundTruthNoise * 100.0, groundTruthNonFinite, groundTruthNegative),
                 "GiCheck");
     } else {
@@ -220,7 +231,7 @@ bool EngineGiCheck::finishPhase()
         return false;
     }
     phase = Phase::GroundTruth;
-    if (++poseIndex < kPoses.size()) {
+    if (++poseIndex < poses().size()) {
         return false;
     }
     const std::string summary = std::format("ReSTIR GI convergence: {} of {} passed", passedCount, checkCount);

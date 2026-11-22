@@ -1,6 +1,6 @@
 # M8 · Optimization and fixes
 
-**Status** — Milestone planned on 2026-11-20; steps re-planned on 2026-11-21 as I1–I12 in execution order, covering every open finding of the three review documents. I1 ([i1_check_runners.md](./i1_check_runners.md)), I2 ([i2_shading_correctness.md](./i2_shading_correctness.md)), I3 ([i3_mega_geometry_fixes.md](./i3_mega_geometry_fixes.md)), I4 ([i4_frame_profile.md](./i4_frame_profile.md)), I5 ([i5_restir_gi_tuning.md](./i5_restir_gi_tuning.md)), and I6 ([i6_restir_di_tuning.md](./i6_restir_di_tuning.md)) built 2026-11-21; remaining I4-ranked steps: **I10 → I9**.\
+**Status** — Milestone planned on 2026-11-20; steps re-planned on 2026-11-21 as I1–I12 in execution order, covering every open finding of the three review documents. I1 ([i1_check_runners.md](./i1_check_runners.md)), I2 ([i2_shading_correctness.md](./i2_shading_correctness.md)), I3 ([i3_mega_geometry_fixes.md](./i3_mega_geometry_fixes.md)), I4 ([i4_frame_profile.md](./i4_frame_profile.md)), I5 ([i5_restir_gi_tuning.md](./i5_restir_gi_tuning.md)), I6 ([i6_restir_di_tuning.md](./i6_restir_di_tuning.md)), and I7 ([i7_nrc_bias.md](./i7_nrc_bias.md)) built 2026-11-21–22; remaining I4-ranked steps: **I10 → I9**. I13 (thin-walled glass, [i13_glass_transmission.md](./i13_glass_transmission.md)) planned 2026-11-22.\
 **Scope** — Make the whole pipeline produce its best image per millisecond. That means fixing the measured bias and stability problems of the default lighting, closing or explaining the NRC bias, and landing the measured perf levers. Each step is backed by a check that keeps it fixed.
 [Engine spec](../../docs/engine_spec.md) · [Findings](./m8_optimization_and_fixes.md) · [Mega Geometry findings](./mg_optimizations_fixes.md) · [PBR plan](../pbr_implementation_plan.md) · [Considerations](../considerations.md)
 
@@ -30,12 +30,13 @@ Finding ids refer to [m8_optimization_and_fixes.md](./m8_optimization_and_fixes.
 | I4 · Frame profile | [`i4_frame_profile.md`](./i4_frame_profile.md) (built) | F4, F7, F8, F9 (RTX 5070 part), F11, F12, C-F1-5 | I2, I3 |
 | I5 · ReSTIR GI tuning | [`i5_restir_gi_tuning.md`](./i5_restir_gi_tuning.md) (built) | O11 follow-ups, age limit (§2.5), ray-traced spatial cost (§2.5), F3 (GI) | I1, I2, I4 |
 | I6 · ReSTIR DI tuning | [`i6_restir_di_tuning.md`](./i6_restir_di_tuning.md) (built) | F5, F6, O8, O10, permutation (§2.7), F3 (DI), F12 (mode choice) | I1, I2, I4 |
-| I7 · NRC bias | `i7_nrc_bias.md` | Q7, Q1, Q2 (ND5), Q3 (ND1), Q4, Q5, Q6 (ND6) | I1, I2 |
+| I7 · NRC bias | [`i7_nrc_bias.md`](./i7_nrc_bias.md) (built) | Q7, Q1, Q2 (ND5), Q3 (ND1), Q4, Q5, Q6 (ND6) | I1, I2 |
 | I8 · NRC cost | `i8_nrc_cost.md` | NP1 (ND7), NP2, NP4, NP5 | I7 |
 | I9 · RTXDI surface traffic | `i9_rtxdi_surface_traffic.md` | O4 | I4 |
 | I10 · Mega Geometry perf | `i10_mega_geometry_perf.md` | MG-P1–MG-P7 | I3, I4 |
 | I11 · Floor tier | `i11_floor_tier.md` | F9 (2060 Super part), O7, NP3, DLSS-RR mode per tier | I4 (needs the 2060 Super) |
-| I12 · Many-light and glossy re-check | `i12_many_light_recheck.md` | O2, O6, O8 (exit), O9, I5 / I6 decisions on Bistro | I5, I6 |
+| I12 · Many-light and glossy re-check | `i12_many_light_recheck.md` | O2, O6, O8 (exit), O9, I5 / I6 decisions on Bistro, F22, F23 | I5, I6 |
+| I13 · Thin-walled glass | [`i13_glass_transmission.md`](./i13_glass_transmission.md) (planned) | F21 | I1, I2, I6 |
 
 Not scheduled: O5 (removed from the candidates on 2026-11-20), ND2–ND4 (design choices), ND8 (waits on an environment light, C-F3-5), and the post-1.0 RTXMG features (mg findings §4).
 
@@ -174,9 +175,22 @@ On Bistro, with M7's emissive triangles and presampling (spec-gloss materials, C
 - O2 with ray-traced resampling, and O6;
 - the BRDF candidate's value (O8 exit);
 - O9 on glossy secondary surfaces;
-- I5's and I6's decisions re-run on a many-light pose.
+- I5's and I6's decisions re-run on a many-light pose;
+- the café's emissive-only interior (`ENGINE_CHECK_SCENE=bistro_cafe`): shipped DI's confetti under DLSS-RR (F22) and shipped GI's dim-tile excess (F23).
 
-**Done when:** each switch is decided with its numbers on Bistro, and the shipped sets hold on both scenes.
+**Done when:** each switch is decided with its numbers on Bistro, and the shipped sets hold on both scenes and in the café (DI bias, dim tiles, `Lit` stability).
+
+### I13 · Thin-walled glass
+
+Bistro's glass (18 `KHR_materials_transmission` materials, smooth, no volume) renders opaque and blocks every ray (F21). Following the RTXDI FullSample's glass pass:
+
+- glass leaves the vis buffer and gets its own ray mask, so lighting and the DLSS-RR guides describe the surface behind;
+- a compute pass after `combine` composites Fresnel reflection, the glass's diffuse share and transmission throughput over up to 4 layers;
+- shadow transmittance in final DI and GI shading, and the DLSS-RR guide variant, decided with Bistro numbers.
+
+Refraction, volume and rough transmission are stage 2 (engine spec §15).
+
+**Done when:** the glass throughput check passes on `TransmissionTest` and Bistro, the Sponza runners read byte-identical, and the pass cost is recorded on two Bistro poses.
 
 ## Order
 
@@ -186,6 +200,7 @@ I3 → I4                          (I3 can run alongside I1 and I2)
 I1 + I2 → I7 → I8
 I4 → I11                         (needs the 2060 Super)
 I5 + I6 → I12
+I1 + I2 + I6 → I13
 ```
 
 - **I1 first:** I2's fixes and every tuning step are judged by runners that do not exist yet.
@@ -206,7 +221,7 @@ The milestone number gives order of completion, not of start.
 
 ## Frame and acceptance
 
-M8 adds no frame pass; I1 adds runners only.
+M8 adds one frame pass, I13's glass composite between `combine` and DLSS-RR; I1 adds runners only.
 
 M8 is done when:
 

@@ -55,6 +55,9 @@ public:
         bool isTrainingEnabled = true;
         // FrameSettings::numTrainingIterations, 16K training records each; the RTXGI sample trains once per frame
         uint32_t trainingIterations = 1;
+        // AddQueryResultToOutput uses the custom GI reservoir resolve (passes/nrc_resolve.slang); any other mode runs
+        // the SDK's debug Resolve into indirectRadiance (ND5)
+        NrcResolveMode resolveMode = NrcResolveMode::AddQueryResultToOutput;
     };
 
     NrcCache(const Device& device, const VkAllocator& allocator, const NrcLibrary& library);
@@ -84,6 +87,11 @@ public:
     // after the query pass: inference at the queries, then training. Binds the driver's descriptor heap; the caller
     // rebinds the engine heaps
     void recordTrain(const vk::raii::CommandBuffer& cmd);
+    // SDK debug resolve (ND5): writes the active NrcResolveMode into an internal RGBA32F target (matching NRC's
+    // Rgba32f storage image descriptor) and blits the renderExtent region into indirectRadiance
+    [[nodiscard]] bool isDebugResolveActive() const noexcept;
+    void recordDebugResolve(const vk::raii::CommandBuffer& cmd, vk::Image indirectRadiance, vk::Extent2D extent);
+    [[nodiscard]] const char* resolveModeComboString() const;
     // after the submit that ran this frame's NRC commands, on the same queue
     void endFrame(const vk::raii::Queue& queue);
 
@@ -108,6 +116,8 @@ private:
     // device idle: (re)allocates the SDK buffers whose size changed and fills sdkBufferInfo
     void allocateSdkBuffers();
     void destroySdkBuffers();
+    void ensureDebugResolveTarget();
+    void destroyDebugResolveTarget();
     [[nodiscard]] nrc::FrameSettings frameSettings() const;
 
     const Device& device;
@@ -118,6 +128,12 @@ private:
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> constants;
     std::array<SdkBuffer, static_cast<size_t>(nrc::BufferIdx::Count)> sdkBuffers;
     nrc::vulkan::Buffers sdkBufferInfo{};
+    // lazily allocated RGBA32F target for NRC's built-in Resolve debug pass (0 bytes in normal rendering)
+    vk::raii::Image debugResolveImage = nullptr;
+    VmaAllocation debugResolveMemory = nullptr;
+    vk::raii::ImageView debugResolveView = nullptr;
+    vk::Extent2D debugResolveExtent{};
+    bool isDebugResolveInitialized = false;
     // render extent of the current swapchain; the SDK frame (contextSettings.frameDimensions) only grows past it
     vk::Extent2D renderExtent{};
     BoundingBox configuredBounds{};

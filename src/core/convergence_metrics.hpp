@@ -37,7 +37,13 @@ struct TileErrors
     // sum of positive mean in tiles whose reference is zero, as a share of total reference luminance
     double zeroRefLeak = 0.0;
     size_t zeroRefLeakTiles = 0;
+    // signed sum(mean - reference) / sum(reference) over the lit tiles below kDimTileShare of the average lit tile:
+    // light leaking into places that are dim but not black reads positive
+    double dimBias = 0.0;
+    size_t dimTiles = 0;
 };
+
+inline constexpr double kDimTileShare = 0.1;
 
 // |sum(mean - reference)| / sum(reference) per tile: signed within a tile, so the noise cancels and a local bias does
 // not. Tiles with a black reference are tracked separately in zeroRefLeak; count 0 when every tile is black
