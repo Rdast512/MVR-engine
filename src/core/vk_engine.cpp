@@ -86,6 +86,15 @@ void Engine::initialize()
         }
     }
 
+    if (const std::optional<std::string> planName = EngineLab::requestedPlan()) {
+        // one tool per process: it measures the shipped state or tries settings, never both (full_testing.md §8)
+        if (motionTest || guideCapture || cullCheck || giCheck || rayCheck || temporalCheck ||
+            EngineBench::readConfig(0)) {
+            throw std::runtime_error("ENGINE_LAB refused: an engine check or bench variable is set too");
+        }
+        lab.emplace(*planName);
+    }
+
     const uint32_t defaultBenchFrames = giCheck ? kGiCheckBenchFrames : 0;
     if (const auto benchConfig = EngineBench::readConfig(defaultBenchFrames)) {
         bench.emplace(*benchConfig);
@@ -94,7 +103,7 @@ void Engine::initialize()
     swapChain = std::make_unique<SwapChain>(window, *device);
     swapChain->isUncapped =
         bench.has_value() || motionTest.has_value() || guideCapture.has_value() || cullCheck.has_value() ||
-        giCheck.has_value() || rayCheck.has_value() || temporalCheck.has_value();
+        giCheck.has_value() || rayCheck.has_value() || temporalCheck.has_value() || lab.has_value();
     swapChain->init();
 
     camera = std::make_unique<Camera>(*swapChain);
@@ -163,6 +172,7 @@ void Engine::initialize()
             logError(std::format("ENGINE_INDIRECT_MODE='{}' is not a mode; ignored", request), "Engine");
         }
     }
+    applyEngineConfig();
     // the guide shots show the glTF samples' own lights, as Khronos renders them
     renderer->getWorldLights().sun.isEnabled = !EngineGuideCapture::isRequested();
     renderer->rebuildSwapchainResources();
@@ -228,7 +238,7 @@ bool Engine::run()
     auto& deviceRef = device->vkdevice;
     // the bench, motion-test, guide-capture and cull-check views move only as they script it
     const bool isCameraInputEnabled =
-        !bench && !motionTest && !guideCapture && !cullCheck && !rayCheck && !giCheck && !temporalCheck;
+        !bench && !motionTest && !guideCapture && !cullCheck && !rayCheck && !giCheck && !temporalCheck && !lab;
     // no other runner drives the camera or the scene: the ray check holds the startup view and ends the run
     const bool isRayCheckStandalone = !bench && !motionTest && !guideCapture && !cullCheck && !giCheck && !temporalCheck;
 
@@ -378,6 +388,16 @@ bool Engine::run()
                 isCaptureRequested = true;
                 renderer->requestDisplayCapture();
             }
+            if (lab) {
+                const ObjectStorage& objects = scene->objectStorage;
+                const EngineLab::Request request = lab->beginFrame(
+                    *camera, *renderer, objects.size() > 0 ? std::optional(objects.localBounds[0]) : std::nullopt);
+                applyLabRequest(request);
+                if (request.shouldCapture) {
+                    isCaptureRequested = true;
+                    renderer->requestDisplayCapture();
+                }
+            }
             if (bench) {
                 bench->stepField(scene->objectStorage);
             }
@@ -423,6 +443,13 @@ bool Engine::run()
                                                                            : std::nullopt) ||
                     quit;
             }
+            if (lab) {
+                if (isCaptureRequested) {
+                    deviceRef.waitIdle();
+                }
+                quit = lab->endFrame(*camera, isCaptureRequested ? renderer->getLastDisplayCapture() : std::nullopt) ||
+                    quit;
+            }
             if (rayCheck) {
                 deviceRef.waitIdle();
                 quit = rayCheck->endFrame(renderer->getLastRayCheck(), isRayCheckStandalone) || quit;
@@ -434,7 +461,7 @@ bool Engine::run()
 
         // unfocused windows often lose vsync pacing and burn CPU/GPU; automated runners stay uncapped
         const bool isAutomatedRunner =
-            bench || motionTest || guideCapture || cullCheck || giCheck || rayCheck || temporalCheck;
+            bench || motionTest || guideCapture || cullCheck || giCheck || rayCheck || temporalCheck || lab;
         if (!windowFocused && !minimized && !quit && !isAutomatedRunner) {
             ZoneScopedN("UnfocusedFramePacing");
             const auto frameEndTime = std::chrono::high_resolution_clock::now();
@@ -474,6 +501,9 @@ bool Engine::run()
     }
     if (temporalCheck) {
         isPassed = temporalCheck->isPassed() && isPassed;
+    }
+    if (lab) {
+        isPassed = lab->isPassed() && isPassed;
     }
     return isPassed;
 }
@@ -525,19 +555,24 @@ void Engine::applyMotionTestRequest(const EngineMotionTest::Request& request)
     }
 }
 
+void Engine::replaceModels(const std::filesystem::path& model, std::string_view subsystem)
+{
+    // load before unloading the previous entities: every swap drops the older models while the new one stays
+    // resident (PBR plan C1)
+    const EntityId previousCount = scene->objectStorage.size();
+    const SceneActionStatus status = loadModel(model, glm::vec3(0.0f));
+    if (status.isError) {
+        logError(status.text, subsystem);
+    }
+    for (EntityId erased = 0; erased < previousCount; ++erased) {
+        unloadModel(0);
+    }
+}
+
 void Engine::applyGuideCaptureRequest(const EngineGuideCapture::Request& request)
 {
     if (request.model) {
-        // load before unloading the previous shot's entities: every shot drops the older models while the new one
-        // stays resident (PBR plan C1)
-        const EntityId previousCount = scene->objectStorage.size();
-        const SceneActionStatus status = loadModel(*request.model, glm::vec3(0.0f));
-        if (status.isError) {
-            logError(status.text, "GuideCapture");
-        }
-        for (EntityId erased = 0; erased < previousCount; ++erased) {
-            unloadModel(0);
-        }
+        replaceModels(*request.model, "GuideCapture");
     }
     WorldLights::Sun& sun = renderer->getWorldLights().sun;
     sun.isEnabled = request.sun.has_value();
@@ -551,6 +586,31 @@ void Engine::applyGuideCaptureRequest(const EngineGuideCapture::Request& request
     if (request.shouldCapture) {
         renderer->requestDisplayCapture();
     }
+}
+
+void Engine::applyLabRequest(const EngineLab::Request& request)
+{
+    if (request.model) {
+        replaceModels(*request.model, "Lab");
+    }
+}
+
+void Engine::applyEngineConfig()
+{
+    const std::optional<LabConfigParse> parse = readEngineConfig(captureLabConfig(*renderer, *camera));
+    if (!parse) {
+        return;
+    }
+    // the checks measure the shipped state; a lab plan sets its own configs (full_testing.md §0)
+    if (motionTest || guideCapture || cullCheck || giCheck || rayCheck || temporalCheck || lab) {
+        logInfo("ENGINE_CONFIG ignored: engine checks and lab plans set their own settings", "Engine");
+        return;
+    }
+    if (!parse->config) {
+        throw std::runtime_error(std::format("ENGINE_CONFIG: {}", parse->error));
+    }
+    applyLabConfig(*parse->config, *renderer, *camera);
+    logInfo(std::format("ENGINE_CONFIG applied: {}", formatLabConfig(*parse->config)), "Engine");
 }
 
 void Engine::recreateSwapchain()

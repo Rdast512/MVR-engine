@@ -41,9 +41,13 @@ struct TileErrors
     // light leaking into places that are dim but not black reads positive
     double dimBias = 0.0;
     size_t dimTiles = 0;
+    // the same over the tiles above kHotTileFactor times the average lit tile: fireflies and boiling-filter clipping
+    double hotBias = 0.0;
+    size_t hotTiles = 0;
 };
 
 inline constexpr double kDimTileShare = 0.1;
+inline constexpr double kHotTileFactor = 10.0;
 
 // |sum(mean - reference)| / sum(reference) per tile: signed within a tile, so the noise cancels and a local bias does
 // not. Tiles with a black reference are tracked separately in zeroRefLeak; count 0 when every tile is black

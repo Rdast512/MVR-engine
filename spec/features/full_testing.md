@@ -1,6 +1,6 @@
 # Feature: Full settings testing (settings lab)
 
-**Date:** 2026-11-22 · **Status:** planned · **Milestone:** M8 tooling, ahead of I12 ([README](../fixesM1-6/README.md)); used by I7, I12, I13 and every later tuning step
+**Date:** 2026-11-22 · **Status:** T1–T5, T7, T9 built, not run yet (§9); T6, T8, T10–T12 open · **Milestone:** M8 tooling, ahead of I12 ([README](../fixesM1-6/README.md)); used by I7, I12, I13 and every later tuning step
 **Implements:** a settings lab, separate from the engine checks: a switch catalog (the logic of every lighting setting), a case catalog (scenes and poses that each stress one failure), and a matrix runner that tries settings and finds the switch behind a measured error by one-factor runs and bisection
 **Touches:** findings F22, F23 ([m8_optimization_and_fixes.md](../fixesM1-6/m8_optimization_and_fixes.md)); considerations C-I12-1, C-I12-2 ([considerations.md](../considerations.md)); stands beside M8 I1's engine checks ([i1_check_runners.md](../fixesM1-6/i1_check_runners.md)) without changing them (§0)
 **Reference:** RTXDI `Doc/NoiseAndBias.md`, `Doc/RestirPT.md` (DLSS-RR decorrelation, duplication history reduction), `Doc/Confidence.md`, `Doc/RestirGI.md`; FullSample `UserInterface.cpp` (`ApplyPreset`, `ApplyReSTIRPTPreset`, `ApplyDenoiserCompatDefaults`); library defaults in `Source/ReSTIRDI.cpp`, `ReSTIRGI.cpp`, `ReSTIRPT.cpp`; `reference/NrcGuide.md` (resolve modes, §Debugging); `reference/vk_denoise_dlssrr/README.md` (guide buffers). NVIDIA's samples ship presets and on-screen toggles, no automated A/B runner.
@@ -74,7 +74,7 @@ set      := domain '=' setName              # di=shipped | di=nvidia | di=conver
 override := domain '.' switch '=' value     # di.spatialSamples=2 gi.fireflyBound=on frame.indirectMode=nrc
 ```
 
-Sets apply first, then overrides, left to right. `ENGINE_CONFIG` applies one config at startup to the interactive engine and bench runs (lab plans set their own configs per run; the engine checks ignore it, §0); the UI shows the current config string with a copy button, so an A/B found by hand becomes a runner line. Unknown names and out-of-range values are logged and the run fails (a typo must not silently test the base).
+Sets apply first, then overrides, left to right. `ENGINE_CONFIG` applies one config at startup to the interactive engine and bench runs, over the state the other variables set up (`ENGINE_INDIRECT_MODE`, `ENGINE_DI_SAMPLING`), so `ENGINE_CONFIG="di.spatialSamples=2"` changes one switch and `di=nvidia` replaces the DI set (lab plans set their own configs per run; the engine checks ignore it, §0); the UI shows the current config string with a copy button, so an A/B found by hand becomes a runner line. Unknown names and out-of-range values are logged and the run fails (a typo must not silently test the base).
 
 ---
 
@@ -222,9 +222,15 @@ seeds   3                          # noise floor: the base on 3 seeds
 sets    di=converged               # extra whole configs, run as given
 ofat                               # every switch where base and target differ, flipped alone, both directions
 sweep   di.spatialSamples 0 1 2 4  # one switch across values, on the base
-pairs   di.spatialSamples di.permutation   # the 2x2 of two switches
+pairs   di.spatialSamples di.permutation   # the 2x2 of two switches (values from the target, or name=value)
 bisect  Lit:flicker                # §6.4, on one metric
+fix     di.spatialSamples=2 di.permutation=on   # §6.6: the config levers run over
+lever   L1 spatial: di.spatialSamples=2         # over the fix and on the base; the group is the first word
+sweep   di.radius 4 8 16 32 over fix lever L1   # a sweep from the fix (plus overrides after `fix`), in a lever group
+stack   Lit:std                    # the fix plus each lever group's best on the metric, after every other run
 ```
+
+A plan is read top to bottom: each run directive (`sets`, `ofat`, `sweep`, `pairs`, `lever`, `bisect`, `stack`) runs on the `cases`, `views` and `kinds` lines above it, so one plan can give its levers different scopes. Kinds a case does not list (§5) are left out for that case; `diBias` always reads `Direct lighting` and `giBias` `Indirect radiance`, whatever `views` says. A metric is named `view:metric` with the names of `src/lab/lab_plan.hpp` `kLabMetrics` (`std`, `flicker`, `lag1`, `bias`, `dimBias`, `hotBias`, `1b.dimBias`, `8b.bias`, `move.settle`, `pan.band`, …). A switch or case whose feature is not built (`notBuilt` in the registry, §3; a case's `notBuilt` in §5) skips its directive with a logged line; any other unknown name stops the plan before it runs. Plan files are `tests/lab/<name>` or `tests/lab/<name>.lab`.
 
 Built-in plans: `sets` (shipped / NVIDIA / converged on every case), `di-ofat`, `gi-ofat`, `cafe` (what the café work ran by hand), `leak` (dim and dark leak on `cafe.door`, `guide.terminator`), `stability-levers` (§6.6).
 
@@ -292,7 +298,7 @@ The levers that could make the café stable enough that a viewer does not notice
 |---|---|---|
 | T1 · Registry | `src/lab/settings_registry.{hpp,cpp}`: §3's switches with accessors, value lists, the shipped / NVIDIA / converged values read from `RtxdiContext`, the NVIDIA source string; `ENGINE_CONFIG` for the interactive engine; the UI's config string with copy; the engine checks log and ignore `ENGINE_CONFIG` | every field of `RtxdiContext::Settings` and `GiSettings` is a switch or listed as excluded with a reason; a config string round-trips; every engine check's lines byte-identical |
 | T2 · Cases | `src/lab/lab_cases.hpp`; the 3 guide scenes as lab cases (the guide capture unchanged); `cafe.door` chosen by PNG; lab runs on Bistro wait for async texture loads before their first run | lab café runs repeat byte for byte (the engine checks' café runs read ~0.2% today, F23 note); each case has a checked frame PNG |
-| T3 · Measurements | the lab's run loop and accumulators; hot bias, lag-1 correlation; noise floor runs | on the shipped config, the lab's stability and bias numbers equal the engine checks' lines for the same case and view (§0 cross-check); lag-1 correlation of café shipped DI raw view is high and of DI + spatial reuse is low (the F22 mechanism, measured) |
+| T3 · Measurements | the lab's run loop and accumulators; hot bias, lag-1 correlation; noise floor runs | on the shipped config, the lab's stability and bias numbers agree with the engine checks' lines for the same case and view within the lab's noise floor (§0 cross-check; the lab seeds its runs from their content, the checks from theirs, so equal numbers are not expected); lag-1 correlation of café shipped DI raw view is high and of DI + spatial reuse is low (the F22 mechanism, measured) |
 | T4 · Matrix runner | `ENGINE_LAB`, plans, `sets` / `ofat` / `sweep` / `pairs`, CSV, ranking | the `cafe` plan reproduces the F22 table within the café's repeatability |
 | T5 · Bisection | `bisect` directive | §T6's GI search ends on a switch set |
 | T6 · Validation | run blind: `di-ofat` on the café (`Lit` flicker) and `gi-ofat` + `bisect` on `cafe.dining` GI dim bias | the DI ranking puts `di.spatialSamples` and `di.permutation` on top; the GI search names the switch behind F23 (expected `gi.fireflyBound`, §3.2) or names what it actually is. Validation passes when the runner finds the known culprit without being told it, not only when it agrees with the expected value |
@@ -316,3 +322,24 @@ T8, T10 and T11 are engine features the lab needs, not lab code: each is off by 
 - **Reference noise.** In the café, RTXDI's DI reference at 1024 frames still reads tile p90 10–15% against itself, and the one-bounce GI truth ±5% bias. Tile metrics there compare at 2 noise floors, not at Sponza's limits.
 - **Parallel sessions.** Two sessions sharing `build/windows-clang-release` overwrite each other's `logs/engine.log` and lock DLLs. A lab run uses its own build tree (`cmake --preset windows-clang-release -B build/<name> -DFMT_MODULE=OFF`).
 - **One tool per process.** `ENGINE_LAB` together with any engine check's variable is refused at startup: a process either measures the shipped state or tries settings, never both.
+
+---
+
+## 9. Build status (2026-11-22)
+
+Built and compiled in `build/cafe-release`; no lab plan has run yet, so nothing in §7's "Done when" column is checked except what `tests/lab_registry_test.cpp` covers (CPU only: every switch round-trips through a config string, sets apply before overrides, typos are refused, every built-in plan parses and expands).
+
+| Step | State | Where |
+|---|---|---|
+| T1 · Registry | built: 57 switches (and 5 planned ones) over `RtxdiContext::Settings` / `GiSettings`, `Dlss::Settings`, `NrcCache::Settings`, indirect mode, jitter; `static_assert` on each struct's size so a new field breaks the build until it gets a switch; `ENGINE_CONFIG`; the UI's config string and *Copy config* button (Lighting panel, under *Defaults*); the checks and the lab log `ENGINE_CONFIG ignored` | `src/lab/settings_registry.{hpp,cpp}`, `src/core/vk_engine.cpp` `applyEngineConfig`, `src/ui/engine_ui.cpp` |
+| T2 · Cases | built: 9 runnable cases; `cafe.door` (pose not chosen), `glossy.*` (I12), `glass.window` (I13), `cafe.toggle` (T8) are listed with `notBuilt` and skipped. Not checked: frame PNGs per case, byte-repeatability on Bistro | `src/lab/lab_cases.hpp` |
+| T3 · Measurements | built: stability (plus lag-1 correlation), `diBias` (1024-frame RTXDI reference per case, DLSS mode, jitter and seed), `giBias` (one-bounce and 8-bounce truths, 2048 frames, jitter off), `lightChange`, `screenEdge` (I1's definitions, the lab's copy), hot bias (`convergence_metrics` `TileErrors::hotBias`, tiles above 10× the average lit tile; the checks do not print it), noise floors (the base on `seeds`, plus the reference read against itself for signed bias metrics). `cost` is not measured in the lab's process: the plan writes `logs/lab/<plan>_cost.ps1` with ABBA bench runs per config (bench mode knows the startup camera and the courtyard pose only, so café cases have no cost run) | `src/lab/lab_metrics.{hpp,cpp}`, `src/lab/engine_lab.cpp` |
+| T4 · Runner | built: `ENGINE_LAB`, plans, every directive of §6.1, `[Lab] MEASURED` lines, `logs/lab/<plan>.csv` (one row per run, every metric and its floor), the ranking per case, view and metric, the interaction flags of §6.3 (one-direction OFAT effects, pair non-additivity) | `src/lab/lab_plan.{hpp,cpp}`, `src/lab/engine_lab.{hpp,cpp}` |
+| T5 · Bisection | built: ddmin over the switches base and target differ in, 80% reproduce share, a target effect below 2 floors ends it as noise | `EngineLab::advanceBisection` |
+| T6 · Validation | open: needs runs | — |
+| T7 · Guide | built | `docs/settings.md` §9 |
+| T8, T10, T11 | open: engine features; their switches exist as planned (`frame.historyConfidence`, `frame.specularGuides`, `gi.targetCompression`, `frame.preDenoiserClamp`, `scene.emissiveScale`) and are refused by `ENGINE_CONFIG` and skipped by plans | — |
+| T9 · `stability-levers` | built as a plan: 1306 runs before the stack (L4c, L6's guides and L7's target compression and clamp skipped until T8 / T10 / T11), a decision line per lever and case, a verdict per lever, the target line, `logs/lab/stability-levers_decisions.csv`. At ~10 s a run this is a multi-hour plan; `ENGINE_LAB_CASES` narrows it | `src/lab/lab_plan.cpp` `kStabilityLeversPlan` |
+| T12 · Trim the café check | open: after T6 | — |
+
+Runs per built-in plan before bisection and stacks: `sets` 147, `di-ofat` 98, `gi-ofat` 201 (plus its `cafe.dining` bisection), `cafe` 116, `leak` 36, `stability-levers` 1306.

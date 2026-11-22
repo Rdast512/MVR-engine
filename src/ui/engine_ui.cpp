@@ -7,6 +7,7 @@
     #include "core/vk_device.hpp"
     #include "core/vk_asset_buffers.hpp"
     #include "core/vk_swapchain.hpp"
+    #include "lab/settings_registry.hpp"
     #include "render/vk_renderer.hpp"
     #include "scene/vk_camera.hpp"
     #include "scene/vk_scene.hpp"
@@ -1107,6 +1108,15 @@ void EngineUi::drawRayTracingPanel()
         context.renderer.getNrc().settings = {};
         context.renderer.indirectMode = IndirectMode::RestirGi;
     }
+    // the settings lab's config string (spec/features/full_testing.md §2.1): an A/B found here becomes a plan line
+    // or an ENGINE_CONFIG value
+    const std::string config = formatLabConfig(captureLabConfig(context.renderer, context.camera));
+    if (ImGui::Button("Copy config")) {
+        ImGui::SetClipboardText(config.c_str());
+    }
+    ImGui::SetItemTooltip("copies the lighting settings as an ENGINE_CONFIG / lab plan string");
+    ImGui::SameLine();
+    ImGui::TextWrapped("%s", config.c_str());
 
     ImGui::SeparatorText("Indirect (M4)");
     // spec/m4/g7_indirect_modes.md

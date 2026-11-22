@@ -9,6 +9,7 @@
 #include "engine_motion_test.hpp"
 #include "engine_temporal_check.hpp"
 #include "texture_manager.hpp"
+#include "lab/engine_lab.hpp"
 #include "../render/nrc_library.hpp"
 #include "../render/vk_renderer.hpp"
 #include "../render/vk_shader_objects.hpp"
@@ -29,6 +30,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 
 class Engine
 {
@@ -76,6 +78,8 @@ class Engine
     std::optional<EngineTemporalCheck> temporalCheck;
     // set from the environment: primary rays against the vis buffer every frame, alongside another runner or alone
     std::optional<EngineRayCheck> rayCheck;
+    // ENGINE_LAB=<plan>: the settings lab, alone in its process (spec/features/full_testing.md §8), quits after the plan
+    std::optional<EngineLab> lab;
     // ENGINE_INDIRECT_MODE=cycle: the indirect mode follows the frame number
     bool isIndirectModeCycling = false;
     bool initialized = false;
@@ -100,8 +104,14 @@ class Engine
     std::optional<SceneActionStatus> clearInstanceField();
     // loads and resizes the motion test asks for before its frame
     void applyMotionTestRequest(const EngineMotionTest::Request& request);
+    // loads model at the origin, then unloads every entity that was there before it
+    void replaceModels(const std::filesystem::path& model, std::string_view subsystem);
     // the model swap and capture the guide capture asks for before its frame
     void applyGuideCaptureRequest(const EngineGuideCapture::Request& request);
+    // the lab's model swap before its frame
+    void applyLabRequest(const EngineLab::Request& request);
+    // ENGINE_CONFIG for the interactive engine and bench runs; the checks and the lab log that they ignore it
+    void applyEngineConfig();
     // the one recreate path, at most once per frame before it is built: swapchain, swapchain-sized resources and the
     // UI image count
     void recreateSwapchain();

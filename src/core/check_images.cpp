@@ -26,20 +26,21 @@ namespace
 
     double reinhard(double value) { return value > 0.0 ? value / (1.0 + value) : 0.0; }
 
-    std::filesystem::path checkFile(std::string_view name)
+    std::filesystem::path checkFile(std::string_view name, std::string_view folder)
     {
         std::string stem(name);
         std::ranges::replace_if(stem, [](char c) { return !std::isalnum(static_cast<unsigned char>(c)); }, '_');
         const char* base = SDL_GetBasePath();
-        const std::filesystem::path directory = std::filesystem::path(base != nullptr ? base : "") / "logs" / "checks";
+        const std::filesystem::path directory = std::filesystem::path(base != nullptr ? base : "") / "logs" / folder;
         std::error_code errorCode;
         std::filesystem::create_directories(directory, errorCode);
         return directory / (stem + ".png");
     }
 
-    void writeRgba(std::string_view name, vk::Extent2D extent, const std::vector<uint8_t>& pixels)
+    void writeRgba(std::string_view name, vk::Extent2D extent, const std::vector<uint8_t>& pixels,
+                   std::string_view folder)
     {
-        const std::filesystem::path file = checkFile(name);
+        const std::filesystem::path file = checkFile(name, folder);
         stbi_write_png_compression_level = 1;
         if (stbi_write_png(file.string().c_str(), static_cast<int>(extent.width), static_cast<int>(extent.height), 4,
                            pixels.data(), static_cast<int>(extent.width) * 4) == 0) {
@@ -54,7 +55,7 @@ bool isCheckPngRequested()
     return text != nullptr && std::string_view(text) == "1";
 }
 
-void writeCheckCapturePng(std::string_view name, const Renderer::DisplayCapture& capture)
+void writeCheckCapturePng(std::string_view name, const Renderer::DisplayCapture& capture, std::string_view folder)
 {
     const size_t texels = size_t{capture.extent.width} * capture.extent.height;
     std::vector<uint8_t> pixels(texels * 4);
@@ -64,7 +65,7 @@ void writeCheckCapturePng(std::string_view name, const Renderer::DisplayCapture&
         }
         pixels[texel * 4 + 3] = 255;
     }
-    writeRgba(name, capture.extent, pixels);
+    writeRgba(name, capture.extent, pixels, folder);
 }
 
 double checkPngScale(std::span<const double> values)
@@ -78,7 +79,8 @@ double checkPngScale(std::span<const double> values)
     return mean > 0.0 ? 0.5 / mean : 1.0;
 }
 
-void writeCheckLuminancePng(std::string_view name, vk::Extent2D extent, std::span<const double> values, double scale)
+void writeCheckLuminancePng(std::string_view name, vk::Extent2D extent, std::span<const double> values, double scale,
+                            std::string_view folder)
 {
     std::vector<uint8_t> pixels(values.size() * 4);
     for (size_t texel = 0; texel < values.size(); ++texel) {
@@ -88,11 +90,11 @@ void writeCheckLuminancePng(std::string_view name, vk::Extent2D extent, std::spa
         pixels[texel * 4 + 2] = gray;
         pixels[texel * 4 + 3] = 255;
     }
-    writeRgba(name, extent, pixels);
+    writeRgba(name, extent, pixels, folder);
 }
 
 void writeCheckErrorPng(std::string_view name, vk::Extent2D extent, std::span<const double> values,
-                        std::span<const double> reference, double scale)
+                        std::span<const double> reference, double scale, std::string_view folder)
 {
     constexpr double kContext = 0.25;
     std::vector<uint8_t> pixels(values.size() * 4);
@@ -104,10 +106,11 @@ void writeCheckErrorPng(std::string_view name, vk::Extent2D extent, std::span<co
         pixels[texel * 4 + 2] = encodeSrgb(std::max(reinhard(-error), context));
         pixels[texel * 4 + 3] = 255;
     }
-    writeRgba(name, extent, pixels);
+    writeRgba(name, extent, pixels, folder);
 }
 
-void writeCheckUnitPng(std::string_view name, vk::Extent2D extent, std::span<const double> values)
+void writeCheckUnitPng(std::string_view name, vk::Extent2D extent, std::span<const double> values,
+                       std::string_view folder)
 {
     std::vector<uint8_t> pixels(values.size() * 4);
     for (size_t texel = 0; texel < values.size(); ++texel) {
@@ -117,5 +120,5 @@ void writeCheckUnitPng(std::string_view name, vk::Extent2D extent, std::span<con
         pixels[texel * 4 + 2] = gray;
         pixels[texel * 4 + 3] = 255;
     }
-    writeRgba(name, extent, pixels);
+    writeRgba(name, extent, pixels, folder);
 }

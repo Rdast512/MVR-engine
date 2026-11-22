@@ -211,3 +211,47 @@ The NRC controls under `Indirect mode` act only in the NRC modes; ReSTIR GI mode
 ## 8. Components not built yet
 
 OMM (M6) has no settings yet; its defaults will come from the OMM SDK. SER is shelved to post-1.0 (engine spec §16.5 V1, considerations C-G1-3) and has no runtime switch in 1.0.
+
+## 9. Settings lab: trying settings and finding the culprit
+
+The engine checks (§6) measure what ships against how it should look. The settings lab tries other settings and ranks the switches by what they change ([full_testing.md](../spec/features/full_testing.md)). The two never mix: the checks ignore `ENGINE_CONFIG`, and `ENGINE_LAB` refuses to start next to any check or bench variable.
+
+| Variable | What it does |
+|---|---|
+| `ENGINE_CONFIG="di=shipped gi=nvidia di.spatialSamples=2"` | the interactive engine and bench runs start with this config: sets (`di=shipped\|nvidia\|converged\|reference`, `gi=shipped\|nvidia\|converged`, `frame=shipped`) first, then `domain.switch=value` overrides, over what `ENGINE_INDIRECT_MODE` and `ENGINE_DI_SAMPLING` set. A typo stops the engine. The UI's *Copy config* button (under the lighting *Defaults*) copies the current settings in this form |
+| `ENGINE_LAB=<plan>` | runs a plan and quits: a built-in name (`sets`, `di-ofat`, `gi-ofat`, `cafe`, `leak`, `stability-levers`) or `tests/lab/<plan>[.lab]` |
+| `ENGINE_LAB_CASES=cafe.tables,sponza.courtyard` | keeps only these cases of the plan |
+| `ENGINE_LAB_PNG=1` | each run's first frame, mean, CV map and error map in `logs/lab` |
+
+Run it like the checks: from its own build tree when another session uses `build/windows-clang-release` (`cmake --preset windows-clang-release -B build/<name> -DFMT_MODULE=OFF`), with `VK_LOADER_LAYERS_DISABLE='*validation*' VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false`. A run is about 10 s (780 frames); `di-ofat` is ~15 min, `stability-levers` several hours.
+
+**Output.** `[Lab] MEASURED <plan>, <case>, <view>, <config>, <kind>, seed n: …` per run in `logs/engine.log`; at the end, per case, view and metric, `largest effects on …` with each effect in noise floors (below 2 floors is "no effect"), `interaction candidate` and `pair … non-additivity` lines, `bisect …` results, `decision …` lines per lever, and `target:` (the café against the Sponza poses). Files: `logs/lab/<plan>.csv` (one row per run, every metric and its floor), `<plan>_decisions.csv`, `<plan>_cost.ps1` (bench runs, ABBA per config: run it afterwards, on its own; the lab never times its own frames).
+
+**Plan format** (one directive per line, `#` comments; each run directive uses the `cases` / `views` / `kinds` lines above it):
+
+```
+base    di=shipped gi=shipped
+target  di=nvidia gi=shipped
+seeds   3
+cases   cafe.tables cafe.dining
+views   Lit "Direct lighting"
+kinds   stability diBias
+ofat                                   # each differing switch alone, both directions
+sweep   di.radius 4 8 16 32            # on the base; "over fix gi.boilingFilter=on" starts elsewhere
+pairs   di.spatialSamples di.permutation
+sets    di=converged
+bisect  Lit:flicker                    # smallest switch set behind base → target on one metric
+fix     di.spatialSamples=2 di.permutation=on
+lever   L1 both: di.spatialSamples=2 di.permutation=on
+stack   Lit:std
+```
+
+Kinds: `stability` (temporal std, flicker share, f2f, 8-frame swing, lag-1 correlation), `diBias` (against RTXDI's no-reuse reference: bias, tile p50 / p90, dark leak, dim bias, hot bias), `giBias` (against the GI check's one-bounce `1b.*` and 8-bounce `8b.*` truths), `lightChange` (`move.settle`, `toggle.settle`), `screenEdge` (`pan.band`, `pan.disoccluded`, `dolly.*`), `cost` (the script). Cases: `sponza.gallery`, `sponza.courtyard`, `bistro.street`, `cafe.tables`, `cafe.dining`, `guide.lamp`, `guide.terminator`, `guide.emissive`; `cafe.door`, `glossy.*`, `glass.window`, `cafe.toggle` are listed but wait for their poses or features and are skipped.
+
+**Finding a culprit.**
+
+1. Name the symptom by its metrics, not by eye: run the base on the case (`sets` plan, or a plan with `seeds 3` and nothing else) and read the pattern off [full_testing.md](../spec/features/full_testing.md) §4.1. Confetti under DLSS-RR with a calm raw view and a high `lag1` is temporal correlation; a high raw `std` is too few samples; `dimBias > 0` with `darkLeak` 0 is reuse brightening dim places; `darkLeak > 0` is visibility (also present in the reference) or a ray bug, not a setting.
+2. Take the candidates from §3's "If wrong" column for that pattern and write a plan: `ofat` between the base and a config without the symptom (NVIDIA's set is usually one), on the case and the view that shows it.
+3. Read the ranking. A switch on top with several floors is the lead; one with an effect from the base and none in the target (an `interaction candidate`) needs a partner: `pairs` it with the next switch.
+4. If the one-factor effects do not add up to the base → target difference, `bisect` on the metric finds the smallest set.
+5. Confirm with the mechanism (§3 "What it does", ideally in NVIDIA's words) and check the fix on the other cases: its bias and lag must stay within 2 floors everywhere (the `decision` lines do this for levers). Then the step that owns the setting changes it and re-runs its gates; the lab never ships a setting.

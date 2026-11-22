@@ -1,0 +1,9 @@
+# ENGINE_LAB=f22_quick: the F22 fix and its two halves on the café tables, Lit and the raw DI view (~3 min)
+base    di=shipped gi=shipped
+seeds   3
+cases   cafe.tables
+views   Lit "Direct lighting"
+kinds   stability
+sets    di.spatialSamples=2
+sets    di.permutation=on
+pairs   di.spatialSamples=2 di.permutation=on

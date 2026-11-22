@@ -80,14 +80,22 @@ TileErrors compareTiles(std::span<const double> mean, std::span<const double> re
         return {.zeroRefLeak = zeroRefLeak, .zeroRefLeakTiles = zeroRefLeakTiles};
     }
     const double dimCutoff = kDimTileShare * referenceTotal / static_cast<double>(litTiles.size());
+    const double hotCutoff = kHotTileFactor * referenceTotal / static_cast<double>(litTiles.size());
     double dimReference = 0.0;
     double dimMean = 0.0;
     size_t dimTiles = 0;
+    double hotReference = 0.0;
+    double hotMean = 0.0;
+    size_t hotTiles = 0;
     for (const auto& [referenceSum, meanSum] : litTiles) {
         if (referenceSum < dimCutoff) {
             dimReference += referenceSum;
             dimMean += meanSum;
             ++dimTiles;
+        } else if (referenceSum > hotCutoff) {
+            hotReference += referenceSum;
+            hotMean += meanSum;
+            ++hotTiles;
         }
     }
     std::ranges::sort(shares);
@@ -103,5 +111,7 @@ TileErrors compareTiles(std::span<const double> mean, std::span<const double> re
         .zeroRefLeakTiles = zeroRefLeakTiles,
         .dimBias = dimReference > 0.0 ? (dimMean - dimReference) / dimReference : 0.0,
         .dimTiles = dimTiles,
+        .hotBias = hotReference > 0.0 ? (hotMean - hotReference) / hotReference : 0.0,
+        .hotTiles = hotTiles,
     };
 }
