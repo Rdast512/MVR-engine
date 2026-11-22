@@ -70,6 +70,14 @@ namespace
             LAYOUT_FIELD(GpuCameraData, frameDeltaTime),
             LAYOUT_FIELD(GpuCameraData, prevCameraPos),
             LAYOUT_FIELD(GpuCameraData, lodBias),
+            LAYOUT_FIELD(GpuCameraData, rayOrigin),
+            LAYOUT_FIELD(GpuCameraData, rayDx),
+            LAYOUT_FIELD(GpuCameraData, rayDy),
+            LAYOUT_FIELD(GpuCameraData, prevRayOrigin),
+            LAYOUT_FIELD(GpuCameraData, prevRayDx),
+            LAYOUT_FIELD(GpuCameraData, prevRayDy),
+            LAYOUT_FIELD(GpuCameraData, rayPad0),
+            LAYOUT_FIELD(GpuCameraData, rayPad1),
         }},
         {"GpuObjectUB", sizeof(GpuObjectUB), {
             LAYOUT_FIELD(GpuObjectUB, modelMatrix),
@@ -658,13 +666,12 @@ namespace
 
     // core/binding.slang storage-image formats
     constexpr std::array kImageFormats = {
-        ImageFormatConstant{"kImageFormatRgba32f", SLANG_IMAGE_FORMAT_rgba32f},
         ImageFormatConstant{"kImageFormatRgba16f", SLANG_IMAGE_FORMAT_rgba16f},
         ImageFormatConstant{"kImageFormatRg16f", SLANG_IMAGE_FORMAT_rg16f},
         ImageFormatConstant{"kImageFormatR11g11b10f", SLANG_IMAGE_FORMAT_r11f_g11f_b10f},
         ImageFormatConstant{"kImageFormatR32f", SLANG_IMAGE_FORMAT_r32f},
         ImageFormatConstant{"kImageFormatRgba8", SLANG_IMAGE_FORMAT_rgba8},
-        ImageFormatConstant{"kImageFormatRg16Snorm", SLANG_IMAGE_FORMAT_rg16_snorm},
+        ImageFormatConstant{"kImageFormatRgba32ui", SLANG_IMAGE_FORMAT_rgba32ui},
         ImageFormatConstant{"kImageFormatR32ui", SLANG_IMAGE_FORMAT_r32ui},
         ImageFormatConstant{"kImageFormatR8ui", SLANG_IMAGE_FORMAT_r8ui},
     };

@@ -7,7 +7,8 @@
 // call. Light and BRDF math stays in lighting.lights and material.brdf: the bridge only composes them.
 //
 // Surfaces come from the guide sets: current or previous by frame parity, so a previous-frame surface is last frame's
-// resolve output (position guide, normals, albedos, camera position). Lights are E2's world rows, last frame's for
+// resolve output (packed surface guide + diffuse albedo, world position rebuilt from view depth and the frame's
+// jittered ray basis). Lights are E2's world rows, last frame's for
 // previous-frame loads; light index i is row i in both frames (RAB_TranslateLightIndex is the identity), and a load or
 // unload resets history. Point and spot rows are deltas; triangle rows (spec/m7/e2_emissive_triangles.md) take a
 // uniform area sample, and a BRDF ray names the triangle light it hits.
@@ -102,7 +103,13 @@ struct RtxdiBridgeState
     GpuGuideSet previous;
     uint2 renderSize;
     float3 cameraPos;
+    float3 rayOrigin;
+    float3 rayDx;
+    float3 rayDy;
     float3 prevCameraPos;
+    float3 prevRayOrigin;
+    float3 prevRayDx;
+    float3 prevRayDy;
     RayScene rays;
     uint64_t worldLights;
     uint64_t prevWorldLights;
@@ -135,7 +142,13 @@ void rtxdiBridgeInit(GpuFrameRoot root)
     gRtxdiBridge.previous = targets.previous;
     gRtxdiBridge.renderSize = targets.renderSize;
     gRtxdiBridge.cameraPos = camera[0].cameraPos;
+    gRtxdiBridge.rayOrigin = camera[0].rayOrigin;
+    gRtxdiBridge.rayDx = camera[0].rayDx;
+    gRtxdiBridge.rayDy = camera[0].rayDy;
     gRtxdiBridge.prevCameraPos = camera[0].prevCameraPos;
+    gRtxdiBridge.prevRayOrigin = camera[0].prevRayOrigin;
+    gRtxdiBridge.prevRayDx = camera[0].prevRayDx;
+    gRtxdiBridge.prevRayDy = camera[0].prevRayDy;
     gRtxdiBridge.rays = loadRayScene(root);
     gRtxdiBridge.worldLights = root.worldLights;
     gRtxdiBridge.prevWorldLights = root.prevWorldLights;
@@ -214,22 +227,26 @@ RAB_Surface RAB_GetGBufferSurface(int2 pixel, bool previousFrame)
     }
     const GpuGuideSet set = previousFrame ? gRtxdiBridge.previous : gRtxdiBridge.current;
     const int3 texel = int3(pixel, 0);
-    const float4 position = tex2D(set.sampled[kGuidePosition]).Load(texel);
-    if (position.w <= 0.0)
+    const uint4 packed = uint4Tex2D(set.sampled[kGuideSurface]).Load(texel);
+    const float viewDepth = asfloat(packed.x);
+    if (viewDepth <= 0.0)
     {
         return surface;
     }
-    const float4 normalRoughness = tex2D(set.sampled[kGuideNormalRoughness]).Load(texel);
-    const float4 specularF0 = tex2D(set.sampled[kGuideSpecularF0]).Load(texel);
-    surface.position = position.xyz;
-    surface.viewDepth = position.w;
-    surface.normal = normalRoughness.xyz;
-    surface.roughness = normalRoughness.w;
-    surface.geoNormal = octDecode(tex2D(set.sampled[kGuideGeoNormal]).Load(texel).xy);
-    surface.viewDir = normalize((previousFrame ? gRtxdiBridge.prevCameraPos : gRtxdiBridge.cameraPos) - position.xyz);
-    surface.diffuseAlbedo = tex2D(set.sampled[kGuideDiffuseAlbedo]).Load(texel).rgb;
-    surface.specularF0 = specularF0.rgb;
-    surface.isLit = specularF0.a > 0.0;
+    const float3 diffuseAlbedo = tex2D(set.sampled[kGuideDiffuseAlbedo]).Load(texel).rgb;
+    const float3 cameraPos = previousFrame ? gRtxdiBridge.prevCameraPos : gRtxdiBridge.cameraPos;
+    const float3 rayOrigin = previousFrame ? gRtxdiBridge.prevRayOrigin : gRtxdiBridge.rayOrigin;
+    const float3 rayDx = previousFrame ? gRtxdiBridge.prevRayDx : gRtxdiBridge.rayDx;
+    const float3 rayDy = previousFrame ? gRtxdiBridge.prevRayDy : gRtxdiBridge.rayDy;
+    const float3 rayDirScaled = rayOrigin + float(pixel.x) * rayDx + float(pixel.y) * rayDy;
+
+    surface.position = cameraPos + rayDirScaled * viewDepth;
+    surface.viewDepth = viewDepth;
+    surface.normal = unpackOct16(packed.y);
+    surface.geoNormal = unpackOct16(packed.z);
+    unpackSurfaceMaterial(packed.w, surface.specularF0, surface.roughness, surface.isLit);
+    surface.viewDir = normalize(-rayDirScaled);
+    surface.diffuseAlbedo = diffuseAlbedo;
     return surface;
 }
 

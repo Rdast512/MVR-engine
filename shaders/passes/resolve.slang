@@ -26,19 +26,17 @@ float3 motionPixels(GpuFrameRoot root, float4 currentClip, float4 previousClip, 
                   previousClip.w - currentClip.w);
 }
 
-// diffuseAlbedo.a = ao; specularF0.a = specular weight (0: unlit, no specular lobe at all)
-void writeGuides(GpuGuideSet set, uint2 pixel, float4 normalRoughness, float2 geoNormal, float4 diffuseAlbedo,
-                 float4 specularF0, float3 specAlbedo, float3 emissive, float3 motion, float4 position)
+// diffuseAlbedo.a = ao; surfaceGuide packs viewDepth, shading/geo normals, specularF0, roughness and isLit (m8 O4)
+void writeGuides(GpuGuideSet set, uint2 pixel, float4 normalRoughness, float4 diffuseAlbedo, float3 specAlbedo,
+                 float3 emissive, float3 motion, uint4 surfaceGuide)
 {
     // formats: RenderTargets kGuideFormats
     storageTex2D<float4, kImageFormatRgba16f>(set.storage[kGuideNormalRoughness])[pixel] = normalRoughness;
-    storageTex2D<float2, kImageFormatRg16Snorm>(set.storage[kGuideGeoNormal])[pixel] = geoNormal;
     storageTex2D<float4, kImageFormatRgba8>(set.storage[kGuideDiffuseAlbedo])[pixel] = diffuseAlbedo;
-    storageTex2D<float4, kImageFormatRgba8>(set.storage[kGuideSpecularF0])[pixel] = specularF0;
     storageTex2D<float4, kImageFormatRgba8>(set.storage[kGuideSpecAlbedo])[pixel] = float4(specAlbedo, 1.0);
     storageTex2D<float3, kImageFormatR11g11b10f>(set.storage[kGuideEmissive])[pixel] = emissive;
     storageTex2D<float4, kImageFormatRgba16f>(set.storage[kGuideMotion])[pixel] = float4(motion, 0.0);
-    storageTex2D<float4, kImageFormatRgba32f>(set.storage[kGuidePosition])[pixel] = position;
+    storageTex2D<uint4, kImageFormatRgba32ui>(set.storage[kGuideSurface])[pixel] = surfaceGuide;
 }
 
 // empty pixel: zero guides, and the motion of a direction at infinity
@@ -56,7 +54,7 @@ void resolveBackground(GpuFrameRoot root, GpuTargets targets, uint2 pixel)
     const float4 none4 = float4(0.0, 0.0, 0.0, 0.0);
     // a direction has no depth: only the screen motion is meaningful
     const float3 motion = float3(motionPixels(root, currentClip, previousClip, targetSize).xy, 0.0);
-    writeGuides(targets.current, pixel, none4, float2(0.0, 0.0), none4, none4, none, none, motion, none4);
+    writeGuides(targets.current, pixel, none4, none4, none, none, motion, uint4(0u, 0u, 0u, 0u));
 }
 
 // covered pixel; isUnlit is a constant per entry
@@ -85,10 +83,11 @@ void resolveSurface(GpuFrameRoot root, GpuTargets targets, uint2 pixel, bool isU
                               material.specularWeight;
     const float4 currentClip = mul(camera.viewProj, float4(surface.position, 1.0));
     const float4 previousClip = mul(camera.prevViewProj, float4(surface.prevPosition, 1.0));
-    writeGuides(targets.current, pixel, float4(material.n, material.roughness), octEncode(surface.geoNormal),
-                float4(brdfInputs.cDiff, material.ao), float4(f0, material.specularWeight), specAlbedo,
-                material.emissive, motionPixels(root, currentClip, previousClip, targetSize),
-                float4(surface.position, currentClip.w));
+    const uint4 surfaceGuide = uint4(asuint(currentClip.w), packOct16(material.n), packOct16(surface.geoNormal),
+                                     packSurfaceMaterial(f0, material.roughness, material.specularWeight > 0.0));
+    writeGuides(targets.current, pixel, float4(material.n, material.roughness), float4(brdfInputs.cDiff, material.ao),
+                specAlbedo, material.emissive, motionPixels(root, currentClip, previousClip, targetSize),
+                surfaceGuide);
 }
 
 // the pixel of this thread in its group's tile; false outside the target or on another bin's pixel, so every pixel is

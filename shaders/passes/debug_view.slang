@@ -104,6 +104,11 @@ float4 loadGuide(GpuGuideSet set, uint guide, uint2 pixel)
     return tex2D(set.sampled[guide]).Load(int3(pixel, 0));
 }
 
+uint4 loadSurfaceGuide(GpuGuideSet set, uint2 pixel)
+{
+    return uint4Tex2D(set.sampled[kGuideSurface]).Load(int3(pixel, 0));
+}
+
 // log-scaled linear depth, as passes/hiz_view.slang: near white, far black
 float depthShade(float depth, GpuCameraData camera)
 {
@@ -140,8 +145,11 @@ float3 unshadowedLights(GpuFrameRoot root, GpuGuideSet set, GpuCameraData camera
                         float2 targetSize)
 {
     const float3 emissive = loadGuide(set, kGuideEmissive, pixel).rgb;
-    const float4 specularF0 = loadGuide(set, kGuideSpecularF0, pixel);
-    if (depth == 0.0 || specularF0.a == 0.0)
+    float3 specularF0;
+    float packedRoughness;
+    bool isLit;
+    unpackSurfaceMaterial(loadSurfaceGuide(set, pixel).w, specularF0, packedRoughness, isLit);
+    if (depth == 0.0 || !isLit)
     {
         return emissive;
     }
@@ -160,7 +168,7 @@ float3 unshadowedLights(GpuFrameRoot root, GpuGuideSet set, GpuCameraData camera
         const float nDotL = dot(normalRoughness.xyz, sample.l);
         if (nDotL > 0.0)
         {
-            color += evalBrdf(normalRoughness.xyz, cDiff, specularF0.rgb, normalRoughness.w, view, sample.l) *
+            color += evalBrdf(normalRoughness.xyz, cDiff, specularF0, normalRoughness.w, view, sample.l) *
                      sample.radiance * nDotL;
         }
     }
@@ -256,10 +264,15 @@ float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCamer
     case kDebugViewRoughness:
         return loadGuide(set, kGuideNormalRoughness, pixel).www;
     case kDebugViewGeometricNormal:
-        return depth == 0.0 ? float3(0.0, 0.0, 0.0)
-                            : octDecode(loadGuide(set, kGuideGeoNormal, pixel).xy) * 0.5 + 0.5;
+        return depth == 0.0 ? float3(0.0, 0.0, 0.0) : unpackOct16(loadSurfaceGuide(set, pixel).z) * 0.5 + 0.5;
     case kDebugViewSpecularF0:
-        return loadGuide(set, kGuideSpecularF0, pixel).rgb;
+    {
+        float3 specularF0;
+        float roughness;
+        bool isLit;
+        unpackSurfaceMaterial(loadSurfaceGuide(set, pixel).w, specularF0, roughness, isLit);
+        return specularF0;
+    }
     case kDebugViewSpecularAlbedo:
         return loadGuide(set, kGuideSpecAlbedo, pixel).rgb;
     case kDebugViewEmissive:
@@ -332,7 +345,7 @@ void debugViewMain(uint3 id : SV_DispatchThreadID)
         const uint triangle = visPayloadTriangle(payload);
         if (isIdView(mode))
         {
-            const float3 geoNormal = octDecode(loadGuide(targets.current, kGuideGeoNormal, id.xy).xy);
+            const float3 geoNormal = unpackOct16(loadSurfaceGuide(targets.current, id.xy).z);
             const float2 ndc = pixelToNdc(float2(id.xy) + 0.5, float2(targets.renderSize));
             const float4 farPoint = mul(camera.invViewProj, float4(ndc, 0.0, 1.0));
             const float3 view = normalize(camera.cameraPos - farPoint.xyz / farPoint.w);

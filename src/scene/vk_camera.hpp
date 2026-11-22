@@ -85,6 +85,9 @@ public:
     GpuCameraData cameraData = {};
     glm::mat4 prevViewProj = {};
     glm::vec3 prevCameraPos{0.0f};
+    glm::vec3 prevRayOrigin{0.0f};
+    glm::vec3 prevRayDx{0.0f};
+    glm::vec3 prevRayDy{0.0f};
     std::array<void*, 2> cameraBuffersMapped = {nullptr, nullptr};
     std::array<vk::raii::Buffer, 2> cameraBuffers = {nullptr, nullptr};
     std::array<VmaAllocation, 2> cameraBuffersMemory = {nullptr, nullptr};

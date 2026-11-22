@@ -15,16 +15,14 @@ namespace
     // indexed by GuideImage (docs/engine_spec.md §9.3)
     constexpr std::array<vk::Format, kGuideImageCount> kGuideFormats = {
         vk::Format::eR16G16B16A16Sfloat, // NormalRoughness
-        vk::Format::eR16G16Snorm, // GeoNormal
         vk::Format::eR8G8B8A8Unorm, // DiffuseAlbedo
-        vk::Format::eR8G8B8A8Unorm, // SpecularF0
         vk::Format::eR8G8B8A8Unorm, // SpecAlbedo
         vk::Format::eB10G11R11UfloatPack32, // Emissive
         vk::Format::eR16G16B16A16Sfloat, // Motion
-        vk::Format::eR32G32B32A32Sfloat, // Position
+        vk::Format::eR32G32B32A32Uint, // Surface (packed RTXDI surface guide, m8 O4)
     };
     constexpr std::array<const char*, kGuideImageCount> kGuideNames = {
-        "NormalRoughness", "GeoNormal", "DiffuseAlbedo", "SpecularF0", "SpecAlbedo", "Emissive", "Motion", "Position",
+        "NormalRoughness", "DiffuseAlbedo", "SpecAlbedo", "Emissive", "Motion", "Surface",
     };
 
     // the resolve writes through typed storage images (core/binding.slang storageTex2D); later passes sample
@@ -166,7 +164,7 @@ void RenderTargets::checkFormatSupport() const
                 std::format("render targets: {} lacks {}", vk::to_string(format), vk::to_string(required)));
         }
     };
-    // RG16_SNORM, RG16F and R11G11B10F: SPIR-V StorageImageExtendedFormats, core since 1.0 (no device feature)
+    // RG16F and R11G11B10F: SPIR-V StorageImageExtendedFormats, core since 1.0 (no device feature)
     for (const vk::Format format : kGuideFormats) {
         check(format, kStorageFeatures);
     }

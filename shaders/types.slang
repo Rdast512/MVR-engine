@@ -46,6 +46,16 @@ public struct GpuCameraData
 
     public float3 prevCameraPos; // equal to cameraPos on a cut
     public float lodBias;        // log2(render / display) under DLSS (engine spec §12.2)
+
+    // world-space ray basis at unit view depth for jittered pixel centers (m8 O4)
+    public float3 rayOrigin;
+    public float3 rayDx;
+    public float3 rayDy;
+    public float3 prevRayOrigin; // equal to rayOrigin on a cut
+    public float3 prevRayDx;
+    public float3 prevRayDy;
+    public float rayPad0;
+    public float rayPad1;
 };
 
 public struct GpuObjectUB
@@ -725,14 +735,12 @@ public static const uint kVisTriangleBits = 7;
 
 // GpuGuideSet rows; must match GuideImage in src/core/types.hpp
 public static const uint kGuideNormalRoughness = 0;
-public static const uint kGuideGeoNormal = 1;
-public static const uint kGuideDiffuseAlbedo = 2;
-public static const uint kGuideSpecularF0 = 3;
-public static const uint kGuideSpecAlbedo = 4;
-public static const uint kGuideEmissive = 5;
-public static const uint kGuideMotion = 6;   // xy pixels to the previous frame, z view depth change
-public static const uint kGuidePosition = 7; // world position, w view depth (0: empty)
-public static const uint kGuideImageCount = 8;
+public static const uint kGuideDiffuseAlbedo = 1;
+public static const uint kGuideSpecAlbedo = 2;
+public static const uint kGuideEmissive = 3;
+public static const uint kGuideMotion = 4;  // xy pixels to the previous frame, z view depth change
+public static const uint kGuideSurface = 5; // RGBA32_UINT packed RTXDI surface (viewDepth, oct n, oct geoN, f0+rough)
+public static const uint kGuideImageCount = 6;
 
 public struct GpuGuideSet
 {

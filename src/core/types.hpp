@@ -904,12 +904,26 @@ struct alignas(16) GpuCameraData {
     glm::vec3 prevCameraPos;
     // texture LOD bias log2(render / display) under DLSS (engine spec §12.2); applied by scaling the gradients
     float lodBias;
+
+    // world-space ray basis at unit view depth for jittered pixel centers: rayDirScaled = rayOrigin + pixel.x * rayDx
+    // + pixel.y * rayDy, worldPos = cameraPos + rayDirScaled * viewDepth (m8 O4)
+    glm::vec3 rayOrigin;
+    glm::vec3 rayDx;
+    glm::vec3 rayDy;
+    // previous frame's ray basis (exact previous invView, proj and jitter); equals current on a cut
+    glm::vec3 prevRayOrigin;
+    glm::vec3 prevRayDx;
+    glm::vec3 prevRayDy;
+    float rayPad0;
+    float rayPad1;
 };
-static_assert(sizeof(GpuCameraData) == 512);
+static_assert(sizeof(GpuCameraData) == 592);
 static_assert(offsetof(GpuCameraData, prevViewProj) == 384);
 static_assert(offsetof(GpuCameraData, cameraPos) == 448);
 static_assert(offsetof(GpuCameraData, renderTargetSize) == 464);
 static_assert(offsetof(GpuCameraData, prevCameraPos) == 496);
+static_assert(offsetof(GpuCameraData, rayOrigin) == 512);
+static_assert(offsetof(GpuCameraData, prevRayOrigin) == 548);
 
 // one row per entity in the per-frame instance buffer
 struct alignas(16) GpuObjectUB {
@@ -969,22 +983,19 @@ inline constexpr uint32_t kMaxVisibleRows = 1u << (32 - kVisTriangleBits);
 // GpuGuideSet rows (docs/engine_spec.md §9.3); must match shaders/types.slang kGuide*
 enum class GuideImage : uint32_t
 {
-    // RGBA16F: world shading normal, perceptual roughness
+    // RGBA16F: world shading normal, perceptual roughness (DLSS-RR)
     NormalRoughness = 0,
-    // RG16_SNORM: octahedral, facing-corrected
-    GeoNormal,
-    // RGBA8: baseColor * (1 - metallic)
+    // RGBA8: baseColor * (1 - metallic), a = ao (DLSS-RR, RTXDI, combine)
     DiffuseAlbedo,
-    // RGBA8: lerp(0.04, baseColor, metallic)
-    SpecularF0,
-    // RGBA8: environment BRDF approximation
+    // RGBA8: environment BRDF approximation (DLSS-RR)
     SpecAlbedo,
-    // R11G11B10F
+    // R11G11B10F (combine, NRC)
     Emissive,
     // RGBA16F: render-resolution pixels to the previous frame, no jitter; z = view depth there minus here
     Motion,
-    // RGBA32F: world position, w = view depth (0: empty pixel); the previous set gives RTXDI last frame's surface
-    Position,
+    // RGBA32_UINT: packed RTXDI surface guide (x = asuint(viewDepth), y = packOct16(n), z = packOct16(geoNormal),
+    // w = f0.rgb unorm8x3 | (isLit ? 1 + round(roughness * 254) : 0) << 24; m8 O4)
+    Surface,
     Count,
 };
 inline constexpr size_t kGuideImageCount = std::to_underlying(GuideImage::Count);
@@ -997,7 +1008,7 @@ struct GpuGuideSet
     std::array<uint32_t, kGuideImageCount> storage{};
     std::array<uint32_t, kGuideImageCount> sampled{};
 };
-static_assert(sizeof(GpuGuideSet) == 64);
+static_assert(sizeof(GpuGuideSet) == 48);
 
 // passes/exposure.slang's log2-luminance histogram, including black in bin 0
 inline constexpr uint32_t kExposureHistogramBins = 256;
@@ -1068,9 +1079,9 @@ struct GpuTargets
     uint32_t giSampleIdsStorage = 0;
     uint32_t giDuplicationStorage = 0;
 };
-static_assert(sizeof(GpuTargets) == 232);
-static_assert(offsetof(GpuTargets, giStagnancyStorage) == 216);
-static_assert(offsetof(GpuTargets, binIdsStorage) == 208);
+static_assert(sizeof(GpuTargets) == 200);
+static_assert(offsetof(GpuTargets, giStagnancyStorage) == 184);
+static_assert(offsetof(GpuTargets, binIdsStorage) == 176);
 static_assert(offsetof(GpuTargets, current) == 32);
 
 // GpuFrameRoot::frameFlags, matches shaders/types.slang kFrameFlag*

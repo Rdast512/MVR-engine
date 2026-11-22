@@ -67,3 +67,33 @@ public float3 octDecode(float2 e)
     n.xy += select(n.xy >= 0.0, float2(-t, -t), float2(t, t));
     return normalize(n);
 }
+
+// octahedral unit vector <-> packed snorm16x2 (one R32_UINT word, < 0.0025 deg error)
+public uint packOct16(float3 n)
+{
+    const int2 s = int2(round(clamp(octEncode(n), -1.0, 1.0) * 32767.0));
+    return (uint(s.x) & 0xffffu) | ((uint(s.y) & 0xffffu) << 16);
+}
+
+public float3 unpackOct16(uint packed)
+{
+    const int sx = int(packed << 16) >> 16;
+    const int sy = int(packed) >> 16;
+    return octDecode(float2(sx, sy) * (1.0 / 32767.0));
+}
+
+// f0.rgb as unorm8x3; top 8 bits: 0 = unlit, 1..255 = lit with roughness (a - 1) / 254 (m8 O4)
+public uint packSurfaceMaterial(float3 f0, float roughness, bool isLit)
+{
+    const uint3 qF0 = uint3(round(saturate(f0) * 255.0));
+    const uint qAlpha = isLit ? (1u + uint(round(saturate(roughness) * 254.0))) : 0u;
+    return qF0.r | (qF0.g << 8) | (qF0.b << 16) | (qAlpha << 24);
+}
+
+public void unpackSurfaceMaterial(uint packed, out float3 f0, out float roughness, out bool isLit)
+{
+    f0 = float3(packed & 0xffu, (packed >> 8) & 0xffu, (packed >> 16) & 0xffu) * (1.0 / 255.0);
+    const uint qAlpha = packed >> 24;
+    isLit = qAlpha != 0u;
+    roughness = isLit ? float(qAlpha - 1u) * (1.0 / 254.0) : 0.0;
+}

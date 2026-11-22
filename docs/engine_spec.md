@@ -355,14 +355,13 @@ Per pixel:
 
 | Image | Format | Consumers |
 |---|---|---|
-| depth | D32F reverse-Z (hardware) | ReSTIR GI, DLSS (`InUseHWDepth`) |
-| `normalRoughness` | RGBA16F: world N, perceptual roughness | RTXDI, PT, DLSS |
-| `geoNormal` | RG16 snorm, octahedral | ray origin offset |
-| `diffuseAlbedo`, `specularF0` | RGBA8; a = ao, specular weight (0: unlit) | RTXDI, PT, DLSS diffuse albedo |
+| depth | D32F reverse-Z (hardware) | Hi-Z, resolve, debug view, DLSS (`InUseHWDepth`) |
+| `normalRoughness` | RGBA16F: world N, perceptual roughness | DLSS, debug view |
+| `diffuseAlbedo` | RGBA8; a = ao | RTXDI (`RAB_GetGBufferSurface`), NRC resolve, combine, motion check, DLSS diffuse albedo |
 | `specAlbedo` | RGBA8, env-BRDF approximation | DLSS specular albedo |
-| `emissive` | R11G11B10F | combine |
-| `motion` | RGBA16F, render-res pixels, no jitter; z = view depth change | DLSS, ReSTIR temporal |
-| `position` | RGBA32F: world position, w = view depth (0: empty) | RTXDI surfaces and ray origins, this frame and the previous |
+| `emissive` | R11G11B10F | combine, NRC update |
+| `motion` | RGBA16F, render-res pixels, no jitter; z = view depth change | DLSS, ReSTIR temporal / GI shade |
+| `surface` | RGBA32_UINT: `x` = `asuint(viewDepth)` (`0` = empty), `y` = `packOct16(n)`, `z` = `packOct16(geoNormal)`, `w` = `f0.rgb` unorm8×3 \| `roughness`/`isLit` (M8 O4) | RTXDI surfaces and ray origins (position rebuilt from `viewDepth` + jittered ray basis), this frame and the previous; debug view |
 | `specHitDistance` | R16F | optional DLSS input (see below) |
 
 `specHitDistance` is in the `OPTIONAL - only for research purposes` block of `NVSDK_NGX_VK_DLSSD_Eval_Params` in the vendored NGX 1.5 headers (`nvsdk_ngx_helpers_dlssd_vk.h`); the required inputs are color, depth, motion, diffuse/specular albedo, normals and roughness. The baseline does not pass it. If it is enabled for a measured quality gain, it must be full render resolution on both tiers: write it after ReSTIR GI (§11.5) as `length(X₂ − X₁)` of each pixel's final reservoir sample, never from the half-resolution indirect launch, whose missing checkerboard pixels would read as 0.

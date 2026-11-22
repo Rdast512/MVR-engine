@@ -206,8 +206,32 @@ void Camera::updateCameraData(uint8_t currentImage, uint64_t frameIndex, bool is
     cameraData.invProj = glm::inverse(cameraData.proj);
     cameraData.invViewProj = glm::inverse(cameraData.viewProj);
 
+    // world-space ray basis at unit view depth for jittered pixel centers (m8 O4):
+    // c.xy / c.w = pixelNdc - jitterOffset, c.w = -v.z = viewDepth > 0
+    {
+        const glm::dvec3 rightAxis(cameraData.invView[0]);
+        const glm::dvec3 upAxis(cameraData.invView[1]);
+        const glm::dvec3 forwardAxis(-glm::dvec3(cameraData.invView[2]));
+        const double invP00 = 1.0 / static_cast<double>(cameraData.proj[0][0]);
+        const double invP11 = 1.0 / static_cast<double>(cameraData.proj[1][1]);
+        const double invW = static_cast<double>(cameraData.invRenderTargetSize.x);
+        const double invH = static_cast<double>(cameraData.invRenderTargetSize.y);
+        const double jx = static_cast<double>(cameraData.jitterOffset.x);
+        const double jy = static_cast<double>(cameraData.jitterOffset.y);
+        cameraData.rayDx = glm::vec3(rightAxis * (2.0 * invW * invP00));
+        cameraData.rayDy = glm::vec3(upAxis * (2.0 * invH * invP11));
+        cameraData.rayOrigin = glm::vec3(forwardAxis + rightAxis * ((-1.0 + invW - jx) * invP00) +
+                                         upAxis * ((-1.0 + invH - jy) * invP11));
+    }
+    cameraData.prevRayOrigin = isCutFrame ? cameraData.rayOrigin : prevRayOrigin;
+    cameraData.prevRayDx = isCutFrame ? cameraData.rayDx : prevRayDx;
+    cameraData.prevRayDy = isCutFrame ? cameraData.rayDy : prevRayDy;
+
     std::memcpy(cameraBuffersMapped[currentImage], &cameraData, sizeof(cameraData));
 
     prevViewProj = cameraData.viewProj;
     prevCameraPos = cameraData.cameraPos;
+    prevRayOrigin = cameraData.rayOrigin;
+    prevRayDx = cameraData.rayDx;
+    prevRayDy = cameraData.rayDy;
 }
