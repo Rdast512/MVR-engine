@@ -162,6 +162,27 @@ Stamped M4, the current milestone; [rtxdi_3_2_update.md](./features/rtxdi_3_2_up
 - **C-FT-3 · Open · cases waiting for their poses or features.** `cafe.door` needs a pose chosen from a frame PNG (T2), `glossy.floor` / `glossy.metal` a scene (I12), `glass.window` transmission (I13), `cafe.toggle` a per-material emissive scale (T8). Each is listed with `notBuilt` and skipped by every plan, `leak` and `stability-levers` included. **Exit:** each case gets its pose or feature and a checked frame PNG.
 - **C-FT-4 · Hack · the stack picks by mean improvement.** `stack Lit:std` takes, per lever group, the config with the lowest mean change of the metric against the fix over the cases it ran on, without the bias and lag limits the decision lines apply. A lever can be stacked that the decision line marks as regressing. **Exit:** I12 reads the decision lines and writes its own stack as a `sets` line; or the stack skips levers with a regression.
 
+## M8 · GPU-AV pass (2026-11-22, temporary per-bin resolve, C-E1-3)
+
+- **C-GA-1 · Open · primary rays miss a freshly loaded large model for 16 frames.** Found by `ENGINE_GUIDE_CAPTURE=1 ENGINE_RT_CHECK=1` during the first full GPU-AV pass. The same frames fail without layers too (release, SDK 1.4.363.1, `build/cafe-release`), so it is not a GPU-AV effect.
+  - What fails: frames 177–192 of 4,112. They are the first 16 frames after the guide capture loads its `MetalRoughSpheres_flat_normals_front` variant (1.5 M vertices, 23,896 meshlets, 5 instances).
+  - What the RT check reports: in each frame all 4,062 interior pixels are misses (0 id mismatches), so the vis buffer has geometry and the primary ray hits nothing.
+  - Every other model swap in the run matches, and the motion and cull runs match every frame (318/318, 454/454).
+  - Likely cause, unconfirmed: the model's cluster acceleration structures are not in the TLAS for its first frames, while raster already draws it. Rays then see empty space: no shadows, no GI and no reflections from that model until they arrive.
+  - The guide capture's own checks still pass (2/2 normal, 3/3 convergence), since the PNGs are taken later.
+  - **Exit:** find which build or upload spans those frames (for example by logging `RayTracingScene` build progress per frame after a load) and either wait for it or hold the model's raster until it is ready. The RT check then matches every frame after a load.
+- **Pass result:** under GPU-AV, every runner showed no GPU-AV message apart from the known ones:
+  - guide capture + RT check, motion test + RT check, cull check + RT check;
+  - GI check 14/14;
+  - stability 28, light change 32, screen edge 80;
+  - café stability 68 steps, and café GI with 28 phases measured.
+  The remaining messages are the `WARNING-Setting-Limit-Adjusted` feature forcing and the NRC leak at `vkDestroyDevice` (C-G3-3: 22 objects without reconfigures, 51 with NRC steps, 241 in the guide capture's many `Configure` calls). The guide capture's 241 objects break down as:
+  - 15 fences, 68 `VkCuFunctionNVX` and 13 `VkCuModuleNVX`;
+  - NRC's descriptor pool, 4 sets and both layouts;
+  - 69 buffers, each with its memory, all unnamed (the engine names every buffer it creates).
+
+  That fits C-G3-3 for 15 `Configure` calls, except the buffers: about 4 leak per `Configure`, not the ~1 recorded on 2026-11-17. Logs: `build/cafe-release/logs/gpuav_full/`.
+
 ## Tooling and validation environment
 
 - **C-T-3 · Limitation · the motion test does not support jitter.** With `ENGINE_JITTER=1` it fails 7 of 13: the static, entity and teleport scenarios compare albedo pixel by pixel between frames, which jitter changes by design. The motion vectors themselves stay within 0.06 px. The test defaults jitter off; jittered runs of it are for validation coverage only.
