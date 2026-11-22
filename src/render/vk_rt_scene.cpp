@@ -45,6 +45,21 @@ namespace
     // MG-B4: geometric growth margin when a moving entity exceeds sceneBounds (avoids per-frame NRC reconfigures)
     constexpr float kDynamicBoundsGrowthFraction = 0.25f;
     constexpr float kDynamicBoundsMinMargin = 1.0f;
+    // MG-P5: derived-grid refinement limits (vk_lod_clusters scene.hpp:349-355)
+    constexpr uint32_t kDerivedMaxInstances = 1024;
+    constexpr uint32_t kDerivedMaxPartitions = 4096;
+    constexpr uint32_t kMaxGridAxis = 128;
+
+    // interleave low 16 bits for 2D Morton Z-order (vk_lod_clusters scene_partitions.cpp:17)
+    [[nodiscard]] constexpr uint32_t part1By1(uint32_t v) noexcept
+    {
+        v &= 0x0000ffffu;
+        v = (v ^ (v << 8)) & 0x00ff00ffu;
+        v = (v ^ (v << 4)) & 0x0f0f0f0fu;
+        v = (v ^ (v << 2)) & 0x33333333u;
+        v = (v ^ (v << 1)) & 0x55555555u;
+        return v;
+    }
 
     template <std::unsigned_integral T>
     constexpr T divideRoundUp(T value, T divisor)
@@ -65,12 +80,13 @@ namespace
         }
     }
 
-    [[nodiscard]] uint32_t partitionForCenter(glm::vec2 center, glm::vec2 lower, glm::vec2 extent, uint32_t axis)
+    // Morton Z-order index in [0, axis * axis) for power-of-two axis
+    [[nodiscard]] uint32_t mortonCellForCenter(glm::vec2 center, glm::vec2 lower, glm::vec2 extent, uint32_t axis)
     {
         const glm::vec2 normalized = (center - lower) / extent * static_cast<float>(axis);
         const glm::ivec2 cell = glm::clamp(glm::ivec2(glm::floor(normalized)), glm::ivec2(0),
                                            glm::ivec2(static_cast<int32_t>(axis - 1)));
-        return static_cast<uint32_t>(cell.y) * axis + static_cast<uint32_t>(cell.x);
+        return part1By1(static_cast<uint32_t>(cell.x)) | (part1By1(static_cast<uint32_t>(cell.y)) << 1);
     }
 
     // mesh-space box of a primitive's meshlet groups
@@ -172,6 +188,7 @@ void RayTracingScene::buildTemplates()
     templates.lightTasks.clear();
     templates.dynamicEntities.clear();
     templates.partitionOccupancy.clear();
+    templates.cellToPartition.clear();
     templates.triangleLightCount = 0;
     templates.layoutGeneration = frameData.layoutGeneration();
     templates.instancesPerPartition = settings.instancesPerPartition;
@@ -218,6 +235,8 @@ void RayTracingScene::buildTemplates()
                 if (address == 0) {
                     continue;
                 }
+                const PrimitiveDraw& primitive = geometry.primitiveDraws[p];
+                const BoundingBox box = primitiveBounds(geometry, primitive);
                 templates.rows.push_back(GpuRayInstance{.nodeInstanceIndex = nodeInstanceFirsts[id] + k,
                                                         .primitiveRow = p});
                 templates.builds.push_back(GpuRayInstanceBuild{
@@ -225,7 +244,6 @@ void RayTracingScene::buildTemplates()
                     .flags = micromapped[p - model.primitives.first] != 0 ? GpuRayInstanceBuildFlag::OpacityMicromap
                                                                           : 0u,
                 });
-                const PrimitiveDraw& primitive = geometry.primitiveDraws[p];
                 if (isEmissive(primitive.materialId)) {
                     templates.firstLights.push_back(templates.triangleLightCount);
                     templates.lightTasks.push_back(GpuTriangleLightTask{
@@ -237,7 +255,6 @@ void RayTracingScene::buildTemplates()
                 } else {
                     templates.firstLights.push_back(kNoneIndex);
                 }
-                const BoundingBox box = primitiveBounds(geometry, geometry.primitiveDraws[p]);
                 const glm::vec3 localCenter =
                     glm::vec3(node.localToModel * glm::vec4(0.5f * (box.bboxMin + box.bboxMax), 1.0f));
                 templates.rowLocalCenters.push_back(localCenter);
@@ -270,43 +287,101 @@ void RayTracingScene::buildTemplates()
     }
 
     // no global partition: changed instances are rewritten in their grid partition, which measured faster (feature
-    // spec §3.6)
+    // spec §3.6). MG-P5: refine a power-of-two XZ grid while any cell exceeds instancesPerPartition, drop empty cells,
+    // and number occupied partitions in 2D Morton Z-order
     const uint32_t maxPartitions = device.capabilities.partitionedAccelerationStructure.maxPartitionCount;
     if (maxPartitions == 0) {
         throw std::runtime_error("rt: maxPartitionCount is 0");
     }
-    const double cellInstances = std::max(templates.instancesPerPartition, 1u);
-    auto axis = static_cast<uint32_t>(std::ceil(std::sqrt(static_cast<double>(count) / cellInstances)));
-    axis = std::max(axis, 1u);
-    while (axis > 1 && axis * axis > maxPartitions) {
-        --axis;
+    if (count == 0) {
+        templates.gridLower = glm::vec2(0.0f);
+        templates.gridExtent = glm::vec2(1.0f);
+        templates.gridAxis = 1;
+        templates.cellToPartition = {0};
+        templates.partitionOccupancy = {0};
+        templates.shape = PtlasShape{.instances = 1, .partitions = 1, .maxPerPartition = 1};
+    } else {
+        glm::vec2 lower(std::numeric_limits<float>::max());
+        glm::vec2 upper(std::numeric_limits<float>::lowest());
+        for (const glm::vec2& center : centers) {
+            lower = glm::min(lower, center);
+            upper = glm::max(upper, center);
+        }
+        const glm::vec2 extent = glm::max(upper - lower, glm::vec2(std::numeric_limits<float>::min()));
+        const uint32_t maxPartitionsLimit = std::min(maxPartitions, kDerivedMaxPartitions);
+        const uint32_t targetPerPartition = std::max(templates.instancesPerPartition, 1u);
+        const uint32_t targetCells = divideRoundUp(count, targetPerPartition);
+        const uint32_t maxInstancesLimit = std::max(kDerivedMaxInstances, targetPerPartition);
+
+        auto tallyGrid = [&](uint32_t candidateAxis, std::vector<uint32_t>& counts, uint32_t& occupied,
+                             uint32_t& maxCell) {
+            counts.assign(static_cast<size_t>(candidateAxis) * candidateAxis, 0);
+            for (const glm::vec2& center : centers) {
+                ++counts[mortonCellForCenter(center, lower, extent, candidateAxis)];
+            }
+            occupied = 0;
+            maxCell = 0;
+            for (const uint32_t n : counts) {
+                if (n > 0) {
+                    ++occupied;
+                    maxCell = std::max(maxCell, n);
+                }
+            }
+        };
+
+        // pick the power-of-two grid closest to targetCells without exceeding maxPartitionsLimit, then refine only
+        // when a dense pocket still exceeds maxInstancesLimit
+        uint32_t axis = 1;
+        while (axis * 2 <= kMaxGridAxis && (axis * 2) * (axis * 2) <= maxPartitionsLimit &&
+               (axis * 2) * (axis * 2) <= targetCells * 2) {
+            axis *= 2;
+        }
+        std::vector<uint32_t> cellCounts;
+        uint32_t occupied = 0;
+        uint32_t maxCell = 0;
+        tallyGrid(axis, cellCounts, occupied, maxCell);
+        std::vector<uint32_t> nextCounts;
+        while (maxCell > maxInstancesLimit && axis * 2 <= kMaxGridAxis) {
+            const uint32_t nextAxis = axis * 2;
+            uint32_t nextOccupied = 0;
+            uint32_t nextMaxCell = 0;
+            tallyGrid(nextAxis, nextCounts, nextOccupied, nextMaxCell);
+            if (nextOccupied > maxPartitionsLimit || nextMaxCell >= maxCell) {
+                break;
+            }
+            axis = nextAxis;
+            cellCounts.swap(nextCounts);
+            occupied = nextOccupied;
+            maxCell = nextMaxCell;
+        }
+
+        templates.gridLower = lower;
+        templates.gridExtent = extent;
+        templates.gridAxis = axis;
+        templates.cellToPartition.resize(cellCounts.size());
+        templates.partitionOccupancy.reserve(occupied);
+        uint32_t lastPartition = 0;
+        for (uint32_t m = 0; m < cellCounts.size(); ++m) {
+            if (cellCounts[m] > 0) {
+                lastPartition = static_cast<uint32_t>(templates.partitionOccupancy.size());
+                templates.partitionOccupancy.push_back(cellCounts[m]);
+            }
+            templates.cellToPartition[m] = lastPartition;
+        }
+        for (uint32_t row = 0; row < count; ++row) {
+            templates.builds[row].partition =
+                templates.cellToPartition[mortonCellForCenter(centers[row], lower, extent, axis)];
+        }
+        templates.shape = PtlasShape{
+            .instances = count,
+            .partitions = occupied,
+            .maxPerPartition = std::max(maxCell, 1u),
+        };
     }
-    glm::vec2 lower(std::numeric_limits<float>::max());
-    glm::vec2 upper(std::numeric_limits<float>::lowest());
-    for (const glm::vec2& center : centers) {
-        lower = glm::min(lower, center);
-        upper = glm::max(upper, center);
-    }
-    const glm::vec2 extent = glm::max(upper - lower, glm::vec2(std::numeric_limits<float>::min()));
-    templates.gridLower = lower;
-    templates.gridExtent = extent;
-    templates.gridAxis = axis;
-    templates.partitionOccupancy.assign(static_cast<size_t>(axis) * axis, 0);
-    for (uint32_t row = 0; row < count; ++row) {
-        const uint32_t partition = partitionForCenter(centers[row], lower, extent, axis);
-        templates.builds[row].partition = partition;
-        ++templates.partitionOccupancy[partition];
-    }
-    const uint32_t partitions = axis * axis;
-    templates.shape = PtlasShape{
-        .instances = std::max(count, 1u),
-        .partitions = partitions,
-        .maxPerPartition = std::max(*std::ranges::max_element(templates.partitionOccupancy), 1u),
-    };
-    logInfo(std::format("rt templates: {} instances, {}x{} partitions, at most {} per partition; {} triangle lights in "
-                        "{} emissive instances",
-                        count, axis, axis, templates.shape.maxPerPartition, templates.triangleLightCount,
-                        templates.lightTasks.size()),
+    logInfo(std::format("rt templates: {} instances, {} partitions ({}x{} grid, Z-order), at most {} per partition; {} "
+                        "triangle lights in {} emissive instances",
+                        count, templates.shape.partitions, templates.gridAxis, templates.gridAxis,
+                        templates.shape.maxPerPartition, templates.triangleLightCount, templates.lightTasks.size()),
             "RayTracingScene");
 }
 
@@ -352,13 +427,13 @@ void RayTracingScene::updateDynamicEntities()
             boundsGrew = true;
         }
 
-        // C-C4-5: reassign moved rows to their current XZ grid cell
+        // C-C4-5: reassign moved rows to their current XZ grid cell's compacted Z-order partition
         if (shouldReassignPartitions) {
             for (uint32_t row = entity.firstRow; row < entity.firstRow + entity.rowCount; ++row) {
                 const glm::vec4 center = entityMatrix * glm::vec4(templates.rowLocalCenters[row], 1.0f);
-                const uint32_t newPartition =
-                    partitionForCenter({center.x, center.z}, templates.gridLower, templates.gridExtent,
-                                       templates.gridAxis);
+                const uint32_t cell = mortonCellForCenter({center.x, center.z}, templates.gridLower,
+                                                          templates.gridExtent, templates.gridAxis);
+                const uint32_t newPartition = templates.cellToPartition[cell];
                 uint32_t& oldPartition = templates.builds[row].partition;
                 if (newPartition != oldPartition) {
                     --templates.partitionOccupancy[oldPartition];
@@ -685,7 +760,7 @@ void RayTracingScene::collectResults(uint32_t frameSlot)
         return;
     }
     const auto toMs = [this](uint64_t begin, uint64_t end) {
-        return static_cast<float>(end - begin) * timestampPeriodNs * 1e-6f;
+        return end > begin ? static_cast<float>(end - begin) * timestampPeriodNs * 1e-6f : 0.0f;
     };
     lastStartTick = ticks[0];
     lastEndTick = ticks[2];

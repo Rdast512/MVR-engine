@@ -102,31 +102,15 @@ public bool traceClosest(GpuFrameRoot root, RayDesc ray, out RayHit hit)
     return traceClosest(loadRayScene(root), ray, hit);
 }
 
-// the node instance a hit belongs to
-public uint hitNodeInstance(GpuFrameRoot root, RayHit hit)
-{
-    return bdaPtr<GpuRayInstance>(root.rayInstances)[hit.rayInstance].nodeInstanceIndex;
-}
-
-// the vis-buffer decode chain from (node instance, meshlet, triangle); only the positions come from the hit
+// the vis-buffer decode chain from (node instance, meshlet, triangle); positions and transforms come from the hit
+// (m8 MG-P4)
 public DecodedHit decodeHit(GpuFrameRoot root, RayHit hit, float3 rayDirection, RayCone cone)
 {
-    GpuVisibleMeshlet visible;
-    visible.nodeInstanceIndex = hitNodeInstance(root, hit);
-    visible.meshletRow = hit.meshletRow;
     DecodedHit decoded;
-    decoded.draw = loadDrawContext(root, visible, kNoneIndex);
-
-    TriangleCorners corners = loadCornerVertices(decoded.draw, hit.triangle);
-    // geometric normal and spawn points from the traced positions, never the raster ones (spec §10.2)
-    corners.objectPos = hit.objectPos;
-    // front faces wind counter-clockwise in object space; the normal matrix keeps the normal outward under mirroring,
-    // which is the facing the rasterizer derives with FlipWinding
-    const float3 outward = mul(normalMatrix(decoded.draw.nodeInstance.worldMatrix),
-                               cross(hit.objectPos[1] - hit.objectPos[0], hit.objectPos[2] - hit.objectPos[0]));
-    corners.isFrontFacing = dot(outward, rayDirection) < 0.0;
-    decoded.surface =
-        buildRaySurface(decoded.draw, corners, hit.barycentrics, cone.width + cone.spread * hit.t, rayDirection);
+    decoded.draw = loadRayDrawContext(root, hit.rayInstance, hit.meshletRow, hit.objectToWorld);
+    const TriangleCorners corners = loadRayCornerVertices(decoded.draw, hit.triangle, hit.objectPos);
+    decoded.surface = buildRaySurface(decoded.draw, corners, hit.barycentrics, cone.width + cone.spread * hit.t,
+                                      rayDirection, hit.objectToWorld, hit.worldToObject);
     return decoded;
 }
 

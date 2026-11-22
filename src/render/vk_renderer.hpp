@@ -218,6 +218,9 @@ private:
     // this frame's ray command buffers; the first raySegmentCount are recorded, in submission order
     std::span<vk::raii::CommandBuffer> raySegments;
     uint32_t raySegmentCount = 0;
+    // MG-P7 (I4 §3): pre-DLSS pure-Vulkan segment count submitted before AcquireImage when NRC is paused; DLSS-RR +
+    // post stay with presentCmd in one post-acquire submit (C-G3-6)
+    uint32_t preDlssRaySegmentCount = 0;
     // FrameSync::rayTimeline value of the last ray submit with NRC commands; 0 before the first
     uint64_t lastNrcRaySubmit = 0;
     // C-G3-6 (NP1): isolated SDK command buffers (recordIsolated) avoid the device loss without a host wait;

@@ -136,6 +136,8 @@ private:
         std::vector<GpuTriangleLightTask> lightTasks;
         std::vector<DynamicEntity> dynamicEntities;
         std::vector<uint32_t> partitionOccupancy;
+        // dense cell (cy * gridAxis + cx) -> compacted Z-order partition index in [0, shape.partitions) (m8 MG-P5)
+        std::vector<uint32_t> cellToPartition;
         glm::vec2 gridLower{0.0f};
         glm::vec2 gridExtent{1.0f};
         uint32_t gridAxis = 1;

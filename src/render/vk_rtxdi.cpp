@@ -845,7 +845,7 @@ void RtxdiContext::collectLightPrepResults(uint32_t frameSlot)
         return;
     }
     const auto toMs = [this](uint64_t begin, uint64_t end) {
-        return static_cast<float>(end - begin) * lightPrepTimestampPeriodNs * 1e-6f;
+        return end > begin ? static_cast<float>(end - begin) * lightPrepTimestampPeriodNs * 1e-6f : 0.0f;
     };
     lastLightPrepStartTick = ticks[0];
     lastLightPrepEndTick = ticks[3];

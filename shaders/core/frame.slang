@@ -11,7 +11,7 @@ public struct DrawContext
     public GpuVisibleMeshlet visible;
     public GpuNodeInstance nodeInstance;
     public GpuModel model;
-    public uint primitiveRow; // row of the model's primitives slice
+    public uint primitiveRow; // row of the model's primitives slice; kNoneIndex for hits
     public GpuPrimitive primitive;
     // the material's, copied into the primitive at load; also DrawRecordFlag::TwoSided
     public bool isDoubleSided;
@@ -37,6 +37,38 @@ public DrawContext loadDrawContext(GpuFrameRoot root, GpuVisibleMeshlet visible,
 public DrawContext loadDrawContext(GpuFrameRoot root, uint visibleRow)
 {
     return loadDrawContext(root, bdaPtr<GpuVisibleMeshlet>(root.visibleMeshlets)[visibleRow], visibleRow);
+}
+
+// ray-hit draw context (m8 MG-P4): reads only modelIndex/flags from GpuNodeInstance (skipping 128 B of world/prev
+// matrices already carried by RayHit::objectToWorld) and looks up GpuPrimitive by the absolute
+// GpuRayInstance::primitiveRow (skipping model.meshletPrimitives)
+public DrawContext loadRayDrawContext(GpuFrameRoot root, uint rayInstance, uint meshletRow, float3x4 objectToWorld)
+{
+    const GpuRayInstance ray = bdaPtr<GpuRayInstance>(root.rayInstances)[rayInstance];
+    GpuNodeInstance* nodePtr = bdaPtr<GpuNodeInstance>(root.nodeInstances) + ray.nodeInstanceIndex;
+    const uint modelIndex = nodePtr.modelIndex;
+    const uint nodeFlags = nodePtr.flags;
+
+    DrawContext draw;
+    draw.root = root;
+    draw.visibleRow = kNoneIndex;
+    draw.visible.nodeInstanceIndex = ray.nodeInstanceIndex;
+    draw.visible.meshletRow = meshletRow;
+    draw.nodeInstance.worldMatrix =
+        float4x4(objectToWorld[0], objectToWorld[1], objectToWorld[2], float4(0.0, 0.0, 0.0, 1.0));
+    draw.nodeInstance.prevWorldMatrix =
+        float4x4(float4(1.0, 0.0, 0.0, 0.0), float4(0.0, 1.0, 0.0, 0.0), float4(0.0, 0.0, 1.0, 0.0),
+                 float4(0.0, 0.0, 0.0, 1.0));
+    draw.nodeInstance.entityIndex = 0;
+    draw.nodeInstance.modelIndex = modelIndex;
+    draw.nodeInstance.nodeIndex = 0;
+    draw.nodeInstance.flags = nodeFlags;
+    draw.model = bdaPtr<GpuModel>(root.models)[modelIndex];
+    // the hit has the absolute row only, not the model-relative one
+    draw.primitiveRow = kNoneIndex;
+    draw.primitive = bdaPtr<GpuPrimitive>(root.primitives)[ray.primitiveRow];
+    draw.isDoubleSided = (draw.primitive.flags & kPrimitiveFlagDoubleSided) != 0;
+    return draw;
 }
 
 // groupId: mesh workgroup within the sequence's batch

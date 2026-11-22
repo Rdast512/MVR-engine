@@ -147,9 +147,9 @@ void EngineBench::logResults(const GpuTimer& timer, const MeshletCullStats& cull
         const double tickMs = static_cast<double>(timer.timestampPeriod()) * 1e-6;
         const uint64_t gfxStart = timer.lastBeginTick();
         const uint64_t gfxResolveEnd = timer.lastEndTick(GpuTimerScope::Resolve);
-        const uint64_t cmpStart = lightPrep.lastStartTick;
-        const uint64_t cmpEnd = rtStats.lastEndTick;
-        const double cmpDurationMs = static_cast<double>(cmpEnd - cmpStart) * tickMs;
+        const uint64_t cmpStart = std::min(lightPrep.lastStartTick, rtStats.lastStartTick);
+        const uint64_t cmpEnd = std::max(lightPrep.lastEndTick, rtStats.lastEndTick);
+        const double cmpDurationMs = cmpEnd > cmpStart ? static_cast<double>(cmpEnd - cmpStart) * tickMs : 0.0;
         const double preRayMs = static_cast<double>(gfxResolveEnd - gfxStart) * tickMs;
         const double startOffsetMs = static_cast<double>(static_cast<int64_t>(cmpStart - gfxStart)) * tickMs;
         const uint64_t overlapStart = std::max(gfxStart, cmpStart);

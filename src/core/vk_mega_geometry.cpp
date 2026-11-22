@@ -220,28 +220,6 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
 
     const auto clusterCount = static_cast<uint32_t>(geometry.meshlets.size());
     const auto blasCount = static_cast<uint32_t>(blasPrimitives.size());
-    vk::ClusterAccelerationStructureTriangleClusterInputNV triangleLimits{
-        .vertexFormat = vk::Format::eR32G32B32Sfloat,
-        .maxGeometryIndexValue = 0,
-        .maxClusterUniqueGeometryCount = 1,
-        // spec §10.2: no truncation until measured
-        .minPositionTruncateBitCount = 0,
-    };
-    for (const GpuMeshletDesc& meshlet : geometry.meshlets) {
-        triangleLimits.maxClusterTriangleCount = std::max<uint32_t>(triangleLimits.maxClusterTriangleCount,
-                                                                    meshlet.triangleCount);
-        triangleLimits.maxClusterVertexCount = std::max<uint32_t>(triangleLimits.maxClusterVertexCount,
-                                                                  meshlet.vertexCount);
-        triangleLimits.maxTotalTriangleCount += meshlet.triangleCount;
-        triangleLimits.maxTotalVertexCount += meshlet.vertexCount;
-    }
-    if (triangleLimits.maxClusterTriangleCount > limits.maxTrianglesPerCluster ||
-        triangleLimits.maxClusterVertexCount > limits.maxVerticesPerCluster) {
-        throw std::runtime_error(std::format("meshlet of {} triangles / {} vertices exceeds the cluster AS limits {} / {}",
-                                             triangleLimits.maxClusterTriangleCount,
-                                             triangleLimits.maxClusterVertexCount, limits.maxTrianglesPerCluster,
-                                             limits.maxVerticesPerCluster));
-    }
     vk::ClusterAccelerationStructureClustersBottomLevelInputNV blasLimits{};
     for (const uint32_t row : blasPrimitives) {
         blasLimits.maxTotalClusterCount += geometry.primitives[row].meshletCount;
@@ -274,6 +252,7 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
         };
     };
     std::vector<MicromapPlan> micromapPlans;
+    std::vector<uint8_t> clusterHasOmm(clusterCount, 0);
     vk::DeviceSize micromapStorageBytes = 0;
     vk::DeviceSize micromapScratchBytes = 0;
     for (const uint32_t row : blasPrimitives) {
@@ -285,6 +264,7 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
         uint32_t clusterTriangles = 0;
         for (uint32_t m = primitive.firstMeshlet; m < primitive.firstMeshlet + primitive.meshletCount; ++m) {
             clusterTriangles += geometry.meshlets[m].triangleCount;
+            clusterHasOmm[m] = 1;
         }
         // the OMM index runs over the cluster triangles in cluster order (D1)
         if (bake.triangleCount != clusterTriangles) {
@@ -310,19 +290,64 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
         micromapPlans.push_back(plan);
     }
 
+    // m8 MG-P1: split opaque and OMM clusters into disjoint CLAS builds so opaque clusters never pay for
+    // eAllowClusterOpacityMicromapsNV
+    std::vector<uint32_t> opaqueClusters;
+    std::vector<uint32_t> ommClusters;
+    opaqueClusters.reserve(clusterCount);
+    for (uint32_t row = 0; row < clusterCount; ++row) {
+        if (clusterHasOmm[row] != 0) {
+            ommClusters.push_back(row);
+        } else {
+            opaqueClusters.push_back(row);
+        }
+    }
+    const auto computeTriangleLimits = [&](std::span<const uint32_t> rows) {
+        vk::ClusterAccelerationStructureTriangleClusterInputNV triLimits{
+            .vertexFormat = vk::Format::eR32G32B32Sfloat,
+            .maxGeometryIndexValue = 0,
+            .maxClusterUniqueGeometryCount = 1,
+            .minPositionTruncateBitCount = 0,
+        };
+        for (const uint32_t row : rows) {
+            const GpuMeshletDesc& meshlet = geometry.meshlets[row];
+            triLimits.maxClusterTriangleCount =
+                std::max<uint32_t>(triLimits.maxClusterTriangleCount, meshlet.triangleCount);
+            triLimits.maxClusterVertexCount =
+                std::max<uint32_t>(triLimits.maxClusterVertexCount, meshlet.vertexCount);
+            triLimits.maxTotalTriangleCount += meshlet.triangleCount;
+            triLimits.maxTotalVertexCount += meshlet.vertexCount;
+        }
+        if (triLimits.maxClusterTriangleCount > limits.maxTrianglesPerCluster ||
+            triLimits.maxClusterVertexCount > limits.maxVerticesPerCluster) {
+            throw std::runtime_error(
+                std::format("meshlet of {} triangles / {} vertices exceeds the cluster AS limits {} / {}",
+                            triLimits.maxClusterTriangleCount, triLimits.maxClusterVertexCount,
+                            limits.maxTrianglesPerCluster, limits.maxVerticesPerCluster));
+        }
+        return triLimits;
+    };
+    vk::ClusterAccelerationStructureTriangleClusterInputNV opaqueTriangleLimits =
+        computeTriangleLimits(opaqueClusters);
+    vk::ClusterAccelerationStructureTriangleClusterInputNV ommTriangleLimits = computeTriangleLimits(ommClusters);
+
     // data access: position fetch needs it (VUID-HitTriangleVertexPositionsKHR-None-08751, VUID-RuntimeSpirv-flags-08761)
     constexpr vk::BuildAccelerationStructureFlagsKHR kBuildFlags =
         vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace |
         vk::BuildAccelerationStructureFlagBitsKHR::eAllowDataAccess;
-    vk::ClusterAccelerationStructureInputInfoNV clasInput{
-        .maxAccelerationStructureCount = clusterCount,
-        // in the size query too (VUID-VkClusterAccelerationStructureBuildTriangleClusterInfoNV-opacityMicromapArray-10881)
-        .flags = micromapPlans.empty()
-            ? kBuildFlags
-            : kBuildFlags | vk::BuildAccelerationStructureFlagBitsKHR::eAllowClusterOpacityMicromapsNV,
+    vk::ClusterAccelerationStructureInputInfoNV opaqueClasInput{
+        .maxAccelerationStructureCount = static_cast<uint32_t>(opaqueClusters.size()),
+        .flags = kBuildFlags,
         .opType = vk::ClusterAccelerationStructureOpTypeNV::eBuildTriangleCluster,
     };
-    clasInput.opInput.pTriangleClusters = &triangleLimits;
+    opaqueClasInput.opInput.pTriangleClusters = &opaqueTriangleLimits;
+    vk::ClusterAccelerationStructureInputInfoNV ommClasInput{
+        .maxAccelerationStructureCount = static_cast<uint32_t>(ommClusters.size()),
+        // in the size query too (VUID-VkClusterAccelerationStructureBuildTriangleClusterInfoNV-opacityMicromapArray-10881)
+        .flags = kBuildFlags | vk::BuildAccelerationStructureFlagBitsKHR::eAllowClusterOpacityMicromapsNV,
+        .opType = vk::ClusterAccelerationStructureOpTypeNV::eBuildTriangleCluster,
+    };
+    ommClasInput.opInput.pTriangleClusters = &ommTriangleLimits;
     vk::ClusterAccelerationStructureInputInfoNV blasInput{
         .maxAccelerationStructureCount = blasCount,
         .flags = kBuildFlags,
@@ -330,28 +355,42 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
     };
     blasInput.opInput.pClustersBottomLevel = &blasLimits;
 
-    // scratch serves every pass; the implicit query is the host's upper bound, logged against the real sizes
+    // MG-P6: scratch serves only eComputeSizes and eExplicitDestinations; eImplicitDestinations is queried solely for
+    // the clasEstimate log and must not inflate buildScratchSize
     vk::DeviceSize scratchBytes = 0;
+    vk::DeviceSize implicitScratchBytes = 0;
     vk::DeviceSize clasEstimate = 0;
-    for (vk::ClusterAccelerationStructureInputInfoNV* input : {&clasInput, &blasInput}) {
-        for (const auto mode : {vk::ClusterAccelerationStructureOpModeNV::eImplicitDestinations,
-                                vk::ClusterAccelerationStructureOpModeNV::eExplicitDestinations,
+    for (vk::ClusterAccelerationStructureInputInfoNV* input : {&opaqueClasInput, &ommClasInput, &blasInput}) {
+        if (input->maxAccelerationStructureCount == 0) {
+            continue;
+        }
+        for (const auto mode : {vk::ClusterAccelerationStructureOpModeNV::eExplicitDestinations,
                                 vk::ClusterAccelerationStructureOpModeNV::eComputeSizes}) {
             input->opMode = mode;
             const vk::AccelerationStructureBuildSizesInfoKHR sizes =
                 device.getClusterAccelerationStructureBuildSizesNV(*input);
             scratchBytes = std::max(scratchBytes, sizes.buildScratchSize);
-            if (input == &clasInput && mode == vk::ClusterAccelerationStructureOpModeNV::eImplicitDestinations) {
-                clasEstimate = sizes.accelerationStructureSize;
-            }
+        }
+        input->opMode = vk::ClusterAccelerationStructureOpModeNV::eImplicitDestinations;
+        const vk::AccelerationStructureBuildSizesInfoKHR implicitSizes =
+            device.getClusterAccelerationStructureBuildSizesNV(*input);
+        implicitScratchBytes = std::max(implicitScratchBytes, implicitSizes.buildScratchSize);
+        if (input != &blasInput) {
+            clasEstimate += implicitSizes.accelerationStructureSize;
         }
     }
 
     using TriangleClusterInfo = vk::ClusterAccelerationStructureBuildTriangleClusterInfoNV;
     using BottomLevelInfo = vk::ClusterAccelerationStructureBuildClustersBottomLevelInfoNV;
+    const auto opaqueCount = static_cast<uint32_t>(opaqueClusters.size());
+    const auto ommCount = static_cast<uint32_t>(ommClusters.size());
     InputLayout layout;
+    // opaque and OMM clusters packed contiguously in split order for their indirect CLAS builds
     const vk::DeviceSize clasInfosOffset = layout.add(sizeof(TriangleClusterInfo) * clusterCount);
     const vk::DeviceSize blasInfosOffset = layout.add(sizeof(BottomLevelInfo) * blasCount);
+    // destination addresses in split order (read/written by CLAS explicit build)
+    const vk::DeviceSize clasDstAddressesOffset = layout.add(sizeof(vk::DeviceAddress) * clusterCount);
+    // model-relative meshlet order (read by Cluster BLAS build so each primitive's clusters stay contiguous)
     const vk::DeviceSize clasAddressesOffset = layout.add(sizeof(vk::DeviceAddress) * clusterCount);
     const vk::DeviceSize blasAddressesOffset = layout.add(sizeof(vk::DeviceAddress) * blasCount);
     // cluster-local positions, parallel to meshletVertices; indices are the raster's 8-bit corners in raster order
@@ -419,15 +458,15 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
     }
     std::memcpy(inputs.mapped + trianglesOffset, geometry.meshletTriangles.data(),
                 geometry.meshletTriangles.size_bytes());
-    std::vector<TriangleClusterInfo> clasInfos(clusterCount);
+    std::vector<TriangleClusterInfo> clasInfosByRow(clusterCount);
     for (uint32_t row = 0; row < clusterCount; ++row) {
         const GpuMeshletDesc& meshlet = geometry.meshlets[row];
         // clusterID is the meshlet row and the triangle order the raster's, so a hit decodes like a vis-buffer pixel
-        clasInfos[row] = TriangleClusterInfo{
+        clasInfosByRow[row] = TriangleClusterInfo{
             .clusterID = row,
             .triangleCount = meshlet.triangleCount,
             .vertexCount = meshlet.vertexCount,
-            .positionTruncateBitCount = triangleLimits.minPositionTruncateBitCount,
+            .positionTruncateBitCount = 0,
             .indexType = static_cast<uint32_t>(vk::ClusterAccelerationStructureIndexFormatFlagBitsNV::e8),
             // set below for the clusters of baked primitives; opacityMicromapArray 0 disables OMMs
             .opacityMicromapIndexType = 0,
@@ -444,13 +483,22 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
         // the primitive's index has one entry per cluster triangle in cluster order: each cluster takes its run
         vk::DeviceSize firstTriangle = 0;
         for (uint32_t row = primitive.firstMeshlet; row < primitive.firstMeshlet + primitive.meshletCount; ++row) {
-            TriangleClusterInfo& info = clasInfos[row];
+            TriangleClusterInfo& info = clasInfosByRow[row];
             info.opacityMicromapIndexType = static_cast<uint32_t>(clusterIndexFormat(indexType));
             info.opacityMicromapIndexBufferStride = indexStride(indexType);
             info.opacityMicromapArray = micromapAddresses[i];
             info.opacityMicromapIndexBuffer = inputAddress(plan.indexOffset + firstTriangle * indexStride(indexType));
             firstTriangle += geometry.meshlets[row].triangleCount;
         }
+    }
+    // split order: [0, opaqueCount) opaque clusters, [opaqueCount, clusterCount) OMM clusters
+    std::vector<uint32_t> splitOrder;
+    splitOrder.reserve(clusterCount);
+    splitOrder.insert(splitOrder.end(), opaqueClusters.begin(), opaqueClusters.end());
+    splitOrder.insert(splitOrder.end(), ommClusters.begin(), ommClusters.end());
+    std::vector<TriangleClusterInfo> clasInfos(clusterCount);
+    for (uint32_t i = 0; i < clusterCount; ++i) {
+        clasInfos[i] = clasInfosByRow[splitOrder[i]];
     }
     std::memcpy(inputs.mapped + clasInfosOffset, clasInfos.data(), std::span(clasInfos).size_bytes());
     std::vector<BottomLevelInfo> blasInfos(blasCount);
@@ -467,7 +515,8 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
 
     const auto commandsInfo = [&](const vk::ClusterAccelerationStructureInputInfoNV& input,
                                   vk::ClusterAccelerationStructureOpModeNV mode, vk::DeviceSize infosOffset,
-                                  vk::DeviceSize infoStride, vk::DeviceSize addressesOffset, uint32_t count) {
+                                  vk::DeviceSize infoStride, vk::DeviceSize addressesOffset, uint32_t count,
+                                  uint32_t sizesOffsetElements = 0) {
         vk::ClusterAccelerationStructureCommandsInfoNV info{
             .input = input,
             .scratchData = scratch.address,
@@ -475,7 +524,9 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
         };
         info.input.opMode = mode;
         if (mode == vk::ClusterAccelerationStructureOpModeNV::eComputeSizes) {
-            info.dstSizesArray = stridedRegion(sizesReadback.address, sizeof(uint32_t), count);
+            info.dstSizesArray =
+                stridedRegion(sizesReadback.address + vk::DeviceSize{sizesOffsetElements} * sizeof(uint32_t),
+                              sizeof(uint32_t), count);
         } else {
             info.dstAddressesArray =
                 stridedRegion(inputAddress(addressesOffset), sizeof(vk::DeviceAddress), count);
@@ -521,25 +572,64 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
         micromapBuilds.push_back(info);
     }
 
+    const vk::DeviceSize ommInfosOffset = clasInfosOffset + sizeof(TriangleClusterInfo) * opaqueCount;
+    const vk::DeviceSize ommDstAddressesOffset = clasDstAddressesOffset + sizeof(vk::DeviceAddress) * opaqueCount;
+
     // micromaps before every CLAS pass that references them, in the same submit (D2 must-not)
     submit([&](const vk::raii::CommandBuffer& cmd) {
         if (!micromapBuilds.empty()) {
             cmd.buildMicromapsEXT(micromapBuilds);
             micromapBarrier(cmd);
         }
-        cmd.buildClusterAccelerationStructureIndirectNV(
-            commandsInfo(clasInput, kComputeSizes, clasInfosOffset, sizeof(TriangleClusterInfo), 0, clusterCount));
+        if (opaqueCount > 0) {
+            cmd.buildClusterAccelerationStructureIndirectNV(commandsInfo(
+                opaqueClasInput, kComputeSizes, clasInfosOffset, sizeof(TriangleClusterInfo), 0, opaqueCount, 0));
+            if (ommCount > 0) {
+                buildBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                             vk::AccessFlagBits2::eAccelerationStructureReadKHR |
+                                 vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
+            }
+        }
+        if (ommCount > 0) {
+            cmd.buildClusterAccelerationStructureIndirectNV(commandsInfo(
+                ommClasInput, kComputeSizes, ommInfosOffset, sizeof(TriangleClusterInfo), 0, ommCount, opaqueCount));
+        }
         buildBarrier(cmd, vk::PipelineStageFlagBits2::eHost, vk::AccessFlagBits2::eHostRead);
     });
-    model.clas = placeStructures(readSizes(clusterCount), limits.clusterByteAlignment, clasAddressesOffset, "Clas");
+    // pack CLAS in original meshlet row order so each primitive's clusters stay contiguous in VRAM, then scatter
+    // destination addresses into split order for the opaque and OMM indirect builds
+    const std::vector<uint32_t> splitSizes = readSizes(clusterCount);
+    std::vector<uint32_t> rowSizes(clusterCount, 0);
+    for (uint32_t i = 0; i < clusterCount; ++i) {
+        rowSizes[splitOrder[i]] = splitSizes[i];
+    }
+    std::vector<vk::DeviceAddress> clasByRow;
+    model.clas = placeStructures(rowSizes, limits.clusterByteAlignment, clasAddressesOffset, "Clas", &clasByRow);
+    std::vector<vk::DeviceAddress> splitClasAddresses(clusterCount, 0);
+    for (uint32_t i = 0; i < clusterCount; ++i) {
+        splitClasAddresses[i] = clasByRow[splitOrder[i]];
+    }
+    std::memcpy(inputs.mapped + clasDstAddressesOffset, splitClasAddresses.data(),
+                std::span(splitClasAddresses).size_bytes());
 
     // BLAS sizes depend on the built CLAS they reference
     submit([&](const vk::raii::CommandBuffer& cmd) {
-        cmd.buildClusterAccelerationStructureIndirectNV(commandsInfo(
-            clasInput, kExplicit, clasInfosOffset, sizeof(TriangleClusterInfo), clasAddressesOffset, clusterCount));
-        buildBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
-                     vk::AccessFlagBits2::eAccelerationStructureReadKHR |
-                         vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
+        if (opaqueCount > 0) {
+            cmd.buildClusterAccelerationStructureIndirectNV(commandsInfo(opaqueClasInput, kExplicit, clasInfosOffset,
+                                                                         sizeof(TriangleClusterInfo),
+                                                                         clasDstAddressesOffset, opaqueCount));
+            buildBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                         vk::AccessFlagBits2::eAccelerationStructureReadKHR |
+                             vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
+        }
+        if (ommCount > 0) {
+            cmd.buildClusterAccelerationStructureIndirectNV(commandsInfo(ommClasInput, kExplicit, ommInfosOffset,
+                                                                         sizeof(TriangleClusterInfo),
+                                                                         ommDstAddressesOffset, ommCount));
+            buildBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+                         vk::AccessFlagBits2::eAccelerationStructureReadKHR |
+                             vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
+        }
         cmd.buildClusterAccelerationStructureIndirectNV(
             commandsInfo(blasInput, kComputeSizes, blasInfosOffset, sizeof(BottomLevelInfo), 0, blasCount));
         buildBarrier(cmd, vk::PipelineStageFlagBits2::eHost, vk::AccessFlagBits2::eHostRead);
@@ -559,10 +649,12 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
     // host preparation and the waited submits
     const double buildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     logInfo(std::format("model {}: {} CLAS in {} (host estimate {}), {} cluster BLAS for {} primitives in {}, "
-                        "{} micromaps in {}; built in {:.1f} ms; rt geometry total {}",
+                        "{} micromaps in {}, scratch {} (implicit destinations {}); built in {:.1f} ms; rt geometry "
+                        "total {}",
                         models.size(), clusterCount, formatBytes(model.clas.bytes), formatBytes(clasEstimate), blasCount,
                         geometry.primitives.size(), formatBytes(model.blas.bytes), model.micromaps.size(),
-                        formatBytes(model.micromapStorage.bytes), buildMs,
+                        formatBytes(model.micromapStorage.bytes), formatBytes(scratch.bytes),
+                        formatBytes(implicitScratchBytes), buildMs,
                         formatBytes(totalBytes() + model.clas.bytes + model.blas.bytes + model.micromapStorage.bytes)),
             "MegaGeometry");
     models.push_back(std::move(model));

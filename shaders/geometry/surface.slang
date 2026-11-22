@@ -45,6 +45,27 @@ public TriangleCorners loadCornerVertices(DrawContext draw, uint triangle)
     return corners;
 }
 
+// ray-hit corners (m8 MG-P4): uses the hardware-fetched CLAS positions and skips reading GpuVertex::pos (36 B/hit)
+public TriangleCorners loadRayCornerVertices(DrawContext draw, uint triangle, float3 objectPos[3])
+{
+    const GpuMeshletDesc meshlet = loadMeshlet(draw);
+    const uint3 local = loadMeshletTriangle(draw, meshlet, triangle);
+    GpuVertex* vertices = bdaPtr<GpuVertex>(draw.model.vertices);
+    TriangleCorners corners;
+    [unroll]
+    for (uint i = 0; i < 3; ++i)
+    {
+        const uint vertexIndex = loadMeshletVertexIndex(draw, meshlet, local[i]);
+        corners.vertexIndex[i] = vertexIndex;
+        corners.objectPos[i] = objectPos[i];
+        corners.color[i] = vertices[vertexIndex].color;
+        corners.texCoord[i] = vertices[vertexIndex].texCoord;
+        corners.clip[i] = float4(0.0, 0.0, 0.0, 0.0);
+    }
+    corners.isFrontFacing = true;
+    return corners;
+}
+
 public TriangleCorners loadTriangleCorners(DrawContext draw, GpuCameraData camera, uint triangle)
 {
     TriangleCorners corners = loadCornerVertices(draw, triangle);
@@ -175,21 +196,64 @@ float uvDensity(float2 uv[3], float worldArea)
     return worldArea > 0.0 ? sqrt(abs(e1.x * e2.y - e1.y * e2.x) / worldArea) : 0.0;
 }
 
-// ray hit (spec/features/ray_tracing_mega_geometry.md §7): isotropic gradients from the ray-cone width at the hit.
-// The footprint's uv area equals the area a pixel covers through |ddx x ddy|, so SampleGrad picks the resolve's mip
+// ray hit (spec/features/ray_tracing_mega_geometry.md §7, m8 MG-P4): uses hit objectToWorld / worldToObject directly,
+// skips prevPosition and normalMatrix() cofactor ALU, and derives isotropic gradients from the ray-cone width
 public Surface buildRaySurface(DrawContext draw, TriangleCorners corners, float2 hitBarycentrics, float coneWidth,
-                               float3 rayDirection)
+                               float3 rayDirection, float3x4 objectToWorld, float3x4 worldToObject)
 {
     Barycentrics bary;
     bary.lambda = float3(1.0 - hitBarycentrics.x - hitBarycentrics.y, hitBarycentrics.x, hitBarycentrics.y);
     bary.ddx = float3(0.0, 0.0, 0.0);
     bary.ddy = float3(0.0, 0.0, 0.0);
-    float2 uv1[3];
-    Surface surface = buildSurfaceAt(draw, corners, bary, uv1);
 
-    const float3x3 toWorld = (float3x3)draw.nodeInstance.worldMatrix;
-    const float worldArea = length(cross(mul(toWorld, corners.objectPos[1] - corners.objectPos[0]),
-                                         mul(toWorld, corners.objectPos[2] - corners.objectPos[0])));
+    const float3 objectPos = interpolate(bary, corners.objectPos[0], corners.objectPos[1], corners.objectPos[2]);
+    const float3x3 toWorld = (float3x3)objectToWorld;
+    // inverse-transpose of objectToWorld: normalMatrix()'s direction, mirrored or not
+    const float3x3 toWorldNormal = transpose((float3x3)worldToObject);
+    const float3 edge1 = corners.objectPos[1] - corners.objectPos[0];
+    const float3 edge2 = corners.objectPos[2] - corners.objectPos[0];
+    const float3 worldGeoNormal = mul(toWorldNormal, cross(edge1, edge2));
+    const bool isFrontFacing = dot(worldGeoNormal, rayDirection) < 0.0;
+    const float facing = isFrontFacing ? 1.0 : -1.0;
+
+    float3 normals[3];
+    float4 tangents[3];
+    float2 uv1[3];
+    [unroll]
+    for (uint i = 0; i < 3; ++i)
+    {
+        normals[i] = loadVertexNormal(draw, corners.vertexIndex[i]);
+        tangents[i] = loadVertexTangent(draw, corners.vertexIndex[i]);
+        uv1[i] = loadVertexUv1(draw, corners.vertexIndex[i]);
+    }
+
+    Surface surface;
+    surface.isFrontFacing = isFrontFacing;
+    surface.position = mul(objectToWorld, float4(objectPos, 1.0));
+    surface.prevPosition = float3(0.0, 0.0, 0.0);
+
+    const float3 objectNormal = interpolate(bary, normals[0], normals[1], normals[2]);
+    const bool hasGeoNormal = dot(worldGeoNormal, worldGeoNormal) > kMinGeoNormalLengthSq;
+    const bool hasVertexNormal = dot(objectNormal, objectNormal) > 0.0;
+    const float3 vertexNormal =
+        hasVertexNormal ? normalize(mul(toWorldNormal, objectNormal)) * facing : kFallbackNormal;
+    surface.geoNormal = hasGeoNormal ? normalize(worldGeoNormal) * facing : vertexNormal;
+    surface.normal = hasVertexNormal ? vertexNormal : surface.geoNormal;
+
+    const float4 objectTangent = interpolate(bary, tangents[0], tangents[1], tangents[2]);
+    surface.tangent = float4(0.0, 0.0, 0.0, 0.0);
+    if (dot(objectTangent.xyz, objectTangent.xyz) > 0.0)
+    {
+        const bool isFlipped = (draw.nodeInstance.flags & kNodeFlagFlipWinding) != 0;
+        const float sign = (objectTangent.w < 0.0 ? -1.0 : 1.0) * (isFlipped ? -1.0 : 1.0);
+        surface.tangent = float4(normalize(mul(toWorld, objectTangent.xyz)), sign);
+    }
+
+    surface.color = interpolate(bary, corners.color[0], corners.color[1], corners.color[2]);
+    surface.uv[0] = interpolate(bary, corners.texCoord[0], corners.texCoord[1], corners.texCoord[2]);
+    surface.uv[1] = interpolate(bary, uv1[0], uv1[1], uv1[2]);
+
+    const float worldArea = length(cross(mul(toWorld, edge1), mul(toWorld, edge2)));
     // a tilted surface stretches the footprint along one axis by 1/cos: sqrt keeps the area
     const float cosine = max(abs(dot(rayDirection, surface.geoNormal)), kMinConeCosine);
     const float footprint = coneWidth / sqrt(cosine);

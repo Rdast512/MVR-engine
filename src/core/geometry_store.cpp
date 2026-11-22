@@ -12,14 +12,13 @@
 
 namespace
 {
-    // level 0 of clusterlod.h's clodDefaultConfig (vk_lod_clusters raster preset), so these meshlets stay the base
-    // level once LOD levels are built above them: Flex builder, min = max / 3, no cone weight, split factor 2
+    // m8 MG-P3: Spatial builder for tighter CLAS/BVH boxes, as clusterlod.h's clodDefaultConfigRT (vk_lod_clusters RT
+    // preset). Its min = max / 4 and fill weight 0.5 inflated Bistro's clusters; min = max / 3 and 0.75 measured faster
     constexpr size_t kMeshletMaxVertices = 64;
     constexpr size_t kMeshletMaxTriangles = 126;
     constexpr size_t kMeshletMinTriangles = kMeshletMaxTriangles / 3;
     static_assert(kMeshletMaxVertices <= UINT8_MAX && kMeshletMaxTriangles <= UINT8_MAX, "GpuMeshletDesc stores 8-bit counts");
-    constexpr float kMeshletConeWeight = 0.0f;
-    constexpr float kMeshletSplitFactor = 2.0f;
+    constexpr float kMeshletFillWeight = 0.75f;
     constexpr int kMeshletOptimizeLevel = 1;
     // meshopt_partitionClusters may exceed its target by a third; the largest target that stays within a group
     constexpr size_t kGroupPartitionTarget = kMeshletGroupMaxSize * 3 / 4;
@@ -305,16 +304,16 @@ MeshletBuild GeometryStore::buildMeshlets(uint32_t firstIndex, uint32_t indexCou
     }
     const float* rangePositions = &vertices[firstVertex].pos.x;
 
-    // the Flex bound uses min_triangles: meshlets may be that small
+    // the Spatial bound uses min_triangles: meshlets may be that small
     const size_t maxMeshlets = meshopt_buildMeshletsBound(indexCount, kMeshletMaxVertices, kMeshletMinTriangles);
     std::vector<meshopt_Meshlet> built(maxMeshlets);
     std::vector<unsigned int> localVertices(indexCount);
     std::vector<unsigned char> localTriangles(indexCount);
 
-    const size_t meshletCount = meshopt_buildMeshletsFlex(
+    const size_t meshletCount = meshopt_buildMeshletsSpatial(
         built.data(), localVertices.data(), localTriangles.data(), rangeIndices.data(), indexCount, rangePositions,
         vertexCount, sizeof(GpuVertex), kMeshletMaxVertices, kMeshletMinTriangles, kMeshletMaxTriangles,
-        kMeshletConeWeight, kMeshletSplitFactor);
+        kMeshletFillWeight);
 
     if (meshletCount == 0) {
         return {};

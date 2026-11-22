@@ -41,7 +41,9 @@ public:
     std::vector<vk::raii::Fence> inFlightFences;
     // async compute work of the frame slots signals frame numbers; not recreated with the swapchain
     vk::raii::Semaphore computeTimeline = nullptr;
-    // the ray passes of the frame slots signal frame numbers: the next in-place PTLAS update waits for them
+    // the ray passes of the frame slots signal frame numbers: the next in-place PTLAS update waits for them. With NRC
+    // paused and no ray check, the signal precedes DLSS-RR and post (m8 MG-P7): passes after DLSS-RR must not read the
+    // PTLAS or the light buffers, which host waits on this value free
     vk::raii::Semaphore rayTimeline = nullptr;
     // declared before the buffers: destroyed after them
     vk::raii::CommandPool commandPool = nullptr;

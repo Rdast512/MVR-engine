@@ -337,14 +337,51 @@ void Renderer::drawFrame()
         cpuFrameDataWriteMs = toMs(uboStart, std::chrono::steady_clock::now());
     }
     // after the frame root and node instances of the slot are written
+    std::array<vk::CommandBufferSubmitInfo, FrameSync::kRaySegmentsPerFrame> rayCmdInfos{};
+    for (uint32_t i = 0; i < raySegmentCount; ++i) {
+        rayCmdInfos[i].commandBuffer = *raySegments[i];
+    }
+    // the next frame's in-place PTLAS update and light prep wait for this frame's rays
+    const vk::SemaphoreSubmitInfo raySignal{.semaphore = *frameSync.rayTimeline,
+                                            .value = frameNumber,
+                                            .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
+    // MG-P7 (I4 §3): when NRC is paused and DLSS-RR splits raySegments, submit the pre-DLSS pure-Vulkan ray work
+    // before AcquireImage so acquire/present CPU latency never enters RayStartWait; keep DLSS-RR + post with
+    // presentCmd in one post-acquire submit so no second submit arrives while NGX/CUDA runs (C-G3-6)
+    const bool isPreAcquireRaySubmit = !isNrcRecorded && preDlssRaySegmentCount > 0;
+    const bool isPreDlssRaySignal = isPreAcquireRaySubmit && rayCheckStats[currentFrame].mapped == nullptr;
+    vk::SemaphoreSubmitInfo tlasWait{};
     {
         const auto submitStart = std::chrono::steady_clock::now();
         submitComputeCommands();
+        // after submitComputeCommands() updates computeTimelineValues[currentFrame] = frameNumber; the first stage
+        // that traces waits for this frame's TLAS (spec/features/ray_tracing_mega_geometry.md §3.5)
+        tlasWait = vk::SemaphoreSubmitInfo{.semaphore = *frameSync.computeTimeline,
+                                           .value = computeTimelineValues[currentFrame],
+                                           .stageMask = vk::PipelineStageFlagBits2::eComputeShader |
+                                               vk::PipelineStageFlagBits2::eRayTracingShaderKHR};
         {
             ZoneScopedN("QueueSubmitFrame");
-            // no wait: cull, raster and compute run while the CPU acquires the image, and overlap the TLAS build
             const vk::CommandBufferSubmitInfo frameCmdInfo{.commandBuffer = *frameCmd};
-            graphicsQueue.submit2(vk::SubmitInfo2{.commandBufferInfoCount = 1, .pCommandBufferInfos = &frameCmdInfo});
+            if (isPreAcquireRaySubmit) {
+                const std::array earlySubmits{
+                    // no wait: cull, raster and resolve run while async compute builds PTLAS and lights
+                    vk::SubmitInfo2{.commandBufferInfoCount = 1, .pCommandBufferInfos = &frameCmdInfo},
+                    vk::SubmitInfo2{
+                        .waitSemaphoreInfoCount = 1,
+                        .pWaitSemaphoreInfos = &tlasWait,
+                        .commandBufferInfoCount = preDlssRaySegmentCount,
+                        .pCommandBufferInfos = rayCmdInfos.data(),
+                        .signalSemaphoreInfoCount = isPreDlssRaySignal ? 1u : 0u,
+                        .pSignalSemaphoreInfos = isPreDlssRaySignal ? &raySignal : nullptr,
+                    },
+                };
+                graphicsQueue.submit2(earlySubmits);
+            } else {
+                // no wait: cull, raster and compute run while the CPU acquires the image, and overlap the TLAS build
+                graphicsQueue.submit2(
+                    vk::SubmitInfo2{.commandBufferInfoCount = 1, .pCommandBufferInfos = &frameCmdInfo});
+            }
         }
         cpuSubmitMs += toMs(submitStart, std::chrono::steady_clock::now());
     }
@@ -359,7 +396,8 @@ void Renderer::drawFrame()
         imageIndex = acquired.value;
         cpuWaitsMs += toMs(acqStart, std::chrono::steady_clock::now());
     }
-    // out of date: no present this frame; the ray submits alone signal the fence, so the slot stays usable
+    // out of date: no present this frame; the post-acquire ray/DLSS submit alone signals the fence, so the slot stays
+    // usable
     const bool isImageAcquired = result != vk::Result::eErrorOutOfDateKHR;
     if (isImageAcquired && result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) {
         throw std::runtime_error("failed to acquire swap chain image!");
@@ -377,33 +415,29 @@ void Renderer::drawFrame()
     {
         ZoneScopedN("QueueSubmitRayPresent");
         const auto submitStart = std::chrono::steady_clock::now();
-        // the first stage that traces waits for this frame's TLAS (spec/features/ray_tracing_mega_geometry.md §3.5);
-        // the compute submit is already queued, so the wait never precedes its signal
-        std::array<vk::CommandBufferSubmitInfo, FrameSync::kRaySegmentsPerFrame> rayCmdInfos{};
-        for (uint32_t i = 0; i < raySegmentCount; ++i) {
-            rayCmdInfos[i].commandBuffer = *raySegments[i];
-        }
-        const vk::SemaphoreSubmitInfo tlasWait{.semaphore = *frameSync.computeTimeline,
-                                               .value = computeTimelineValues[currentFrame],
-                                               .stageMask = vk::PipelineStageFlagBits2::eComputeShader |
-                                                   vk::PipelineStageFlagBits2::eRayTracingShaderKHR};
-        // the next frame's in-place PTLAS update waits for this frame's rays
-        const vk::SemaphoreSubmitInfo raySignal{.semaphore = *frameSync.rayTimeline,
-                                                .value = frameNumber,
-                                                .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
         // only the present pass waits for the image; the swapchain barrier chains with this stage
         const vk::SemaphoreSubmitInfo acquireWait{.semaphore = acquireSemaphore,
                                                   .stageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput};
         const vk::CommandBufferSubmitInfo presentCmdInfo{.commandBuffer = *presentCmd};
         const vk::SemaphoreSubmitInfo renderSignal{.semaphore = renderSemaphore,
                                                    .stageMask = vk::PipelineStageFlagBits2::eBottomOfPipe};
+        const vk::SubmitInfo2 postRaySubmit = isPreAcquireRaySubmit
+            ? vk::SubmitInfo2{
+                  .commandBufferInfoCount = raySegmentCount - preDlssRaySegmentCount,
+                  .pCommandBufferInfos = rayCmdInfos.data() + preDlssRaySegmentCount,
+                  .signalSemaphoreInfoCount = isPreDlssRaySignal ? 0u : 1u,
+                  .pSignalSemaphoreInfos = isPreDlssRaySignal ? nullptr : &raySignal,
+              }
+            : vk::SubmitInfo2{
+                  .waitSemaphoreInfoCount = 1,
+                  .pWaitSemaphoreInfos = &tlasWait,
+                  .commandBufferInfoCount = raySegmentCount,
+                  .pCommandBufferInfos = rayCmdInfos.data(),
+                  .signalSemaphoreInfoCount = 1,
+                  .pSignalSemaphoreInfos = &raySignal,
+              };
         const std::array submits{
-            vk::SubmitInfo2{.waitSemaphoreInfoCount = 1,
-                            .pWaitSemaphoreInfos = &tlasWait,
-                            .commandBufferInfoCount = raySegmentCount,
-                            .pCommandBufferInfos = rayCmdInfos.data(),
-                            .signalSemaphoreInfoCount = 1,
-                            .pSignalSemaphoreInfos = &raySignal},
+            postRaySubmit,
             vk::SubmitInfo2{.waitSemaphoreInfoCount = 1,
                             .pWaitSemaphoreInfos = &acquireWait,
                             .commandBufferInfoCount = 1,
@@ -411,7 +445,7 @@ void Renderer::drawFrame()
                             .signalSemaphoreInfoCount = 1,
                             .pSignalSemaphoreInfos = &renderSignal},
         };
-        // the ray work (NRC) shares one submit call with the present pass: no separate submit while NRC runs
+        // the SDK work (NRC / DLSS-RR) shares one submit call with the present pass: no separate submit while it runs
         const uint32_t submitCount = isImageAcquired ? 2 : 1;
         graphicsQueue.submit2(vk::ArrayProxy<const vk::SubmitInfo2>(submitCount, submits.data()), fence);
         cpuSubmitMs += toMs(submitStart, std::chrono::steady_clock::now());
@@ -565,6 +599,7 @@ void Renderer::recordRayCommands()
 
     raySegments = frameSync.raySegments(currentFrame);
     raySegmentCount = 0;
+    preDlssRaySegmentCount = 0;
     // moves on when an SDK call opens a new segment
     const vk::raii::CommandBuffer* cmd = &beginRaySegment();
     {
@@ -683,8 +718,12 @@ void Renderer::submitComputeCommands()
     // the shader objects are created for descriptor heaps
     cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
     cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
-    rtxdi.recordLightPreparation(cmd, currentFrame, frameData.frameRootAddress(currentFrame));
+    // MG-P7: record RT instances + PTLAS before light preparation so reuseBarrier does not stall behind presampling
+    // and light preparation's compute dispatches can overlap buildPartitionedAccelerationStructuresNV. Defensive heap
+    // rebind: whether the PTLAS build keeps the heap bindings is not verified
     rtScene.recordBuild(cmd, currentFrame);
+    bindHeaps(cmd);
+    rtxdi.recordLightPreparation(cmd, currentFrame, frameData.frameRootAddress(currentFrame));
     cmd.end();
 
     // frame numbers only grow, so every signal is larger than the last
@@ -1126,6 +1165,9 @@ const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::Co
     const bool gpuTrace = tracyContext != nullptr && tracyContext->isActive();
     TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
 #endif
+    if (!isNrcRecorded) {
+        preDlssRaySegmentCount = raySegmentCount;
+    }
     // NGX binds its own pipelines and descriptor sets, which invalidate the heap bindings
     const vk::raii::CommandBuffer& postCmd = recordIsolated(cmd, [&](const vk::raii::CommandBuffer& sdkCmd) {
 #ifdef TRACY_ENABLE
