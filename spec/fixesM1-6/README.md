@@ -1,6 +1,6 @@
 # M8 · Optimization and fixes
 
-**Status** — Milestone planned on 2026-11-20; steps re-planned on 2026-11-21 as I1–I12 in execution order, covering every open finding of the three review documents. I1 ([i1_check_runners.md](./i1_check_runners.md)), I2 ([i2_shading_correctness.md](./i2_shading_correctness.md)), I3 ([i3_mega_geometry_fixes.md](./i3_mega_geometry_fixes.md)), I4 ([i4_frame_profile.md](./i4_frame_profile.md)), I5 ([i5_restir_gi_tuning.md](./i5_restir_gi_tuning.md)), I6 ([i6_restir_di_tuning.md](./i6_restir_di_tuning.md)), and I7 ([i7_nrc_bias.md](./i7_nrc_bias.md)) built 2026-11-21–22; remaining I4-ranked steps: **I10 → I9**. I13 (thin-walled glass, [i13_glass_transmission.md](./i13_glass_transmission.md)) planned 2026-11-22.\
+**Status** — Milestone planned on 2026-11-20; steps re-planned on 2026-11-21 as I1–I12 in execution order, covering every open finding of the three review documents. I1 ([i1_check_runners.md](./i1_check_runners.md)), I2 ([i2_shading_correctness.md](./i2_shading_correctness.md)), I3 ([i3_mega_geometry_fixes.md](./i3_mega_geometry_fixes.md)), I4 ([i4_frame_profile.md](./i4_frame_profile.md)), I5 ([i5_restir_gi_tuning.md](./i5_restir_gi_tuning.md)), I6 ([i6_restir_di_tuning.md](./i6_restir_di_tuning.md)), and I7 ([i7_nrc_bias.md](./i7_nrc_bias.md)) built 2026-11-21–22; remaining I4-ranked steps: **I10 → I9**. I13 (thin-walled glass, [i13_glass_transmission.md](./i13_glass_transmission.md)) and I14 (Bistro sampling, reuse, DLSS-RR and rays, [i14_bistro_sampling_and_rays.md](./i14_bistro_sampling_and_rays.md)) planned 2026-11-22. I15 (café DI and GI settings from the lab, [i15_cafe_di_gi_settings.md](./i15_cafe_di_gi_settings.md)) planned 2026-11-22.\
 **Scope** — Make the whole pipeline produce its best image per millisecond. That means fixing the measured bias and stability problems of the default lighting, closing or explaining the NRC bias, and landing the measured perf levers. Each step is backed by a check that keeps it fixed.
 [Engine spec](../../docs/engine_spec.md) · [Findings](./m8_optimization_and_fixes.md) · [Mega Geometry findings](./mg_optimizations_fixes.md) · [PBR plan](../pbr_implementation_plan.md) · [Considerations](../considerations.md)
 
@@ -33,10 +33,12 @@ Finding ids refer to [m8_optimization_and_fixes.md](./m8_optimization_and_fixes.
 | I7 · NRC bias | [`i7_nrc_bias.md`](./i7_nrc_bias.md) (built) | Q7, Q1, Q2 (ND5), Q3 (ND1), Q4, Q5, Q6 (ND6) | I1, I2 |
 | I8 · NRC cost | `i8_nrc_cost.md` | NP1 (ND7), NP2, NP4, NP5 | I7 |
 | I9 · RTXDI surface traffic | `i9_rtxdi_surface_traffic.md` | O4 | I4 |
-| I10 · Mega Geometry perf | `i10_mega_geometry_perf.md` | MG-P1–MG-P7 | I3, I4 |
+| I10 · Mega Geometry perf | [i10_mega_geometry_perf.md](./i10_mega_geometry_perf.md) | MG-S1–MG-S3, MG-P1–MG-P7 | I3, I4 |
 | I11 · Floor tier | `i11_floor_tier.md` | F9 (2060 Super part), O7, NP3, DLSS-RR mode per tier | I4 (needs the 2060 Super) |
-| I12 · Many-light and glossy re-check | `i12_many_light_recheck.md` | O2, O6, O8 (exit), O9, I5 / I6 decisions on Bistro, F22, F23 | I5, I6 |
+| I12 · Many-light and glossy re-check | `i12_many_light_recheck.md` | O2, O6, O8 (exit), O9, I5 / I6 decisions on Bistro, F22, F23 | I5, I6, I14 |
 | I13 · Thin-walled glass | [`i13_glass_transmission.md`](./i13_glass_transmission.md) (planned) | F21 | I1, I2, I6 |
+| I14 · Bistro sampling, reuse, DLSS-RR and rays | [`i14_bistro_sampling_and_rays.md`](./i14_bistro_sampling_and_rays.md) (planned) | F24, F25, F26, F27 (feeds F22, F23) | I1, I2, I6 |
+| I15 · Café DI and GI settings | [`i15_cafe_di_gi_settings.md`](./i15_cafe_di_gi_settings.md) (planned) | F22, F23 (settings fixes from the lab) | I1, I5, I6, settings lab; Phase 2 after I14 Phase 3 |
 
 Not scheduled: O5 (removed from the candidates on 2026-11-20), ND2–ND4 (design choices), ND8 (waits on an environment light, C-F3-5), and the post-1.0 RTXMG features (mg findings §4).
 
@@ -145,7 +147,7 @@ In this order (findings §3.3):
 
 ### I10 · Mega Geometry perf
 
-MG-P1–MG-P7, in I4's ranked order:
+Spec: [i10_mega_geometry_perf.md](./i10_mega_geometry_perf.md). First the items skipped before I10 (re-check of 2026-11-22): MG-S1 triangle BLAS vs CLAS on static content (F2 / E4, never measured), MG-S2 the per-primitive BLAS recheck at Bistro, MG-S3 Bistro and the café runners in the verification set. Then MG-P1–MG-P7, in I4's ranked order:
 
 - MG-P1: opaque and OMM CLAS split;
 - MG-P2: 7-bit position truncation with matching raster positions;
@@ -176,7 +178,7 @@ On Bistro, with M7's emissive triangles and presampling (spec-gloss materials, C
 - the BRDF candidate's value (O8 exit);
 - O9 on glossy secondary surfaces;
 - I5's and I6's decisions re-run on a many-light pose;
-- the café's emissive-only interior (`ENGINE_CHECK_SCENE=bistro_cafe`): shipped DI's confetti under DLSS-RR (F22) and shipped GI's dim-tile excess (F23).
+- the café's emissive-only interior (`ENGINE_CHECK_SCENE=bistro_cafe`): the Bistro re-check of I15's F22 (DI confetti under DLSS-RR) and F23 (GI dim-tile excess) fixes, after I14.
 
 **Done when:** each switch is decided with its numbers on Bistro, and the shipped sets hold on both scenes and in the café (DI bias, dim tiles, `Lit` stability).
 
@@ -192,6 +194,26 @@ Refraction, volume and rough transmission are stage 2 (engine spec §15).
 
 **Done when:** the glass throughput check passes on `TransmissionTest` and Bistro, the Sponza runners read byte-identical, and the pass cost is recorded on two Bistro poses.
 
+### I14 · Bistro sampling, reuse, DLSS-RR and rays
+
+Spec: [i14_bistro_sampling_and_rays.md](./i14_bistro_sampling_and_rays.md). Correctness fixes and checks from the 2026-11-22 four-path Bistro audit (F24–F27), landing ahead of I12's final tuning of F22 and F23:
+
+- **Phase 1 (F24, rays):** geometric hemisphere guard in `shadeLightSample` and `RAB_SurfaceImportanceSampleBrdf`, removal of opaque `side = -1` punch-through, degenerate-triangle NaN guard in `safeSpawnPoint`, offset BRDF ray origin with `TMin = 0`, and offset-origin visibility with bounded endpoint margins;
+- **Phase 2 (F25, DLSS-RR):** off-screen behind-camera motion sentinel, jittered `resolveBackground`, `EnvBRDFApprox2` (`f0 == 0` guard) and `SpecAlbedo` precision A/B, startup ordering check, and an automated `ENGINE_DLSS_CHECK` (clean-input baseline + perturbation controls);
+- **Phase 3 (F26, reuse similarity):** `geoNormal` vs `shadingNormal` in `RAB_GetSurfaceNormal`, resolution-scaled `samplingRadius`, `depthThreshold`, same-frame plane-distance guard in `RAB_AreMaterialsSimilar`, `isFallbackSamplingEnabled` A/B, and tighter material similarity thresholds;
+- **Phase 4 (F27, Bistro light PDF):** independent Bistro textured-emission check, multi-tap `light_world` flux and zero-flux emitter culling (`hitEmission` dropout fix), shading-time texture eval A/B, and scaled `Power_RIS` vs tuned `ReGIR_RIS` for Bistro's exterior-dominated flux (primary and secondary NEE).
+
+**Done when:** all four phases land with Sponza and `bistro_cafe` measurements, `ENGINE_DLSS_CHECK` and the independent Bistro textured-emission check pass, validation and GPU-AV are clean, and the clean baseline is handed off to I12.
+
+### I15 · Café DI and GI settings
+
+Spec: [i15_cafe_di_gi_settings.md](./i15_cafe_di_gi_settings.md). The settings fixes the lab's first runs (`f22_quick`, `di-ofat`, `gi-ofat`, 2026-11-22) found for F22 and F23, which no other step decided:
+
+- **Phase 1 (F22, DI):** `spatialSamples = 2`, with or without permutation, cuts café `Lit` flicker from 87 % / 83 % to 28–35 %. It ships by flicker on 5 seeds, the DI bias against RTXDI's reference, the convergence check and the cost;
+- **Phase 2 (F23, GI):** the café's +10 % (dim tiles +25 %) excess rides on the decorrelation swap. The firefly bound at NVIDIA's ×15 overshoots (−9 to −15 %, Sponza dim tiles −14.5 %), so its multiplier, the swap strength, the decorrelation factor and age 30 are swept over Phase 1's DI. Landed after I14 Phase 3.
+
+**Done when:** both phases are shipped by their rules with café, Sponza and Bistro numbers, or F23 stays open with them, and every runner passes.
+
 ## Order
 
 ```
@@ -199,7 +221,8 @@ I1 → I2 → I4 → I5, I6, I9, I10   (independent; each ABBA-measured against 
 I3 → I4                          (I3 can run alongside I1 and I2)
 I1 + I2 → I7 → I8
 I4 → I11                         (needs the 2060 Super)
-I5 + I6 → I12
+I1 + I2 + I6 → I14 → I12         (I5 + I6 + I14 → I12; audit fixes before final Bistro tuning)
+I5 + I6 + lab → I15 → I12        (I15 Phase 1 now; Phase 2 lands after I14 Phase 3)
 I1 + I2 + I6 → I13
 ```
 

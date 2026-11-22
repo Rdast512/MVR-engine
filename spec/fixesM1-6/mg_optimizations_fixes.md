@@ -1,6 +1,6 @@
 # Feature: RTX Mega Geometry — bugs, spec issues, and performance improvements
 
-**Date:** 2026-11-21 · **Status:** §2 bugs (MG-B1–MG-B4 + C-C4-5) fixed in M8 I3 ([i3_mega_geometry_fixes.md](./i3_mega_geometry_fixes.md), 2026-11-21); §3 perf levers wait for M8 I10 · **Milestone:** [M8](./README.md) (follows [M2](../m2/) C1–C4, [M6](../m6/) D1–D4, and [mega_geometry_comparison.md](../../reference/mega_geometry_comparison.md))
+**Date:** 2026-11-21 · **Status:** §2 bugs (MG-B1–MG-B4 + C-C4-5) fixed in M8 I3 ([i3_mega_geometry_fixes.md](./i3_mega_geometry_fixes.md), 2026-11-21); §3 perf levers wait for M8 I10 ([i10_mega_geometry_perf.md](./i10_mega_geometry_perf.md), which also adds MG-S1–MG-S3, the items skipped before it) · **Milestone:** [M8](./README.md) (follows [M2](../m2/) C1–C4, [M6](../m6/) D1–D4, and [mega_geometry_comparison.md](../../reference/mega_geometry_comparison.md))
 **Why:** Audit of the engine's RTX Mega Geometry stack (CLAS, Cluster BLAS, OMM integration, PTLAS, and ray-hit decode) against Vulkan 1.4.363 VUIDs and NVIDIA's local `RTXMG` and `vk_lod_clusters` references.
 
 **Sources**
