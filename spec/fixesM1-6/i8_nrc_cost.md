@@ -26,7 +26,7 @@ NP3 (`usedTrainingDimensions` on floor tier) remains scheduled for I11 (RTX 2060
 1. **NP1 (`C-G3-6` host wait, `src/render/vk_renderer.{hpp,cpp}`, `src/core/vk_engine.cpp`):**
    - `Renderer::isNrcHostWaitEnabled` defaults to `false` (isolated SDK command buffers `recordIsolated` stay required). `ENGINE_NRC_HOST_WAIT=1` re-enables the wait as a fallback if a future driver regresses.
    - `Renderer::finishPreviousFrame()` clears `lastNrcRaySubmit = 0` after waiting so pausing NRC never re-waits on stale timeline values.
-   - `ENGINE_WINDOW_SIZE=WxH` overrides the initial SDL window extent for automated 2560×1369 stress runs.
+   - `ENGINE_WINDOW_SIZE=WxH` overrides the initial SDL window extent for automated 2560×1369 stress runs; `ENGINE_FULLSCREEN=1` creates the window fullscreen at desktop resolution (overrides the size) for the full-screen stress case.
 2. **NP2 (adaptive / idle training with Adam LR annealing, `src/render/vk_rt_scene.{hpp,cpp}`, `src/render/vk_nrc.{hpp,cpp}`, `src/render/vk_renderer.{hpp,cpp}`, `src/ui/engine_ui.cpp`, `src/lab/settings_registry.cpp`):**
    - `RayTracingScene::hasSceneChanged()` reports layout rebuilds and any dynamic transform change across active meshlet or light-bearing entities (`rowCount > 0 || !model.lights.empty()`), reusing `updateDynamicEntities()` at zero extra per-frame CPU cost.
    - `Renderer::drawFrame()` runs `worldLights.prepareFrame` before `nrc.prepareFrame` and computes `isNrcSceneChanged` from camera cuts, unjittered `viewProj`/`cameraPos` changes, `worldLights.sun`, `isLightSetChanged`, and `rtScene.hasSceneChanged()`. Switching between `NRC + ReSTIR GI` and `NRC` (or changing `giSettings`) does **not** restart training (NRC's training target is unchanged; unpausing NRC already reloads the countdown via `wasPaused`).
@@ -52,6 +52,12 @@ All benchmarks: RTX 5070, driver `621.01`, `windows-clang-release`, validation l
 - `2560×1369` Sponza `ENGINE_INDIRECT_MODE=cycle` × 3,000 frames: **exit 0, 0 device losses** (`drawFrame 9.627 ms`).
 - `2560×1369` Bistro `nrc-restir-gi` (shipped I8) × 3,000 frames: **exit 0, 0 device losses** (`drawFrame 9.023 ms`).
 - Total: **18,000 uncapped frames, 0 device losses.**
+
+**Full-screen case** (C-G3-6's exit; added after review, 2026-11-22): `ENGINE_FULLSCREEN=1` (SDL fullscreen at desktop resolution: 2560×1440 display, 1707×960 render), host wait off, 3,000 measured frames after 240 warm-up per run:
+- Sponza `nrc-restir-gi` × 3: **3/3 exit 0, 0 device losses** (`drawFrame 11.99–12.02 ms`, GPU total 12.04–12.07 ms).
+- Sponza `ENGINE_INDIRECT_MODE=cycle`: **exit 0, 0 device losses** (`drawFrame 10.33 ms`).
+- Bistro `nrc-restir-gi` (2,909 instances): **exit 0, 0 device losses** (`drawFrame 9.37 ms`).
+- Total: **15,000 full-screen uncapped frames, 0 device losses**; with the windowed runs, 33,000.
 
 ### 2. NP2 alone (steady-state idle `idle=64` vs continuous `idle=0`, host wait ON)
 
@@ -114,7 +120,7 @@ Hard-freezing Adam at its full `lr = 1e-2` locks in a single noisy 16K-record mi
 ## Done when
 
 - [x] Baseline post-I7 `NRC + ReSTIR GI` ABBA timings recorded (gallery, courtyard, Bistro, 2560×1369)
-- [x] NP1 (`C-G3-6` host wait) verified on driver `621.01` with `recordIsolated` (18,000 uncapped stress frames, 0 device losses; `−0.560 ms` / `−13.6%` wall frame time), disabled by default with `ENGINE_NRC_HOST_WAIT=1` fallback; `lastNrcRaySubmit` cleared after wait
+- [x] NP1 (`C-G3-6` host wait) verified on driver `621.01` with `recordIsolated` (18,000 windowed + 15,000 full-screen uncapped stress frames, 0 device losses; `−0.560 ms` / `−13.6%` wall frame time), disabled by default with `ENGINE_NRC_HOST_WAIT=1` fallback; `lastNrcRaySubmit` cleared after wait
 - [x] NP2 (adaptive/idle training with Adam LR annealing `1e-2 → 5e-4`) landed (`idleTrainingFrames = 512`), ABBA-measured on static (`−0.288…−0.412 ms` GPU total) and moving (`Field 64`) scenes, and verified across 3 GI-check seeds (`14/14` on seeds 0, 1, 2)
 - [x] NP5 (query throughput threshold `0.01`) A/B-measured across all three definitions on Sponza and Bistro and closed with its numbers
 - [x] NP4 recorded as deferred on `C-G1-3` (Slang `2026.22`)

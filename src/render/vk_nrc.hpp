@@ -77,7 +77,8 @@ public:
     // the slot is not in flight. New scene bounds wait for the device and reconfigure. Without a configured cache, or
     // paused (no NRC work this frame), the slot's constants are zero: the query pass then makes no queries. A pause
     // keeps context, buffers and weights, and defers new bounds to the resume (one Configure).
-    // isSceneChanged: true when camera, lights, dynamic entities, layout or indirect mode changed (restarts NP2 countdown)
+    // isSceneChanged: true when camera, sun, light set, dynamic entities or layout changed (restarts NP2 countdown); an
+    // indirect-mode switch does not, since NRC's training target is the same in both NRC modes
     void prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, bool isPaused, bool isSceneChanged);
     // false until a scene with ray instances is configured: the NRC passes are skipped
     [[nodiscard]] bool isActive() const noexcept { return isConfigured; }

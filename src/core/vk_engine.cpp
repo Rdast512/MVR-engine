@@ -48,6 +48,14 @@ namespace
                  "Engine");
         return {static_cast<int>(WIDTH), static_cast<int>(HEIGHT)};
     }
+
+    // ENGINE_FULLSCREEN=1: fullscreen at desktop resolution, the C-G3-6 full-screen stress case; overrides
+    // ENGINE_WINDOW_SIZE
+    [[nodiscard]] bool isFullscreenRequested()
+    {
+        const char* text = std::getenv("ENGINE_FULLSCREEN");
+        return text != nullptr && *text != '\0' && std::string_view(text) != "0";
+    }
 } // namespace
 
 Engine::~Engine() { cleanup(); }
@@ -59,7 +67,9 @@ void Engine::initialize()
     }
 
     const auto [windowWidth, windowHeight] = requestedWindowSize();
-    window = SDL_CreateWindow("Vulkan", windowWidth, windowHeight, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+    const SDL_WindowFlags fullscreenFlag = isFullscreenRequested() ? SDL_WINDOW_FULLSCREEN : 0;
+    window = SDL_CreateWindow("Vulkan", windowWidth, windowHeight,
+                              SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | fullscreenFlag);
 
     if (window == nullptr) {
         throw std::runtime_error("Failed to create window");
