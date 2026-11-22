@@ -1,6 +1,6 @@
 # M7 · E1: material binning
 
-**Status:** built 2026-11-20; GPU-AV cannot instrument the execution set (C-E1-3), and the binned resolve costs +0.045 ms at the bench pose (C-E1-4) · **Milestone:** M7
+**Status:** built 2026-11-20; GPU-AV cannot instrument the execution set (C-E1-3; GPU-AV runs use the temporary `ENGINE_GPUAV_RESOLVE_PER_BIN=1` switch since 2026-11-22), and the binned resolve costs +0.045 ms at the bench pose (C-E1-4) · **Milestone:** M7
 **Implements:** engine spec §5 stages 8–9, §9.1, §9.2; plan E1, M7 part ("the resolve per material bin", [pbr_implementation_plan.md](../pbr_implementation_plan.md)); [shader_architecture_plan.md](../shader_architecture_plan.md) rows 8–9 (`classify`, per-bin `resolve`)
 **Depends on:** M1 (the resolve and its per-pixel body), D3 (DGC state per bin), `DeviceGeneratedCommands` (`src/render/vk_dgc.*`)
 **Considerations:** `M7 · E1` section: C-E1-3, C-E1-4; C-T-5 (NRC views differ run to run)

@@ -87,8 +87,8 @@ The GPU-AV gap: MG findings §5 asks for GPU-AV on shader changes. MG-P2, MG-P4,
 
 Routes:
 
-- **(a)** the planned fix in [features/gpuav_execution_sets.md](../features/gpuav_execution_sets.md): a patched local layer that keeps the shipped execution set. Run it before these levers;
-- **(b)** fall back to the GPU-AV build switch from `C-E1-3`'s exit (per-bin `vkCmdDispatchIndirect`, never the shipped path);
+- **(a)** ~~a patched local layer ([features/gpuav_execution_sets.md](../features/gpuav_execution_sets.md))~~: dropped 2026-11-22 (user);
+- **(b)** **chosen 2026-11-22:** the temporary GPU-AV switch `ENGINE_GPUAV_RESOLVE_PER_BIN=1` (per-bin `vkCmdDispatchIndirect`, never the shipped path; considerations `C-E1-3`). The levers run GPU-AV with it;
 - **(c)** accept core + sync + best-practices validation, plus the robust-read rule of the RTXDI bridges, for these levers.
 
 ## Verification

@@ -902,9 +902,26 @@ void Renderer::recordResolve(const vk::raii::CommandBuffer& cmd)
                          vk::AccessFlagBits2::eShaderStorageRead,
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &sequenceBarrier});
-    const vk::DeviceAddress materialBins = targets.materialBinsAddress();
-    dgc.recordResolvePreprocess(cmd, materialBins);
-    dgc.recordResolveExecute(cmd, materialBins);
+    if (shaderObjects.isResolvePerBin) {
+        // TEMPORARY (considerations C-E1-3): binArgsPerBinMain's slot per bin, same shaders and push data as the
+        // DGC sequence; an empty bin dispatches 0 groups
+        const vk::Buffer materialBinsBuffer = targets.getMaterialBinsBuffer();
+        for (uint32_t bin = 0; bin < kMaterialBinCount; ++bin) {
+            const ResolvePushData push{
+                .frameRoot = frameData.frameRootAddress(currentFrame),
+                .tileList = targets.materialTileListAddress(static_cast<MaterialBin>(bin)),
+            };
+            ShaderObjects::bindComputeShader(cmd, shaderObjects.resolveShaders[bin]);
+            cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
+            cmd.dispatchIndirect(materialBinsBuffer, offsetof(GpuMaterialBins, sequences) +
+                                                         bin * sizeof(ResolveDgcSequence) +
+                                                         offsetof(ResolveDgcSequence, dispatch));
+        }
+    } else {
+        const vk::DeviceAddress materialBins = targets.materialBinsAddress();
+        dgc.recordResolvePreprocess(cmd, materialBins);
+        dgc.recordResolveExecute(cmd, materialBins);
+    }
     gpuTimer.end(cmd, GpuTimerScope::Resolve);
 }
 

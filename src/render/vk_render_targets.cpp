@@ -335,6 +335,14 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
     submitAndWait(cmd, device.graphicsQueue);
 }
 
+vk::DeviceAddress RenderTargets::materialTileListAddress(MaterialBin bin) const noexcept
+{
+    const vk::DeviceSize tilesX = (extent.width + kMaterialTileSize - 1) / kMaterialTileSize;
+    const vk::DeviceSize tilesY = (extent.height + kMaterialTileSize - 1) / kMaterialTileSize;
+    return materialBinsDeviceAddress + sizeof(GpuMaterialBins) +
+           static_cast<vk::DeviceSize>(std::to_underlying(bin)) * tilesX * tilesY * sizeof(uint32_t);
+}
+
 // one list per bin with room for every render tile: a tile is appended at most once per bin, so nothing overflows
 void RenderTargets::createMaterialBins()
 {

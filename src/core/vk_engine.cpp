@@ -132,6 +132,10 @@ void Engine::initialize()
 
     const uint32_t defaultBenchFrames = giCheck ? kGiCheckBenchFrames : 0;
     if (const auto benchConfig = EngineBench::readConfig(defaultBenchFrames)) {
+        // TEMPORARY (considerations C-E1-3): the per-bin GPU-AV resolve is not the shipped path, so it never times
+        if (isGpuAvResolvePerBinRequested()) {
+            throw std::runtime_error("bench refused: ENGINE_GPUAV_RESOLVE_PER_BIN is a GPU-AV-only resolve path");
+        }
         bench.emplace(*benchConfig);
     }
 

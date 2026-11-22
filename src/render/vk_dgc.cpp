@@ -157,6 +157,11 @@ void DeviceGeneratedCommands::createResolveCommands()
         throw std::runtime_error("DGC limits below the material-binned resolve layout");
     }
 
+    // TEMPORARY (considerations C-E1-3): the per-bin GPU-AV path dispatches without an execution set or layout
+    if (shaderObjects.isResolvePerBin) {
+        return;
+    }
+
     const auto& shaders = shaderObjects.resolveShaders;
     const vk::raii::ShaderEXT& initialShader = shaders[std::to_underlying(MaterialBin::Background)];
     const vk::ShaderEXT initialHandle = *initialShader;

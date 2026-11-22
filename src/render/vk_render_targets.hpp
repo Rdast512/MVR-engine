@@ -92,6 +92,8 @@ public:
     // GpuMaterialBins + tile lists; written and read within one frame's graphics work, so one copy serves both slots
     [[nodiscard]] vk::Buffer getMaterialBinsBuffer() const noexcept { return *materialBins; }
     [[nodiscard]] vk::DeviceAddress materialBinsAddress() const noexcept { return materialBinsDeviceAddress; }
+    // TEMPORARY (considerations C-E1-3): a bin's tile list, as passes/classify.slang tileList() places it
+    [[nodiscard]] vk::DeviceAddress materialTileListAddress(MaterialBin bin) const noexcept;
 
 private:
     struct Target

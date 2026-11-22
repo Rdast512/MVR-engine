@@ -77,6 +77,18 @@ void classifyMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, ui
 }
 
 // one group, one thread: kMaterialBinCount sequences at most, in bin order
+ResolveDgcSequence binSequence(GpuMaterialBins* bins, uint2 renderSize, uint bin, uint tileCount)
+{
+    ResolveDgcSequence sequence;
+    sequence.executionSetIndex = bin;
+    sequence.pad0 = 0;
+    sequence.push.frameRoot = push.frameRoot;
+    sequence.push.tileList = (uint64_t)tileList(bins, renderSize, bin);
+    sequence.groupCount = uint3(tileCount, 1, 1);
+    sequence.pad1 = 0;
+    return sequence;
+}
+
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void binArgsMain()
@@ -92,15 +104,24 @@ void binArgsMain()
         {
             continue;
         }
-        ResolveDgcSequence sequence;
-        sequence.executionSetIndex = bin;
-        sequence.pad0 = 0;
-        sequence.push.frameRoot = push.frameRoot;
-        sequence.push.tileList = (uint64_t)tileList(bins, renderSize, bin);
-        sequence.groupCount = uint3(tileCount, 1, 1);
-        sequence.pad1 = 0;
-        bins.sequences[sequenceCount] = sequence;
+        bins.sequences[sequenceCount] = binSequence(bins, renderSize, bin, tileCount);
         ++sequenceCount;
     }
     bins.sequenceCount = sequenceCount;
+}
+
+// TEMPORARY (considerations C-E1-3, ENGINE_GPUAV_RESOLVE_PER_BIN): sequence slot = bin, 0 groups when empty, for one
+// vkCmdDispatchIndirect per bin under GPU-AV instead of the DGC execute
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void binArgsPerBinMain()
+{
+    const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
+    const uint2 renderSize = loadTargets(root).renderSize;
+    GpuMaterialBins* bins = bdaPtr<GpuMaterialBins>(root.materialBins);
+    for (uint bin = 0; bin < kMaterialBinCount; ++bin)
+    {
+        bins.sequences[bin] = binSequence(bins, renderSize, bin, bins.tileCount[bin]);
+    }
+    bins.sequenceCount = kMaterialBinCount;
 }

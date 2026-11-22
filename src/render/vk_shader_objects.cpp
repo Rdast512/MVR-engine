@@ -1,11 +1,14 @@
 #include "vk_shader_objects.hpp"
 #include "../util/debug.hpp"
+#include "static_headers/logger.hpp"
 
 #include <array>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -26,7 +29,20 @@ std::vector<char> readPassSpirv(std::string_view file)
     return buffer;
 }
 
-ShaderObjects::ShaderObjects(const vk::raii::Device& device) : device(device) {}
+bool isGpuAvResolvePerBinRequested()
+{
+    const char* text = std::getenv("ENGINE_GPUAV_RESOLVE_PER_BIN");
+    return text != nullptr && *text != '\0' && std::string_view(text) != "0";
+}
+
+ShaderObjects::ShaderObjects(const vk::raii::Device& device) : device(device)
+{
+    if (isResolvePerBin) {
+        logInfo("TEMPORARY GPU-AV resolve path (ENGINE_GPUAV_RESOLVE_PER_BIN, considerations C-E1-3): per-bin "
+                "vkCmdDispatchIndirect, no DGC execution set; not the shipped path",
+                "ShaderObjects");
+    }
+}
 
 void ShaderObjects::init()
 {
@@ -87,7 +103,8 @@ void ShaderObjects::createHiZShaders()
 void ShaderObjects::createFrameShaders()
 {
     frameShaders.classify = createComputeShader("classify.spv", "classifyMain", "Classify");
-    frameShaders.binArgs = createComputeShader("classify.spv", "binArgsMain", "BinArgs");
+    frameShaders.binArgs =
+        createComputeShader("classify.spv", isResolvePerBin ? "binArgsPerBinMain" : "binArgsMain", "BinArgs");
     frameShaders.debugView = createComputeShader("debug_view.spv", "debugViewMain", "DebugView");
     frameShaders.motionCheck = createComputeShader("motion_check.spv", "motionCheckMain", "MotionCheck");
     frameShaders.rayCheck = createComputeShader("rt_check.spv", "rayCheckMain", "RayCheck");
@@ -125,10 +142,12 @@ void ShaderObjects::createResolveShaders()
         {MaterialBin::Standard, "resolveStandardMain", "ResolveStandard"},
         {MaterialBin::Unlit, "resolveUnlitMain", "ResolveUnlit"},
     }};
+    // C-E1-3: GPU-AV disables itself on any INDIRECT_BINDABLE shader, so the temporary per-bin path drops the flag
+    const vk::ShaderCreateFlagsEXT bindableFlags =
+        isResolvePerBin ? vk::ShaderCreateFlagsEXT{} : vk::ShaderCreateFlagBitsEXT::eIndirectBindable;
     for (const BinEntry& binEntry : kBinEntries) {
         resolveShaders[std::to_underlying(binEntry.bin)] =
-            createComputeShader("resolve.spv", binEntry.entry, binEntry.debugName,
-                                vk::ShaderCreateFlagBitsEXT::eIndirectBindable);
+            createComputeShader("resolve.spv", binEntry.entry, binEntry.debugName, bindableFlags);
     }
 }
 

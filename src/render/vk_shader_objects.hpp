@@ -18,6 +18,11 @@ inline constexpr bool kDebugRays = true;
 // SPIR-V of a file under ENGINE_SHADER_DIR/passes; throws when it cannot be opened
 [[nodiscard]] std::vector<char> readPassSpirv(std::string_view file);
 
+// TEMPORARY (considerations C-E1-3): ENGINE_GPUAV_RESOLVE_PER_BIN=1 creates the resolve bin shaders without
+// INDIRECT_BINDABLE and dispatches each bin with vkCmdDispatchIndirect instead of the DGC execution set, so GPU-AV can
+// run. Only for GPU-AV runs, never the shipped path (engine spec §9.2); bench mode refuses it. Remove with C-E1-3
+[[nodiscard]] bool isGpuAvResolvePerBinRequested();
+
 // linked mesh + fragment VK_EXT_shader_object pairs plus the unlinked compute shaders; all raster state is dynamic
 class ShaderObjects
 {
@@ -125,6 +130,8 @@ public:
 
     // passes/resolve.slang, one per MaterialBin: the resolve's DGC execution set (ResolvePushData)
     std::array<vk::raii::ShaderEXT, kMaterialBinCount> resolveShaders = {nullptr, nullptr, nullptr};
+    // TEMPORARY (C-E1-3): resolve shaders not indirect-bindable, binArgs from binArgsPerBinMain, no execution set
+    bool isResolvePerBin = isGpuAvResolvePerBinRequested();
 
     // async compute RT scene passes
     struct RtShaders
