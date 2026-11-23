@@ -240,8 +240,9 @@ private:
     }};
     static constexpr uint32_t kConvergenceWarmupFrames = 16;
     // presampled lights correlate error across RTXDI's 16x16 tiles (one RIS tile per screen tile), the check's tile
-    // size: 64 frames leave Power_RIS at p90 4.3%, 512 bring it to 1.9%
-    static constexpr uint32_t kConvergenceFrames = 512;
+    // size: 64 frames leave Power_RIS at p90 4.3%, 512 bring it to 1.9%. 2048 since m8 I14: with the lamp's emitters
+    // culled to 561, 8 candidates read -0.44% over 512 frames and -0.08% over 2048 (one window's shortfall, not bias)
+    static constexpr uint32_t kConvergenceFrames = 2048;
     static constexpr uint32_t kReferenceFrames = 1024;
     static constexpr uint32_t kConvergenceTileSize = 16;
     // shares of the reference's summed luminance; RTXDI 3.1's fused pass read +0.13% and 2.43%, its Basic bug -35%

@@ -404,10 +404,30 @@ void AssetBuffers::uploadAssetBuffers(std::span<const AssetUpload> uploads)
     cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     isRecording = true;
 
+    // one batch may hold several uploads of one buffer (material row runs, m8 I14): a grow is sized for all of them
+    // and later runs land in the grown buffer; a copy that depends on an earlier one in the batch waits for it
+    std::array<vk::DeviceSize, kAssetBufferCount> batchEnd{};
+    for (const AssetUpload& upload : uploads) {
+        const size_t id = std::to_underlying(upload.id);
+        batchEnd[id] = std::max(batchEnd[id], upload.dstOffset + upload.bytes.size_bytes());
+    }
+    std::array<std::optional<size_t>, kAssetBufferCount> grownIndex{};
+    std::array<bool, kAssetBufferCount> isWrittenInPlace{};
+    const auto waitForEarlierCopies = [&cmd] {
+        const vk::MemoryBarrier2 barrier{
+            .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+            .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eCopy,
+            .dstAccessMask = vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite,
+        };
+        cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &barrier});
+    };
+
     for (size_t i = 0; i < uploads.size(); ++i) {
         const AssetUpload& upload = uploads[i];
-        DeviceBuffer& dst = assetBuffers[std::to_underlying(upload.id)];
-        const std::string_view debugName = kAssetBufferInfo[std::to_underlying(upload.id)].debugName;
+        const size_t id = std::to_underlying(upload.id);
+        DeviceBuffer& dst = assetBuffers[id];
+        const std::string_view debugName = kAssetBufferInfo[id].debugName;
         const vk::DeviceSize srcBytes = upload.bytes.size_bytes();
         if (srcBytes == 0) {
             logInfo(std::format("skip {}: empty scratch (used {} / cap {})", debugName, formatBytes(dst.usedBytes),
@@ -419,16 +439,26 @@ void AssetBuffers::uploadAssetBuffers(std::span<const AssetUpload> uploads)
         const vk::DeviceSize newUsed = std::max(dst.usedBytes, writeEnd);
         const vk::BufferCopy stagingCopy(stagingOffsets[i], upload.dstOffset, srcBytes);
 
+        if (grownIndex[id]) {
+            // may overlap the old bytes already copied into the grown buffer
+            Grown& next = grown[*grownIndex[id]];
+            waitForEarlierCopies();
+            cmd.copyBuffer(staging, next.buffer, stagingCopy);
+            next.usedBytes = std::max(next.usedBytes, writeEnd);
+            continue;
+        }
+
         if (dst.memory != nullptr && writeEnd <= dst.capacityBytes) {
             logInfo(std::format("in place {}: {} at {} -> used {} (cap {})", debugName, formatBytes(srcBytes),
                                  formatBytes(upload.dstOffset), formatBytes(newUsed), formatBytes(dst.capacityBytes)),
                      "AssetBuffers");
             cmd.copyBuffer(staging, dst.buffer, stagingCopy);
             dst.usedBytes = newUsed;
+            isWrittenInPlace[id] = true;
             continue;
         }
 
-        const vk::DeviceSize newCapacity = nextCapacity(dst.capacityBytes, newUsed);
+        const vk::DeviceSize newCapacity = nextCapacity(dst.capacityBytes, std::max(newUsed, batchEnd[id]));
         logInfo(std::format("{} {}: used {} -> {} (cap {} -> {})", dst.usedBytes == 0 ? "create" : "grow", debugName,
                              formatBytes(dst.usedBytes), formatBytes(newUsed), formatBytes(dst.capacityBytes),
                              formatBytes(newCapacity)),
@@ -438,6 +468,9 @@ void AssetBuffers::uploadAssetBuffers(std::span<const AssetUpload> uploads)
         createAssetBuffer(upload.id, newCapacity, next.buffer, next.memory);
         // keep only the old bytes the upload does not overwrite: unordered copies must not overlap
         if (dst.memory != nullptr) {
+            if (isWrittenInPlace[id]) {
+                waitForEarlierCopies();
+            }
             const vk::DeviceSize headBytes = std::min(dst.usedBytes, upload.dstOffset);
             if (headBytes > 0) {
                 cmd.copyBuffer(dst.buffer, next.buffer, vk::BufferCopy(0, 0, headBytes));
@@ -447,6 +480,7 @@ void AssetBuffers::uploadAssetBuffers(std::span<const AssetUpload> uploads)
             }
         }
         cmd.copyBuffer(staging, next.buffer, stagingCopy);
+        grownIndex[id] = grown.size() - 1;
     }
 
     submitAndWait(cmd, oneTime.queue);

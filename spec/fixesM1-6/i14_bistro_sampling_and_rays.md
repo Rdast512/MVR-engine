@@ -1,6 +1,6 @@
 # M8 · I14: Bistro sampling, reuse, DLSS-RR and rays
 
-**Status:** planned 2026-11-22 · **Milestone:** M8 ([README](./README.md))
+**Status:** built 2026-11-23 (Phases 1, 2, 4 landed; Phase 3 measured, NVIDIA values kept); regression green except the gallery `NRC mode` gate, which is flaky before and after I14 (§8.3, C-I14-5) · **Milestone:** M8 ([README](./README.md))
 **Implements:** findings F24–F27 ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §4) from the 2026-11-22 four-path Bistro audit; removes correctness defects before I12's final Bistro tuning of F22 (café DI confetti) and F23 (café GI dim-tile excess)
 **Depends on:** I1 (check runners), I2 (shading correctness), I6 (DI defaults and `Power_RIS` baseline)
 **Considerations:** opens C-I14-1 … C-I14-4 (§7); updates `docs/settings.md` if any user-visible setting changes
@@ -175,20 +175,92 @@ Bistro's exterior streetlamp bulbs (`mat 216`, `LMBR_000018b_bulb`, `ef = [100, 
 - **C-I14-2 · Workaround:** same-frame plane-distance rejection lives in `RAB_AreMaterialsSimilar` via extra fields on `RAB_Material` (`position`, `geoNormal`, `viewDepth`, `isPreviousFrame`) because `RTXDI_IsValidNeighbor` takes only normal and linear depth and vendor headers are read-only. **Exit:** an RTXDI release with a plane-distance neighbor hook.
 - **C-I14-3 · Limitation:** load/build-time zero-flux culling of textured emissive triangles assumes static emissive textures and UV coordinates; animated emissive textures (not yet supported) would require skipping static culling for animated materials. **Exit:** re-check if animated emissive textures are added.
 - **C-I14-4 · Unverified:** `ENGINE_DLSS_CHECK` verifies DLSS-RR behavior on the RTX 5070 driver/SDK; re-run on the RTX 2060 Super in I11 and on every DLSS SDK upgrade.
+- **C-I14-5 · Open · the gallery `NRC mode` gate is flaky.** NRC training is not reproducible run to run (C-T-5), and on the gallery pose one binary and one seed read anywhere from −2.9 % to −7.0 % bias with tile p90 from 9.6 % to 28.5 % (§8.3). The ±5 % / p90 18 % gate fails on the pre-I14 build too (seed 1). **Exit:** gate the NRC phases on the median of several runs, or widen their gallery limits from a measured spread; the decision is the user's.
+- **C-I14-6 · Unverified · the RT check depends on the command order of a model upload.** Rewriting `AssetBuffers::uploadAssetBuffers` to issue every growth copy before the staging copies (same buffers, same bytes; with or without a barrier between them) made `ENGINE_RT_CHECK` report 25 frames in which every primary ray misses, deterministically, right after the guide capture loads `MetalRoughSpheres_flat_normals_front` (24,281 meshlets). The original per-upload order passes 8890 / 8890. That looks like a missing dependency between a model load and the RT scene of the following frames, which one timing exposes; not root-caused. **Exit:** find the missing wait (candidates: the RT check's frame slot TLAS after a template rebuild, the CLAS build of a large new model) or show the check reads a stale slot.
+- **C-I14-7 · Limitation · `ENGINE_DLSS_CHECK` has teeth only for the jitter sign.** On the clean analytic input, inverting the normal, squaring the roughness, flipping depth polarity or `proj[1][1]` changes `Lit` std by < 0.1 pp and pan f2f by < 0.1 pp on Sponza and the café; only the inverted jitter sign separates (static std ×11–18, pan f2f +23–46 %). Those controls stay `MEASURED`. **Exit:** a guide-sensitive input (e.g. a specular highlight under motion) that DLSS-RR visibly mis-handles with a wrong guide.
 
 ## 8. Results
 
-To be filled when built.
+Built 2026-11-23 on the RTX 5070, release build, vkconfig and validation off unless stated. Commit `39b57b88f` ("almost i14") holds Phases 1–4; the regression fixes of §8.2–§8.4 came after it. The A/B tables of Phases 2–4 were produced in the build session but only reached its task outputs; they were not recorded, so §8.1 gives each decision as the code carries it, with the numbers that survive.
+
+### 8.1 What landed
+
+| Phase | Item | Outcome |
+|---|---|---|
+| 1 | geometric hemisphere guard in `shadeLightSample`, `RAB_SurfaceImportanceSampleBrdf`, `lambertLightAt` | landed |
+| 1 | opaque `side = -1` removed: `rasterRayOrigin(surface)` and `safeSpawnPoint(hit, geoNormal)` offset along the facing-corrected geometric normal; glass transmission still passes the ray direction | landed |
+| 1 | `safeSpawnPoint` zero-area guard (`kMinSpawnNormalLengthSq = 1e-30`) | landed |
+| 1 | BRDF candidate ray from `gRtxdiBridge.brdfRayOrigin` with `TMin = 0`, `brdfRayMinT = 0` (C-I14-1) | landed |
+| 1 | `visibilitySegment` / `traceLightVisibility` / `traceSegmentVisibility`: from the offset origin, area targets end `clamp(d · 1e-4, 0.5 mm, 2 mm)` short; used by DI, GI reconnection, path NEE, glass transmittance | landed |
+| 2 | off-screen motion sentinel `(-2 · targetSize, Δw)` when `previousClip.w ≤ 0` | landed |
+| 2 | `resolveBackground` subtracts `camera.jitterOffset` | landed |
+| 2 | `EnvBRDFApprox2` with the `saturate(max(f0) · 50)` bias guard | landed |
+| 2 | `rtScene.prepareFrame` before `isDlssPresented()` is read on frame 0 | landed |
+| 2 | `ENGINE_DLSS_CHECK` (`src/core/engine_dlss_check.*`, `FrameFlag::CleanDlssInput` analytic radiance in `combine`, perturbation flags in `resolve` / `vk_dlss`) | landed; gated on static `Lit` std < 0.5 %, flicker < 1 % and the jitter control (C-I14-7) |
+| 2 | `SpecAlbedo` RGBA16F | A/B'd, not landed: stays `R8G8B8A8_UNORM` |
+| 2 | static `InPreExposure = 16` | A/B'd, not landed: stays 1.0 |
+| 2 | `pInSpecularHitDistance` | not wired |
+| 3 | `geoNormal` in `RAB_GetSurfaceNormal`, resolution-scaled radius (`rad_24` among others), depth threshold, plane guard, fallback off, tighter `RAB_AreMaterialsSimilar` | A/B'd on Bistro café stability and Sponza screen edge; none kept. The bridge, `vk_rtxdi.*` and NVIDIA's sets are unchanged, so C-I14-2 did not open |
+| 4 | `ENGINE_LIGHT_PDF_STATS=1` (one-shot readback, per-material PDF share) and `ENGINE_EMISSIVE_CHECK=1` (`EngineTemporalCheck::Kind::EmissiveRef`: BRDF-only exact textured emission against Power_RIS DI on the café poses) | landed |
+| 4 | 4-tap `light_world` flux at a clamped finer mip | landed |
+| 4 | load-time zero-flux culling (`cullGltfEmissiveTriangles`, 1-texel-padded UV box over a mip-0 max(RGB) summed-area table; `GpuTriangleLightRef` + sparse remap tails in `rayInstanceLights`) | landed. Bistro: 13,699 of 19,353 unique emissive triangles culled (70.8 %), 30,587 instanced triangle lights instead of 76,248. `AssetBuffers::rebaseCatalog` / `flush` carry the new `emissiveActiveTriangles` slice |
+| 4 | `hitEmission` keeps emission of a light triangle whose baked radiance is 0 | landed |
+| 4 | exact barycentric `sampleEmissive` in `rtxdi_shade` | A/B'd, not landed: 4-tap baked radiance read lower tile p90 on both café poses and lower dim bias on dining |
+| 4 | `Power_RIS` tile size, 16 / 32 samples, `brdfSamples = 2`, tuned `ReGIR_RIS` cells | A/B'd on café stability and Bistro exterior bench; shipped `Power_RIS` set unchanged (C-M4-2) |
+
+### 8.2 Regression
+
+| Check | Result |
+|---|---|
+| CTest | 8 / 8 (`brdf_test` reference updated to `EnvBRDFApprox2`) |
+| `ENGINE_MOTION_TEST` + RT check | 13 / 13; 318 / 318 frames |
+| `ENGINE_CULL_CHECK` + RT check | 16 / 16 identical; 454 / 454 frames |
+| `ENGINE_GUIDE_CAPTURE` + RT check | normal checks 2 / 2, convergence 3 / 3 (after §8.4: lamp −0.079 %, `Sponza_terminator` +0.000 %, `EmissiveStrengthTest` +0.081 %), glass throughput 2 / 2, RT 8890 / 8890 frames |
+| `ENGINE_DLSS_CHECK` Sponza / café | PASS: shipped static `Lit` std 0.333 % / 0.289 %, flicker 0.028 % / 0.040 %; inverted jitter 3.672 % / 5.199 % std, pan f2f 4.33 % / 6.79 % against 3.53 % / 4.64 % |
+| `ENGINE_GI_CHECK` | 13 / 14: gallery `NRC mode` flaky (§8.3); every non-NRC phase passes (gallery traced paths +0.61 %, courtyard +1.29 %) |
+| `ENGINE_STABILITY_CHECK` café, shipped `Lit` (F22) | tables **13.25 %** std / 79.4 % flicker, dining **11.24 %** / 70.7 % (before I14: 26.85 % / 16.73 % std). Shipped `Direct lighting` against the DI reference: −0.14 % / −0.60 %, dim tiles −2.93 % / −1.20 % |
+| `ENGINE_STABILITY_CHECK` Sponza, `ENGINE_SCREEN_EDGE_CHECK` | ran clean, no non-finite pixels; courtyard shipped `Lit` std 0.99 % |
+| `ENGINE_EMISSIVE_CHECK` café | Power_RIS DI against the BRDF-only exact emission: tables +0.84 % (p90 27.5 %, dim +8.5 %), dining +0.32 % (p90 16.4 %, dim +4.3 %) |
+| Validation core + sync + best practices (guide capture, DLSS check) | only the known external messages (C-H1-2 `WorkgroupSize` / NGX WAW, C-G3-3 NRC at `vkDestroyDevice`) after §8.5 |
+
+### 8.3 Gallery `NRC mode` (GI check, ±5 % / p90 18 %)
+
+Seen first as a 3-of-3 FAIL at −5.75 / −5.17 / −4.99 %, against the I7 record of −3.63 … −0.98 %. Bisected against a pre-I14 build of `a94224210` in `build/h`:
+
+| Gallery `NRC mode` | seed 0 | seed 1 | seed 2 | seed 3 |
+|---|---|---|---|---|
+| pre-I14 | −3.83 %, p90 14.4 % | **−4.98 %, p90 21.2 % FAIL** | −4.53 %, p90 16.8 % | −4.74 %, p90 14.6 %; rerun −2.88 %, p90 9.6 % |
+| I14 | −5.75 / −5.17 / −4.99 / −5.12 % (four runs) | −5.10 %, p90 20.3 % | −4.57 %, p90 19.1 % | −6.97 %, p90 28.5 %; rerun **−4.26 %, p90 14.1 %** |
+
+Variants of the I14 build, seed 0: without the new NEE geometric guard −5.09 %; area margin widened to `clamp(d · 1e-3, 2 mm, 2 cm)` (between NVIDIA's conservative 2 mm and final-visibility 2 cm, `RAB_VisibilityTest.hlsli`) −5.34 %; pre-I14 `indirect` / `nrc_update` / `nrc_resolve` SPIR-V −4.89 %, and −4.41 % on seed 3; pre-I14 `rtxdi_gi_shade` SPIR-V −4.49 %. Every reading lies inside the 2–4 pp spread one binary shows on one seed, so no I14 change is singled out. Conclusion: no I14 regression; the gate was already marginal and fails the pre-I14 build on seed 1 (C-I14-5). The courtyard NRC phases pass in every run.
+
+### 8.4 `LightsPunctualLamp` DI convergence
+
+After zero-flux culling (5,424 of the lamp's 5,985 emissive triangles culled, 561 kept) the check failed at −0.429 % (RGB −0.246 / −0.528 / −0.556 %, limit 0.5 %); with culling disabled it read +0.059 %. Bisected with temporary overrides of the check's test phase:
+
+| Test phase | Bias over 512 frames |
+|---|---|
+| reference mode itself (no reuse, 32 candidates) | −0.132 % (the realization noise of the check) |
+| temporal bias correction Basic / Off, history 1 | −0.429 / −0.434 / −0.435 % |
+| 32 candidates with reuse | −0.148 % |
+| no reuse, 8 candidates / 16 candidates | −0.438 % / −0.094 % |
+| no reuse, 8 candidates, **2048 frames** | **−0.091 %** (per-frame error 57 %) |
+
+Reuse plays no part. Exact RIS is unbiased for any candidate count, and the same 8-candidate stream converges once it runs 2048 frames: the first 512 frames of that run are the failing window. With 561 lights the 8-candidate estimator's per-frame error is high enough that one 512-frame window undershoots by 0.4 %. **Fix:** `kConvergenceFrames` 512 → 2048 (`engine_guide_capture.hpp`); all three convergence checks then pass, the lamp at −0.079 % with culling and +0.149 % without. The guide capture takes ~86 s instead of ~53 s.
+
+### 8.5 `MaterialBuffer` / `PbrExtBuffer` sync hazard (found by this regression)
+
+Sync validation reported `SYNC-HAZARD-READ-AFTER-WRITE` on `vkCmdCopyBuffer` in the guide capture. `appendMaterialUploads` emits one upload per run of contiguous dirty material rows (free-list reuse plus appended rows), so one batch can hold several uploads of a buffer; `uploadAssetBuffers` treated each as alone. A later run that grew the buffer copied the old bytes an earlier in-place run had just written, without a barrier; and a run after a grow would have grown again from the stale old buffer, dropping the earlier run's rows at install. **Fix:** a grow is sized for every upload of that buffer in the batch, later uploads land in the grown buffer, and a transfer barrier precedes a copy that depends on an earlier one; the single-upload path records the same commands as before (C-I14-6 explains why that matters). Validation is clean afterwards and the RT check stays 8890 / 8890.
 
 ## Done when
 
-- [ ] Phase 1 landed: `shadeLightSample` and `RAB_SurfaceImportanceSampleBrdf` reject `dot(geoNormal, l) <= 0`; opaque `side = -1` removed; `safeSpawnPoint` NaN-guarded; BRDF ray offset + `TMin = 0`; offset-origin visibility with bounded endpoint margin; Sponza + `bistro_cafe` verified clean
-- [ ] Phase 2 landed: behind-camera off-screen motion sentinel, jittered `resolveBackground`, `EnvBRDFApprox2` `f0 == 0` guard, startup `isDlssPresented()` verified, `SpecAlbedo` precision decided, and `ENGINE_DLSS_CHECK` passing (clean-input baseline + all perturbation controls)
-- [ ] Phase 3 landed: `geoNormal` vs `shadingNormal`, resolution-scaled `samplingRadius`, `depthThreshold`, same-frame plane-distance guard, `isFallbackSamplingEnabled`, and `RAB_AreMaterialsSimilar` each A/B-measured and decided on Sponza + `bistro_cafe`
-- [ ] Phase 4 landed: independent Bistro textured-emission check passing; zero-flux emitter culling and multi-tap `light_world` flux landed; shading-time texture eval and `Power_RIS` vs tuned `ReGIR_RIS` decided with ABBA timings on `bistro_cafe` and exterior
-- [ ] `NVIDIA defaults` (`nvidiaSettings()` / `nvidiaGiSettings()`) remain callable and unchanged (C-M4-2); no edits under `ThirdParty/`
-- [ ] CTest, GI check, 3 DI convergence checks, `ENGINE_STABILITY_CHECK` (Sponza + `bistro_cafe`), `ENGINE_SCREEN_EDGE_CHECK`, `ENGINE_DLSS_CHECK`, `ENGINE_RT_CHECK`, `ENGINE_CULL_CHECK`, `ENGINE_MOTION_TEST`, `ENGINE_GUIDE_CAPTURE` pass; validation and GPU-AV clean
-- [ ] Updated baseline numbers handed off to I12 for final F22/F23 closure; `m8_optimization_and_fixes.md`, `considerations.md`, and `docs/settings.md` updated
+- [x] Phase 1 landed: `shadeLightSample` and `RAB_SurfaceImportanceSampleBrdf` reject `dot(geoNormal, l) <= 0`; opaque `side = -1` removed; `safeSpawnPoint` NaN-guarded; BRDF ray offset + `TMin = 0`; offset-origin visibility with bounded endpoint margin; Sponza + `bistro_cafe` verified clean
+- [x] Phase 2 landed: behind-camera off-screen motion sentinel, jittered `resolveBackground`, `EnvBRDFApprox2` `f0 == 0` guard, startup `isDlssPresented()` verified, `SpecAlbedo` precision decided, and `ENGINE_DLSS_CHECK` passing (clean-input baseline + all perturbation controls) — the normal, roughness, depth and Y-flip controls do not separate on clean input and are measured only (C-I14-7)
+- [x] Phase 3 landed: `geoNormal` vs `shadingNormal`, resolution-scaled `samplingRadius`, `depthThreshold`, same-frame plane-distance guard, `isFallbackSamplingEnabled`, and `RAB_AreMaterialsSimilar` each A/B-measured and decided on Sponza + `bistro_cafe` — all kept at NVIDIA's values; the A/B tables were not recorded (§8)
+- [x] Phase 4 landed: independent Bistro textured-emission check passing; zero-flux emitter culling and multi-tap `light_world` flux landed; shading-time texture eval and `Power_RIS` vs tuned `ReGIR_RIS` decided with ABBA timings on `bistro_cafe` and exterior — decided (4-tap baked, `Power_RIS`), the timings were not recorded (§8)
+- [x] `NVIDIA defaults` (`nvidiaSettings()` / `nvidiaGiSettings()`) remain callable and unchanged (C-M4-2); no edits under `ThirdParty/`
+- [ ] CTest, GI check, 3 DI convergence checks, `ENGINE_STABILITY_CHECK` (Sponza + `bistro_cafe`), `ENGINE_SCREEN_EDGE_CHECK`, `ENGINE_DLSS_CHECK`, `ENGINE_RT_CHECK`, `ENGINE_CULL_CHECK`, `ENGINE_MOTION_TEST`, `ENGINE_GUIDE_CAPTURE` pass; validation and GPU-AV clean — all pass except the GI check's gallery `NRC mode` (13 of 14, flaky before I14 too, C-I14-5); validation clean (§8.5); GPU-AV not run (C-E1-3)
+- [x] Updated baseline numbers handed off to I12 for final F22/F23 closure; `m8_optimization_and_fixes.md`, `considerations.md`, and `docs/settings.md` updated — the baseline is §8.2
 
 ## Verification of the findings (2026-11-22)
 
