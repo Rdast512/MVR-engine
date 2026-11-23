@@ -276,6 +276,7 @@ private:
     // GlassSettings of the frame being recorded: the ray commands are recorded before the frame root is written
     uint32_t frameGlassFlags = 0;
     uint32_t frameGlassMaxLayers = 1;
+    GlassSettings appliedGlass{};
     // the slot's counters hold a recorded frame's results
     std::array<bool, MAX_FRAMES_IN_FLIGHT> isRayDebugRecorded{};
     uint64_t rayDebugFrames = 0;

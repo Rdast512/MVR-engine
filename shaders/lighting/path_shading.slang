@@ -152,7 +152,7 @@ float3 lambertLightAt(GpuFrameRoot root, RAB_Surface surface, HitOrigin origin, 
         return float3(0.0, 0.0, 0.0);
     }
     const float nDotL = dot(surface.normal, lightSample.l);
-    if (nDotL <= 0.0)
+    if (nDotL <= 0.0 || dot(surface.geoNormal, lightSample.l) <= 0.0)
     {
         return float3(0.0, 0.0, 0.0);
     }
@@ -168,7 +168,7 @@ float3 lambertLightAt(GpuFrameRoot root, RAB_Surface surface, HitOrigin origin, 
 struct PathHit
 {
     RAB_Surface surface;
-    float3 emissive; // after the one emission rule (hitEmission)
+    float3 emissive; // after the one emission rule (hitEmission), unless isLightEmissionKept
 };
 
 // the one emission rule (spec/m7/e2_emissive_triangles.md): a light triangle's light reaches every vertex through
@@ -179,8 +179,9 @@ float3 hitEmission(GpuFrameRoot root, RayHit hit, float3 emissive)
 }
 
 // decode + material at a hit. coneDistance is camera to ray.Origin; decodeHit adds cone.spread * hit.t. No DLSS LOD
-// bias: indirect texture detail is never reconstructed at display resolution
-PathHit shadeRayHit(GpuFrameRoot root, RayHit hit, RayDesc ray, float coneDistance)
+// bias: indirect texture detail is never reconstructed at display resolution. isLightEmissionKept: delta mirror rays
+// (glass reflection) never sample specular light at the glass surface, so light-triangle emission stays intact
+PathHit shadeRayHit(GpuFrameRoot root, RayHit hit, RayDesc ray, float coneDistance, bool isLightEmissionKept = false)
 {
     const GpuCameraData camera = loadCamera(root);
     RayCone cone;
@@ -191,7 +192,7 @@ PathHit shadeRayHit(GpuFrameRoot root, RayHit hit, RayDesc ray, float coneDistan
         sampleMaterial(loadMaterial(root, materialRow(decoded.draw.primitive)), decoded.surface, 0.0);
     PathHit result;
     result.surface = rayHitSurface(decoded, material, ray.Direction, hit.t);
-    result.emissive = hitEmission(root, hit, material.emissive);
+    result.emissive = isLightEmissionKept ? material.emissive : hitEmission(root, hit, material.emissive);
     return result;
 }
 

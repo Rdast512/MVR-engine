@@ -34,11 +34,13 @@ enum class Transmission : uint8_t
     Glass,
     KeptOpaqueRough,
     KeptOpaqueRoughTexture,
+    KeptOpaqueMetal,
     KeptOpaqueUnlit,
     KeptOpaqueSpecularGlossiness,
 };
 
-// on authored values: KHR_materials_transmission builds on metal-rough, and unlit reflects nothing
+// on authored values: KHR_materials_transmission builds on metal-rough, unlit reflects nothing, and pure metal
+// (metallicFactor >= 1) has zero dielectric transmission
 [[nodiscard]] inline Transmission classifyTransmission(const GpuMaterial& material, const MaterialPbrExtension& ext)
 {
     if (ext.transmissionFactor <= 0.0f) {
@@ -52,6 +54,9 @@ enum class Transmission : uint8_t
     }
     if (material.metalRoughTex != kNoneIndex) {
         return Transmission::KeptOpaqueRoughTexture;
+    }
+    if (material.metallicFactor >= 1.0f) {
+        return Transmission::KeptOpaqueMetal;
     }
     if (material.roughnessFactor > kGlassMaxRoughness) {
         return Transmission::KeptOpaqueRough;
@@ -71,6 +76,8 @@ enum class Transmission : uint8_t
         return "roughness above kGlassMaxRoughness";
     case Transmission::KeptOpaqueRoughTexture:
         return "roughness texture";
+    case Transmission::KeptOpaqueMetal:
+        return "metallic";
     case Transmission::KeptOpaqueUnlit:
         return "unlit";
     case Transmission::KeptOpaqueSpecularGlossiness:

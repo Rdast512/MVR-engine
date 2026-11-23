@@ -286,8 +286,15 @@ float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCamer
     case kDebugViewDlssInput:
         return tex2D(targets.noisyColorSampled).Load(int3(pixel, 0)).rgb;
     case kDebugViewGlass:
+    {
+        const bool isReflectionShown = (root.debugView & kDebugViewFlagGlassReflection) != 0;
+        if ((root.glassFlags & kGlassFlagPass) == 0)
+        {
+            return isReflectionShown ? float3(0.0, 0.0, 0.0) : float3(1.0, 1.0, 1.0);
+        }
         // the glass pass wrote its throughput (or reflection term) over noisyColor for this view; DLSS-RR is skipped
         return tex2D(targets.noisyColorSampled).Load(int3(pixel, 0)).rgb;
+    }
     case kDebugViewRtxdiReservoirs:
         return rtxdiReservoir(root, pixel);
     case kDebugViewIndirectSamples:
@@ -366,8 +373,10 @@ void debugViewMain(uint3 id : SV_DispatchThreadID)
             color = lerp(color, float3(0.0, 0.0, 0.0), edge);
         }
     }
-    // the glass pass's layer count (glass.slang) rides along for the guide capture
-    const float alpha = mode == kDebugViewGlass ? tex2D(targets.noisyColorSampled).Load(int3(id.xy, 0)).a : 1.0;
+    // the glass pass's layer count (glass.slang) rides along for the guide capture; 0 when the pass did not run
+    const float alpha = mode == kDebugViewGlass
+        ? ((root.glassFlags & kGlassFlagPass) != 0 ? tex2D(targets.noisyColorSampled).Load(int3(id.xy, 0)).a : 0.0)
+        : 1.0;
     // RenderTargets::kDisplayFormat
     storageTex2D<float4, kImageFormatRgba16f>(targets.displayStorage)[id.xy] = float4(color, alpha);
 }

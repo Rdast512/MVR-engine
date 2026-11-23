@@ -183,15 +183,15 @@ float3 shadeFinalReservoir(GpuFrameRoot root, RAB_Surface surface, RTXDI_GIReser
         return float3(0.0, 0.0, 0.0);
     }
     float3 radiance = shadeGiSample(surface, reservoir.position, reservoir.radiance) * reservoir.weightSum;
-    if (isGiShadowTransmitted(root) && any(radiance > 0.0))
-    {
-        radiance *= reconnectionTransmittance(root, surface, reservoir.position);
-    }
-    // the sample may be a neighbor's or last frame's: X2 can be hidden from this surface
+    // the sample may be a neighbor's or last frame's: test opaque occlusion before walking glass layers
     if (params.enableFinalVisibility != 0 && any(radiance > 0.0) &&
         !isReconnectionVisible(surface, reservoir.position))
     {
         radiance = float3(0.0, 0.0, 0.0);
+    }
+    if (isGiShadowTransmitted(root) && any(radiance > 0.0))
+    {
+        radiance *= reconnectionTransmittance(root, surface, reservoir.position);
     }
     if (params.enableFinalMIS == 0)
     {
@@ -203,9 +203,12 @@ float3 shadeFinalReservoir(GpuFrameRoot root, RAB_Surface surface, RTXDI_GIReser
     {
         if (isGiShadowTransmitted(root))
         {
-            radiance += shadeGiSample(surface, initial.position, initial.radiance) * initial.weightSum *
-                        reconnectionTransmittance(root, surface, initial.position) *
-                        glossyMisWeight(surface, initial.position);
+            const float3 initialRadiance = shadeGiSample(surface, initial.position, initial.radiance) * initial.weightSum;
+            if (any(initialRadiance > 0.0))
+            {
+                radiance += initialRadiance * reconnectionTransmittance(root, surface, initial.position) *
+                            glossyMisWeight(surface, initial.position);
+            }
         }
         else
         {
@@ -247,8 +250,9 @@ float3 shadeInitialSample(GpuFrameRoot root, RAB_Surface surface, RTXDI_GIReserv
         return float3(0.0, 0.0, 0.0);
     }
     const float3 radiance = shadeGiSample(surface, initial.position, initial.radiance) * initial.weightSum;
-    return isGiShadowTransmitted(root) ? radiance * reconnectionTransmittance(root, surface, initial.position)
-                                       : radiance;
+    return isGiShadowTransmitted(root) && any(radiance > 0.0)
+        ? radiance * reconnectionTransmittance(root, surface, initial.position)
+        : radiance;
 }
 
 [shader("compute")]

@@ -17,7 +17,7 @@ import raytracing.trace;
 // I13 §2: a walk stops once its throughput luminance drops below this (GlassPass.hlsl)
 public static const float kGlassMinThroughput = 0.01;
 // crossings a walk tests per counted layer: back faces of single-sided glass pass untouched
-static const uint kGlassHitsPerLayer = 2;
+public static const uint kGlassHitsPerLayer = 2;
 
 // one crossing, coverage (alphaMode BLEND) applied
 public struct GlassLayer
@@ -35,18 +35,20 @@ public struct GlassLayer
 float3 dielectricF0(GpuMaterialExtension ext)
 {
     const float r = (ext.ior - 1.0) / (ext.ior + 1.0);
-    return min(r * r * ext.specularFactor * ext.specularColorFactor, float3(1.0, 1.0, 1.0));
+    return min(r * r * saturate(ext.specularFactor) * ext.specularColorFactor, float3(1.0, 1.0, 1.0));
 }
 
-// Schlick from f0 at cosine mu
-float3 schlick(float3 f0, float mu)
+// Schlick from f0 to f90 at cosine mu (KHR_materials_specular scales dielectric F90 by specularFactor)
+float3 schlick(float3 f0, float3 f90, float mu)
 {
     const float grazing = pow(1.0 - saturate(mu), 5.0);
-    return f0 + (1.0 - f0) * grazing;
+    return f0 + (f90 - f0) * grazing;
 }
 
-// false: a back face of single-sided glass, which a walk passes untouched. cone: the footprint at the ray origin
-public bool evaluateGlassLayer(GpuFrameRoot root, RayHit hit, float3 direction, RayCone cone, out GlassLayer layer)
+// false: a back face of single-sided glass, which a walk passes untouched. cone: the footprint at the ray origin.
+// isShadowWalk skips emissive sampling when only layer.transmittance is needed
+public bool evaluateGlassLayer(GpuFrameRoot root, RayHit hit, float3 direction, RayCone cone, out GlassLayer layer,
+                               bool isShadowWalk = false)
 {
     layer = {};
     const DecodedHit decoded = decodeHit(root, hit, direction, cone);
@@ -57,27 +59,28 @@ public bool evaluateGlassLayer(GpuFrameRoot root, RayHit hit, float3 direction, 
     const uint row = materialRow(decoded.draw.primitive);
     const GpuMaterial material = loadMaterial(root, row);
     const GpuMaterialExtension extension = loadMaterialExtension(root, row);
-    // no DLSS LOD bias: glass layers are not reconstructed at display resolution beyond their color
-    const SampledMaterial sampled = sampleMaterial(material, decoded.surface, 0.0);
+    // no DLSS LOD bias: glass layers are not reconstructed at display resolution beyond their color. Sample only the
+    // slots glass uses (baseColor once, shading normal, transmission, and emissive on camera walks only)
     const float4 baseColor = sampleBaseColor(material, decoded.surface, 0.0);
     const float4 one = float4(1.0, 1.0, 1.0, 1.0);
     const float transmission =
-        extension.transmissionFactor * sampleExtensionTexture(extension.transmission, decoded.surface, 0.0, one).r;
-    // classifyTransmission keeps every glass row free of a metal-rough texture
+        saturate(extension.transmissionFactor * sampleExtensionTexture(extension.transmission, decoded.surface, 0.0, one).r);
+    // classifyTransmission keeps every glass row free of a metal-rough texture and with metallicFactor < 1
     const float metallic = saturate(material.metallicFactor);
 
-    // sampleMaterial keeps n in the geometric hemisphere, and buildRaySurface turns that toward the ray
-    layer.normal = sampled.n;
+    // sampleShadingNormal keeps n in the geometric hemisphere, and buildRaySurface turns that toward the ray
+    layer.normal = sampleShadingNormal(material, decoded.surface, 0.0);
     layer.geoNormal = decoded.surface.geoNormal;
     layer.position = decoded.surface.position;
-    const float mu = abs(dot(layer.normal, direction));
-    const float3 dielectric = schlick(dielectricF0(extension), mu);
-    const float3 conductor = schlick(baseColor.rgb, mu);
+    const float mu = saturate(dot(layer.normal, -direction));
+    const float f90 = saturate(extension.specularFactor);
+    const float3 dielectric = schlick(dielectricF0(extension), float3(f90, f90, f90), mu);
+    const float3 conductor = schlick(baseColor.rgb, float3(1.0, 1.0, 1.0), mu);
     const float3 dielectricShare = (1.0 - metallic) * (1.0 - dielectric) * baseColor.rgb;
     layer.reflectance = lerp(dielectric, conductor, metallic);
     layer.transmittance = transmission * dielectricShare;
     layer.diffuseWeight = (1.0 - transmission) * dielectricShare;
-    layer.emission = sampled.emissive;
+    layer.emission = isShadowWalk ? float3(0.0, 0.0, 0.0) : sampleEmissive(material, decoded.surface, 0.0);
 
     // MASK is cut by the micromap; BLEND covers alpha of the pixel and passes the rest
     if ((material.flags & kMaterialAlphaModeMask) == uint(AlphaMode.Blend))
@@ -123,7 +126,7 @@ public float3 glassTransmittance(GpuFrameRoot root, float3 origin, float3 direct
             break;
         }
         GlassLayer layer;
-        if (evaluateGlassLayer(root, hit, direction, cone, layer))
+        if (evaluateGlassLayer(root, hit, direction, cone, layer, true))
         {
             ++layers;
             throughput *= layer.transmittance;

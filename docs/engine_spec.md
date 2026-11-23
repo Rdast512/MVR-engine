@@ -1,6 +1,6 @@
 # Engine end-goal specification
 
-**Date:** 2026-10-31, updated 2026-11-20 · **Status:** target architecture, normative for new work · **Working tree:** `feature-pbr` on `bdd86e1bf`
+**Date:** 2026-10-31, updated 2026-11-23 · **Status:** target architecture, normative for new work · **Working tree:** `feature-pbr` on `b3edb2e5c`
 **Audit:** §20 holds the 2026-11-10 architecture audit, its decisions and the documents named below that are not in the repository (§20.4).
 **Inputs:** `end_goal.md` (target) and `meshoptimizer.md`, both folded into this spec and not in the repository; [pbr_implementation_plan.md](../spec/pbr_implementation_plan.md), [resource_architecture.md](../spec/resource_architecture.md), [shader_architecture_plan.md](../spec/shader_architecture_plan.md), [meshlet_culling_options.md](./meshlet_culling_options.md), [culling_comparison.md](../reference/culling_comparison.md), [dgc_comparison.md](../reference/dgc_comparison.md)
 **Precedence:** where this spec and an input disagree, this spec wins. §17 lists every overridden decision. Detailed task plans (PBR plan tasks, culling stages) stay valid wherever they don't conflict.
@@ -29,7 +29,11 @@ The engine is a **GPU-driven, bindless, hybrid visibility + real-time path traci
 **Post-1.0 targets:**
 - the same Bistro scene rendered entirely from Nanite-like cluster-LOD geometry built and traversed as in `vk_lod_clusters`, in raster and ray tracing, with the same lighting stack and targets (§16.3, L3);
 - multithreaded rendering: CPU frame work and command recording spread over a job system (§16.4);
-- switchable ray paths: the SER RT pipeline beside the 1.0 ray-query passes, expected to become the default, and triangle BLAS instead of cluster BLAS for static geometry, each behind a toggle so both ways stay (§16.5).
+- switchable ray paths: the SER RT pipeline beside the 1.0 ray-query passes, expected to become the default, and triangle BLAS instead of cluster BLAS for static geometry, each behind a toggle so both ways stay (§16.5);
+- animation: glTF node animation, skinning and morph targets, deformed on the GPU, with the ray-traced geometry rebuilt every frame through RTX Mega Geometry cluster templates instead of refits (§16.6, AN1–AN4);
+- streaming: geometry streamed per cluster-LOD group with GPU-built CLAS, hit-based streaming for rays, and texture mip streaming, so scenes no longer have to fit in VRAM (§16.7, ST1–ST4).
+
+1.0 stays static and resident (decided 2026-11-23): one CLAS path, every asset in VRAM, no deformation. The post-1.0 work above builds on that path rather than replacing it.
 
 ### 1.2 Non-goals
 
@@ -42,7 +46,8 @@ The engine is a **GPU-driven, bindless, hybrid visibility + real-time path traci
 | Raster lighting fallbacks (shadow maps, SSAO, SSR, light probes, lightmaps) | rays only |
 | MSAA, TAA, custom denoisers (SVGF and the like) | DLSS-RR owns reconstruction |
 | [streaming_server_spec.md](./streaming_server_spec.md) | separate project; must not add work to the render path |
-| Geometry and texture streaming | side project; not part of this spec. Scenes must fit in VRAM |
+| Geometry and texture streaming in 1.0 | 1.0 scenes must fit in VRAM; streaming is post-1.0 (§16.7) |
+| Animation in 1.0 | 1.0 renders glTF files in their base pose; animation is post-1.0 (§7.3, §16.6) |
 
 ### 1.3 Principles
 
@@ -123,6 +128,18 @@ Allocations, not measurements. They are the acceptance criteria per stage: each 
 | Resolve + guides | 0.147 | 0.139 | 1.2 |
 | GPU total (with debug view, present, ImGui) | 0.308 | 0.395 | — |
 
+**Measured, M8 I4** (2026-11-21; RTX 5070, 1280×720 window, 853×480 render, DLSS-RR Quality, release, no layers; mean ms, ReSTIR GI mode). Full per-scope tables for all three indirect modes: [i4_frame_profile.md](../spec/fixesM1-6/i4_frame_profile.md) §1. Later steps moved these: I6 cut ReSTIR DI by 37–40%, and I10 cut ray tracing by 7–13%. The current baseline is in [spec/fixesM1-6/README.md](../spec/fixesM1-6/README.md) §Baseline.
+
+| Stage | Sponza gallery | Sponza courtyard (sunlit) | Reference budget |
+|---|---|---|---|
+| Cull + raster + Hi-Z, both phases | 0.123 | 0.125 | 0.6 + 1.0 |
+| Classify + binned resolve | 0.115 | 0.117 | 1.2 |
+| ReSTIR DI (initial + temporal + shade) | 0.351 | 0.704 | 2.0 |
+| Indirect bounce | 0.553 | 0.736 | 3.0 |
+| ReSTIR GI (temporal + shade) | 0.861 | 0.945 | 1.2 |
+| DLSS-RR | 1.211 | 1.216 | 2.5 |
+| GPU total | 3.327 | 3.954 | 16.6 |
+
 CPU budget: ≤ 2 ms per frame on the render thread at any scene size, excluding asset loading. Asset loading runs on worker threads and must not stall a frame (§13.1).
 
 ---
@@ -193,11 +210,14 @@ GRAPHICS QUEUE                                          ASYNC COMPUTE QUEUE
 12 ReSTIR GI      temporal + spatial on indirect samples         → indirect
    (§11.7 indirect modes: the default "ReSTIR GI" skips the NRC work of 11; "NRC" skips 12; "NRC → ReSTIR GI" runs both)
 13 combine        direct + indirect + emissive                   → noisy HDR
+13' glass         thin-walled glass layers over the noisy HDR (§12.4; skipped without glass)
 14 DLSS-RR        noisy HDR + guides                             → display-res HDR
 15 post           auto exposure → tonemap → swapchain, ImGui
 ```
 
-Stages 1–13 run at render resolution (indirect rays at half resolution on the floor tier: target, not built, considerations C-G2-1, M8 I11); 14–15 at display resolution. Stage 8 exists from M7; until then stage 9 is one tiled dispatch (§16.2 M1). No stage reads CPU-recorded per-object data.
+Stages 1–13' run at render resolution (indirect rays at half resolution on the floor tier: target, not built, considerations C-G2-1, M8 I11); 14–15 at display resolution. Stage 8 is built (M7 E1); before M7, stage 9 was one tiled dispatch. Stage 6' also runs the light preparation (`light_world`, `light_pdf_mips`, `rtxdi_presample`; §11.2) before the TLAS signal. No stage reads CPU-recorded per-object data.
+
+After 1.0, animation adds a deformation pass ahead of stage 1 and per-frame CLAS instantiation on the async compute queue (§16.6). Streaming adds request, upload and patch tasks around the LOD traversal (§16.7).
 
 ---
 
@@ -212,7 +232,7 @@ Base: [resource_architecture.md](../spec/resource_architecture.md) (model slices
 | Model slices (vertices, cluster data, indices) | `AssetBuffers` | on load / unload |
 | `GpuModel`, `GpuPrimitive`, `GpuNode`, materials, `GpuMaterialExtension` | same | on load / unload |
 | `GpuNodeInstance[entity × node]` | GPU scene-update pass | each frame from a delta list of changed entity transforms; `prevWorldMatrix` kept on the GPU |
-| Lights: punctual rows + emissive-triangle light list | GPU light-build pass | on load (emissive triangles), per frame (punctual transforms) |
+| Lights: punctual rows + emissive-triangle light list | `light_world` on async compute (M7 E2) | every frame, from the model-space rows and the entity matrices; one row per emitting triangle |
 | Per-cluster boxes (`GpuMeshletBounds`, parallel to `GpuMeshletDesc`), spheres + cones (`GpuMeshletDesc`), cluster → primitive row (`MeshletPrimitives`) (+ DAG error after §16.3) | asset buffers, model-sliced | on load |
 | Cluster groups (`GpuMeshletGroup`: union box, first cluster, count ≤ 32), per primitive (`GpuPrimitive::firstGroup/groupCount`) | asset buffers, model-sliced | on load |
 | Draw records `GpuDrawRecord` per (node instance, group): cull-internal work items, not read by mesh shaders | `MeshletCulling` | on layout change |
@@ -242,7 +262,7 @@ Folded from the former data-layout spec and meshoptimizer backlog (neither is in
 ### 6.4 Textures
 
 - KTX2 BC7 (color, linear data) and BC5 (normal maps), produced **automatically** by the engine in the background and cached; uploaded through GPU decompression (§7.2). The offline `tools/gltf_ktx2` shares the same encoder. BC6H (HDR) is out of scope: libktx has no BC6H target.
-- All mips resident; texture streaming is the side project of §1.2.
+- In 1.0 all mips are resident. Texture mip streaming is post-1.0 (§16.7 ST4).
 - Neural texture compression (RTXNTC, cooperative vectors) is optional (§15), not part of the baseline.
 
 ---
@@ -255,7 +275,7 @@ All geometry processing uses **meshoptimizer** (rule: no homegrown geometry code
 
 1. Clean-up: `meshopt_filterIndexBuffer`, welding, missing normals/tangents (PBR plan A4).
 2. **After the final goal (§16.3): cluster LOD DAG** following meshopt `demo/clusterlod.h` (`vk_lod_clusters` ships a lightly modified copy, used from `Scene::buildGeometryLod` in `scene_cluster_lod.cpp`): `meshopt_buildMeshletsSpatial` (clusters suited to ray tracing) → group with `meshopt_partitionClusters` → `meshopt_simplify*` with locked group borders → re-cluster, until one root group. Each cluster stores bounds, normal cone, its own error and its parent group's error (monotonic), as in `vk_lod_clusters`.
-3. Until then clusters are today's meshlets, built as **level 0 of `clodDefaultConfig`** so LOD later adds levels above them without changing them ([culling_comparison.md](../reference/culling_comparison.md) A3): `meshopt_buildMeshletsFlex` (min triangles = max / 3, cone weight 0, split factor 2), then per primitive `meshopt_partitionClusters` (spatial, target 24 so the +1/3 worst case fits 32) into groups with a union box; clusters are reordered so each group is contiguous. Groups never span primitives (materials and state are per primitive), unlike `vk_lod_clusters`, which partitions a whole mesh. Cluster size comes from the device: mesh-shader output limits and preferred sizes (`maxMeshOutputVertices`, `maxMeshOutputPrimitives`, `maxPreferredMeshWorkGroupInvocations`) and the CLAS limits (`VkPhysicalDeviceClusterAccelerationStructurePropertiesNV`). 64 vertices / 126 triangles is today's choice on NVIDIA, not a fixed constant; `vk_lod_clusters`' presets (default 128T / 128V) are the candidates to measure. The same clusters feed raster and CLAS builds.
+3. Until then clusters are today's meshlets, built as **level 0 of the cluster LOD config**, so LOD later adds levels above them without changing them ([culling_comparison.md](../reference/culling_comparison.md) A3). Since M8 I10 (MG-P3, 2026-11-22) the builder is `meshopt_buildMeshletsSpatial`, the builder of `vk_lod_clusters`' ray-tracing preset (`clodDefaultConfigRT`), with min triangles = max / 3 (42) and fill weight 0.75. It measured `RaySum` −10.9% / −6.6% / −12.8% (gallery / courtyard / Bistro) against the earlier Flex builder. The sample's own `min = max/4, fill 0.5` inflated Bistro's clusters by 53% and was rejected. Then, per primitive, `meshopt_partitionClusters` (spatial, target 24 so the +1/3 worst case fits 32) into groups with a union box; clusters are reordered so each group is contiguous. Groups never span primitives (materials and state are per primitive), unlike `vk_lod_clusters`, which partitions a whole mesh. Cluster size comes from the device: mesh-shader output limits and preferred sizes (`maxMeshOutputVertices`, `maxMeshOutputPrimitives`, `maxPreferredMeshWorkGroupInvocations`) and the CLAS limits (`VkPhysicalDeviceClusterAccelerationStructurePropertiesNV`). 64 vertices / 126 triangles is today's choice on NVIDIA, not a fixed constant; `vk_lod_clusters`' presets (default 128T / 128V) are the candidates to measure. The same clusters feed raster and CLAS builds.
 4. `meshopt_optimizeMeshletLevel` level 1, as in `clusterlod.h`. Levels ≥ 1 may rotate triangle corners, which changes OMM data, so the OMM bake (step 5) reads the final, optimized cluster triangles and never an earlier order.
 5. OMM bake for alpha-tested primitives: NVIDIA OMM SDK CPU baker, one bake per primitive over its final cluster triangles in cluster order, 4-state bake, forced 2-state at trace time (PBR plan D1).
 
@@ -263,11 +283,11 @@ All geometry processing uses **meshoptimizer** (rule: no homegrown geometry code
 
 Processing results (clusters, OMM, quantized streams; the DAG after §16.3) are cached per asset file + processing version, stored as GDeflate pages and decompressed on the GPU on load.
 
-### 7.3 Static geometry only
+### 7.3 Static geometry in 1.0
 
-No animation is planned: no skinning, morph targets or keyframe animation. Rigid entity transforms change only through the debug UI, through `GpuNodeInstance` and the per-frame TLAS build.
+1.0 has no animation: no skinning, no morph targets, no keyframe animation. Rigid entity transforms change only through the debug UI, through `GpuNodeInstance` and the per-frame PTLAS update. Moving entities are supported: the motion vectors, scene bounds and PTLAS partition reassignment are built (MG-B4). That makes rigid node animation (§16.6 AN1) the first post-1.0 step. Skinning and morph targets return post-1.0 on the GPU (AN2), with Mega Geometry cluster templates for the rays (AN3).
 
-**Removal task (M0):** delete the animation code that exists today: the `Joints`, `Weights`, `MorphPos`, `MorphNrm`, `MorphTan`, `MorphTargets` and `MorphWeights` asset buffers and their `GpuModel` slices, `GpuPrimitive` morph ranges, `GpuMorphTarget`, `applyMorphPosition` in the mesh shader, morph and skin parsing in the loader (glTF files load in their base pose), and the "morphed primitives skip culling" rule. About 200 lines across `assets_loader.cpp`, `geometry_store.*`, `types.hpp`, `vk_resource_manager.*`, `vk_meshlet_culling.cpp`, `vk_engine.cpp`, `types.slang` and `geometry/mesh.slang`.
+**Removal task (M0, done 2026-11-08):** the earlier animation code was deleted, since no animation was planned then. Its record is [animation_removal.md](../spec/m0/animation_removal.md); AN2 reintroduces the streams in the GPU-driven form. The deleted code was: the `Joints`, `Weights`, `MorphPos`, `MorphNrm`, `MorphTan`, `MorphTargets` and `MorphWeights` asset buffers and their `GpuModel` slices, `GpuPrimitive` morph ranges, `GpuMorphTarget`, `applyMorphPosition` in the mesh shader, morph and skin parsing in the loader (glTF files load in their base pose), and the "morphed primitives skip culling" rule. About 200 lines across `assets_loader.cpp`, `geometry_store.*`, `types.hpp`, `vk_resource_manager.*`, `vk_meshlet_culling.cpp`, `vk_engine.cpp`, `types.slang` and `geometry/mesh.slang`.
 
 ---
 
@@ -297,7 +317,7 @@ Remaining before 1.0, each in the milestone that owns its dependency (§16.2):
 |---|---|---|
 | A10 capacities | every list append through a capacity check with an overflow counter in `GpuCullCounters` and the culling panel (S11); exact sizing stays until LOD | M0, built |
 | A9 Hi-Z + reverse Z | port `nvhiz-update` (3 levels per dispatch, groupshared reductions in place of `subgroupShuffle`); reverse Z in the culling library, min reduction and the nudge sign | M1, built |
-| A6 bins by pipeline | two-sided by winding flip in the mesh shader (`isFrontFacingHW`) with a back-face bit for shading; per-primitive `AlphaTested` bin (no `*_MIXED` group bits since cluster groups never span primitives, [m6/README.md](../spec/m6/README.md)); bins opaque / alpha-tested (later SW raster) | opaque bin built in M1; alpha bin in M6 (the bin exists and is empty) |
+| A6 bins by pipeline | two-sided by winding flip in the mesh shader (`isFrontFacingHW`) with a back-face bit for shading; per-primitive `AlphaTested` bin (no `*_MIXED` group bits since cluster groups never span primitives, [m6/README.md](../spec/m6/README.md)); bins opaque / alpha-tested (later SW raster) | opaque bin built in M1; alpha-tested bin built in M6 D3 (2026-11-20) |
 | A8 jitter | §12.2 | M3 |
 | Verification | image and timings for A1–A7 on both GPUs (static, fast turn, fly out while frozen, double-sided foliage); cone-cull loss from `cone_weight = 0` | RTX 5070 done 2026-11-13: timings in §2.3; image identical with every test on and off, static and right after a turn, on 16 Sponza poses (`ENGINE_CULL_CHECK=1`). Open: the 2060 Super, the frozen fly-out, double-sided foliage (M6), cone-cull loss |
 
@@ -315,7 +335,7 @@ After the final goal (§16.3):
 | Depth | **reverse-Z** `D32_SFLOAT`, finite far plane, clear 0, `GREATER` (built in M1, §8.1 A9) |
 | Hi-Z | `nvhiz-update` port, 3 levels per dispatch, min reduction (built in M1) |
 | Target | visibility buffer (§8.3) + depth, render resolution, 1 sample, jittered projection |
-| Buckets | opaque and alpha-tested (own fragment shader with `discard`); two-sided by winding flip, no cull-mode bucket (§8.1 A6). One DGC execute per bucket per phase. Today: the opaque bin only; the alpha-tested bin is allocated and stays empty until M6 |
+| Buckets | opaque and alpha-tested (own fragment shader with `discard`); two-sided by winding flip, no cull-mode bucket (§8.1 A6). One DGC execute per bucket per phase. Both bins are built (alpha-tested since M6 D3), with one rule for which primitives are alpha-tested in raster and rays (`isAlphaTested`, §10.5) |
 | DGC | the raster path ([dgc_comparison.md §7–9](../reference/dgc_comparison.md)): GPU-written sequences + count; an execution set once buckets need different shaders. The sample's one indirect mesh draw per list is intentionally not followed |
 | Mesh shader | visible entry → node instance → model → `MeshletPrimitives[meshletRow]` → primitive (material `DoubleSided` flag; no draw record read) → vertex transform → triangle culling → ids only; no material fetch except in the alpha-tested bucket |
 
@@ -337,6 +357,12 @@ Each visible-cluster row is the cull pass's `GpuVisibleMeshlet {nodeInstanceInde
 ### 9.1 Classification
 
 One compute pass reads the visibility buffer in 8×8 tiles and appends each tile to the bin of every material **shader** it contains (rows sharing a shader share a bin). It also writes a per-pixel bin id (R8 or R16 image). Output: per-bin tile lists and counts, and the bin-id image.
+
+**As built (M7 E1, 2026-11-20, [e1_material_binning.md](../spec/m7/e1_material_binning.md)):**
+- `classify` → `binArgs` → one DGC execute over an execution set of three resolve shaders: `Background`, `Standard` (spec-gloss is a row flag inside it) and `Unlit`.
+- Every guide is bit-identical to the single dispatch.
+- I4 cost: 0.018 ms classify + 0.097 ms resolve on the Sponza gallery, about 0.045 ms over the single dispatch (F11, not ranked).
+- GPU-AV cannot instrument indirect-bindable shader objects (considerations C-E1-3). GPU-AV runs use the temporary per-bin switch `ENGINE_GPUAV_RESOLVE_PER_BIN=1`, which is off by default and removed with C-E1-3.
 
 ### 9.2 Resolve and shade
 
@@ -383,13 +409,14 @@ The RT scene is built around the cluster representation that raster uses, follow
 - **Clusters are the only geometry unit.** The engine's meshlets (64 vertices / 126 triangles) are the clusters; the DAG of §7.1 adds coarser levels later. Raster draws them, CLAS are built from them, and hits decode to them.
 - **Same ids everywhere:** a vis-buffer pixel and a ray hit both resolve to `(nodeInstance, cluster, triangle)`, so one `decodeHit` and one `sampleMaterial` serve both (PBR plan C3, extended with the cluster id). The cluster id is the model-slice `meshletRow` of §8.3.
 - **Post-1.0 (§16.5, V2):** a triangle BLAS per static primitive as a toggle beside the cluster BLAS; hits still decode to `(nodeInstance, cluster, triangle)`.
+- **Post-1.0 (§16.6, AN3):** deforming geometry keeps the same clusters. Each cluster gets a template at load, and a CLAS is instantiated from the deformed positions every frame. Static geometry keeps its load-time CLAS, so ids and decode stay the same.
 
 ### 10.2 Load time (per model, once)
 
 | Step | Rule |
 |---|---|
-| CLAS per cluster | every cluster (one level until §16.3, then every LOD level; streaming is out of scope, so everything is resident: the sample's `scene_preloaded.cpp` mode). CLAS are object-space and shared by all instances of the model |
-| Build input | cluster-local position arrays gathered into scratch with 8-bit cluster-local indices, freed after the build; `positionTruncateBitCount` zeroes low mantissa bits to shrink CLAS (the sample's "CLAS Mantissa drop bits", default 0) |
+| CLAS per cluster | every cluster (one level until §16.3, then every LOD level). Through 1.0 everything is resident, the sample's `scene_preloaded.cpp` mode; streaming is post-1.0 (§16.7). CLAS are object-space and shared by all instances of the model. Opaque and OMM clusters are built in two calls, so only alpha-tested clusters carry `ALLOW_CLUSTER_OPACITY_MICROMAPS` (MG-P1: CLAS −8% Sponza, −9% Bistro) |
+| Build input | cluster-local position arrays gathered into scratch with 8-bit cluster-local indices, freed after the build. `positionTruncateBitCount` zeroes low mantissa bits to shrink CLAS (the sample's "CLAS Mantissa drop bits"). It stays 0: 7 bits saved 18–20% of CLAS memory but slowed tracing by 4–6% on the 5070 (MG-P2, reverted). It returns as a memory lever for streaming and the floor tier (§16.7) |
 | Truncation consistency | fetched positions are the truncated CLAS positions, not the raster ones. At secondary hits, build the geometric normal and the next ray origin from the fetched positions only. Ray origins on the primary surface (full-precision raster positions) are offset by at least the truncation error, `≈ 2^(t − 23) · max(abs(p))` for `t` dropped bits, on top of the `geoNormal` offset (§10.4) |
 | Hit positions | `VK_KHR_ray_tracing_position_fetch` (`HitTriangleVertexPosition`, as in the sample's cluster hit shaders). Full-precision positions stay resident anyway for raster and the vis-buffer resolve, so this saves no memory here. Its value is at incoherent secondary hits: positions come from the AS, without the dependent BDA chain instance → model → cluster → vertex index → position |
 | CLAS memory | build into scratch, then move to their final place using the real build sizes: host estimates are 3–5× too large ([clas_allocation.md](../reference/vk_lod_clusters/docs/clas_allocation.md)) |
@@ -403,10 +430,10 @@ The RT scene is built around the cluster representation that raster uses, follow
 | BLAS reuse classification (after §16.3) | `geometry_blas_sharing.comp.glsl`, `traversal_init_blas_reuse.comp.glsl` | per instance: prebuilt low-detail BLAS, shared (another instance's), cached (discrete level, kept across frames), merged (highest resident detail) or own ([blas_sharing.md](../reference/vk_lod_clusters/docs/blas_sharing.md), [blas_caching.md](../reference/vk_lod_clusters/docs/blas_caching.md), [blas_merging.md](../reference/vk_lod_clusters/docs/blas_merging.md)) |
 | Per-frame cluster BLAS builds (after §16.3) | `blas_setup_insertion.comp.glsl`, `blas_clusters_insert.comp.glsl` | indirect; with merging + caching at most 2–3 builds per unique geometry per frame. New BLAS addresses reach the PTLAS as `UPDATE_INSTANCE` ops, without rewriting transforms |
 | Instance write | `instances_assign_blas.comp.glsl` | PTLAS instance ops + `GpuRayInstance` written on the GPU from `GpuNodeInstance`; no CPU loop |
-| TLAS | `vk_partitioned_tlas` (`partitioned_acceleration_structures.hpp`) | **PTLAS, required** (2026-11-14). One partitioned TLAS, updated in place every frame from GPU-written ops: `WRITE_INSTANCE` for every row after a layout change, otherwise only for instances whose world matrix changed, so a still frame writes no ops. Grid partitions over the instances' world positions; changed instances are rewritten in their own partition (the global partition measured slower on the 5070 and is not used). The op list and its count are device addresses, so the build is indirect with no readback. PTLAS has no OMM 2-state instance flag, so every ray sets the 2-state ray flag (§10.5). Frame N's update waits for frame N−1's last ray pass. Rays trace the same raw address (`GpuFrameRoot.tlas`). [ray_tracing_mega_geometry.md](../spec/features/ray_tracing_mega_geometry.md) §3.6. Built in PBR C4: a still frame updates in 0.015–0.019 ms, a moving one in 0.12–0.18 ms, against 0.10–0.15 ms for the earlier full build (5070) |
+| TLAS | `vk_partitioned_tlas` (`partitioned_acceleration_structures.hpp`) | **PTLAS, required** (2026-11-14). One partitioned TLAS, updated in place every frame from GPU-written ops: `WRITE_INSTANCE` for every row after a layout change, otherwise only for instances whose world matrix changed, so a still frame writes no ops. Grid partitions over the instances' world positions: empty cells are dropped, cells are numbered in Z-order, and the grid is refined while a cell holds more than 1,024 instances (MG-P5). Changed instances are rewritten in their own partition, and a moved entity is reassigned to its new cell (MG-B4). The global partition measured slower on the 5070 and is not used; explicit instance boxes were measured and reverted (MG-P5). The op list and its count are device addresses, so the build is indirect with no readback. PTLAS has no OMM 2-state instance flag, so every ray sets the 2-state ray flag (§10.5). Frame N's update waits for frame N−1's last ray pass. Rays trace the same raw address (`GpuFrameRoot.tlas`). [ray_tracing_mega_geometry.md](../spec/features/ray_tracing_mega_geometry.md) §3.6. Built in PBR C4: a still frame updates in 0.015–0.019 ms, a moving one in 0.12–0.18 ms, against 0.10–0.15 ms for the earlier full build (5070) |
 | Hit ids | — | `InstanceIndex()` → `GpuRayInstance`; `ClusterID` (needs `allowClusterAccelerationStructure` on the RT pipeline) → cluster; `PrimitiveIndex()` → triangle in the cluster |
 
-Graphics waits on a timeline semaphore before the first ray pass (§5 stage 10).
+Graphics waits on a timeline semaphore before the first ray pass (§5 stage 10). `rt_instances` and the PTLAS update are recorded before the light preparation, so they overlap it (MG-P7).
 
 **Through the final goal:** one level (today's meshlets). Each mesh primitive gets one cluster BLAS from its CLAS, built once at load and referenced by every instance; only changed instances are written into the PTLAS per frame. LOD (§16.3) then changes which CLAS enter a BLAS, not the data model.
 
@@ -471,16 +498,25 @@ The code is identical on every tier. Whether `ReorderThread` reorders is the dri
 
 PBR plan F1–F3, extended:
 
-- Light sources: punctual lights + **emissive triangles** (light list built on the GPU at load, `RAB_*` bridge reads it), environment map when present.
-- Local light sampling: presampled, as the RTXDI sample. `light_world` writes each local light's power into the light PDF (`R32_FLOAT`, full mip chain), `light_pdf_mips` reduces it, `rtxdi_presample` fills the `Power_RIS` tiles and ReGIR's onion cells around the camera (async compute, before the TLAS signal). `ReGIR_RIS` is the default (`Medium`); `Power_RIS` and `Uniform` stay selectable, and every path vertex samples in the same mode ([spec/m7/f1_light_presampling.md](../spec/m7/f1_light_presampling.md)).
+- Light sources: punctual lights + **emissive triangles**, one light per triangle of each emitting primitive. `light_world` writes them every frame (M7 E2, [e2_emissive_triangles.md](../spec/m7/e2_emissive_triangles.md)), and a BRDF ray that hits an emitter names its light, so emission is counted once along every path. An environment map is used when present (none yet, C-F3-5).
+- Local light sampling: presampled, as the RTXDI sample. `light_world` writes each local light's power into the light PDF (`R32_FLOAT`, full mip chain), `light_pdf_mips` reduces it, and `rtxdi_presample` fills the `Power_RIS` tiles and ReGIR's onion cells around the camera (async compute, before the TLAS signal). **`Power_RIS` ships** (M8 I6 F12): on Bistro's 76K triangle lights, ReGIR's presample cost 0.44 ms and stalled the ray start by 0.35 ms, while `Power_RIS` costs 0.03 ms with the same `Lit` stability. NVIDIA's `ReGIR_RIS` (`Medium`) and `Uniform` stay selectable (`ENGINE_DI_SAMPLING`), and every path vertex samples in the same mode ([spec/m7/f1_light_presampling.md](../spec/m7/f1_light_presampling.md)).
 - Resampling: temporal, then spatial (RTXDI 3.2 dropped the fused pass); one final visibility ray per pixel.
 - Output: `directRadiance` (RGBA16F).
-- As built (F3, 2026-11-14; RTXDI 3.2, 2026-11-15): `rtxdi_initial`, `rtxdi_temporal` and `rtxdi_shade` (spatial + shading) run first in the ray command buffer. The defaults are the RTXDI sample's `Medium` preset, for cost comparisons with NVIDIA's sample: `Raytraced` temporal reuse with the visibility shortcut, 2 `Basic` spatial samples per frame, permutation sampling, 1 BRDF candidate, final visibility reuse and `ReGIR_RIS` local light sampling with 8 candidates (M7 F1). The convergence check holds its own settings instead (`RtxdiContext::convergedSettings`: `Basic` temporal reuse, Pairwise spatial reuse on disocclusions only), since the defaults fail it ([rtxdi_3_2_update.md](../spec/features/rtxdi_3_2_update.md) §3.3, §6.4). RTXDI's unbiased `None` configuration is the reference (`ENGINE_RTXDI_REFERENCE=1`). Measured differences from the library defaults are listed in PBR plan F3.
+- As built (F3, 2026-11-14; RTXDI 3.2, 2026-11-15): `rtxdi_initial`, `rtxdi_temporal` and `rtxdi_shade` (spatial + shading) run first in the ray command buffer. NVIDIA's set is the RTXDI sample's `Medium` preset (`RtxdiContext::nvidiaSettings`), kept callable for cost comparisons with NVIDIA's sample: `Raytraced` temporal reuse with the visibility shortcut, 2 `Basic` spatial samples per frame, permutation sampling, 1 BRDF candidate, final visibility reuse and `ReGIR_RIS` with 8 candidates.
+
+**Shipped set** (`defaultSettings`, M8 I6, [i6_restir_di_tuning.md](../spec/fixesM1-6/i6_restir_di_tuning.md)), `Medium` with these changes:
+- `Power_RIS`;
+- no steady-state spatial reuse; instead, a ray-traced disocclusion boost of 8 samples while M < 4;
+- no permutation;
+- fresh final visibility (O10: no shadow-edge leak);
+- no BRDF candidate ray in a scene without emitters (O8).
+
+The shipped set cuts ReSTIR DI by 37–40% against `Medium` and passes all three convergence shots. The convergence check pins its own `convergedSettings` (`Power_RIS`, no BRDF candidate, no boiling filter, no reuse shortcuts). RTXDI's unbiased `None` configuration is the reference (`ENGINE_RTXDI_REFERENCE=1`). Open: the café's emissive-only interior flickers under DLSS-RR (F22). The planned I15 Phase 1 decides `spatialSamples = 2` from the settings lab, and I12 re-checks it on Bistro.
 
 ### 11.3 Indirect: one bounce + cache termination
 
 - One indirect ray per pixel from the primary surface (`sampleBrdf`, VNDF). Floor tier: half resolution, checkerboard, reconstructed by ReSTIR GI + DLSS-RR (target; not built: every tier traces every pixel until the 2060 Super is measured, considerations C-G2-1, M8 I11).
-- At the secondary hit X₂: direct light via RTXDI sampling without reuse + one visibility ray, then terminate and **query the radiance cache** for bounces 2…∞. Optional, off by default: X₂'s light resampled from the primary ReSTIR DI reservoirs where X₂ is on screen, and a firefly clamp on X₂'s radiance (`GiSettings::isSecondaryResamplingEnabled` / `isFireflyClampEnabled`; measured without gain on Sponza, re-checked with many lights in M8 I12).
+- At the secondary hit X₂: direct light via RTXDI sampling without reuse + one visibility ray, then terminate and **query the radiance cache** for bounces 2…∞. Optional, off by default: X₂'s light resampled from the primary ReSTIR DI reservoirs where X₂ is on screen, and a firefly clamp on X₂'s radiance (`GiSettings::isSecondaryResamplingEnabled` / `isFireflyClampEnabled`, O2 / O6). Neither gained on Sponza, and both are re-checked with many lights in M8 I12 ([i12_many_light_recheck.md](../spec/fixesM1-6/i12_many_light_recheck.md)). NVIDIA's `Medium` turns both on, so I12 Phase 0 adds them to the NVIDIA GI set. X₂ roughness is floored at 0.5 (O9, the sample's `minSecondaryRoughness`; on by default), and I12 checks it on a glossy scene.
 - Writes the ReSTIR GI initial sample (hit position, normal, radiance). With NRC the radiance from X₂ onward is not known in this pass: it writes the query record, and the custom resolve (§11.4) completes the sample after `QueryAndTrain`.
 - 1.0 ships ReSTIR GI mode (§11.7): the sample ends after X₂'s direct light and emission (one bounce), and no cache is queried. The cache termination above runs in the NRC comparison modes.
 
@@ -494,13 +530,21 @@ PBR plan F1–F3, extended:
 | Resolve | custom resolve (NRC guide, step 7) writing `throughput × cached radiance` into the ReSTIR GI samples, instead of the SDK's combined-signal resolve |
 | Cost | CUDA runtime DLLs; HLSL layout matching in the bridge |
 | Quality | handles glossy, adapts without parameters |
-| Tiers | a comparison switch on both tiers (§11.7), not the shipped path since 2026-11-20 (C-G5-3); in the NRC modes the floor tier lowers the training budget, never swaps the cache (P1) |
+| Tiers | a comparison switch on both tiers (§11.7), not the shipped path since 2026-11-20 (then C-G5-3, worked around in M8 I7); in the NRC modes the floor tier lowers the training budget, never swaps the cache (P1) |
 
 NRC is the only radiance cache (decided 2026-11-14: the target is NVIDIA only). The indirect pass calls the NRC bridge directly; there is no cache interface. Linkage test: `tests/nrc_library_test.cpp`. Integrated in M4.
 
 ### 11.5 Indirect resampling: ReSTIR GI
 
-RTXDI ReSTIR GI on the §11.3 samples: temporal then spatial reuse, with the boiling filter on and ray-traced spatial bias correction (NVIDIA's `Basic` reads −27% in the gallery, considerations C-G5-2; [m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md) §2.5), then the final shading with a reconnection ray and the glossy MIS against the pixel's initial sample. Output: `indirectRadiance` (RGBA16F). A failed BRDF sample is a zero-radiance sample (M = 1), not an empty reservoir. The GI check (`ENGINE_GI_CHECK`) holds it to the §14 ground truth ([g5_restir_gi.md](../spec/m4/g5_restir_gi.md)). ReSTIR PT is a later quality option (§15).
+RTXDI ReSTIR GI on the §11.3 samples: temporal then spatial reuse, then the final shading with a reconnection ray and the glossy MIS against the pixel's initial sample.
+
+**Shipped set** (`defaultGiSettings`), NVIDIA's library defaults with these changes:
+- ray-traced spatial bias correction: NVIDIA's `Basic` reads −27% in the gallery (considerations C-G5-2, O1);
+- ReSTIR PT's DLSS-RR profile, which the RTXDI sample applies whenever DLSS-RR runs (O11): 20 frames of history, no age rejection, stagnancy decorrelation and firefly replacement in place of the boiling filter, with RTXDI's boiling filter tested over the full tile (F15);
+- without the profile's two darkening parts: duplication history reduction and the fresh-swap bound;
+- 1 spatial sample (I5, −0.23 ms).
+
+Against the one-bounce ground truth it reads +1.09% / −1.21% (gallery / courtyard, seed 0), and the GI check gates it at ±2% ([i5_restir_gi_tuning.md](../spec/fixesM1-6/i5_restir_gi_tuning.md); [m8_optimization_and_fixes.md](../spec/fixesM1-6/m8_optimization_and_fixes.md) §2.5, §2.10). NVIDIA's set (`nvidiaGiSettings`) and the converged set stay callable. Open: the café's +10% (dim tiles +25%) excess, F23, which the planned I15 Phase 2 addresses. Output: `indirectRadiance` (RGBA16F). A failed BRDF sample is a zero-radiance sample (M = 1), not an empty reservoir. The GI check (`ENGINE_GI_CHECK`) holds it to the §14 ground truth ([g5_restir_gi.md](../spec/m4/g5_restir_gi.md)). ReSTIR PT is a later quality option (§15).
 
 ### 11.6 Combine
 
@@ -518,9 +562,9 @@ A runtime toggle picks how `indirectRadiance` is made; NRC stays initialized in 
 
 Rules: a switch happens at a frame boundary without a reload or a reconfigure, and resets ReSTIR GI and DLSS-RR history for one frame. The NRC context is never destroyed on a switch (SDK leaks, considerations C-G3-3). The self-test runners cover every mode. Defaults change only by a spec decision backed by the G7 timings and convergence numbers (P1).
 
-Built in G7 (2026-11-19): `Renderer::indirectMode`, `ENGINE_INDIRECT_MODE` (a mode id, or `cycle`). A paused cache has zeroed constants; NRC mode is RTXDI's resampling mode `None`; a change sets `FrameFlag::IndirectHistoryReset`. With `convergedGiSettings`, ReSTIR GI mode converges to the one-bounce ground truth (GI check, gated); the shipped defaults read +8.1% / +1.7% (gallery / courtyard, measured, not gated: the age limit, C-G5-1, M8 I5); the NRC modes keep NRC's bias (considerations C-G5-3). On the RTX 5070 at 1280×720: GPU total 3.3 / 2.9 / 2.7 ms for NRC → ReSTIR GI / NRC / ReSTIR GI.
+Built in G7 (2026-11-19): `Renderer::indirectMode`, `ENGINE_INDIRECT_MODE` (a mode id, or `cycle`). A paused cache has zeroed constants; NRC mode is RTXDI's resampling mode `None`; a change sets `FrameFlag::IndirectHistoryReset`. With `convergedGiSettings`, ReSTIR GI mode converges to the one-bounce ground truth (GI check, gated). The shipped defaults read +1.09% / −1.21% (gallery / courtyard) and have been gated since M8 I5. M8 I7 found the NRC modes' ~10% excess (C-G5-3): an upstream NRC 0.16 leak of direct light on `hasExitedScene` training paths, worked around in `nrc_update.slang` (C-G3-7). Both NRC phases have been gated since then, and the GI check passes 14 of 14. On the RTX 5070 at 1280×720: GPU total 3.3 / 2.9 / 2.7 ms for NRC → ReSTIR GI / NRC / ReSTIR GI.
 
-Default decision (2026-11-20, user): ReSTIR GI on both tiers. NRC reads ~10% bright against the ground truth in both NRC modes (considerations C-G5-3), while ReSTIR GI mode is within +8.1% / +1.7% of its one-bounce ground truth with the shipped settings (converged settings: gated in the GI check) and costs 0.6 ms less. NRC stays built and paused, and returns as the default only once C-G5-3 is fixed and the GI check gates it. Optimizations from the RTXDI sample and 3.1 / 3.2 are reviewed in [m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md).
+Default decision (2026-11-20, user): ReSTIR GI on both tiers. NRC reads ~10% bright against the ground truth in both NRC modes (considerations C-G5-3), while ReSTIR GI mode was within +8.1% / +1.7% of its one-bounce ground truth with the shipped settings of the time and cost 0.6 ms less (since M8 I5: +1.09% / −1.21%, gated). NRC stays built and paused. Since M8 I7 (2026-11-22), C-G5-3 is worked around and the NRC phases are gated. A switch of the default back to NRC is a separate user decision, backed by the cost numbers (NRC + ReSTIR GI costs 0.6–0.8 ms more, I4). Optimizations from the RTXDI sample and 3.1 / 3.2 are reviewed in [m8_optimization_and_fixes.md](../spec/fixesM1-6/m8_optimization_and_fixes.md).
 
 ---
 
@@ -555,7 +599,7 @@ Auto exposure from a luminance histogram (compute) → tonemap (ACES fitted or A
 
 v1: `Blend` treated as mask (cutoff 0.5). No forward raster transparency pass.
 
-**Thin-walled glass (M8 I13, [i13_glass_transmission.md](../spec/fixesM1-6/i13_glass_transmission.md)).** A `KHR_materials_transmission` material with `transmissionFactor > 0`, roughness ≤ `kGlassMaxRoughness` (0.3), no metallic-roughness texture, not unlit and not spec-gloss is glass; the others render opaque and are logged with the reason. Glass:
+**Thin-walled glass (M8 I13, [i13_glass_transmission.md](../spec/fixesM1-6/i13_glass_transmission.md)).** A `KHR_materials_transmission` material with `transmissionFactor > 0`, `metallicFactor < 1`, roughness ≤ `kGlassMaxRoughness` (0.3), no metallic-roughness texture, not unlit and not spec-gloss is glass; the others render opaque and are logged with the reason. Glass:
 - stays out of the raster templates, so the vis buffer and every guide describe the surface behind it;
 - is in the TLAS under `kRayMaskGlass` (0x02); every other ray, visibility included, traces `kRayMaskOpaque` (0x01);
 - is composited by the glass pass (`passes/glass.slang`) after `combine` and before DLSS-RR, as the RTXDI FullSample's `GlassPass` does: the camera ray walks up to `maxLayers` (4) glass layers in front of the vis-buffer surface, and noisy color becomes `Σ (Πⱼ<ᵢ Tⱼ)(Eᵢ + Rᵢ + Dᵢ) + (Π Tᵢ) · color`. `T = t(1−m)(1−F)·baseColor`, `R = F_layer · L(mirror ray)` (shaded as X₂: emission and one direct-light sample), `D` the non-transmitted dielectric share lit by one light sample, Lambert only;
@@ -593,6 +637,8 @@ Done when (M10): Nsight Systems on the Bistro benchmark paths shows no CPU wait 
 
 NRC passes stay on the graphics queue in frame order (table above); they are not candidates for overlap.
 
+X3–X5 are the base for post-1.0 streaming (§16.7). ST1 replaces the load-time CLAS/BLAS builds of X4 with RTXMG's GPU-only build pipeline (implicit destinations, a GPU allocator, `MOVE_OBJECTS`), so a streamed group needs no CPU readback or `waitIdle`.
+
 ---
 
 ## 14. Profiling, validation and debug
@@ -603,12 +649,18 @@ NRC passes stay on the graphics queue in frame order (table above); they are not
 | Tracy | CPU + GPU zones for every pass, memory pools per resource kind |
 | Counters | every GPU list (visible clusters, candidates, bins, light samples) reports count, capacity, overflow |
 | Nsight Graphics / Systems | per-milestone capture; occupancy and RT traversal checks |
-| Validation | layers via vkconfig, best-practices NVIDIA preset; clean before merge |
+| Validation | layers via vkconfig, best-practices NVIDIA preset; clean before merge. GPU-AV runs need `ENGINE_GPUAV_RESOLVE_PER_BIN=1` until C-E1-3 closes (§9.1). Performance is measured with every layer off |
+| Self-test runners | env-var runners, each deterministic per frame index and documented in [settings.md](./settings.md) §6: `ENGINE_CULL_CHECK` (culling lossless, 16 poses), `ENGINE_RT_CHECK` (primary rays against the vis buffer, `alpha-edge` class), `ENGINE_MOTION_TEST` (13 scenarios), `ENGINE_GUIDE_CAPTURE` (guides, A4 normals, 3 ReSTIR DI convergence shots, 2 glass throughput checks), `ENGINE_GI_CHECK` (ReSTIR GI and NRC against the ground truth, seeded), and M8 I1's `ENGINE_STABILITY_CHECK`, `ENGINE_LIGHT_CHANGE_CHECK` and `ENGINE_SCREEN_EDGE_CHECK`. `ENGINE_CHECK_SCENE` moves the GI and temporal runners from Sponza to Bistro's café (`bistro_cafe`, F22 / F23) or Bistro's glass poses (`bistro`, I13); I12 Phase 0 adds `bistro_glossy`. Planned: `ENGINE_DLSS_CHECK` (M8 I14) |
+| Settings lab | `ENGINE_LAB=<plan>` runs plans of settings switches over named cases and writes a CSV to `logs/lab` that ranks the switches. It is separate from the checks: the checks ignore `ENGINE_CONFIG`, and the lab refuses to start next to them ([full_testing.md](../spec/features/full_testing.md), [settings.md](./settings.md) §9). It finds candidates, and the runners decide |
 | Debug views | `DebugView` table: geometry (clusters, LOD level, triangles, instances), vis buffer ids, every §9.3 guide, RTXDI reservoirs, cache debug resolve, DLSS input vs output. Geometry views are derived from the vis buffer in compute; overdraw is not planned (it would need a raster debug variant) |
 | Ground truth | accumulation mode of the same path tracer (many frames, cache off, high bounce count) on static frames; no second renderer (PBR plan §8). Built in G5: `RtxdiContext::giReferenceBounces` traces 8 bounces after X2 with NRC paused, the GI reference shades the samples without reuse, and `ENGINE_GI_CHECK` averages it against ReSTIR GI |
 | Benchmarks | fixed camera paths per scene, recorded per tier, compared with §2.3 |
 
-Benchmark scenes: Sponza (+ Intel Sponza curtains/ivy for alpha), **Bistro** (the final-goal scene: many lights, emissive), Khronos validation assets (PBR plan "Validation assets"). After 1.0 (§16.3): Bistro on cluster LOD with the M10 benchmark paths (L3), and a dense scan or Zorah-class scene for cluster LOD (as used by `vk_lod_clusters`).
+Benchmark scenes:
+- Sponza (+ Intel Sponza curtains/ivy for alpha).
+- **Bistro**, the final-goal scene: many lights, 76K emissive triangles, spec-gloss materials, thin-walled glass. It is in `models/bistro` as KTX2 only, through Git LFS, loaded as 2,909 instances; its café interior is lit by emissive triangles only.
+- Khronos validation assets (PBR plan "Validation assets").
+- After 1.0: Bistro on cluster LOD with the M10 benchmark paths (§16.3, L3); a dense scan or Zorah-class scene for cluster LOD and streaming (as used by `vk_lod_clusters`, §16.7); the Khronos animation assets in `gltf/2.0` (`AnimatedCube`, `BoxAnimated`, `InterpolationTest`, `SimpleSkin`, `RiggedFigure`, `CesiumMan`, `BrainStem`, `Fox`, `AnimatedMorphCube`, `MorphStressTest`) plus an instanced crowd for animation (§16.6).
 
 ---
 
@@ -629,25 +681,29 @@ Each is a separate stage, added only when the baseline meets §2.3 and the techn
 
 ## 16. Roadmap
 
-### 16.1 Current state (`bdd86e1bf` plus the working tree, 2026-11-20)
+### 16.1 Current state (`b3edb2e5c` plus the working tree, 2026-11-23)
 
 | Area | State |
 |---|---|
 | Vulkan 1.4 base, shader objects, descriptor heaps, BDA frame root, model slices, shared models/materials | done |
-| meshoptimizer clusters as `clusterlod.h` level 0 (Flex builder, level-1 optimize), groups via `partitionClusters`, box bounds + cones, index filtering | done |
+| meshoptimizer clusters as cluster-LOD level 0 (Spatial builder since M8 I10 MG-P3, level-1 optimize), groups via `partitionClusters`, box bounds + cones, index filtering | done |
 | GPU culling aligned with `vk_lod_clusters` leaf level (§8.1): `culling.slang` port, box tests, group tier, per-group reject bitmasks, `{instance, cluster}` visible entries, frozen-pyramid freeze, 1-fetch Hi-Z, lossless sub-pixel, homogeneous per-triangle backface; history invalidation | done (A1–A5, A7, C1–C3); image and timings on the RTX 5070 done (§2.3, `ENGINE_CULL_CHECK`); the 2060 Super open |
 | DGC raster: GPU-written sequences, explicit preprocess, one execute per (phase, raster bin) | done |
-| Animation code (§7.3) | removed (2026-11-08) |
+| Animation code (§7.3) | removed (2026-11-08); returns post-1.0 on the GPU and Mega Geometry (§16.6) |
 | Culling list capacities and overflow counters (A10) | done |
 | Reverse-Z, 3-level Hi-Z, `R32_UINT` vis buffer, opaque bin with winding flip (M1) | done; culling is lossless under reverse Z (`ENGINE_CULL_CHECK`: 16 of 16 poses identical with culling on and off) |
-| Resolve as one tiled compute dispatch writing the §9.3 guides and motion; `sampleMaterial` (PBR B1) | built; motion checked by the scripted motion test (`ENGINE_MOTION_TEST`, [motion_vectors.md](../spec/features/motion_vectors.md) §5.1); guides match the Khronos screenshots for `MetalRoughSpheres`, `TwoSidedPlane` and `UnlitTest` (`ENGINE_GUIDE_CAPTURE`, PBR plan E1); A4 generated tangents and flat normals match their references pixel by pixel (PBR plan A4) |
+| Resolve writing the §9.3 guides and motion; `sampleMaterial` (PBR B1) | built as one tiled dispatch in M1, binned since M7 E1 (§9.1); motion checked by the scripted motion test (`ENGINE_MOTION_TEST`, [motion_vectors.md](../spec/features/motion_vectors.md) §5.1); guides match the Khronos screenshots for `MetalRoughSpheres`, `TwoSidedPlane` and `UnlitTest` (`ENGINE_GUIDE_CAPTURE`, PBR plan E1); A4 generated tangents and flat normals match their references pixel by pixel (PBR plan A4) |
 | BRDF (PBR B2): GGX, VNDF sampling, `tests/brdf_test.cpp` | built |
 | Punctual lights (PBR B3): `evalLight` in `lighting/lights.slang`, `tests/lights_test.cpp` | built; called by the RTXDI bridge (PBR F2) and the `Unshadowed lights` / `Shadowed lights` views |
 | Debug views, GPU timers, Tracy | done |
-| Per-stage timings on both cards (M0, M1 rows of §2.3) | RTX 5070 recorded 2026-11-13 (§2.3); the 2060 Super not recorded |
+| Per-stage timings on both cards (M0, M1 rows of §2.3) | RTX 5070 recorded 2026-11-13 and as the full frame profile in M8 I4 (§2.3); the 2060 Super not recorded (M8 I11) |
 | DLSS, NRC | DLSS-RR evaluated every Lit frame (PBR H1); NRC built since M4 (PBR G3), trained and queried in the NRC modes only, paused by default since 2026-11-20 (§11.7); linkage test in `tests/` |
 | Direct and indirect lighting (ReSTIR DI 3.2, compute indirect bounce, ReSTIR GI, NRC, combine, indirect mode toggle), DLSS-RR, auto exposure + ACES tonemap, cluster AS and PTLAS, GI ground truth | built (M2–M4; §16.2) |
-| OMM, SER RT pipeline, cluster LOD | OMM planned (M6, [spec/m6](../spec/m6/README.md)); SER built in M4 and shelved 2026-11-17, returns post-1.0 (§16.5 V1); cluster LOD post-1.0 |
+| OMM and the alpha-tested raster bin | built (M6, [spec/m6](../spec/m6/README.md), 2026-11-20) |
+| Material binning, emissive-triangle lights, light presampling | built (M7, [spec/m7](../spec/m7/README.md), 2026-11-20/21); `Power_RIS` default since M8 I6 |
+| Bistro | loads with KTX2 textures and spec-gloss materials (C-M7-1); glass composited (M8 I13); café and glass check scenes |
+| Optimization and fixes (M8) | I1–I10 and I13 built; I11 (floor tier), I12, I14, I15 planned (§16.2) |
+| SER RT pipeline, triangle BLAS, cluster LOD, animation, streaming | SER built in M4 and shelved 2026-11-17, returns post-1.0 (§16.5 V1); triangle BLAS measured in I10 and kept post-1.0 (V2); cluster LOD, animation and streaming post-1.0 (§16.3, §16.6, §16.7) |
 | Structure and document debt | §20 |
 
 ### 16.2 Milestones
@@ -664,11 +720,19 @@ Each milestone renders something testable and is measured against §2.3 before t
 | M5 | — | merged into M4 (2026-11-14): NRC is the only cache | — |
 | M6 | Alpha | OMM bake per primitive, attach per cluster, build (§10.5), alpha-tested raster bucket | foliage cut-outs in raster and shadows; zero ray candidates |
 | M7 | Material binning | tile classification + bin-id image (§9.1), DGC compute execution set with the overlap guard (§9.2), emissive-triangle lights, `Power_RIS` | per-bin timings; Bistro emissives lit |
-| M8 | Optimization and fixes | bias and stability of the default lighting, the NRC bias, measured perf levers across the frame, and the check runners that hold them: GI-check seeding, stability, light-change and screen-edge runners; frame profile; ReSTIR GI and DI tuning with NVIDIA's sets kept callable; NRC bias and cost; pass merges; floor tier; many-light re-check after M7; plan: [spec/fixesM1-6](../spec/fixesM1-6/README.md) (I1–I12), findings: [m8_optimization_and_fixes.md](../spec/fixesM1-6/m8_optimization_and_fixes.md), [mg_optimizations_fixes.md](../spec/fixesM1-6/mg_optimizations_fixes.md) | shipped ReSTIR GI gated in the GI check (or its bias a documented choice); NRC phases gated or C-G5-3's cause known; `Lit` stability no worse than the 2026-11-20 baseline; every lever of the frame profile landed or closed with its numbers on both tiers |
+| M8 | Optimization and fixes | bias and stability of the default lighting, the NRC bias, measured perf levers across the frame, and the check runners that hold them: GI-check seeding, stability, light-change and screen-edge runners; frame profile; ReSTIR GI and DI tuning with NVIDIA's sets kept callable; NRC bias and cost; RTXDI surface traffic; Mega Geometry fixes and perf; floor tier; many-light and glossy re-check after M7; thin-walled glass; the Bistro audit fixes and café settings; plan: [spec/fixesM1-6](../spec/fixesM1-6/README.md) (I1–I15), findings: [m8_optimization_and_fixes.md](../spec/fixesM1-6/m8_optimization_and_fixes.md), [mg_optimizations_fixes.md](../spec/fixesM1-6/mg_optimizations_fixes.md) | shipped ReSTIR GI gated in the GI check (or its bias a documented choice); NRC phases gated or C-G5-3's cause known; `Lit` stability no worse than the 2026-11-20 baseline; every lever of the frame profile landed or closed with its numbers on both tiers |
 | M9 | Asset pipeline | §6.4 and §7.2: automatic KTX2 conversion, GDeflate cache, GPU decompression for textures and geometry; background loading on worker threads, async upload and build, deferred destruction on unload (§13.1 X3–X5) | §6.4 and §7.2 hold; Bistro load time and PCIe bytes recorded; loading a model while rendering causes no frame over budget |
 | M10 | **1.0 final goal: Bistro** | full Bistro scene, complete lighting stack (ReSTIR DI + ReSTIR GI, the NRC switch kept for comparison); fixed benchmark paths; per-stage tuning on both tiers; CPU/GPU overlap verified (§13.1) | §2.3 met on the reference tier; floor result recorded (met, or overrun list → §2.1 outcome); §13.1 done criteria met |
 
-**Status (2026-11-20):** M1 and M3 are done. M0 and M2 are built on the RTX 5070 (2060 Super checks and the M2 overlap capture stay open). M4 is built on the RTX 5070 (G1 built then shelved 2026-11-17 to post-1.0 V1; G2, G3, G5, G6, G7 built; default switched to ReSTIR GI on 2026-11-20; 2060 Super timings stay open, default tuning and NRC bias moved to M8). M5 was merged into M4. M6 and M8 are spec-planned; M7, M9 and M10 are not started. AU items not marked done are optional (§20.2).
+**Status (2026-11-23):**
+- **Done:** M1, M3 and M6.
+- **Built on the RTX 5070:** M0, M2, M4 and M7. Their 2060 Super checks stay open (C-M0-1), as does the M2 overlap capture, which I4 recorded for the 5070 (F9).
+- **M4:** G1 was built, then shelved 2026-11-17 to post-1.0 V1. G2, G3, G5, G6 and G7 are built, and the default switched to ReSTIR GI on 2026-11-20.
+- **M5** was merged into M4.
+- **M8 is in progress:** I1–I10 and I13 are built; I11, I12, I14 and I15 are planned.
+- **Not started:** M9 and M10.
+
+AU items not marked done are optional (§20.2).
 
 | # | Done | Open |
 |---|---|---|
@@ -678,9 +742,9 @@ Each milestone renders something testable and is measured against §2.3 before t
 | M3 | PBR B2 (BRDF), B3 (`evalLight`); B1's `KHR_texture_transform` check (`TextureTransformTest`, `TextureTransformMultiTest`); E1's AO guide, unlit specular weight, `lodBias` and Halton jitter with the culling jitter rule (§12.2); E2's GPU world light buffer for punctual lights; F1's RTXDI host context (reservoirs, neighbor offsets, constants per slot); F2's RTXDI bridge (`RAB_*` over the guides, `traceVisibility`) with the position guide and `motion.z`; F3's ReSTIR DI passes into `directRadiance` (`Direct lighting` view, formerly `Lighting only`), matching RTXDI's unbiased reference on `LightsPunctualLamp` (updated to RTXDI 3.2 on 2026-11-15); H1's DLSS-RR at the Quality render resolution (1.14 ms on the 5070); H2's histogram auto exposure and ACES tonemap (0.030 ms), with the exposure passed to DLSS-RR; E3's engine sun; on sunlit `Sponza` the Lit output holds still (temporal deviation 0.35% of the mean at Quality) and repeats at repeated poses under a yawing camera and a moving sun (2.4% and 1.5%) | **done** (2026-11-14). The 2060 Super timings stay with M0 (considerations C-M0-1, C-F3-7); E2's emissive triangles move to M7 |
 | M4 | PBR G1 built then shelved 2026-11-17 to post-1.0 V1 (C-G1-3); G2 compute ray-query indirect pass (`IndirectPass`, `passes/indirect.slang`); G3 NRC (`NrcCache`, `passes/nrc_update.slang`, `passes/nrc_resolve.slang`, 0.62 ms on 5070); G5 ReSTIR GI (`rtxdi_gi_temporal`, `rtxdi_gi_shade`) + §14 GI ground truth and `ENGINE_GI_CHECK`, ray-traced spatial bias correction since 2026-11-20 (C-G5-2); G6 combine (`noisyColor = direct + indirect + emissive`, `Direct lighting` / `DLSS input` views); G7 runtime indirect mode toggle (`NRC → ReSTIR GI` / `NRC` / `ReSTIR GI`; ReSTIR GI default on both tiers since 2026-11-20; 5070 GPU total 3.3 / 2.9 / 2.7 ms at 1280×720) | 2060 Super timings and NRC hardware check (R4, C-M0-1, C-G3-2); default tuning and NRC +10% bias (C-M4-2, C-G5-3) moved to M8 |
 | M5 | — | merged into M4 (2026-11-14) |
-| M6 | spec planned ([spec/m6](../spec/m6/README.md), 2026-11-20) | not started |
-| M7 | — | not started |
-| M8 | spec planned ([spec/fixesM1-6](../spec/fixesM1-6/README.md), 2026-11-20; steps re-planned as I1–I12 on 2026-11-21) | O1, O9, O11 and F10 done ahead of the steps; I1 built 2026-11-21 (check runners; found F20) |
+| M6 | D1 OMM SDK bake per alpha primitive; D2 micromap per primitive built before its CLAS, per-cluster OMM index ranges, alpha instances without `FORCE_OPAQUE`; D3 alpha-tested raster bin; D4 zero-candidate counter and the `alpha-edge` RT-check class. `AlphaBlendModeTest` and Sponza's plants cut out in raster and shadows; every runner green, GPU-AV clean ([spec/m6](../spec/m6/README.md)) | **done** (2026-11-20). Accepted: micromap build cost (C-D2-1), the known-area gate on Sponza's chains (C-D1-2) |
+| M7 | E1 material binning (classify + DGC execution set of `Background` / `Standard` / `Unlit`, guides bit-identical); E2 emissive-triangle lights written per frame by `light_world`; F1 light PDF, `Power_RIS` tiles and ReGIR cells ([spec/m7](../spec/m7/README.md)). Bistro loads with its spec-gloss materials (C-M7-1) | built (2026-11-20/21). Open: GPU-AV on the execution set (C-E1-3, temporary per-bin switch), C-E2-2, C-F1-4 to C-F1-6; the "Bistro emissives lit" check is still to be run; M8 I14 Phase 4 adds an independent Bistro textured-emission check |
+| M8 | O1, O2/O6 (off), O3 (closed), O9, O11, F10 and the sampling audit ahead of the steps. I1 check runners; I2 shading correctness (F13–F20); I3 Mega Geometry fixes (MG-B1–B4); I4 frame profile; I5 ReSTIR GI tuning (shipped GI gated, +1.09% / −1.21%); I6 ReSTIR DI tuning (`Power_RIS`, −37–40% DI); I7 NRC bias (upstream `hasExitedScene` leak found and worked around; NRC phases gated, GI check 14 of 14); I8 NRC cost; I9 RTXDI surface traffic; I10 Mega Geometry perf (MG-P1, P3, P4, P5 layout, P6, P7 kept; P2 and explicit boxes reverted; 1.0 stays on CLAS); I13 thin-walled glass; the settings lab ([spec/fixesM1-6](../spec/fixesM1-6/README.md)) | I11 floor tier (needs the 2060 Super); I14 Bistro sampling, reuse, DLSS-RR and rays (F24–F27); I15 café DI and GI settings (F22, F23); I12 many-light and glossy re-check after I14 and I15 Phase 1 (Phase 0 can land now). NRC bias closed in I7 (C-G5-3 worked around, upstream C-G3-7) |
 | M9–M10 | — | not started |
 
 **Work added by the audit (§20.2):**
@@ -729,6 +793,60 @@ Rules:
 - A toggle switches at a frame boundary, without a reload.
 - V2 applies to static, single-level geometry. Instances on per-frame LOD cuts (L2) keep cluster BLAS. With OMM (M6), the triangle BLAS carries the same micromaps through `VkAccelerationStructureTrianglesOpacityMicromapEXT`.
 - V1 and V2 compose: all four combinations are valid and measured.
+- V2 and animation (§16.6): a deforming instance always uses cluster BLAS built from templates. V2 stays for geometry that never deforms.
+
+### 16.6 Post-1.0 target: animation on RTX Mega Geometry
+
+Starts after M10. AN1 is independent of L1–L3. AN2–AN4 come before or alongside L1, because a deforming instance needs its own vertex data, which the LOD traversal must address.
+
+Every animated pixel must agree in raster and rays in the same frame, so it is both drawn and traced from one set of deformed positions. NVIDIA's reference is `vk_animated_clusters` (local source in `reference/vk_animated_clusters`). On an RTX 6000 Ada, with 8.43 M animated triangles at 2560×1440, it measured:
+
+| Path | AS build / refit | Render | Sum | RT memory |
+|---|---|---|---|---|
+| Cluster templates | 0.80 ms | 1.52 ms | 2.32 ms | 271 MB |
+| Triangle BLAS, refits | 2.78 ms | 1.45 ms | 4.23 ms | 564 MB |
+| Triangle BLAS, 10% rebuilds | 5.22 ms | 1.39 ms | 6.61 ms | 564 MB |
+
+Its README recommends CLAS for content that changes every frame and triangle BLAS for static content, which is the §16.5 V2 split. Further sources:
+- RTXMG's cluster tessellator and `docs/ClusterTess.md` use the same template machinery;
+- [ray_tracing_mega_geometry.md](../spec/features/ray_tracing_mega_geometry.md) §9.6;
+- [mega_geometry_comparison.md](../reference/mega_geometry_comparison.md) F8 and §4;
+- [mg_optimizations_fixes.md](../spec/fixesM1-6/mg_optimizations_fixes.md) §4.
+
+| # | Milestone | Content | Done when |
+|---|---|---|---|
+| AN1 | Node animation (rigid) | glTF `animations` channels (translation, rotation, scale; `LINEAR`, `STEP`, `CUBICSPLINE`) for node transforms. Each loaded model gets an animation slice of keyframe times and values in the asset buffers. A GPU pass evaluates the active clips, walks the node hierarchy and writes `GpuNodeInstance` with `prevWorldMatrix`. The CPU writes only clip time and play state per entity (goal 2). The existing moving-instance path does the rest: motion vectors, PTLAS `WRITE_INSTANCE` ops for changed instances only, partition reassignment and growing scene bounds (MG-B4). Lights attached to animated nodes move through `light_world` | `AnimatedCube`, `BoxAnimated` and `InterpolationTest` match the Khronos sample renders. `ENGINE_MOTION_TEST` gains animated-node scenarios. `ENGINE_RT_CHECK` matches every frame. A paused clip writes no PTLAS ops. ReSTIR DI and GI history survives the motion (stability runner on an animated pose) |
+| AN2 | Skinning and morph targets on the GPU | The loader parses `JOINTS_n` / `WEIGHTS_n`, skins, inverse bind matrices and morph targets again (removed in M0; [animation_removal.md](../spec/m0/animation_removal.md)), into model-relative slices. A deformation compute pass at the start of the frame, before stage 1, writes per-instance deformed position, normal and tangent streams, plus last frame's positions for motion vectors. This follows `vk_animated_clusters`: each animated instance gets its own vertex data, while static instances keep sharing the model's. Raster, the vis-buffer resolve and ray-hit decode read the deformed streams through the same `(instance, cluster, triangle)` ids. Cluster boxes for deforming clusters are recomputed or padded per frame, and the normal-cone test is off for them, since a cone baked in the bind pose is not conservative. The pass is GPU-driven: no CPU loop over joints or vertices | `SimpleSkin`, `RiggedFigure`, `CesiumMan`, `BrainStem`, `Fox`, `AnimatedMorphCube` and `MorphStressTest` match the Khronos renders. `ENGINE_CULL_CHECK` is bit-identical on an animated pose (culling stays lossless with padded boxes). The motion test checks skinned motion vectors. The deformation pass cost and the per-instance memory are recorded |
+| AN3 | Mega Geometry for animation: cluster templates | At load, one cluster template per meshlet of each deformable primitive (`BUILD_TRIANGLE_CLUSTER_TEMPLATE`, `PREFER_FAST_TRACE`), from the meshlet's 8-bit local indices. Each template's box is padded by a percentage of the object box: the sample's "template bbox bloat", 10% by default; too little gives artifacts. Every frame on async compute, after the deformation pass (timeline semaphore), the GPU does three things. It instantiates each deforming cluster's CLAS from the deformed positions (`INSTANTIATE_TRIANGLE_CLUSTER`, `PREFER_FAST_BUILD`) into implicit destinations sized exactly by the instantiation query. It rebuilds the instance's cluster BLAS over them. It patches the new BLAS address into the PTLAS as an `UPDATE_INSTANCE` op without a readback. OMM micromaps stay attached per cluster through the instantiation, so animated foliage keeps its cut-outs. `ClusterID` stays the meshlet row, so `decodeHit` is unchanged. Position truncation is re-measured here, since the sample calls templates "very sensitive" to it (MG-P2 numbers: −18–20% CLAS) | `ENGINE_RT_CHECK` matches the deformed raster on every frame of the AN2 assets, with 0 self-hits. A/B against a refit triangle BLAS per instance: build, trace and memory recorded on both tiers. The RT build stays within its §2.3 row on an instanced skinned crowd (the `vk_animated_clusters` bunny-grid analogue) |
+| AN4 | Procedural deformation and foliage | Vertex animation outside glTF: wind on alpha-tested foliage and vegetation, written by the AN2 pass from per-material parameters and traced through AN3's templates. The large-world levers of [mg_optimizations_fixes.md](../spec/fixesM1-6/mg_optimizations_fixes.md) §4 are re-measured here, because thousands of moving instances change their balance: explicit PTLAS instance boxes (the reverted half of MG-P5), `WRITE_PARTITION_TRANSLATION` for moving groups, and a per-mesh BLAS merge for multi-primitive trees (MG-S2) | a wind-animated foliage scene keeps leaf-shaped shadows (M6 criteria) while moving. Each large-world lever is landed with its ABBA gain or closed with its numbers |
+
+Rules:
+- One set of deformed positions per frame feeds raster, the resolve and rays. No pass reads bind-pose positions for an animated instance.
+- Static instances of an animated model's mesh keep the load-time CLAS and shared vertex data. Only instances whose animation is playing pay for deformation and instantiation.
+- Deformation and instantiation have their own GPU timer rows, added to §2.3 when AN2 starts.
+- Animation and cluster LOD compose as in RTXMG and `vk_lod_clusters`: the deformed level-0 clusters feed the DAG's coarser levels through the same templates. The order is fixed in the L1/AN2 step specs.
+
+### 16.7 Post-1.0 target: streaming
+
+Starts after M9's asset pipeline (§6.4, §7.2, §13.1 X3–X5). Geometry streaming needs cluster LOD (L1, L2): the unit streamed is a LOD group, and the coarsest groups always stay resident. 1.0's rule that everything is resident (§10.2) ends here.
+
+NVIDIA's references:
+- `vk_lod_clusters`: [streaming.md](../reference/vk_lod_clusters/docs/streaming.md), [hitbased_streaming.md](../reference/vk_lod_clusters/docs/hitbased_streaming.md), [clas_allocation.md](../reference/vk_lod_clusters/docs/clas_allocation.md), `src/scene_streaming*.cpp`, `shaders/stream_*.comp.glsl`;
+- RTXMG's `rtxmg/cluster_lod/streaming.cpp` and `blas_pass.cpp`;
+- the deferred items of [mg_optimizations_fixes.md](../spec/fixesM1-6/mg_optimizations_fixes.md) §4.
+
+| # | Milestone | Content | Done when |
+|---|---|---|---|
+| ST1 | GPU-only CLAS/BLAS build pipeline | The deferred half of MG-P6: CLAS and BLAS built into implicit destinations in a reusable transient buffer, sized on the GPU. A GPU prefix sum and allocator place them, and `MOVE_OBJECTS` (`NO_OVERLAP`) moves them into persistent storage. Moves use `vk_lod_clusters`' persistent CLAS allocator, so a CLAS moves once after its build. Simple compaction is not used: it moves resident CLAS on every unload and is incompatible with BLAS caching. The model load path (M9 X4) moves onto it, so a load needs no `waitIdle` and no host size readback | a model loads and unloads during the M10 camera path with no frame over budget, no CPU readback and no `waitIdle` (Nsight Systems). CLAS memory within 5% of the exact sizes |
+| ST2 | Geometry streaming per LOD group | `vk_lod_clusters`' four tasks: request, resident table, storage and update. The LOD traversal appends missing groups to a request list, and an age filter appends groups not used for a while to an unload list. The host reads the request one frame late and caps loads by a per-frame limit and a memory budget (`VK_EXT_memory_budget`, §3). It uploads the groups' GDeflate pages from M9's cache on the async queue, and an update task patches the group addresses and builds the new groups' CLAS through ST1. For rays, positions are uploaded only for the CLAS build and not kept: hits use position fetch (§10.2), which is RTXMG's position stripping, and MG-P4 already removed position loads from hit decode. Raster keeps positions with the persistent group data. A group's blob starts 16-byte aligned (the sample's rule) | a scene larger than the floor card's 8 GB streams on the M10 paths with no frame over budget. Missing groups render at their resident coarser level, never as holes. `ENGINE_RT_CHECK` and `ENGINE_CULL_CHECK` pass while streaming. Load latency and PCIe bytes per frame are recorded |
+| ST3 | Hit-based streaming for rays | `hitbased_streaming.md`. Rays reach geometry the camera traversal does not predict (shadows, reflections, indirect), so every resident group stores its last hit frame and ray-cone width in one `uint32`, written with one `atomicMax` from the hit decode. A per-frame pass propagates hits to coarser groups one LOD level at a time. A missing finer group is requested only where its coarser group was hit with a narrow enough cone. Shadow rays register hits from the primary surface only, and random-direction samples register none. In the engine, the "closest-hit" is the ray-query hit decode in compute (§11.1); with SER (V1) it is the minimal closest-hit | off-screen reflections and shadows keep their detail on the M10 paths at a lower resident size than ST2 alone (both recorded) |
+| ST4 | Texture mip streaming | The coarsest mips (the mip tail) of every texture stay resident. Finer mips are requested from a GPU-written per-texture minimum-mip buffer, filled by the resolve's `SampleGrad` footprints and by ray-cone LOD at hits, so reflections and GI request the mips they sample. Uploads go through M9's KTX2 + GDeflate path (§6.4). A mip that is not yet resident is clamped through the descriptor's mip range, never sampled undefined. There is no NVIDIA reference for this in `reference/`: the step spec picks one first (reference-first rule) | Bistro at full texture detail with a texture budget below its full size; no frame over budget while mips arrive; the clamp is visible in a debug view |
+
+Rules:
+- Streaming changes residency, never the image contract. A frame whose groups or mips are missing renders the coarser resident data, and the check runners compare against a fully resident run.
+- Per-frame limits and the memory budget are settings, logged with every benchmark run. The sample's defaults are not recommendations, per its own docs.
+- RT and raster stream from the same residency table. The RT cut may want groups the raster cut does not (ST3), but no ray traces a group whose CLAS is not built. The §10.4 hybrid rule holds inside the frustum.
+- 7-bit CLAS truncation (reverted MG-P2) and the large-world PTLAS items (re-centering the grid, streaming partition allocation) are re-measured here, as residency levers.
 
 ---
 
@@ -752,7 +870,11 @@ Rules:
 | meshoptimizer.md backlog #8 | cluster LOD "only if Mega Geometry returns" | planned after the final goal (§16.3) | Mega Geometry returns; LOD follows the Bistro goal |
 | meshoptimizer.md, spec §6.3 / §7.1 (2026-11-04) | `meshopt_buildMeshlets`, `cone_weight = 0.25`, `meshopt_optimizeMeshlet` level 0 only for OMM corner order | `clusterlod.h` level 0: Flex builder, `cone_weight = 0`, `optimizeMeshletLevel` 1; OMM baked from the final cluster triangles (§7.1) | clusters must not change when LOD levels are added |
 | spec §8.2 (2026-11-04) | opaque single-sided / double-sided buckets by cull mode | opaque / alpha-tested bins, two-sided by winding flip (§8.1 A6) | matches `vk_lod_clusters` `rasterBinning`; one fewer DGC execute per phase |
-| resource_architecture.md morph and skin streams | morph deltas reachable, default-weight morphs applied in the mesh shader; joints/weights uploaded | removed (§7.3) | no animation planned |
+| resource_architecture.md morph and skin streams | morph deltas reachable, default-weight morphs applied in the mesh shader; joints/weights uploaded | removed (§7.3). **2026-11-23:** they return post-1.0 as GPU deformation into per-instance streams, with cluster templates for rays (§16.6 AN2–AN3), not as mesh-shader morphs | no animation in 1.0; post-1.0 animation must also be ray traced |
+| spec §7.3 (2026-11-04) | no animation planned | 1.0 static; animation post-1.0 on Mega Geometry cluster templates (§16.6) | 2026-11-23: one CLAS path in 1.0, built so that animation and streaming extend it (I10 decision) |
+| spec §1.2 (2026-10-31) | geometry and texture streaming a side project, out of this spec | out of 1.0 only; post-1.0 §16.7 (ST1–ST4) | 2026-11-23: the LOD and CLAS data model is the streaming unit of `vk_lod_clusters` |
+| spec §11.2 (2026-11-21, M7 F1) | `ReGIR_RIS` default (NVIDIA `Medium`) | `Power_RIS` default; `ReGIR_RIS` callable (§11.2) | M8 I6 F12: ReGIR's presample costs 0.44 ms and stalls the ray start on Bistro, with no stability gain |
+| spec §7.1 (2026-11-07) | `meshopt_buildMeshletsFlex` (min = max / 3, split factor 2) | `meshopt_buildMeshletsSpatial` (min = max / 3, fill 0.75; §7.1) | M8 I10 MG-P3: −7 to −13% `RaySum` |
 | end_goal §2 | `VK_EXT_descriptor_buffer` / `mutable_descriptor_type` | `VK_EXT_descriptor_heap` | engine already migrated; descriptor heap replaces descriptor buffer |
 | end_goal §3 | Hi-Z from "previous frame's" depth with previous transforms | as built: previous pyramid with previous matrices, no depth reprojection | [meshlet_culling_options.md §8](./meshlet_culling_options.md#8-review-proposed-4-tier-pipeline--visibility-buffer) |
 
@@ -769,7 +891,10 @@ Rules:
 | Q3 | Vis buffer 32 vs 64 bit | 32-bit chosen (§8.3); real-runtime pros and cons not measured yet | measure resolve and raster cost after M1 on both tiers; switch only if 64-bit wins and L1's atomic path stays possible |
 | Q7 | `VK_KHR_ray_tracing_position_fetch` on the 2060 Super | without it, hit decode needs a persistent position copy | required since PBR C1 (supported on the RTX 5070, driver 621.1); the 2060 Super is not in the dev machine: if it lacks it, device creation names it as missing |
 | Q8 | Slang access to `ClusterID` and attributes on `HitObject` | decides whether SER passes need the minimal closest-hit invoke | closed 2026-11-16 (Slang 2026.22 probe, G1 SER4): `GetClusterID` is NV-only and Slang has no SPIR-V `ClusterID()`, so a minimal closest-hit reads `ClusterIDNV` (4 B payload); everything else comes from the EXT hit object ([g1_ser_rt_pipeline.md](../spec/m4/g1_ser_rt_pipeline.md) SER4) |
-| R7 | After §16.3: all LOD levels' CLAS resident (no streaming) on 8 GB | limits scene size on the floor card | `positionTruncateBitCount`, BLAS sharing/merging/caching, scene choice (R5) |
+| R7 | After §16.3: all LOD levels' CLAS resident (no streaming) on 8 GB | limits scene size on the floor card | until §16.7: `positionTruncateBitCount`, BLAS sharing/merging/caching, scene choice (R5); then geometry streaming (ST2, ST3) |
+| R9 | After §16.6: per-instance vertex streams, CLAS and BLAS for every playing animated instance | VRAM and build time grow with the animated crowd, most on the 8 GB floor card | templates size instantiations exactly (271 against 564 MB in `vk_animated_clusters`); static instances share; truncation re-measured (AN3); crowd size per tier from the AN3 numbers |
+| Q11 | After §16.6: culling bounds of deforming clusters | bind-pose boxes and cones are not conservative under deformation | AN2: per-frame or padded boxes, cone test off for deforming clusters; held by `ENGINE_CULL_CHECK` on animated poses |
+| Q12 | After §16.7: texture streaming reference | no NVIDIA texture-streaming sample in `reference/` | picked before the ST4 spec |
 | R8 | After §16.3: raster/RT LOD mismatch | self-shadowing, leaks at primary hits | §10.4 rule + debug view |
 | Q9 | GDeflate ratio on BC7/BC5 data | decides how much of the decompression gain is textures vs geometry | §6.4, §7.2; measured in M9 |
 | Q10 | PTLAS partitioning: grid cell size, the global partition's trace cost, and how long the wait for the previous frame's ray passes holds the async compute queue | trace time and the X2 overlap | PBR C4 measured Sponza and the instance fields: ~64 instances per grid cell, no global partition, no trace-time difference between still and moving frames; an all-moving scene updates slower than a full build. Again on Bistro (M10) |
@@ -791,6 +916,8 @@ Local notes are in [reference/](../reference/); sources are under `reference/` o
 | Meshlet culling and tuning | nvpro-samples/gl_vk_meshlet_cadscene | [gl_vk_meshlet_cadscene_reference.md](../reference/gl_vk_meshlet_cadscene_reference.md) |
 | Cluster LOD, raster + RT, BLAS sharing / merging / caching, SW raster, culling | nvpro-samples/vk_lod_clusters (Apache-2.0; license in `ThirdParty/licenses`, ported files keep the NVIDIA header and a "modified" note) | [culling_comparison.md](../reference/culling_comparison.md); source in `reference/vk_lod_clusters`; `docs/blas_*.md`, `docs/lod_generation.md`, `docs/raster_twopass_culling.md` |
 | Partitioned TLAS | nvpro-samples/vk_partitioned_tlas | — |
+| Animated geometry, cluster templates (post-1.0 §16.6) | nvpro-samples/vk_animated_clusters | [mega_geometry_comparison.md](../reference/mega_geometry_comparison.md) F8, §4; source in `reference/vk_animated_clusters` |
+| Geometry streaming, GPU CLAS allocation, hit-based streaming (post-1.0 §16.7) | nvpro-samples/vk_lod_clusters (`scene_streaming*`, `stream_*.comp.glsl`), NVIDIA-RTX/RTXMG (`cluster_lod/streaming.cpp`, `blas_pass.cpp`) | `reference/vk_lod_clusters/docs/streaming.md`, `hitbased_streaming.md`, `clas_allocation.md`; [mg_optimizations_fixes.md](../spec/fixesM1-6/mg_optimizations_fixes.md) §4 |
 | Tessellated clusters | nvpro-samples/vk_tessellated_clusters, NVIDIA-RTX/RTXMG | — |
 | RT pipeline, SER, ray query in Slang | nvpro-samples/vk_raytracing_tutorial_KHR (`v2`) | [vk_raytracing_tutorial_v2_reference.md](../reference/vk_raytracing_tutorial_v2_reference.md) |
 | glTF PBR, textures | nvpro-samples/nvpro_core2, vk_gltf_renderer | [nvpro_core2_textures_pbr.md](../reference/nvpro_core2_textures_pbr.md) |
@@ -897,11 +1024,13 @@ Root cause of the drift: the same facts (vis-buffer format, the §9.3 guide tabl
 
 | Date | Change |
 |---|---|
+| 2026-11-23 | Post-1.0 animation (§16.6, AN1–AN4: GPU node animation, skinning and morphs, Mega Geometry cluster templates instantiated per frame, procedural foliage) and streaming (§16.7, ST1–ST4: GPU-only CLAS/BLAS builds, LOD-group geometry streaming, hit-based streaming, texture mips) added from `vk_animated_clusters`, `vk_lod_clusters` and RTXMG; §1.1, §1.2, §5, §6.4, §7.3, §10.1, §10.2, §13.1, §14, §17, R7, R9, Q11, Q12 and §19 follow. 1.0 stays static and resident |
+| 2026-11-23 | Consistency pass against the step specs (M6, M7, M8 I1–I15): M6 done, M7 built, M8 status per step (§16.1, §16.2); shipped ReSTIR DI (`Power_RIS`, I6) and ReSTIR GI (O11 profile, gated, I5) sets (§11.2, §11.5, §11.7); NRC bias found and gated in I7 (§11.4, §11.7); spatial meshlets (MG-P3, §7.1), split OMM CLAS and truncation result (MG-P1, MG-P2, §10.2), PTLAS layout and overlap (MG-P5, MG-P7, §10.3); material binning and emissive lights as built (§6.1, §9.1, §11.2); alpha bin built (§8.1, §8.2); glass in the frame overview (§5); I4 frame profile in §2.3; check runners, check scenes and the settings lab (§14); broken findings links fixed |
 | 2026-11-23 | M8 I10 complete ([i10_mega_geometry_perf.md](../spec/fixesM1-6/i10_mega_geometry_perf.md)): 1.0 stays on CLAS (V2 / compacted triangle BLAS remains post-1.0 in §16.5 with I10 numbers recorded); unimplemented/reverted I10 levers useful for post-1.0 animations, streaming, and large tree worlds (MG-P2 truncation, MG-P5 explicit AABBs, MG-P6 GPU-only streaming builds, MG-S2 per-mesh BLAS merge, cluster templates, position stripping) catalogued in [mg_optimizations_fixes.md](../spec/fixesM1-6/mg_optimizations_fixes.md) §4 |
 | 2026-11-21 | §9.4: `KHR_materials_pbrSpecularGlossiness` is read (Bistro, C-M7-1); `GpuMaterial` keeps 240 B, its pads now hold `specularFactor` and `glossinessFactor` |
 | 2026-11-20 | Consistency pass: §11.7 separates the gated converged ReSTIR GI settings from the shipped ones (+8.1% / +1.7%); the floor-tier half-resolution indirect marked as target, not built (§5, §11.3, C-G2-1); §11.3 names the off-by-default X₂ options (O2, O6) |
 | 2026-11-20 | Doc sync across `engine_spec.md`, `pbr_implementation_plan.md`, `shader_architecture_plan.md`, `resource_architecture.md` and `considerations.md`: updated M4 built status, §16.1/§16.2, §17 SER shelving, §11.6/§11.7 order, §1.1/§4 S6/§8.1 A6/§18 rows, actual shader/host layouts and struct sizes (`GpuFrameRoot` 192 B, `GpuTargets` 208 B, `GpuRtxdiConstants` 496 B, `GpuNrcConstants` 168 B) |
-| 2026-11-20 | New milestone M8 "Optimization and fixes" (§16.2, [spec/m8](../spec/m8/README.md)): the RTXDI and NRC sample reviews merged into [m8_optimization_and_fixes.md](../spec/features/m8_optimization_and_fixes.md). Asset pipeline moves to M9, the 1.0 goal (Bistro) to M10; earlier changelog rows keep the old numbers |
+| 2026-11-20 | New milestone M8 "Optimization and fixes" (§16.2, [spec/fixesM1-6](../spec/fixesM1-6/README.md)): the RTXDI and NRC sample reviews merged into [m8_optimization_and_fixes.md](../spec/fixesM1-6/m8_optimization_and_fixes.md). Asset pipeline moves to M9, the 1.0 goal (Bistro) to M10; earlier changelog rows keep the old numbers |
 | 2026-11-20 | ReSTIR GI ships NVIDIA's settings with ray-traced spatial bias correction (§11.5): bias −27% / −9% → +8% / +1.7% against the one-bounce ground truth, +0.17 ms |
 | 2026-11-20 | 1.0 goal: the full RTXDI stack, ReSTIR DI + ReSTIR GI (§1.1); NRC stays as a runtime switch for comparison (§11.7), its budget row only for those modes (§2.3) |
 | 2026-11-20 | ReSTIR GI mode is the default indirect mode on both tiers (§11.7; NRC bias, considerations C-G5-3) |

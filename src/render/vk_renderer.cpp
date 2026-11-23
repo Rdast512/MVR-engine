@@ -51,9 +51,19 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
         logInfo(std::format("NRC host wait (C-G3-6): {}", isNrcHostWaitEnabled ? "on" : "off"), "Renderer");
     }
     for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
-        glassCounters[slot] = createHostBuffer(sizeof(GpuGlassCounters), allocator.allocator, device.vkdevice,
-                                               device.queueFamilyIndices, std::format("GlassCounters_{}", slot), nullptr);
-        *static_cast<GpuGlassCounters*>(glassCounters[slot].mapped) = {};
+        // MG-B2: host-cached readback memory avoids uncached WC VRAM reads in drawFrame()
+        HostBuffer& counters = glassCounters[slot];
+        createBuffer(sizeof(GpuGlassCounters),
+                     vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
+                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent |
+                         vk::MemoryPropertyFlagBits::eHostCached,
+                     counters.buffer, counters.memory, allocator.allocator, device.vkdevice, device.queueFamilyIndices,
+                     std::format("GlassCounters_{}", slot), VMA_ALLOCATION_CREATE_MAPPED_BIT);
+        VmaAllocationInfo allocationInfo{};
+        vmaGetAllocationInfo(allocator.allocator, counters.memory, &allocationInfo);
+        counters.mapped = allocationInfo.pMappedData;
+        counters.address = device.vkdevice.getBufferAddress({.buffer = *counters.buffer});
+        *static_cast<GpuGlassCounters*>(counters.mapped) = {};
     }
     if constexpr (kDebugRays) {
         for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
@@ -274,10 +284,18 @@ void Renderer::drawFrame()
     if (void* stats = rayCheckStats[currentFrame].mapped) {
         *static_cast<GpuRayCheckStats*>(stats) = {};
     }
-    {
+    if (isGlassRecorded[currentFrame]) {
         auto& counters = *static_cast<GpuGlassCounters*>(glassCounters[currentFrame].mapped);
-        lastGlassCounters = isGlassRecorded[currentFrame] ? counters : GpuGlassCounters{};
+        lastGlassCounters = counters;
         counters = {};
+    } else {
+        lastGlassCounters = {};
+    }
+    if (glass != appliedGlass) {
+        if (rtScene.glassRowCount() > 0) {
+            isDlssHistoryValid = false;
+        }
+        appliedGlass = glass;
     }
     if (void* mapped = rayDebugCounters[currentFrame].mapped) {
         auto& counters = *static_cast<GpuRayDebugCounters*>(mapped);

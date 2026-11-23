@@ -19,13 +19,14 @@ import raytracing.trace;
 // describe the surface behind it (vk_gltf_renderer's primary surface replacement for clear glass)
 
 static const uint kGlassTile = 8; // matches src/render/vk_renderer.cpp kFullscreenTile
-// RTXDI's per-pass seeds stop at 31; NRC takes 41 and 42, the GI reference 43
-static const uint kGlassLightSeed = 44;
+// RTXDI's per-pass seeds stop at 31; NRC takes 41 and 42, the GI reference 43, GI decorrelation 44
+static const uint kGlassLightSeed = 45;
 
 [[vk::push_constant]] ConstantBuffer<FramePushData> push;
 
-// a layer's mirror ray, shaded as X2 of the indirect pass: emission and one sampled light, no indirect light and no
-// sky until M7's environment light (C-I13-2). coneDistance: camera to the glass hit
+// a layer's mirror ray, shaded as X2 of the indirect pass: emission (including light triangles, since the glass
+// surface never samples direct specular reflections) and one sampled light, no indirect light and no sky until M7's
+// environment light (C-I13-2). coneDistance: camera to the glass hit
 float3 reflectedRadiance(GpuFrameRoot root, GpuRtxdiConstants constants, RayHit hit, GlassLayer layer,
                          float3 direction, float coneDistance, inout RTXDI_RandomSamplerState rng,
                          inout RTXDI_RandomSamplerState coherentRng)
@@ -45,7 +46,7 @@ float3 reflectedRadiance(GpuFrameRoot root, GpuRtxdiConstants constants, RayHit 
     {
         return float3(0.0, 0.0, 0.0);
     }
-    const PathHit x2 = shadeRayHit(root, reflected, mirror, coneDistance);
+    const PathHit x2 = shadeRayHit(root, reflected, mirror, coneDistance, true);
     HitOrigin origin;
     origin.hit = reflected;
     return x2.emissive + secondaryDirectLight(root, x2.surface, origin, constants, rng, coherentRng);
@@ -96,9 +97,8 @@ void glassMain(uint3 id : SV_DispatchThreadID)
     }
     const float originDistance = length(ray.Origin - camera.cameraPos);
 
-    RTXDI_RandomSamplerState rng = RTXDI_InitRandomSampler(pixel, constants.runtime.frameIndex, kGlassLightSeed);
-    RTXDI_RandomSamplerState coherentRng =
-        RTXDI_InitRandomSampler(pixel / RTXDI_TILE_SIZE_IN_PIXELS, constants.runtime.frameIndex, kGlassLightSeed);
+    RTXDI_RandomSamplerState rng = {};
+    RTXDI_RandomSamplerState coherentRng = {};
     const RayScene scene = loadRayScene(root);
     float3 throughput = float3(1.0, 1.0, 1.0);
     float3 overlay = float3(0.0, 0.0, 0.0);
@@ -110,7 +110,7 @@ void glassMain(uint3 id : SV_DispatchThreadID)
     uint layers = 0;
     bool isEarlyStop = false;
     // back faces of single-sided glass pass without counting as a layer
-    for (uint step = 0; step < 2 * root.glassMaxLayers && layers < root.glassMaxLayers; ++step)
+    for (uint step = 0; step < kGlassHitsPerLayer * root.glassMaxLayers && layers < root.glassMaxLayers; ++step)
     {
         RayHit hit;
         if (ray.TMax <= 0.0 || !traceClosest(scene, ray, kRayMaskGlass, hit))
@@ -123,13 +123,19 @@ void glassMain(uint3 id : SV_DispatchThreadID)
         GlassLayer layer;
         if (evaluateGlassLayer(root, hit, ray.Direction, cone, layer))
         {
+            if (layers == 0)
+            {
+                rng = RTXDI_InitRandomSampler(pixel, constants.runtime.frameIndex, kGlassLightSeed);
+                coherentRng = RTXDI_InitRandomSampler(pixel / RTXDI_TILE_SIZE_IN_PIXELS, constants.runtime.frameIndex,
+                                                      kGlassLightSeed);
+            }
             ++layers;
             const float hitDistance = originDistance + travelled + hit.t;
             float3 terms = float3(0.0, 0.0, 0.0);
             if ((flags & kGlassFlagEmission) != 0)
             {
-                // a light triangle's emission reaches the frame through light sampling
-                terms += hitEmission(root, hit, layer.emission);
+                // primary camera hit: never direct-light sampled, so emissive glass adds its full emission
+                terms += layer.emission;
             }
             if ((flags & kGlassFlagReflection) != 0 && any(layer.reflectance > 0.0))
             {

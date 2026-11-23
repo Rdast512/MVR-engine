@@ -35,7 +35,7 @@ Finding ids refer to [m8_optimization_and_fixes.md](./m8_optimization_and_fixes.
 | I9 · RTXDI surface traffic | [`i9_rtxdi_surface_traffic.md`](./i9_rtxdi_surface_traffic.md) (built) | O4 | I4 |
 | I10 · Mega Geometry perf | [`i10_mega_geometry_perf.md`](./i10_mega_geometry_perf.md) (built) | MG-S1–MG-S3, MG-P1–MG-P7 | I3, I4 |
 | I11 · Floor tier | `i11_floor_tier.md` | F9 (2060 Super part), O7, NP3, DLSS-RR mode per tier | I4 (needs the 2060 Super) |
-| I12 · Many-light and glossy re-check | `i12_many_light_recheck.md` | O2, O6, O8 (exit), O9, I5 / I6 decisions on Bistro, F22, F23 | I5, I6, I14 |
+| I12 · Many-light and glossy re-check | [`i12_many_light_recheck.md`](./i12_many_light_recheck.md) (planned 2026-11-23; Phase 0 now, Phases 1–3 after I14, I15) | O2, O6, O8 (exit), O9, I5 / I6 decisions on Bistro, F22, F23 | I5, I6, I14 |
 | I13 · Thin-walled glass | [`i13_glass_transmission.md`](./i13_glass_transmission.md) (built 2026-11-23) | F21 | I1, I2, I6 |
 | I14 · Bistro sampling, reuse, DLSS-RR and rays | [`i14_bistro_sampling_and_rays.md`](./i14_bistro_sampling_and_rays.md) (planned) | F24, F25, F26, F27 (feeds F22, F23) | I1, I2, I6 |
 | I15 · Café DI and GI settings | [`i15_cafe_di_gi_settings.md`](./i15_cafe_di_gi_settings.md) (planned) | F22, F23 (settings fixes from the lab) | I1, I5, I6, settings lab; Phase 2 after I14 Phase 3 |
@@ -172,7 +172,7 @@ On the RTX 2060 Super:
 
 ### I12 · Many-light and glossy re-check
 
-On Bistro, with M7's emissive triangles and presampling (spec-gloss materials, C-M7-1):
+Spec: [i12_many_light_recheck.md](./i12_many_light_recheck.md). Phase 0 (a Bistro + bar-mirror glossy scene, and the NVIDIA GI set carrying `Medium`'s O2 and O6) can land now; the decisions wait for I14 and I15 Phase 1. On Bistro, with M7's emissive triangles and presampling (spec-gloss materials, C-M7-1):
 
 - O2 with ray-traced resampling, and O6;
 - the BRDF candidate's value (O8 exit);

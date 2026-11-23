@@ -179,6 +179,48 @@ public float4 sampleExtensionTexture(GpuTextureRef ref, Surface surface, float l
         .SampleGrad(samplerOf(NonUniformResourceIndex(ref.samp)), uv, ddx, ddy);
 }
 
+// world-space shading normal with normal mapping and facing / geometric-hemisphere guard (m8 I2 F19)
+public float3 sampleShadingNormal(GpuMaterial material, Surface surface, float lodBias)
+{
+    const float4 one = float4(1.0, 1.0, 1.0, 1.0);
+    float3 n = surface.normal;
+    // assets can ship tangents parallel to the normal; normalizing the zero residual gives NaN
+    const float3 orthoTangent = surface.tangent.xyz - surface.normal * dot(surface.normal, surface.tangent.xyz);
+    const float orthoLengthSq = dot(orthoTangent, orthoTangent);
+
+    // tangent-less meshes keep the vertex normal (spec B1 guard)
+    if (material.normalTex != kNoneIndex && material.normalSamp != kNoneIndex && surface.tangent.w != 0.0 &&
+        orthoLengthSq > kMinOrthoTangentLengthSq)
+    {
+        const float2 encodedNormal = sampleSlot(material, kUvSlotNormal, material.normalTex, material.normalSamp,
+                                                material.normalUv, surface, lodBias, one).xy;
+        // z from xy: two-channel (BC5) maps have no blue channel
+        float3 tangentNormal;
+        tangentNormal.xy = encodedNormal * 2.0 - 1.0;
+        tangentNormal.z = sqrt(saturate(1.0 - dot(tangentNormal.xy, tangentNormal.xy)));
+        tangentNormal.xy *= material.normalScale;
+        float3 t = orthoTangent / sqrt(orthoLengthSq);
+        // back faces flipped the normal; the bitangent follows it
+        float3 b = cross(surface.normal, t) * surface.tangent.w;
+        // negate t too, so the back-face normal is the exact negation of the front-face one (Khronos sample viewer)
+        if (!surface.isFrontFacing)
+        {
+            t = -t;
+        }
+        if ((material.flags & kMaterialFlagUvTransformNormal) != 0)
+        {
+            transformTangentFrame(material.uvMatrices[kUvSlotNormal], t, b);
+        }
+        n = normalize(tangentNormal.x * t + tangentNormal.y * b + tangentNormal.z * surface.normal);
+    }
+    // m8 I2 F19 (ND9): keep the shading normal in the geometric normal's hemisphere (RTXGI Pathtracer.hlsl:421, 469)
+    if (dot(surface.geoNormal, n) < 0.0)
+    {
+        n = -n;
+    }
+    return n;
+}
+
 // rays hit every material: the unlit body is picked per row
 public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodBias)
 {
@@ -215,43 +257,8 @@ public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, flo
     }
     result.ao = lerp(1.0, occlusion, material.occlusionStrength);
     result.emissive = emissive;
-    result.n = surface.normal;
+    result.n = sampleShadingNormal(material, surface, lodBias);
     result.specularWeight = 1.0;
-
-    // assets can ship tangents parallel to the normal; normalizing the zero residual gives NaN
-    const float3 orthoTangent = surface.tangent.xyz - surface.normal * dot(surface.normal, surface.tangent.xyz);
-    const float orthoLengthSq = dot(orthoTangent, orthoTangent);
-
-    // tangent-less meshes keep the vertex normal (spec B1 guard)
-    if (material.normalTex != kNoneIndex && material.normalSamp != kNoneIndex && surface.tangent.w != 0.0 &&
-        orthoLengthSq > kMinOrthoTangentLengthSq)
-    {
-        const float2 encodedNormal = sampleSlot(material, kUvSlotNormal, material.normalTex, material.normalSamp,
-                                                material.normalUv, surface, lodBias, one).xy;
-        // z from xy: two-channel (BC5) maps have no blue channel
-        float3 tangentNormal;
-        tangentNormal.xy = encodedNormal * 2.0 - 1.0;
-        tangentNormal.z = sqrt(saturate(1.0 - dot(tangentNormal.xy, tangentNormal.xy)));
-        tangentNormal.xy *= material.normalScale;
-        float3 t = orthoTangent / sqrt(orthoLengthSq);
-        // back faces flipped the normal; the bitangent follows it
-        float3 b = cross(surface.normal, t) * surface.tangent.w;
-        // negate t too, so the back-face normal is the exact negation of the front-face one (Khronos sample viewer)
-        if (!surface.isFrontFacing)
-        {
-            t = -t;
-        }
-        if ((material.flags & kMaterialFlagUvTransformNormal) != 0)
-        {
-            transformTangentFrame(material.uvMatrices[kUvSlotNormal], t, b);
-        }
-        result.n = normalize(tangentNormal.x * t + tangentNormal.y * b + tangentNormal.z * surface.normal);
-    }
-    // m8 I2 F19 (ND9): keep the shading normal in the geometric normal's hemisphere (RTXGI Pathtracer.hlsl:421, 469)
-    if (dot(surface.geoNormal, result.n) < 0.0)
-    {
-        result.n = -result.n;
-    }
 
     // unlit: no diffuse or specular response, the color is all emission
     if (isUnlit)

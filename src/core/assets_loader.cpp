@@ -1947,6 +1947,11 @@ namespace
     {
         const MaterialStore::MaterialInfo& info = ctx.materials.infos[draw.materialId];
         const GpuMaterial& material = info.material;
+        // m8 I13: alphaMode BLEND on thin-walled glass is smoothly blended in evaluateGlassLayer, never 0.5-cut by OMM
+        if (isGlass(material, info.extension) &&
+            (material.flags & GpuMaterialFlag::AlphaModeMask) == GpuMaterialFlag::AlphaBlend) {
+            return std::nullopt;
+        }
         const float cutoff = alphaTestCutoff(material);
         if (!isAlphaTested(material)) {
             // the shader tests factor.a x texture.a, so a factor below the cutoff would discard everything

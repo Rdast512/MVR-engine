@@ -197,6 +197,17 @@ Screen edge: static pixel error (band / disoccluded), and the band's pixel error
 - Validation (core + sync + best practices, Bistro street, shadow transmittance and blended guides on): only NGX's known messages (C-H1-2).
 - GPU-AV (`ENGINE_GPUAV_RESOLVE_PER_BIN=1`, C-E1-3) over two Bistro glass stability steps (shadow transmittance, blended guides): no shader errors.
 
+**Post-audit fixes (2026-11-23):**
+- Primary glass emission (`passes/glass.slang`) and delta mirror reflections (`path_shading.slang` `shadeRayHit(..., isLightEmissionKept = true)`) now keep raw `material.emissive` instead of zeroing emissive triangle lights through `hitEmission()`. On Bistro street windows, `Lit` mean rises from `0.078177` to `0.079269` (`+1.4%`) with reflected café lamps, and temporal std drops from `8.73%` to `8.46%` (`8.33%` with shadow transmittance, `7.77%` with blended guides).
+- `qualifyOmmPrimitive()` (`assets_loader.cpp`) skips OMM baking on `AlphaBlend` glass so textured translucent panes blend smoothly in `evaluateGlassLayer()` instead of being hard-cut at `alpha < 0.5`; non-glass `BLEND` decals remain untouched (C-I13-4).
+- `classifyTransmission()` (`material_store.hpp`) keeps pure-metallic transmissive materials (`metallicFactor >= 1.0`) opaque (`KeptOpaqueMetal`).
+- `DebugView::Glass` (`debug_view.slang`) returns `(0, 0, 0)` / `(1, 1, 1)` with `alpha = 0` when `kGlassFlagPass` is clear instead of leaking `noisyColor`.
+- `lambertLightAt()` (`path_shading.slang`) guards against back-face lighting with `dot(surface.geoNormal, lightSample.l) <= 0`.
+- `evaluateGlassLayer()` (`lighting/glass.slang`) uses `sampleShadingNormal()` (`material/pbr.slang`), samples `baseColor` once, applies `KHR_materials_specular` `F90 = saturate(extension.specularFactor)`, clamps `transmission` and `mu`, and skips `sampleEmissive()` during `glassTransmittance()` walks; `passes/glass.slang` initializes its RNG lazily on the first glass hit and uses distinct seed `kGlassLightSeed = 45` (off `kGiDecorrelationSeed = 44`) and shared `kGlassHitsPerLayer = 2`.
+- `rtxdi_gi_shade.slang` tests opaque `isReconnectionVisible()` before `reconnectionTransmittance()` and skips `reconnectionTransmittance()` when radiance is zero (F13 far-miss placeholders).
+- `vk_renderer.cpp` allocates `glassCounters` in `eHostCached` memory (no uncached WC reads, MG-B2), reads/zeroes it only when glass recorded in that slot, and resets DLSS-RR history when `glass` settings change on a scene with glass.
+- Re-verified after fixes: CTest 8/8, `ENGINE_RT_CHECK` 32/32, `ENGINE_CULL_CHECK` 16/16, `ENGINE_MOTION_TEST` 13/13, `ENGINE_GUIDE_CAPTURE` (2/2 normal, 3/3 DI convergence, 2/2 glass throughput: `TransmissionTest` 0.023% / 0.044%, Bistro 0.029% / 0.207%), Bistro core+sync+best-practices validation clean, Bistro GPU-AV clean on shipped, `shadow transmittance` and `blended guides` steps (`0` shader errors).
+
 ## Done when
 
 - [x] Transmissive materials classified; the opaque-kept ones logged with their reason
