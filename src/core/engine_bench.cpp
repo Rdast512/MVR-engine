@@ -91,7 +91,7 @@ void EngineBench::stepField(ObjectStorage& storage)
 
 bool EngineBench::onFrame(const GpuTimer& timer, const MeshletCullStats& cullStats,
                           const RayTracingScene::Stats& rtStats, const RtxdiContext::LightPrepStats& lightPrep,
-                          const Renderer::CpuStats& cpuStats)
+                          const Renderer::CpuStats& cpuStats, const GpuGlassCounters& glassCounters)
 {
     ++frame;
     if (frame <= kWarmupFrames || (frame - kWarmupFrames) % GpuTimer::kHistorySize != 0) {
@@ -107,13 +107,13 @@ bool EngineBench::onFrame(const GpuTimer& timer, const MeshletCullStats& cullSta
     if (windowCount * GpuTimer::kHistorySize < config.measuredFrames) {
         return false;
     }
-    logResults(timer, cullStats, rtStats, lightPrep, cpuStats);
+    logResults(timer, cullStats, rtStats, lightPrep, cpuStats, glassCounters);
     return true;
 }
 
 void EngineBench::logResults(const GpuTimer& timer, const MeshletCullStats& cullStats,
                              const RayTracingScene::Stats& rtStats, const RtxdiContext::LightPrepStats& lightPrep,
-                             const Renderer::CpuStats& cpuStats) const
+                             const Renderer::CpuStats& cpuStats, const GpuGlassCounters& glassCounters) const
 {
     logInfo(std::format("Bench: field side {}{}, {} windows of {} frames after {} warm-up frames", config.fieldSide,
                         config.isFieldMoving ? " (moving)" : "", windowCount, GpuTimer::kHistorySize, kWarmupFrames),
@@ -168,4 +168,15 @@ void EngineBench::logResults(const GpuTimer& timer, const MeshletCullStats& cull
                         visibleMeshletCount(early), visibleMeshletCount(late), early.occlusionCulled,
                         late.occlusionCulled, occlusionHistoryName(cullStats.history)),
             "Bench");
+    // m8 I13 §6: the layer cap's evidence
+    if (glassCounters.pixels > 0) {
+        std::string layers;
+        for (const uint32_t count : glassCounters.layerPixels) {
+            layers += std::format("{}{}", layers.empty() ? "" : " / ", count);
+        }
+        logInfo(std::format("  glass: {} px, by layers 1..{}: {}, early stop {} px, cap reached {} px",
+                            glassCounters.pixels, glassCounters.layerPixels.size(), layers, glassCounters.earlyStops,
+                            glassCounters.capped),
+                "Bench");
+    }
 }

@@ -4,6 +4,7 @@ import core.frame;
 import geometry.hit;
 import material.brdf;
 import material.pbr;
+import lighting.glass;
 import raytracing.trace;
 
 #include "lighting/rtxdi_bridge.slang"

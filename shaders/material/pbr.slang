@@ -149,6 +149,36 @@ public float3 sampleEmissive(GpuMaterial material, Surface surface, float lodBia
                                                 material.emissiveUv, surface, lodBias, one).rgb;
 }
 
+// factor x COLOR_0 x texture, alpha included; sRGB views decode the texture in hardware
+public float4 sampleBaseColor(GpuMaterial material, Surface surface, float lodBias)
+{
+    const float4 one = float4(1.0, 1.0, 1.0, 1.0);
+    return material.baseColorFactor * float4(surface.color, 1.0) *
+        sampleSlot(material, kUvSlotBaseColor, material.baseColorTex, material.baseColorSamp, material.baseColorUv,
+                   surface, lodBias, one);
+}
+
+// a KHR_materials_* texture (GpuMaterialExtension) with its own KHR_texture_transform, M = T * R * S as
+// packUvMatrix in src/core/material_store.hpp; absent: the fallback
+public float4 sampleExtensionTexture(GpuTextureRef ref, Surface surface, float lodBias, float4 fallback)
+{
+    if (ref.tex == kNoneIndex || ref.samp == kNoneIndex)
+    {
+        return fallback;
+    }
+    const uint set = min(ref.uv, 1u);
+    const float c = cos(ref.uvXform.rotation);
+    const float s = sin(ref.uvXform.rotation);
+    const float2x2 linear = float2x2(c * ref.uvXform.scale.x, s * ref.uvXform.scale.y,
+                                     -s * ref.uvXform.scale.x, c * ref.uvXform.scale.y);
+    const float scale = exp2(lodBias);
+    const float2 uv = mul(linear, surface.uv[set]) + ref.uvXform.offset;
+    const float2 ddx = mul(linear, surface.uvDdx[set]) * scale;
+    const float2 ddy = mul(linear, surface.uvDdy[set]) * scale;
+    return tex2D(NonUniformResourceIndex(ref.tex))
+        .SampleGrad(samplerOf(NonUniformResourceIndex(ref.samp)), uv, ddx, ddy);
+}
+
 // rays hit every material: the unlit body is picked per row
 public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodBias)
 {
@@ -159,10 +189,7 @@ public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, flo
 public SampledMaterial sampleMaterial(GpuMaterial material, Surface surface, float lodBias, bool isUnlit)
 {
     const float4 one = float4(1.0, 1.0, 1.0, 1.0);
-    // sRGB views decode base color and emissive in hardware
-    const float4 baseColor = material.baseColorFactor * float4(surface.color, 1.0) *
-        sampleSlot(material, kUvSlotBaseColor, material.baseColorTex, material.baseColorSamp, material.baseColorUv,
-                   surface, lodBias, one);
+    const float4 baseColor = sampleBaseColor(material, surface, lodBias);
     // metal-rough: B metal, G rough; spec-gloss: RGB specular (sRGB view), A glossiness
     const float4 parameters = sampleSlot(material, kUvSlotMetalRough, material.metalRoughTex, material.metalRoughSamp,
                                          material.metalRoughUv, surface, lodBias, one);

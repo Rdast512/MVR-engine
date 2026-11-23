@@ -553,7 +553,15 @@ Auto exposure from a luminance histogram (compute) → tonemap (ACES fitted or A
 
 ### 12.4 Transparency
 
-v1: `Blend` treated as mask (cutoff 0.5). Later: refractive/transmissive surfaces handled inside the path tracer (`KHR_materials_transmission`) with RR's transparency guidance. No forward raster transparency pass.
+v1: `Blend` treated as mask (cutoff 0.5). No forward raster transparency pass.
+
+**Thin-walled glass (M8 I13, [i13_glass_transmission.md](../spec/fixesM1-6/i13_glass_transmission.md)).** A `KHR_materials_transmission` material with `transmissionFactor > 0`, roughness ≤ `kGlassMaxRoughness` (0.3), no metallic-roughness texture, not unlit and not spec-gloss is glass; the others render opaque and are logged with the reason. Glass:
+- stays out of the raster templates, so the vis buffer and every guide describe the surface behind it;
+- is in the TLAS under `kRayMaskGlass` (0x02); every other ray, visibility included, traces `kRayMaskOpaque` (0x01);
+- is composited by the glass pass (`passes/glass.slang`) after `combine` and before DLSS-RR, as the RTXDI FullSample's `GlassPass` does: the camera ray walks up to `maxLayers` (4) glass layers in front of the vis-buffer surface, and noisy color becomes `Σ (Πⱼ<ᵢ Tⱼ)(Eᵢ + Rᵢ + Dᵢ) + (Π Tᵢ) · color`. `T = t(1−m)(1−F)·baseColor`, `R = F_layer · L(mirror ray)` (shaded as X₂: emission and one direct-light sample), `D` the non-transmitted dielectric share lit by one light sample, Lambert only;
+- attenuates final direct light (DI shading, X₂ direct light, glass reflections) and final ReSTIR GI shading by the product of `T` along the shadow ray (`shadowTransmittance`). Light sampling, targets, resampling, GI sample generation and NRC stay glass-free (C-I13-3).
+
+DLSS-RR keeps the guides of the surface behind (variant a); blended albedo guides (variant b) are a switch. Refraction, volume attenuation, rough transmission and dispersion are path-traced transmission (§15, C-I13-1).
 
 ---
 

@@ -112,6 +112,40 @@ EngineTemporalCheck::EngineTemporalCheck(Kind kind) : kind(kind), steps(buildSte
     logInfo(std::format("{} check: {} steps, results follow", kindName(kind), steps.size()), "TemporalCheck");
 }
 
+const char* EngineTemporalCheck::glassStateName(GlassState state)
+{
+    switch (state) {
+    case GlassState::Shipped:
+        return "shipped";
+    case GlassState::PassOff:
+        return "pass off";
+    case GlassState::ShadowTransmittance:
+        return "shadow transmittance";
+    case GlassState::BlendGuides:
+        return "blended guides";
+    }
+    return "";
+}
+
+GlassSettings EngineTemporalCheck::glassSettingsFor(GlassState state, const GlassSettings& shipped)
+{
+    GlassSettings settings = shipped;
+    switch (state) {
+    case GlassState::Shipped:
+        break;
+    case GlassState::PassOff:
+        settings.isPassEnabled = false;
+        break;
+    case GlassState::ShadowTransmittance:
+        settings.isShadowTransmittanceEnabled = true;
+        break;
+    case GlassState::BlendGuides:
+        settings.isGuideBlendEnabled = true;
+        break;
+    }
+    return settings;
+}
+
 const char* EngineTemporalCheck::diSetName(DiSet set)
 {
     switch (set) {
@@ -173,6 +207,41 @@ std::vector<EngineTemporalCheck::Step> EngineTemporalCheck::buildSteps(Kind kind
              di == DiSet::Reference ? kDirectReferenceFrames : 480, kNoChange, di, mode});
     };
     for (uint8_t pose = 0; pose < checkPoses(scene).size(); ++pose) {
+        // m8 I13: the glass poses per glass state; no light change, the café runner covers it
+        if (scene == CheckScene::Bistro) {
+            constexpr std::array kGlassStates{GlassState::Shipped, GlassState::PassOff,
+                                              GlassState::ShadowTransmittance, GlassState::BlendGuides};
+            switch (kind) {
+            case Kind::Stability:
+                for (const GlassState glass : kGlassStates) {
+                    for (const DebugView view : {DebugView::Lit, DebugView::DirectLighting}) {
+                        add({StepType::Stability, pose, GiSettingsSet::Shipped, view, SunState::Default,
+                             SunState::Default, Motion::Pan, false, 300, 480, kNoChange, DiSet::Shipped,
+                             IndirectMode::RestirGi, glass});
+                    }
+                }
+                break;
+            case Kind::LightChange:
+                break;
+            case Kind::ScreenEdge:
+                for (const Motion motion : {Motion::Pan, Motion::Dolly}) {
+                    for (const bool isFinal : {false, true}) {
+                        add({StepType::Depth, pose, GiSettingsSet::Shipped, DebugView::Depth, SunState::Default,
+                             SunState::Default, motion, isFinal, 0, 1, kNoChange});
+                    }
+                    for (const GlassState glass : kGlassStates) {
+                        add({StepType::EdgeReference, pose, GiSettingsSet::Shipped, DebugView::Lit, SunState::Default,
+                             SunState::Default, motion, true, 256, 256, 128, DiSet::Shipped, IndirectMode::RestirGi,
+                             glass});
+                        add({StepType::EdgeMove, pose, GiSettingsSet::Shipped, DebugView::Lit, SunState::Default,
+                             SunState::Default, motion, false, 256, 256, 0, DiSet::Shipped, IndirectMode::RestirGi,
+                             glass});
+                    }
+                }
+                break;
+            }
+            continue;
+        }
         switch (kind) {
         case Kind::Stability:
             if (scene == CheckScene::BistroCafe) {
@@ -280,9 +349,13 @@ uint32_t EngineTemporalCheck::stepSeed(const Step& step)
     return static_cast<uint32_t>(key) % (UINT32_MAX - kStepSeedStride) & ~1u;
 }
 
-WorldLights::Sun EngineTemporalCheck::sunFor(SunState state)
+WorldLights::Sun EngineTemporalCheck::sunFor(SunState state) const
 {
     WorldLights::Sun sun = WorldLights::defaultSun();
+    if (scene == CheckScene::Bistro) {
+        sun.azimuthDegrees = kBistroGlassSunAzimuthDegrees;
+        sun.elevationDegrees = kBistroGlassSunElevationDegrees;
+    }
     if (state == SunState::Moved) {
         sun.azimuthDegrees += kSunMoveDegrees;
     } else if (state == SunState::Off) {
@@ -309,13 +382,16 @@ std::string EngineTemporalCheck::stepLabel(const Step& step) const
 {
     const char* view = kDebugViews[std::to_underlying(step.view)].name;
     const char* pose = checkPoses(scene)[step.pose].name;
+    const std::string glass =
+        step.glass == GlassState::Shipped ? std::string() : std::format(", glass {}", glassStateName(step.glass));
     switch (step.type) {
     case StepType::Stability: {
         const std::string di = step.di == DiSet::Shipped ? std::string() : std::format(", DI {}", diSetName(step.di));
         const std::string mode = step.mode == IndirectMode::RestirGi
             ? std::string()
             : std::format(", {}", indirectModeInfo(step.mode).label);
-        return std::format("stability, {}, {}{}{}, {}", pose, giSettingsSetName(step.set), di, mode, view);
+        return std::format("stability, {}, {}{}{}{}, {}", pose, giSettingsSetName(step.set), di, mode, glass,
+                           view);
     }
     case StepType::LightReference:
     case StepType::LightChange:
@@ -324,9 +400,9 @@ std::string EngineTemporalCheck::stepLabel(const Step& step) const
     case StepType::Depth:
     case StepType::EdgeReference:
     case StepType::EdgeMove:
-        return std::format("screen edge, {}, {}, {}, {}", pose,
+        return std::format("screen edge, {}, {}, {}{}, {}", pose,
                            step.motion == Motion::Pan ? "pan 10 deg" : "dolly back 1 m", giSettingsSetName(step.set),
-                           view);
+                           glass, view);
     }
     return "";
 }
@@ -344,6 +420,10 @@ void EngineTemporalCheck::startStep(Camera& camera, Renderer& renderer)
     rtxdi.isGiReference = false;
     rtxdi.giReferenceBounces = 0;
     rtxdi.giSettings = giSettingsFor(step.set);
+    if (!startupGlassSettings) {
+        startupGlassSettings = renderer.glass;
+    }
+    renderer.glass = glassSettingsFor(step.glass, *startupGlassSettings);
     renderer.debugView.view = step.view;
     renderer.getWorldLights().sun = sunFor(step.sun);
     const PoseView& canonical = poses[step.pose];

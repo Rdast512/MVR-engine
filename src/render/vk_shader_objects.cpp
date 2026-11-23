@@ -124,6 +124,7 @@ void ShaderObjects::createFrameShaders()
     frameShaders.giDuplication =
         createComputeShader("rtxdi_gi_duplication.spv", "rtxdiGiDuplicationMain", "RtxdiGiDuplication");
     frameShaders.combine = createComputeShader("combine.spv", "combineMain", "Combine");
+    frameShaders.glass = createComputeShader("glass.spv", "glassMain", "Glass");
     frameShaders.exposureHistogram = createComputeShader("exposure.spv", "exposureHistogramMain", "ExposureHistogram");
     frameShaders.exposureAdapt = createComputeShader("exposure.spv", "exposureAdaptMain", "ExposureAdapt");
     frameShaders.post = createComputeShader("post.spv", "postMain", "Post");

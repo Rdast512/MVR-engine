@@ -67,6 +67,9 @@ public:
     // guide of the set frameNumber's parity selects
     [[nodiscard]] ImageRef guide(uint32_t frameNumber, GuideImage image) const;
     [[nodiscard]] ImageRef noisyColor() const { return imageRef(noisyColorTarget, kNoisyColorFormat); }
+    // DLSS-RR's albedo guide blended with the glass layers (m8 I13 §4 variant b): DiffuseAlbedo or SpecAlbedo, written
+    // by passes/glass.slang; the shared guides stay the surface's, since RTXDI reads them again next frame
+    [[nodiscard]] ImageRef glassAlbedo(GuideImage image) const;
     // eShaderReadOnlyOptimal after the late hi-z build
     [[nodiscard]] ImageRef depth() const
     {
@@ -152,6 +155,9 @@ private:
     Target directRadiance;
     Target indirectRadiance;
     Target noisyColorTarget;
+    // DLSS-only albedo guides with glass (m8 I13 §4 variant b)
+    Target glassDiffuseAlbedo;
+    Target glassSpecAlbedo;
     Target upscaledTarget;
     Target postTarget;
     Target exposureTarget;

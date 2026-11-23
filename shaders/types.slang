@@ -131,8 +131,11 @@ public static const uint kDebugViewIndirectSamples = 27u;
 public static const uint kDebugViewNrcCache = 28u;
 public static const uint kDebugViewIndirectRadiance = 29u;
 public static const uint kDebugViewMaterialBin = 30u;
+// the glass pass's throughput, or with kDebugViewFlagGlassReflection its reflection term (m8 I13)
+public static const uint kDebugViewGlass = 31u;
 public static const uint kDebugViewModeMask = 0xffu;
 public static const uint kDebugViewFlagEdges = 1u << 8;
+public static const uint kDebugViewFlagGlassReflection = 1u << 9;
 
 // one mesh placement inside its model, model-relative
 public struct GpuNode
@@ -185,6 +188,8 @@ public static const uint kMaterialFlagUvTransformNormal = 1u << 6;
 public static const uint kMaterialFlagUvTransformOcclusion = 1u << 7;
 public static const uint kMaterialFlagUvTransformEmissive = 1u << 8;
 public static const uint kMaterialFlagSpecularGlossiness = 1u << 9;
+// smooth thin-walled glass (m8 I13): out of the vis buffer, on kRayMaskGlass
+public static const uint kMaterialFlagTransmissive = 1u << 10;
 public static const uint kMaterialUvSlotCount = 5;
 
 // one meshlet cull work item: one GpuMeshletGroup of one primitive placed by one node instance
@@ -777,6 +782,8 @@ public struct GpuTargets
     public uint giStagnancyPrevious; // last frame's, sampled
     public uint giSampleIdsStorage;   // R32_UINT final ReSTIR GI sample per pixel, 0: none; rtxdi_gi_shade
     public uint giDuplicationStorage; // R32F neighbors sharing it, rtxdi_gi_duplication; next frame's temporal reads
+    public uint glassDiffuseAlbedoStorage; // RGBA8 DLSS-RR guides blended with glass (m8 I13 §4 variant b)
+    public uint glassSpecAlbedoStorage;
 };
 
 // exposure histogram: bin 0 includes black, bin 255 is the ceiling
@@ -819,6 +826,12 @@ public struct GpuRayInstanceBuild
 
 // GpuRayInstanceBuild.flags, matches GpuRayInstanceBuildFlag in src/core/types.hpp
 public static const uint kRayInstanceBuildFlagOpacityMicromap = 1u << 0;
+public static const uint kRayInstanceBuildFlagGlass = 1u << 1;
+
+// TLAS instance masks (m8 I13): every ray but the glass pass's layer walk and the shadow transmittance traces
+// kRayMaskOpaque, so glass blocks nothing and the vis buffer and the primary rays agree
+public static const uint kRayMaskOpaque = 0x01u;
+public static const uint kRayMaskGlass = 0x02u;
 
 // GpuFrameRoot.frameFlags, matches FrameFlag in src/core/types.hpp
 public static const uint kFrameFlagHistoryReset = 1u << 0;
@@ -863,4 +876,27 @@ public struct GpuFrameRoot
     public uint64_t rayInstanceLights; // uint[], parallel to rayInstances: first triangle-region row or kNoneIndex
     public uint firstTriangleLight;    // world row of triangle light 0, after the point and spot rows
     public uint triangleLightCount;
+    public uint glassFlags;            // kGlassFlag* (m8 I13); 0 without glass instances
+    public uint glassMaxLayers;        // layers a glass walk crosses at most
+    public uint64_t glassCounters;     // GpuGlassCounters of this frame slot
+};
+
+// GpuFrameRoot.glassFlags, matches GlassFlag in src/core/types.hpp
+public static const uint kGlassFlagPass = 1u << 0;
+public static const uint kGlassFlagShadowTransmittance = 1u << 1;
+public static const uint kGlassFlagReflection = 1u << 2;
+public static const uint kGlassFlagDiffuseShare = 1u << 3;
+public static const uint kGlassFlagEmission = 1u << 4;
+public static const uint kGlassFlagBlendGuides = 1u << 5;
+// matches kGlassMaxLayersLimit in src/core/types.hpp
+public static const uint kGlassMaxLayersLimit = 8;
+
+// matches GpuGlassCounters in src/core/types.hpp
+public struct GpuGlassCounters
+{
+    public uint pixels;
+    public uint earlyStops;
+    public uint capped;
+    public uint pad0;
+    public uint layerPixels[kGlassMaxLayersLimit];
 };

@@ -219,6 +219,14 @@ uint32_t MeshletCulling::drawRecordFlagsOf(const PrimitiveDraw& primitive) const
     return std::to_underlying(bin) | (isTwoSided ? DrawRecordFlag::TwoSided : 0u);
 }
 
+bool MeshletCulling::isGlassPrimitive(const PrimitiveDraw& primitive) const
+{
+    const MaterialStore& materials = scene.materialStore;
+    const uint32_t materialId = primitive.materialId == kNoneIndex ? materials.defaultMaterialId() : primitive.materialId;
+    const MaterialStore::MaterialInfo& info = materials.infos[materialId];
+    return isGlass(info.material, info.extension);
+}
+
 // one item per node instance with meshlets, its draw records contiguous behind firstDrawRecord
 void MeshletCulling::buildTemplates()
 {
@@ -232,6 +240,7 @@ void MeshletCulling::buildTemplates()
 
     const uint32_t entityCount = assets.asset(AssetBuffer::Primitives).address == 0 ? 0 : storage.size();
     const std::span<const uint32_t> nodeInstanceFirsts = frameData.entityNodeInstanceFirst();
+    uint32_t glassPrimitives = 0;
     for (EntityId id = 0; id < entityCount; ++id) {
         // an entity whose load is not flushed yet has no GPU model and no node-instance rows
         if ((storage.flags[id] & EntityFlag::Active) == 0 || storage.modelIds[id] == kInvalidModelId) {
@@ -246,6 +255,11 @@ void MeshletCulling::buildTemplates()
             };
             for (uint32_t p = node.firstPrimitive; p < node.firstPrimitive + node.primitiveCount; ++p) {
                 const PrimitiveDraw& primitive = geometry.primitiveDraws[p];
+                // m8 I13: the vis buffer holds the first opaque surface behind glass; the glass pass traces glass
+                if (isGlassPrimitive(primitive)) {
+                    ++glassPrimitives;
+                    continue;
+                }
                 const uint32_t flags = drawRecordFlagsOf(primitive);
                 templates.binMeshlets[flags & DrawRecordFlag::BinMask] += primitive.meshlets.meshletCount;
                 for (uint32_t g = 0; g < primitive.groupCount; ++g) {
@@ -277,8 +291,10 @@ void MeshletCulling::buildTemplates()
         throw std::runtime_error(std::format("cull: {} visible rows exceed the vis-buffer row field ({})",
                                              visibleRows, kMaxVisibleRows));
     }
-    logInfo(std::format("cull templates: {} instances, {} draw records, {} + {} meshlets", templates.instances.size(),
-                        templates.drawRecords.size(), templates.binMeshlets[0], templates.binMeshlets[1]),
+    logInfo(std::format("cull templates: {} instances, {} draw records, {} + {} meshlets, {} glass primitive "
+                        "instances not rasterized",
+                        templates.instances.size(), templates.drawRecords.size(), templates.binMeshlets[0],
+                        templates.binMeshlets[1], glassPrimitives),
             "Culling");
 }
 

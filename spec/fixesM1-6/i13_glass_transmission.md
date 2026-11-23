@@ -1,9 +1,9 @@
 # M8 · I13: thin-walled glass
 
-**Status:** planned 2026-11-22 · **Milestone:** M8 ([README](./README.md))
+**Status:** planned 2026-11-22, built 2026-11-23 (§8) · **Milestone:** M8 ([README](./README.md))
 **Implements:** finding F21 ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §4): `KHR_materials_transmission` is parsed and uploaded but no shader reads it, so glass renders as an opaque white dielectric and blocks every ray
 **Depends on:** I1 (runners), I2 (shading fixes), I6 (fresh final DI visibility, which the shadow transmittance multiplies)
-**Considerations:** opens C-I13-1 … C-I13-4 (§7); updates engine spec §12.4
+**Considerations:** opens C-I13-1 … C-I13-4 (§7), and C-I13-5 (the throughput check's reference) and C-I13-6 (the blended specular guide) when built; updates engine spec §12.4
 **References:**
 - `reference/RTXDI/Samples/FullSample/Shaders/GlassPass.hlsl` and `Source/App/SceneRenderer.cpp:1143-1146`: glass composited after lighting and before DLSS-RR, up to 8 layers, Fresnel reflection plus transmission throughput; `RasterizedGBuffer.hlsl:168-182` discards transmissive surfaces from the G-buffer; `RAB_LightSampling.hlsli:186,200` traces DI shadows against `INSTANCE_MASK_OPAQUE` only
 - `reference/vk_gltf_renderer/docs/denoising.md` ("Clear glass: primary surface replacement") and `shaders/pathtrace_functions.h.slang:1146-1250` (`dlssIsClearGlass`, `dlssTraceSkipThinGlass`): DLSS-RR guides from the first surface behind clear glass; `pInColorBeforeTransparency` measured worse and not wired
@@ -109,16 +109,102 @@ Keep the variant with the lower `Lit` static pixel error and temporal std; (a) o
 
 ## 8. Results
 
-To be filled when built.
+Built 2026-11-23 (RTX 5070, release, 1280×720 window, DLSS-RR Quality, no validation layers unless stated). Bistro's two poses run under `kBistroGlassSun*` (azimuth 110°, elevation 35°). Bistro loads 17 thin-walled glass materials (337 instances, out of the raster templates) and keeps `LMBR_000009e_Glass` opaque (roughness 1).
+
+**Glass throughput check** (guide capture, transmission only, pass on / off at the same frame indices and exposure against the `Glass` view's `ΠT`):
+
+| Shot | Compared px (1–2 layers) | Median | p90 | Pixels without glass changed |
+|---|---|---|---|---|
+| `TransmissionTest_sun` | 2208 | 0.023% | 0.044% | 0 |
+| `Bistro_street_windows` | 38097 (56785 below 0.1% of the mean skipped) | 0.029% | 0.208% | 0 |
+
+The reference is the pass's own `ΠT`, not a CPU evaluation (C-I13-5). Bistro's maximum (`124–543%` across runs) comes from a few pixels that do not repeat between the phases. The `TransmissionTest` PNGs show the smooth row tinted and see-through, the textured and masked panes with their pattern, and the rough and metal rows opaque (8 materials kept opaque, logged). `TransmissionSuzanne`'s `Glass` view shows its two crossings.
+
+**Pass cost** (ABBA, 2000 frames per run):
+
+| Pose | Glass pass on | Pass off | GPU total on / off |
+|---|---|---|---|
+| Street windows (99K px behind glass) | 1.06–1.10 ms | 0.0007–0.0009 ms | 6.59–6.84 / 5.11–5.80 ms |
+| Bar shelf (24K px) | 0.82–0.83 ms | 0.0008 ms | 6.29–6.38 / 5.49–5.54 ms |
+| Sponza courtyard (no glass) | 0.0006 ms (the empty scope) | 0.0006 ms | 3.16 / 3.20 ms |
+
+With shadow transmittance off (the default below), the pass reads 0.98 ms on the street and 0.79 ms on the bar shelf. Its parts:
+
+| Configuration | Street | Bar shelf |
+|---|---|---|
+| shipped | 0.98 ms | 0.79 ms |
+| reflection off | 0.39 ms | 0.38 ms |
+| diffuse share off | 0.75 ms | 0.58 ms |
+| walk only (reflection, diffuse share and emission off) | 0.22 ms | 0.15 ms |
+| `maxLayers` 2 | 0.79 ms | 0.57 ms |
+| `maxLayers` 8 | 1.26 ms | 1.10 ms |
+
+**Layers** (`[Bench]` glass line, one frame):
+
+| Pose | Pixels by layers 1 / 2 / 3 / 4 (cap 4) | At the cap | With cap 8: past 4 |
+|---|---|---|---|
+| Street windows | 93229 / 1695 / 3110 / 948 | 947 px (1.0%) | 948 px, up to 8 layers |
+| Bar shelf | 9843 / 7769 / 985 / 5735 | 5715 px (23%) | 1700 px (7%), up to 8 layers |
+
+**Decision: `maxLayers` stays 4.** 2 truncates 59% of the bar shelf's glass pixels. 8 costs `+0.28 / +0.31 ms` for 1% / 7% of them, which are already behind four layers of throughput.
+
+**Shadow transmittance** (street pose):
+
+| | Off | On |
+|---|---|---|
+| GPU total | 5.90 ms | 6.58 ms (`+0.68 ms`: DI shade `+0.14`, Indirect `+0.25`, GI shade `+0.12`, glass pass `+0.15`) |
+| `Direct lighting` mean | 0.012254 | 0.012149 (`−0.86%`) |
+| `Lit` mean | 0.078177 | 0.076113 (`−2.6%`) |
+| Pixels darkened by more than 3% | | 1158 (0.3% of the frame), median on / off 0.860 |
+
+No direct sun reaches the café floor behind the windows. A search over seven sun angles (azimuth 110–140°, elevation 6–55°) found the awning blocking a high sun and the buildings across the street a low one. The term then changes only scattered glass-lit pixels.
+
+**Decision: shadow transmittance off by default**, as in RTXDI's FullSample, whose DI shadows trace `INSTANCE_MASK_OPAQUE` only. It is a 12% GPU cost for a change that is visible on 0.3% of the frame here. The switch stays (`Shadow transmittance`, `glass.shadowTransmittance`).
+
+**DLSS-RR guides** (`ENGINE_CHECK_SCENE=bistro`; these runs had shadow transmittance on as the reference state, with its off state measured beside it):
+
+| Pose | State | `Lit` mean | Temporal std | Flicker |
+|---|---|---|---|---|
+| Street windows | (a) guides of the surface behind | 0.076113 | 8.66% | 71.4% |
+| | (b) blended guides | 0.076174 | 7.98% | 67.2% |
+| | shadow transmittance off | 0.078177 | 8.73% | 71.6% |
+| | pass off (glass invisible) | 0.047882 | 11.66% | 81.0% |
+| Bar shelf | (a) | 0.021569 | 24.51% | 63.8% |
+| | (b) | 0.021203 | 26.40% | 69.5% |
+| | shadow transmittance off | 0.022144 | 24.08% | 63.7% |
+| | pass off | 0.020030 | 27.37% | 70.9% |
+
+Screen edge: static pixel error (band / disoccluded), and the band's pixel error 64 frames after the move:
+
+| Pose, motion | (a) | (b) | Shadow transmittance off | Pass off |
+|---|---|---|---|---|
+| Street, pan 10° | 5.2% / 16.0%, 16.0% | 4.8% / 14.9%, 15.0% | 5.3% / 15.9%, 16.0% | 5.5% / 24.3%, 16.7% |
+| Street, dolly 1 m | 9.3% / 9.0%, 22.3% | 8.6% / 8.2%, 22.3% | 9.5% / 9.0%, 23.0% | 9.3% / 14.9%, 23.1% |
+| Bar, pan 10° | 7.5%, 31.3% | 7.5%, 31.9% | 7.4%, 30.5% | 7.7%, 30.8% |
+| Bar, dolly 1 m | 22.7% / 36.9%, 40.6% | 23.5% / 40.2%, 40.2% | 22.5% / 33.8%, 40.7% | 23.7% / 58.8%, 40.0% |
+
+**Decision: guides (a).** (b) wins on the street windows (large panes: `Lit` std `−0.7` points, static error `−0.4…−1.1` points) and loses on the bar shelf (bottles and glasses: std `+1.9` points, dolly disoccluded error `+3.3` points). That is a tie across the two poses, so (a) stays, per §4's rule (fewer writes). (b) stays a switch (`Blend DLSS guides with glass`, `glass.blendGuides`); its specular blend deviates from §4 (C-I13-6). Glass itself steadies the image: with the pass off, the windows show the noisier interior (street `Lit` std 11.66%, disoccluded error 24.3%).
+
+**Sponza** (against a HEAD build, `abc011787`, same machine and session):
+- Stability (29 lines), screen edge (37) and light change (17) are byte-identical.
+- The GI check's non-NRC lines are identical. Its NRC phases differ run to run on both builds (C-T-5); the gallery's NRC-mode phase sits at its gate (`−5.36%` FAIL on HEAD's run, `−4.80%` PASS on this one).
+- The first run differed in `Lit` only. A `.spv` swap traced it to `rtxdi_gi_shade`: multiplying the GI sample by a transmittance of exactly `1.0` changed the driver's FMA contraction. The shading now keeps its pre-I13 expressions unless `kGlassFlagShadowTransmittance` is set.
+
+**Regression and validation:**
+- CTest 8 of 8 (the layout test mirrors `GpuGlassCounters`, `GpuFrameRoot`'s glass fields and the glass guide images).
+- `ENGINE_RT_CHECK` 32 of 32; `ENGINE_CULL_CHECK` 16 of 16; `ENGINE_MOTION_TEST` 13 of 13.
+- `ENGINE_GUIDE_CAPTURE`: 2 of 2 normal, 3 of 3 convergence and 2 of 2 throughput checks, 506 PNGs.
+- Validation (core + sync + best practices, Bistro street, shadow transmittance and blended guides on): only NGX's known messages (C-H1-2).
+- GPU-AV (`ENGINE_GPUAV_RESOLVE_PER_BIN=1`, C-E1-3) over two Bistro glass stability steps (shadow transmittance, blended guides): no shader errors.
 
 ## Done when
 
-- [ ] Transmissive materials classified; the opaque-kept ones logged with their reason
-- [ ] Glass out of the vis buffer and on its own ray mask; every other ray on `kRayMaskOpaque`
-- [ ] Glass pass composites thin-walled layers before DLSS-RR; glass throughput check passes on `TransmissionTest` and Bistro
-- [ ] Shadow transmittance measured on and off, default decided
-- [ ] DLSS-RR guide variant decided with stability and screen-edge numbers on both Bistro poses
-- [ ] Sponza runners byte-identical to post-I6 (NRC phases excepted); pass cost on Sponza 0
-- [ ] Glass pass cost recorded on both Bistro poses (ABBA)
-- [ ] CTest, RT check, cull check, motion test, guide capture pass; validation clean
-- [ ] Engine spec §12.4, `docs/settings.md` and the considerations updated
+- [x] Transmissive materials classified; the opaque-kept ones logged with their reason
+- [x] Glass out of the vis buffer and on its own ray mask; every other ray on `kRayMaskOpaque`
+- [x] Glass pass composites thin-walled layers before DLSS-RR; glass throughput check passes on `TransmissionTest` and Bistro
+- [x] Shadow transmittance measured on and off, default decided
+- [x] DLSS-RR guide variant decided with stability and screen-edge numbers on both Bistro poses
+- [x] Sponza runners byte-identical to post-I6 (NRC phases excepted); pass cost on Sponza 0
+- [x] Glass pass cost recorded on both Bistro poses (ABBA)
+- [x] CTest, RT check, cull check, motion test, guide capture pass; validation clean
+- [x] Engine spec §12.4, `docs/settings.md` and the considerations updated

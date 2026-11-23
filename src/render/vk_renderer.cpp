@@ -50,6 +50,11 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
         isNrcHostWaitEnabled = std::string_view(waitEnv) != "0";
         logInfo(std::format("NRC host wait (C-G3-6): {}", isNrcHostWaitEnabled ? "on" : "off"), "Renderer");
     }
+    for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
+        glassCounters[slot] = createHostBuffer(sizeof(GpuGlassCounters), allocator.allocator, device.vkdevice,
+                                               device.queueFamilyIndices, std::format("GlassCounters_{}", slot), nullptr);
+        *static_cast<GpuGlassCounters*>(glassCounters[slot].mapped) = {};
+    }
     if constexpr (kDebugRays) {
         for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
             rayDebugCounters[slot] =
@@ -72,6 +77,9 @@ Renderer::~Renderer()
         }
     }
     for (HostBuffer& counters : rayDebugCounters) {
+        destroyHostBuffer(allocator.allocator, counters, nullptr);
+    }
+    for (HostBuffer& counters : glassCounters) {
         destroyHostBuffer(allocator.allocator, counters, nullptr);
     }
     for (HostBuffer& stats : motionCheckStats) {
@@ -266,6 +274,11 @@ void Renderer::drawFrame()
     if (void* stats = rayCheckStats[currentFrame].mapped) {
         *static_cast<GpuRayCheckStats*>(stats) = {};
     }
+    {
+        auto& counters = *static_cast<GpuGlassCounters*>(glassCounters[currentFrame].mapped);
+        lastGlassCounters = isGlassRecorded[currentFrame] ? counters : GpuGlassCounters{};
+        counters = {};
+    }
     if (void* mapped = rayDebugCounters[currentFrame].mapped) {
         auto& counters = *static_cast<GpuRayDebugCounters*>(mapped);
         if (isRayDebugRecorded[currentFrame]) {
@@ -333,6 +346,9 @@ void Renderer::drawFrame()
                             .triangleLightCount = worldLights.triangleLightCount(),
                             .rayDebug = rayDebugCounters[currentFrame].address,
                             .materialBins = targets.materialBinsAddress(),
+                            .glassFlags = frameGlassFlags,
+                            .glassMaxLayers = frameGlassMaxLayers,
+                            .glassCounters = glassCounters[currentFrame].address,
                         });
         cpuFrameDataWriteMs = toMs(uboStart, std::chrono::steady_clock::now());
     }
@@ -600,6 +616,9 @@ void Renderer::recordRayCommands()
     raySegments = frameSync.raySegments(currentFrame);
     raySegmentCount = 0;
     preDlssRaySegmentCount = 0;
+    // the frame root written after this recording carries the same glass state
+    frameGlassFlags = glass.flags(rtScene.glassRowCount() > 0);
+    frameGlassMaxLayers = glass.clampedMaxLayers();
     // moves on when an SDK call opens a new segment
     const vk::raii::CommandBuffer* cmd = &beginRaySegment();
     {
@@ -1112,6 +1131,8 @@ const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::Co
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &combineBarrier});
     dispatchFullscreen(cmd, shaderObjects.frameShaders.combine);
     gpuTimer.end(cmd, GpuTimerScope::Combine);
+    recordGlass(cmd);
+    gpuTimer.end(cmd, GpuTimerScope::Glass);
 
     const auto now = std::chrono::steady_clock::now();
     const float wallDeltaMs = lastFrameTime == std::chrono::steady_clock::time_point{}
@@ -1143,6 +1164,8 @@ const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::Co
     };
     const GpuCameraData& cameraData = camera.cameraData;
     const vk::Extent2D renderExtent = targets.getExtent();
+    const bool isGlassGuideBlended = (frameGlassFlags & (GlassFlag::Pass | GlassFlag::BlendGuides)) ==
+        (GlassFlag::Pass | GlassFlag::BlendGuides);
     // history resets with the frame's (camera cut, resize, layout change) and after frames without the Lit view
     const bool isHistoryReset =
         !isDlssHistoryValid || camera.isCut() || culling.isSceneLayoutChanged() || isLightSetChanged;
@@ -1150,8 +1173,11 @@ const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::Co
         .color = toDlss(targets.noisyColor()),
         .depth = toDlss(targets.depth(), vk::ImageAspectFlagBits::eDepth),
         .motion = toDlss(targets.guide(frameNumber, GuideImage::Motion)),
-        .diffuseAlbedo = toDlss(targets.guide(frameNumber, GuideImage::DiffuseAlbedo)),
-        .specularAlbedo = toDlss(targets.guide(frameNumber, GuideImage::SpecAlbedo)),
+        // m8 I13 §4 variant b: the albedo guides blended with the glass layers
+        .diffuseAlbedo = toDlss(isGlassGuideBlended ? targets.glassAlbedo(GuideImage::DiffuseAlbedo)
+                                                    : targets.guide(frameNumber, GuideImage::DiffuseAlbedo)),
+        .specularAlbedo = toDlss(isGlassGuideBlended ? targets.glassAlbedo(GuideImage::SpecAlbedo)
+                                                     : targets.guide(frameNumber, GuideImage::SpecAlbedo)),
         .normalRoughness = toDlss(targets.guide(frameNumber, GuideImage::NormalRoughness)),
         .output = toDlss(targets.upscaled()),
         // NDC units, y down like pixels
@@ -1181,6 +1207,31 @@ const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::Co
                 frameDeltaMs * 1e-3f);
     gpuTimer.end(postCmd, GpuTimerScope::Post);
     return postCmd;
+}
+
+void Renderer::recordGlass(const vk::raii::CommandBuffer& cmd)
+{
+    isGlassRecorded[currentFrame] = (frameGlassFlags & GlassFlag::Pass) != 0;
+    if (!isGlassRecorded[currentFrame]) {
+        return;
+    }
+    // combine's noisyColor writes -> the glass pass's read-modify-write
+    const vk::MemoryBarrier2 colorBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &colorBarrier});
+    dispatchFullscreen(cmd, shaderObjects.frameShaders.glass);
+    // the counters are read on the host after the slot's fence; noisyColor's consumers order themselves
+    const vk::MemoryBarrier2 readbackBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &readbackBarrier});
 }
 
 void Renderer::recordDebugView(const vk::raii::CommandBuffer& cmd)

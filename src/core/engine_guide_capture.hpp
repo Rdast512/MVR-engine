@@ -1,9 +1,11 @@
 #pragma once
 
+#include "core/check_poses.hpp"
 #include "render/debug_view.hpp"
 #include "render/vk_renderer.hpp"
 #include "scene/vk_camera.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -17,7 +19,8 @@
 // (spec/pbr_implementation_plan.md E1, A4): each model alone at the origin, framed from a fixed direction, every guide
 // view written as a PNG under logs/guides; then the normal checks compare captures pixel by pixel, and the convergence
 // check compares ReSTIR DI's mean against the exact punctual sum (spec/features/rtxdi_3_2_update.md §4), or against
-// RTXDI's no-reuse mode where triangle lights take part (spec/m7/e2_emissive_triangles.md).
+// RTXDI's no-reuse mode where triangle lights take part (spec/m7/e2_emissive_triangles.md), and the glass
+// throughput check holds the glass pass's composite against its throughput (m8 I13 §5).
 // ENGINE_GUIDE_CAPTURE=1 enables the run; the engine quits once the last shot is written and the checks are logged
 class EngineGuideCapture
 {
@@ -44,6 +47,14 @@ public:
         bool isRtxdiReference = false;
         // WorldLights::areTriangleLightsSampled
         bool areTriangleLightsSampled = true;
+        // the shipped settings outside the throughput check
+        GlassSettings glass;
+        // RtxdiContext::frameIndexOverride and Camera::jitterPhaseOverride: the throughput check's phases repeat
+        // frame for frame
+        std::optional<uint32_t> frameIndex;
+        std::optional<uint64_t> jitterPhase;
+        // PostProcess::Settings::manualEv; auto exposure when nullopt
+        std::optional<float> manualEv;
     };
 
     // modelBounds: entity 0's model-space bounding sphere, once the scene has an entity. rtxdi holds
@@ -55,7 +66,8 @@ public:
     [[nodiscard]] bool isPassed() const noexcept
     {
         return isFinished && normalPassedCount == kNormalChecks.size() &&
-            convergenceCheckCount == kConvergenceShots.size() && convergencePassedCount == kConvergenceShots.size();
+            convergenceCheckCount == kConvergenceShots.size() && convergencePassedCount == kConvergenceShots.size() &&
+            throughputCheckCount == kThroughputShots.size() && throughputPassedCount == kThroughputShots.size();
     }
 
 private:
@@ -104,7 +116,7 @@ private:
     static constexpr size_t kMirrorShippedShot = 4;
     static constexpr size_t kMirrorGeneratedShot = 5;
     static constexpr size_t kFlatNormalsShot = 7;
-    static constexpr std::array<Shot, 18> kShots = {{
+    static constexpr std::array<Shot, 22> kShots = {{
         {"gltf/2.0/MetalRoughSpheres/glTF", "MetalRoughSpheres_front", Variant::AsShipped, kFront},
         // the plane lies in xz with its normal +y
         {"gltf/2.0/TwoSidedPlane/glTF", "TwoSidedPlane_top", Variant::AsShipped, {0.0f, 0.8f, 0.6f}},
@@ -144,6 +156,19 @@ private:
         // KHR_materials_pbrSpecularGlossiness: the right bottle and label are spec-gloss, the left ones metal-rough;
         // the sample's contract is that both look almost the same
         {"gltf/2.0/SpecGlossVsMetalRough/glTF", "SpecGlossVsMetalRough_front", Variant::AsShipped, kFront},
+        // m8 I13 thin-walled glass: smooth transmissive panels (textured, masked, metal and rough variants, the last
+        // two rendering opaque) in front of a backdrop; the sample ships no light, so a sun from the front right
+        {"gltf/2.0/TransmissionTest/glTF", "TransmissionTest_sun", Variant::AsShipped, kFront, std::nullopt,
+         SunAngles{30.0f, 40.0f}},
+        // a closed thin-walled mesh, roughness 0.1: two crossings per pixel, under its own lights
+        {"gltf/2.0/TransmissionSuzanne/glTF", "TransmissionSuzanne_front", Variant::AsShipped, kFront},
+        // Bistro's glass check poses and sun (check_poses.hpp)
+        {"models/bistro/bistro.gltf", "Bistro_street_windows", Variant::AsShipped, kFront,
+         CameraPose{kBistroGlassCheckPoses[0].position, kBistroGlassCheckPoses[0].target},
+         SunAngles{kBistroGlassSunAzimuthDegrees, kBistroGlassSunElevationDegrees}},
+        {"models/bistro/bistro.gltf", "Bistro_bar_shelf", Variant::AsShipped, kFront,
+         CameraPose{kBistroGlassCheckPoses[1].position, kBistroGlassCheckPoses[1].target},
+         SunAngles{kBistroGlassSunAzimuthDegrees, kBistroGlassSunElevationDegrees}},
     }};
     static constexpr std::array<NormalCheck, 2> kNormalChecks = {{
         {"A4 generated tangents match the shipped ones (NormalTangentMirrorTest shading normal)", kMirrorGeneratedShot,
@@ -158,7 +183,7 @@ private:
         DebugView view;
         IndirectMode mode;
     };
-    static constexpr std::array<ShotView, 22> kViews = {{
+    static constexpr std::array<ShotView, 23> kViews = {{
         {DebugView::DiffuseAlbedo, IndirectMode::NrcRestirGi},
         {DebugView::SpecularF0, IndirectMode::NrcRestirGi},
         {DebugView::Roughness, IndirectMode::NrcRestirGi},
@@ -176,6 +201,8 @@ private:
         {DebugView::NrcCache, IndirectMode::NrcRestirGi},
         {DebugView::IndirectRadiance, IndirectMode::NrcRestirGi},
         {DebugView::DlssInput, IndirectMode::NrcRestirGi},
+        // the glass pass's throughput, white without glass (m8 I13)
+        {DebugView::Glass, IndirectMode::NrcRestirGi},
         {DebugView::IndirectSamples, IndirectMode::Nrc},
         {DebugView::IndirectRadiance, IndirectMode::Nrc},
         {DebugView::DlssInput, IndirectMode::Nrc},
@@ -238,6 +265,34 @@ private:
     {
         return findConvergenceShot(index) != nullptr;
     }
+    // the glass throughput check (m8 I13 §5) after the shot's views, three phases from a camera cut at the same frame
+    // indices and exposure: the pass off, then on with transmission alone (no reflection, diffuse share, emission or
+    // shadow transmittance), both in DLSS input, then the Glass view's throughput and layer count. Glass changes
+    // nothing before the glass pass, so on / off is the composite's throughput, held against the pass's own
+    // (C-I13-5: not a CPU evaluation of the layers)
+    enum class ThroughputPhase : uint8_t
+    {
+        PassOff,
+        Transmission,
+        Throughput,
+    };
+    // TransmissionTest_sun, Bistro_street_windows
+    static constexpr std::array<size_t, 2> kThroughputShots = {18, 20};
+    // the captured frame of each phase
+    static constexpr uint32_t kThroughputFrames = 8;
+    // even: RTXDI's buffer parity follows the frame index
+    static constexpr uint32_t kThroughputFrameIndexBase = 1u << 20;
+    static constexpr float kThroughputManualEv = 0.0f;
+    // over pixels behind one or two layers: L1 RGB error relative to throughput x pass-off color (spec I13 §5)
+    static constexpr double kMaxThroughputMedianError = 0.01;
+    static constexpr double kMaxThroughputP90Error = 0.03;
+    // below this share of the compared pixels' mean the half-float pass-off color is too coarse to divide by
+    static constexpr double kThroughputDarkShare = 1e-3;
+    static constexpr size_t kMinThroughputPixels = 1000;
+    [[nodiscard]] static constexpr bool isThroughputShot(size_t index) noexcept
+    {
+        return std::ranges::find(kThroughputShots, index) != kThroughputShots.end();
+    }
     // the load frame, then frames with the shot's camera before the first capture
     static constexpr uint32_t kSettleFrames = 3;
     // bounding sphere to frame height
@@ -262,6 +317,12 @@ private:
     void accumulateReference(const Renderer::DisplayCapture& capture);
     // logs the metrics; true when within the limits
     [[nodiscard]] bool evaluateConvergence() const;
+    // one frame of the throughput check; true after its last phase
+    [[nodiscard]] bool advanceThroughput(const std::optional<Renderer::DisplayCapture>& capture);
+    // logs the metrics; true when within the limits. glass: the Throughput phase's capture
+    [[nodiscard]] bool evaluateThroughput(const Renderer::DisplayCapture& glass) const;
+    // the shot's camera; a cut
+    static void frameShot(Camera& camera, const Shot& shot, std::optional<glm::vec4> modelBounds);
     // next shot; true after the last one
     bool finishShot();
 
@@ -306,6 +367,20 @@ private:
     size_t normalPassedCount = 0;
     size_t convergenceCheckCount = 0;
     size_t convergencePassedCount = 0;
+    struct ThroughputRun
+    {
+        ThroughputPhase phase = ThroughputPhase::PassOff;
+        // frames into the phase
+        uint32_t frame = 0;
+        vk::Extent2D extent{};
+        // the PassOff and Transmission captures, RGBA16F texels
+        std::vector<uint16_t> passOff;
+        std::vector<uint16_t> transmission;
+    };
+    // engaged after a throughput shot's last view
+    std::optional<ThroughputRun> throughput;
+    size_t throughputCheckCount = 0;
+    size_t throughputPassedCount = 0;
     // the settings replaced while a convergence shot runs
     std::optional<RtxdiContext::Settings> heldRtxdiSettings;
 };

@@ -75,6 +75,8 @@ RenderTargets::~RenderTargets()
     destroy(directRadiance);
     destroy(indirectRadiance);
     destroy(noisyColorTarget);
+    destroy(glassDiffuseAlbedo);
+    destroy(glassSpecAlbedo);
     destroy(upscaledTarget);
     destroy(postTarget);
     destroy(exposureTarget);
@@ -215,6 +217,8 @@ void RenderTargets::destroyTargets()
     destroy(directRadiance);
     destroy(indirectRadiance);
     destroy(noisyColorTarget);
+    destroy(glassDiffuseAlbedo);
+    destroy(glassSpecAlbedo);
     destroy(upscaledTarget);
     destroy(postTarget);
     destroy(exposureTarget);
@@ -258,6 +262,10 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
     createTarget(indirectRadiance, kIndirectRadianceFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferDst,
                  vk::ImageLayout::eGeneral, "IndirectRadiance", extent);
     createTarget(noisyColorTarget, kNoisyColorFormat, kStorageUsage, vk::ImageLayout::eGeneral, "NoisyColor", extent);
+    createTarget(glassDiffuseAlbedo, kGuideFormats[std::to_underlying(GuideImage::DiffuseAlbedo)], kStorageUsage,
+                 vk::ImageLayout::eGeneral, "GlassDiffuseAlbedo", extent);
+    createTarget(glassSpecAlbedo, kGuideFormats[std::to_underlying(GuideImage::SpecAlbedo)], kStorageUsage,
+                 vk::ImageLayout::eGeneral, "GlassSpecAlbedo", extent);
     createTarget(upscaledTarget, kUpscaledFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferSrc,
                  vk::ImageLayout::eGeneral, "DlssOutput", displayExtent);
     // transfer source for the Lit display capture
@@ -304,6 +312,8 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
     initialize(*directRadiance.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*indirectRadiance.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*noisyColorTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
+    initialize(*glassDiffuseAlbedo.image, vk::ImageLayout::eGeneral, kStorageAccess);
+    initialize(*glassSpecAlbedo.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*upscaledTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*postTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*binIds.image, vk::ImageLayout::eGeneral, kStorageAccess);
@@ -373,6 +383,12 @@ RenderTargets::ImageRef RenderTargets::guide(uint32_t frameNumber, GuideImage im
     return imageRef(guideSets[frameNumber % kGuideSetCount][index], kGuideFormats[index]);
 }
 
+RenderTargets::ImageRef RenderTargets::glassAlbedo(GuideImage image) const
+{
+    const size_t index = std::to_underlying(image);
+    return imageRef(image == GuideImage::SpecAlbedo ? glassSpecAlbedo : glassDiffuseAlbedo, kGuideFormats[index]);
+}
+
 void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool isPostPresented)
 {
     const auto guideSet = [this](uint32_t set)
@@ -413,5 +429,7 @@ void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool 
         .giStagnancyPrevious = giStagnancy[(current + 1) % kGuideSetCount].sampledIndex,
         .giSampleIdsStorage = giSampleIds.storageIndex,
         .giDuplicationStorage = giDuplication.storageIndex,
+        .glassDiffuseAlbedoStorage = glassDiffuseAlbedo.storageIndex,
+        .glassSpecAlbedoStorage = glassSpecAlbedo.storageIndex,
     };
 }

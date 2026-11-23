@@ -7,7 +7,6 @@ import core.binding;
 // global partition measured slower on the 5070 (§3.6). Runs on the async compute queue before the PTLAS build
 
 static const uint kRtInstancesGroupSize = 64; // matches src/render/vk_rt_scene.cpp
-static const uint kInstanceMaskAll = 0xFFu;
 // VK_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCE_FLAG_FORCE_OPAQUE_BIT_NV: no any-hit. Primitives with a micromap drop
 // it and carry no opacity flag; rays force OMM 2-state themselves (spec/m6/d2_micromap_clas.md)
 static const uint kPtlasInstanceForceOpaque = 0x4u;
@@ -88,7 +87,7 @@ void rtInstancesMain(uint3 dispatchId: SV_DispatchThreadID)
     instance.explicitAabb = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
     // InstanceID() = primitive row: the SER hint skips the GpuRayInstance load (§4.3); the host checks the 24 bits
     instance.instanceId = ray.primitiveRow;
-    instance.instanceMask = kInstanceMaskAll;
+    instance.instanceMask = (build.flags & kRayInstanceBuildFlagGlass) != 0 ? kRayMaskGlass : kRayMaskOpaque;
     // one hit group: record offset 0. No facing flags: RT handles mirrored transforms itself
     instance.hitGroupOffset = 0;
     instance.instanceFlags = (build.flags & kRayInstanceBuildFlagOpacityMicromap) != 0 ? 0u : kPtlasInstanceForceOpaque;

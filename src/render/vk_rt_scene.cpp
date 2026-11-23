@@ -190,6 +190,7 @@ void RayTracingScene::buildTemplates()
     templates.partitionOccupancy.clear();
     templates.cellToPartition.clear();
     templates.triangleLightCount = 0;
+    templates.glassRowCount = 0;
     templates.layoutGeneration = frameData.layoutGeneration();
     templates.instancesPerPartition = settings.instancesPerPartition;
     templates.isPartitionReassignmentEnabled = settings.isPartitionReassignmentEnabled;
@@ -208,6 +209,14 @@ void RayTracingScene::buildTemplates()
         }
         const MaterialStore::MaterialInfo& info = materials.infos[materialId];
         return isLightEmitter(packMaterial(info.material, info.extension));
+    };
+    // m8 I13: glass instances sit on kRayMaskGlass, which only the glass pass and the shadow transmittance trace
+    const auto isGlassMaterial = [&materials](uint32_t materialId) {
+        if (materialId == kNoneIndex) {
+            return false;
+        }
+        const MaterialStore::MaterialInfo& info = materials.infos[materialId];
+        return isGlass(info.material, info.extension);
     };
     const uint32_t entityCount = assets.asset(AssetBuffer::Primitives).address == 0 ? 0 : storage.size();
     const std::span<const uint32_t> nodeInstanceFirsts = frameData.entityNodeInstanceFirst();
@@ -239,10 +248,13 @@ void RayTracingScene::buildTemplates()
                 const BoundingBox box = primitiveBounds(geometry, primitive);
                 templates.rows.push_back(GpuRayInstance{.nodeInstanceIndex = nodeInstanceFirsts[id] + k,
                                                         .primitiveRow = p});
+                const bool isGlassRow = isGlassMaterial(primitive.materialId);
+                templates.glassRowCount += isGlassRow ? 1u : 0u;
                 templates.builds.push_back(GpuRayInstanceBuild{
                     .blas = address,
-                    .flags = micromapped[p - model.primitives.first] != 0 ? GpuRayInstanceBuildFlag::OpacityMicromap
-                                                                          : 0u,
+                    .flags = (micromapped[p - model.primitives.first] != 0 ? GpuRayInstanceBuildFlag::OpacityMicromap
+                                                                           : 0u) |
+                        (isGlassRow ? GpuRayInstanceBuildFlag::Glass : 0u),
                 });
                 if (isEmissive(primitive.materialId)) {
                     templates.firstLights.push_back(templates.triangleLightCount);
@@ -379,9 +391,10 @@ void RayTracingScene::buildTemplates()
         };
     }
     logInfo(std::format("rt templates: {} instances, {} partitions ({}x{} grid, Z-order), at most {} per partition; {} "
-                        "triangle lights in {} emissive instances",
+                        "triangle lights in {} emissive instances; {} glass instances",
                         count, templates.shape.partitions, templates.gridAxis, templates.gridAxis,
-                        templates.shape.maxPerPartition, templates.triangleLightCount, templates.lightTasks.size()),
+                        templates.shape.maxPerPartition, templates.triangleLightCount, templates.lightTasks.size(),
+                        templates.glassRowCount),
             "RayTracingScene");
 }
 

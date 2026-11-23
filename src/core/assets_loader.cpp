@@ -971,6 +971,8 @@ namespace
     {
         logDebug(std::format("glTF materials: {}", model.materials_count), "AssetLoader");
         ctx.materialIds.resize(model.materials_count);
+        uint32_t glassCount = 0;
+        uint32_t keptOpaqueCount = 0;
         for (uint32_t i = 0; i < model.materials_count; ++i) {
             const tg3_material& material = model.materials[i];
             const tg3_pbr_metallic_roughness& pbr = material.pbr_metallic_roughness;
@@ -1044,7 +1046,22 @@ namespace
 
             MaterialPbrExtension pbrExt{};
             parseGltfMaterialPbrExtensions(ctx, material, gpu, pbrExt, owner);
+            const Transmission transmission = classifyTransmission(gpu, pbrExt);
+            if (transmission == Transmission::Glass) {
+                ++glassCount;
+            } else if (transmission != Transmission::None) {
+                ++keptOpaqueCount;
+                logInfo(std::format("glTF {} '{}': KHR_materials_transmission {} kept opaque ({}, roughness {:.2f})",
+                                    owner, strView(material.name), pbrExt.transmissionFactor,
+                                    transmissionOpaqueReason(transmission), gpu.roughnessFactor),
+                        "AssetLoader");
+            }
             ctx.materialIds[i] = ctx.materials.add(gpu, pbrExt, strView(material.name));
+        }
+        if (glassCount + keptOpaqueCount > 0) {
+            logInfo(std::format("glTF materials: {} thin-walled glass, {} transmissive kept opaque (m8 I13)", glassCount,
+                                keptOpaqueCount),
+                    "AssetLoader");
         }
     }
 

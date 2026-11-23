@@ -305,6 +305,7 @@ engine_add_slang_pass(passes/rtxdi_gi_temporal.slang ENTRIES rtxdiGiTemporalMain
 engine_add_slang_pass(passes/rtxdi_gi_shade.slang ENTRIES rtxdiGiShadeMain FLAGS ${RTXDI_SLANG_FLAGS})
 engine_add_slang_pass(passes/rtxdi_gi_duplication.slang ENTRIES rtxdiGiDuplicationMain)
 engine_add_slang_pass(passes/combine.slang ENTRIES combineMain)
+engine_add_slang_pass(passes/glass.slang ENTRIES glassMain FLAGS ${RTXDI_SLANG_FLAGS})
 engine_add_slang_pass(passes/exposure.slang ENTRIES exposureHistogramMain exposureAdaptMain)
 engine_add_slang_pass(passes/post.slang ENTRIES postMain)
 

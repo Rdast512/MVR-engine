@@ -16,6 +16,7 @@
 #include "vk_indirect.hpp"
 #include "vk_nrc.hpp"
 #include "debug_view.hpp"
+#include "glass_settings.hpp"
 #include "indirect_mode.hpp"
 #include "vk_meshlet_culling.hpp"
 #include "vk_render_targets.hpp"
@@ -61,6 +62,8 @@ public:
     uint32_t frameNumber = 0;
     // read once per recorded frame; the UI changes it between frames
     DebugViewSettings debugView;
+    // thin-walled glass (m8 I13); read once per recorded frame
+    GlassSettings glass;
     // read once per recorded frame; a change resets ReSTIR GI and DLSS-RR history for one frame. ReSTIR GI by
     // default since 2026-11-20: NRC reads ~10% bright (considerations C-G5-3)
     IndirectMode indirectMode = IndirectMode::RestirGi;
@@ -103,6 +106,8 @@ public:
     [[nodiscard]] RayTracingScene::Stats getRayTracingStats() const noexcept { return rtScene.getStats(); }
     [[nodiscard]] RtxdiContext::LightPrepStats getLightPrepStats() const noexcept { return rtxdi.getLightPrepStats(); }
     [[nodiscard]] CpuStats getCpuStats() const noexcept;
+    // the glass pass's counters of the last completed frame that ran it, zero otherwise (m8 I13 §6)
+    [[nodiscard]] const GpuGlassCounters& getGlassCounters() const noexcept { return lastGlassCounters; }
 
     // ENGINE_MOTION_TEST: passes/motion_check.slang runs after the debug view of every later frame
     void enableMotionCheck();
@@ -163,6 +168,8 @@ private:
     // combine -> noisyColor; DLSS-RR -> exposure -> tonemap into the post target when the Lit view is shown; returns
     // the ray segment open after it
     [[nodiscard]] const vk::raii::CommandBuffer& recordReconstruction(const vk::raii::CommandBuffer& cmd);
+    // thin-walled glass layers over noisyColor, between combine and DLSS-RR (m8 I13)
+    void recordGlass(const vk::raii::CommandBuffer& cmd);
     void recordDebugView(const vk::raii::CommandBuffer& cmd);
     void recordMotionCheck(const vk::raii::CommandBuffer& cmd);
     void recordRayCheck(const vk::raii::CommandBuffer& cmd);
@@ -262,6 +269,13 @@ private:
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> rayCheckStats;
     // per frame slot, GpuRayDebugCounters; empty unless kDebugRays
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> rayDebugCounters;
+    // per frame slot, GpuGlassCounters; reset by the host after the slot's fence
+    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> glassCounters;
+    std::array<bool, MAX_FRAMES_IN_FLIGHT> isGlassRecorded{};
+    GpuGlassCounters lastGlassCounters{};
+    // GlassSettings of the frame being recorded: the ray commands are recorded before the frame root is written
+    uint32_t frameGlassFlags = 0;
+    uint32_t frameGlassMaxLayers = 1;
     // the slot's counters hold a recorded frame's results
     std::array<bool, MAX_FRAMES_IN_FLIGHT> isRayDebugRecorded{};
     uint64_t rayDebugFrames = 0;

@@ -24,9 +24,70 @@
     return {.row0 = {c * uv.scale.x, s * uv.scale.y, uv.offset.x}, .row1 = {-s * uv.scale.x, c * uv.scale.y, uv.offset.y}};
 }
 
+// m8 I13 stage 1: smooth thin-walled glass only; rougher transmission stays opaque until path-traced transmission
+// (C-I13-1), since a sharp straight-through view of frosted glass is more wrong than an opaque one
+inline constexpr float kGlassMaxRoughness = 0.3f;
+
+enum class Transmission : uint8_t
+{
+    None,
+    Glass,
+    KeptOpaqueRough,
+    KeptOpaqueRoughTexture,
+    KeptOpaqueUnlit,
+    KeptOpaqueSpecularGlossiness,
+};
+
+// on authored values: KHR_materials_transmission builds on metal-rough, and unlit reflects nothing
+[[nodiscard]] inline Transmission classifyTransmission(const GpuMaterial& material, const MaterialPbrExtension& ext)
+{
+    if (ext.transmissionFactor <= 0.0f) {
+        return Transmission::None;
+    }
+    if ((material.flags & GpuMaterialFlag::Unlit) != 0) {
+        return Transmission::KeptOpaqueUnlit;
+    }
+    if ((material.flags & GpuMaterialFlag::SpecularGlossiness) != 0) {
+        return Transmission::KeptOpaqueSpecularGlossiness;
+    }
+    if (material.metalRoughTex != kNoneIndex) {
+        return Transmission::KeptOpaqueRoughTexture;
+    }
+    if (material.roughnessFactor > kGlassMaxRoughness) {
+        return Transmission::KeptOpaqueRough;
+    }
+    return Transmission::Glass;
+}
+
+[[nodiscard]] inline bool isGlass(const GpuMaterial& material, const MaterialPbrExtension& ext)
+{
+    return classifyTransmission(material, ext) == Transmission::Glass;
+}
+
+[[nodiscard]] constexpr const char* transmissionOpaqueReason(Transmission transmission)
+{
+    switch (transmission) {
+    case Transmission::KeptOpaqueRough:
+        return "roughness above kGlassMaxRoughness";
+    case Transmission::KeptOpaqueRoughTexture:
+        return "roughness texture";
+    case Transmission::KeptOpaqueUnlit:
+        return "unlit";
+    case Transmission::KeptOpaqueSpecularGlossiness:
+        return "specular-glossiness model";
+    case Transmission::None:
+    case Transmission::Glass:
+        break;
+    }
+    return "";
+}
+
 // the store keeps authored values for dedup and the UI; the GPU row is precomputed
 [[nodiscard]] inline GpuMaterial packMaterial(GpuMaterial material, const MaterialPbrExtension& ext)
 {
+    if (isGlass(material, ext)) {
+        material.flags |= GpuMaterialFlag::Transmissive;
+    }
     material.emissiveFactor *= ext.emissiveStrength;
     const std::array<MaterialUvTransform, kMaterialUvSlotCount> transforms = {
         ext.baseColorUv, ext.metalRoughUv, ext.normalUv, ext.occlusionUv, ext.emissiveUv};

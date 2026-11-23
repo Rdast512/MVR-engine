@@ -159,12 +159,19 @@ void Engine::initialize()
                                                   scene->materialStore, scene->lightStore);
 
     const glm::vec3 initialAssetPos{0.0f, 0.0f, 0.0f};
-    // a check scene (ENGINE_CHECK_SCENE) selects the model of the GI and temporal checks
+    // a check scene (ENGINE_CHECK_SCENE) selects the model of the GI and temporal checks; ENGINE_MODEL any run's
+    // (m8 I13), relative to the repository root like the lab cases
     const char* checkModel = (giCheck || temporalCheck) ? checkSceneModel(readCheckScene()) : nullptr;
+    const char* modelOverride = std::getenv("ENGINE_MODEL");
+    const auto repositoryPath = [](const char* path) {
+        const std::filesystem::path model(path);
+        return (model.is_absolute() ? model : std::filesystem::path(ENGINE_MODELS_DIR).parent_path() / model).string();
+    };
     const std::string startupModel = checkModel != nullptr
         ? (std::filesystem::path(ENGINE_MODELS_DIR) / checkModel).string()
-        : (bench && !bench->getConfig().modelPath.empty()) ? bench->getConfig().modelPath
-                                                           : MODEL_PATH.string();
+        : (modelOverride != nullptr && *modelOverride != '\0') ? repositoryPath(modelOverride)
+        : (bench && !bench->getConfig().modelPath.empty())     ? bench->getConfig().modelPath
+                                                               : MODEL_PATH.string();
     if (!assetsLoader->loadModel(startupModel, initialAssetPos)) {
         logError(std::format("Startup model failed to load: {}", startupModel), "Engine");
     }
@@ -172,6 +179,13 @@ void Engine::initialize()
     camera->focusOn(initialAssetPos);
     if (bench && bench->getConfig().pose == "courtyard") {
         camera->lookAt(kCourtyardPose.position, kCourtyardPose.target);
+    }
+    // m8 I13's glass poses by name, under their sun (below)
+    const auto glassBenchPose = std::ranges::find_if(kBistroGlassCheckPoses, [&](const CheckPose& pose) {
+        return bench && bench->getConfig().pose == pose.name;
+    });
+    if (glassBenchPose != kBistroGlassCheckPoses.end()) {
+        camera->lookAt(glassBenchPose->position, glassBenchPose->target);
     }
     frameSync = std::make_unique<FrameSync>(*device);
     // flushes the startup model
@@ -215,6 +229,10 @@ void Engine::initialize()
     applyEngineConfig();
     // the guide shots show the glTF samples' own lights, as Khronos renders them
     renderer->getWorldLights().sun.isEnabled = !EngineGuideCapture::isRequested();
+    if (glassBenchPose != kBistroGlassCheckPoses.end()) {
+        renderer->getWorldLights().sun.azimuthDegrees = kBistroGlassSunAzimuthDegrees;
+        renderer->getWorldLights().sun.elevationDegrees = kBistroGlassSunElevationDegrees;
+    }
     renderer->rebuildSwapchainResources();
     if (motionTest) {
         renderer->enableMotionCheck();
@@ -515,7 +533,8 @@ bool Engine::run()
         FrameMark;
         if (bench && !minimized &&
             bench->onFrame(renderer->getGpuTimer(), renderer->getCulling().getStats(),
-                           renderer->getRayTracingStats(), renderer->getLightPrepStats(), renderer->getCpuStats())) {
+                           renderer->getRayTracingStats(), renderer->getLightPrepStats(), renderer->getCpuStats(),
+                           renderer->getGlassCounters())) {
             quit = true;
         }
     }
@@ -623,6 +642,12 @@ void Engine::applyGuideCaptureRequest(const EngineGuideCapture::Request& request
     renderer->indirectMode = request.indirectMode;
     renderer->getRtxdi().isReference = request.isRtxdiReference;
     renderer->getWorldLights().areTriangleLightsSampled = request.areTriangleLightsSampled;
+    renderer->glass = request.glass;
+    renderer->getRtxdi().frameIndexOverride = request.frameIndex;
+    camera->jitterPhaseOverride = request.jitterPhase;
+    PostProcess::Settings& post = renderer->getPost().settings;
+    post.isAutoExposure = !request.manualEv.has_value();
+    post.manualEv = request.manualEv.value_or(post.manualEv);
     if (request.shouldCapture) {
         renderer->requestDisplayCapture();
     }

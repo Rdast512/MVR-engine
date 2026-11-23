@@ -220,6 +220,7 @@ private:
                                                     bool isLayoutChanged) const;
     [[nodiscard]] uint32_t meshletsPerSequence(uint32_t totalMeshlets) const;
     [[nodiscard]] uint32_t drawRecordFlagsOf(const PrimitiveDraw& primitive) const;
+    [[nodiscard]] bool isGlassPrimitive(const PrimitiveDraw& primitive) const;
     void createFrameBuffers();
     void destroyFrameBuffers();
 

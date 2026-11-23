@@ -170,6 +170,13 @@ namespace
             LAYOUT_FIELD(GpuCullView, binVisibleCapacity),
             LAYOUT_FIELD(GpuCullView, pad1),
         }},
+        {"GpuGlassCounters", sizeof(GpuGlassCounters), {
+            LAYOUT_FIELD(GpuGlassCounters, pixels),
+            LAYOUT_FIELD(GpuGlassCounters, earlyStops),
+            LAYOUT_FIELD(GpuGlassCounters, capped),
+            LAYOUT_FIELD(GpuGlassCounters, pad0),
+            LAYOUT_FIELD(GpuGlassCounters, layerPixels),
+        }},
         {"GpuCullCounters", sizeof(GpuCullCounters), {
             LAYOUT_FIELD(GpuCullCounters, visibleMeshlets),
             LAYOUT_FIELD(GpuCullCounters, sequenceCount),
@@ -530,6 +537,8 @@ namespace
             LAYOUT_FIELD(GpuTargets, giStagnancyPrevious),
             LAYOUT_FIELD(GpuTargets, giSampleIdsStorage),
             LAYOUT_FIELD(GpuTargets, giDuplicationStorage),
+            LAYOUT_FIELD(GpuTargets, glassDiffuseAlbedoStorage),
+            LAYOUT_FIELD(GpuTargets, glassSpecAlbedoStorage),
         }},
         {"GpuExposureReadback", sizeof(GpuExposureReadback), {
             LAYOUT_FIELD(GpuExposureReadback, exposure),
@@ -587,6 +596,9 @@ namespace
             LAYOUT_FIELD(GpuFrameRoot, rayInstanceLights),
             LAYOUT_FIELD(GpuFrameRoot, firstTriangleLight),
             LAYOUT_FIELD(GpuFrameRoot, triangleLightCount),
+            LAYOUT_FIELD(GpuFrameRoot, glassFlags),
+            LAYOUT_FIELD(GpuFrameRoot, glassMaxLayers),
+            LAYOUT_FIELD(GpuFrameRoot, glassCounters),
         }},
     };
 

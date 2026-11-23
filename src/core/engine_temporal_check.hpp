@@ -18,7 +18,9 @@
 //   ENGINE_LIGHT_CHANGE_CHECK=1: frames until Indirect radiance settles after a sun move and a sun toggle;
 //   ENGINE_SCREEN_EDGE_CHECK=1: frames until the band a pan or a backward dolly reveals converges.
 // ENGINE_CHECK_SCENE=bistro_cafe runs them in Bistro's café, where stability also covers the DI sets, the NRC modes
-// and Direct lighting against RTXDI's reference (bias and dark leak). ENGINE_CHECK_STEPS=a|b keeps the stability
+// and Direct lighting against RTXDI's reference (bias and dark leak); ENGINE_CHECK_SCENE=bistro runs stability and
+// screen edge on Bistro's glass poses per glass state, under a sun through the café windows (m8 I13).
+// ENGINE_CHECK_STEPS=a|b keeps the stability
 // steps whose label contains a or b; ENGINE_CHECK_PNG=1 writes each stability step's first frame, mean and noise map
 class EngineTemporalCheck
 {
@@ -95,6 +97,19 @@ private:
         ShippedSpatialPermutation,
     };
 
+    // glass settings of a step (m8 I13, ENGINE_CHECK_SCENE=bistro); not in the step's seed, so the variants of one step
+    // see the same noise and differ only by the glass
+    enum class GlassState : uint8_t
+    {
+        Shipped,
+        // no glass pass: glass is neither rasterized nor composited
+        PassOff,
+        // the shipped pass with the shadow transmittance (I13 §3), off by default
+        ShadowTransmittance,
+        // DLSS-RR albedo guides blended with the glass layers (I13 §4 variant b)
+        BlendGuides,
+    };
+
     struct Step
     {
         StepType type;
@@ -114,6 +129,7 @@ private:
         uint32_t changeAt;
         DiSet di = DiSet::Shipped;
         IndirectMode mode = IndirectMode::RestirGi;
+        GlassState glass = GlassState::Shipped;
     };
 
     struct PoseView
@@ -184,11 +200,15 @@ private:
 
     [[nodiscard]] static std::vector<Step> buildSteps(Kind kind, CheckScene scene);
     [[nodiscard]] static const char* diSetName(DiSet set);
+    [[nodiscard]] static const char* glassStateName(GlassState state);
+    // shipped: the startup settings
+    [[nodiscard]] static GlassSettings glassSettingsFor(GlassState state, const GlassSettings& shipped);
     // shipped: the startup settings
     [[nodiscard]] static RtxdiContext::Settings diSettingsFor(DiSet set, const RtxdiContext::Settings& shipped);
     // frame index base of the step's RTXDI seeds
     [[nodiscard]] static uint32_t stepSeed(const Step& step);
-    [[nodiscard]] static WorldLights::Sun sunFor(SunState state);
+    // the scene's base sun: the default, or through the café windows in the Bistro glass scene
+    [[nodiscard]] WorldLights::Sun sunFor(SunState state) const;
     // where a motion starts; it ends at the pose, the view the other runners measure
     [[nodiscard]] static PoseView startPose(const PoseView& pose, Motion motion);
     [[nodiscard]] static const char* kindName(Kind kind);
@@ -219,6 +239,7 @@ private:
     bool hasStartupPose = false;
     // the DI settings at the first step: DiSet::Shipped restores them (ENGINE_DI_SAMPLING included)
     std::optional<RtxdiContext::Settings> startupDiSettings;
+    std::optional<GlassSettings> startupGlassSettings;
     // the last DI reference step's mean Direct lighting and its pose
     std::vector<double> directReference;
     uint8_t directReferencePose = UINT8_MAX;

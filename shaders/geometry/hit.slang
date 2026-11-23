@@ -74,13 +74,13 @@ public PrimaryRay primaryRay(GpuCameraData camera, uint2 pixel, float2 targetSiz
 }
 
 // closest hit under the ray contract of raytracing/trace.slang: one Proceed(), no candidates, no facing cull. OMM
-// 2-state comes from the ray flag: PTLAS has no instance flag for it
-public bool traceClosest(RayScene scene, RayDesc ray, out RayHit hit)
+// 2-state comes from the ray flag: PTLAS has no instance flag for it. instanceMask: kRayMask* (m8 I13)
+public bool traceClosest(RayScene scene, RayDesc ray, uint instanceMask, out RayHit hit)
 {
     hit = {};
     requireOmm2StateRayFlag();
     RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OMM_2_STATE> query;
-    query.TraceRayInline(RaytracingAccelerationStructure(scene.tlas), RAY_FLAG_NONE, 0xFF, ray);
+    query.TraceRayInline(RaytracingAccelerationStructure(scene.tlas), RAY_FLAG_NONE, instanceMask, ray);
     countCandidate(scene.rayDebug, query.Proceed());
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
     {
@@ -97,9 +97,15 @@ public bool traceClosest(RayScene scene, RayDesc ray, out RayHit hit)
     return true;
 }
 
+// glass is transparent to every ray but the glass pass's and the shadow transmittance's (m8 I13)
+public bool traceClosest(RayScene scene, RayDesc ray, out RayHit hit)
+{
+    return traceClosest(scene, ray, kRayMaskOpaque, hit);
+}
+
 public bool traceClosest(GpuFrameRoot root, RayDesc ray, out RayHit hit)
 {
-    return traceClosest(loadRayScene(root), ray, hit);
+    return traceClosest(loadRayScene(root), ray, kRayMaskOpaque, hit);
 }
 
 // the vis-buffer decode chain from (node instance, meshlet, triangle); positions and transforms come from the hit

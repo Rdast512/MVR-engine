@@ -16,7 +16,8 @@
 // fixed-scene GPU timing run: averages every timer scope over whole history windows, logs them, then the engine quits.
 // ENGINE_BENCH_FRAMES = measured frames (enables the run), ENGINE_BENCH_FIELD = instance-field side (0 = none),
 // ENGINE_BENCH_FIELD_MOVE = 1 translates field instances across XZ partitions each frame (C-C4-5 / I10),
-// ENGINE_BENCH_MODEL = startup model path override, ENGINE_BENCH_POSE = "courtyard" for sunlit Sponza pose
+// ENGINE_BENCH_MODEL = startup model path override, ENGINE_BENCH_POSE = "courtyard" for sunlit Sponza pose, or a
+// Bistro glass pose name ("street windows", "bar shelf", check_poses.hpp) with its sun
 class EngineBench
 {
 public:
@@ -38,17 +39,18 @@ public:
                         float cellSize) noexcept;
     // advances moving field instances before drawFrame when isFieldMoving is set
     void stepField(ObjectStorage& storage);
-    // once per frame; true once the results are logged. The cull counters logged are the last frame's
+    // once per frame; true once the results are logged. The cull and glass counters logged are the last frame's
     [[nodiscard]] bool onFrame(const GpuTimer& timer, const MeshletCullStats& cullStats,
                                const RayTracingScene::Stats& rtStats, const RtxdiContext::LightPrepStats& lightPrep,
-                               const Renderer::CpuStats& cpuStats);
+                               const Renderer::CpuStats& cpuStats, const GpuGlassCounters& glassCounters);
 
 private:
     // shader object warm-up and GPU clock ramp
     static constexpr uint32_t kWarmupFrames = 2 * GpuTimer::kHistorySize;
 
     void logResults(const GpuTimer& timer, const MeshletCullStats& cullStats, const RayTracingScene::Stats& rtStats,
-                    const RtxdiContext::LightPrepStats& lightPrep, const Renderer::CpuStats& cpuStats) const;
+                    const RtxdiContext::LightPrepStats& lightPrep, const Renderer::CpuStats& cpuStats,
+                    const GpuGlassCounters& glassCounters) const;
 
     Config config;
     EntityId fieldFirstEntity = 0;

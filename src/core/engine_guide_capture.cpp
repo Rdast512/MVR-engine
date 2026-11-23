@@ -82,6 +82,14 @@ namespace
         constexpr float kUnitTolerance = 0.1f;
         return std::abs(glm::length(normal) - 1.0f) <= kUnitTolerance ? glm::normalize(normal) : glm::vec3(0.0f);
     }
+
+    glm::vec4 decodeTexel(std::span<const uint16_t> rgba16f, size_t texel)
+    {
+        return {glm::unpackHalf1x16(rgba16f[texel * 4]), glm::unpackHalf1x16(rgba16f[texel * 4 + 1]),
+                glm::unpackHalf1x16(rgba16f[texel * 4 + 2]), glm::unpackHalf1x16(rgba16f[texel * 4 + 3])};
+    }
+
+    float sumRgb(glm::vec3 color) { return color.r + color.g + color.b; }
 } // namespace
 
 bool EngineGuideCapture::isRequested()
@@ -163,16 +171,31 @@ EngineGuideCapture::Request EngineGuideCapture::beginFrame(Camera& camera, Debug
         }
         return request;
     }
-    if (shotFrame == 1 && shot.pose) {
-        camera.lookAt(shot.pose->position, shot.pose->target);
-    } else if (shotFrame == 1 && modelBounds) {
-        // the bounding sphere fills the vertical field of view
-        const glm::vec3 center(*modelBounds);
-        const float halfFov = glm::radians(camera.getFovDegrees()) * 0.5f;
-        const float distance = kFramingMargin * modelBounds->w / std::sin(halfFov);
-        camera.lookAt(center + distance * glm::normalize(shot.viewDirection), center);
+    if (shotFrame == 1) {
+        frameShot(camera, shot, modelBounds);
     }
     request.sun = shot.sun;
+    if (throughput) {
+        if (throughput->frame == 0) {
+            frameShot(camera, shot, modelBounds);
+        }
+        if (throughput->phase == ThroughputPhase::PassOff) {
+            request.glass.isPassEnabled = false;
+        }
+        request.glass.isReflectionEnabled = false;
+        request.glass.isDiffuseShareEnabled = false;
+        request.glass.isEmissionEnabled = false;
+        request.glass.isShadowTransmittanceEnabled = false;
+        request.frameIndex = kThroughputFrameIndexBase + throughput->frame;
+        request.jitterPhase = throughput->frame;
+        request.manualEv = kThroughputManualEv;
+        // NRC trains asynchronously to the frame; ReSTIR GI alone repeats
+        request.indirectMode = IndirectMode::RestirGi;
+        debugView.view = throughput->phase == ThroughputPhase::Throughput ? DebugView::Glass : DebugView::DlssInput;
+        debugView.showGlassReflection = false;
+        request.shouldCapture = throughput->frame + 1 == kThroughputFrames && modelBounds.has_value();
+        return request;
+    }
     request.isRtxdiReference = isConvergenceRunning && convergence->isReferencePhase;
     request.areTriangleLightsSampled = !isConvergenceRunning || findConvergenceShot(shotIndex)->areTriangleLightsSampled;
     debugView.view = isConvergenceRunning ? DebugView::DirectLighting : kViews[viewIndex].view;
@@ -193,6 +216,9 @@ bool EngineGuideCapture::endFrame(const std::optional<Renderer::DisplayCapture>&
     }
     if (isConvergenceRunning) {
         return advanceConvergence(capture) && finishShot();
+    }
+    if (throughput) {
+        return advanceThroughput(capture) && finishShot();
     }
     if (!capture) {
         logError(std::format("{}: no model to frame, shot skipped", kShots[shotIndex].name), "GuideCapture");
@@ -226,7 +252,143 @@ bool EngineGuideCapture::endFrame(const std::optional<Renderer::DisplayCapture>&
         isConvergenceRunning = true;
         return false;
     }
+    if (isThroughputShot(shotIndex)) {
+        throughput.emplace();
+        return false;
+    }
     return finishShot();
+}
+
+void EngineGuideCapture::frameShot(Camera& camera, const Shot& shot, std::optional<glm::vec4> modelBounds)
+{
+    if (shot.pose) {
+        camera.lookAt(shot.pose->position, shot.pose->target);
+    } else if (modelBounds) {
+        // the bounding sphere fills the vertical field of view
+        const glm::vec3 center(*modelBounds);
+        const float halfFov = glm::radians(camera.getFovDegrees()) * 0.5f;
+        const float distance = kFramingMargin * modelBounds->w / std::sin(halfFov);
+        camera.lookAt(center + distance * glm::normalize(shot.viewDirection), center);
+    }
+}
+
+bool EngineGuideCapture::advanceThroughput(const std::optional<Renderer::DisplayCapture>& capture)
+{
+    ThroughputRun& run = *throughput;
+    if (++run.frame < kThroughputFrames) {
+        return false;
+    }
+    const bool isFirstPhase = run.phase == ThroughputPhase::PassOff;
+    if (!capture || (!isFirstPhase && capture->extent != run.extent)) {
+        logError(std::format("FAIL glass throughput ({}): capture missing or resized", kShots[shotIndex].name),
+                 "GuideCapture");
+        ++throughputCheckCount;
+        throughput.reset();
+        return true;
+    }
+    switch (run.phase) {
+    case ThroughputPhase::PassOff:
+        run.extent = capture->extent;
+        run.passOff.assign(capture->rgba16f.begin(), capture->rgba16f.end());
+        run.phase = ThroughputPhase::Transmission;
+        break;
+    case ThroughputPhase::Transmission:
+        run.transmission.assign(capture->rgba16f.begin(), capture->rgba16f.end());
+        run.phase = ThroughputPhase::Throughput;
+        break;
+    case ThroughputPhase::Throughput: {
+        const bool isPassed = evaluateThroughput(*capture);
+        ++throughputCheckCount;
+        throughputPassedCount += isPassed ? 1u : 0u;
+        throughput.reset();
+        return true;
+    }
+    }
+    run.frame = 0;
+    return false;
+}
+
+bool EngineGuideCapture::evaluateThroughput(const Renderer::DisplayCapture& glass) const
+{
+    const ThroughputRun& run = *throughput;
+    const size_t texelCount = static_cast<size_t>(run.extent.width) * run.extent.height;
+    // pixels without glass must come through bit for bit
+    uint64_t touchedPixels = 0;
+    uint64_t nonFinitePixels = 0;
+    std::array<uint64_t, 3> layerPixels{0, 0, 0};
+    struct Compared
+    {
+        float expected;
+        float error;
+    };
+    std::vector<Compared> compared;
+    for (size_t texel = 0; texel < texelCount; ++texel) {
+        const glm::vec4 throughputTexel = decodeTexel(glass.rgba16f, texel);
+        const glm::vec3 throughputRgb(throughputTexel);
+        const glm::vec3 passOff(decodeTexel(run.passOff, texel));
+        const glm::vec3 transmission(decodeTexel(run.transmission, texel));
+        if (!std::isfinite(sumRgb(passOff)) || !std::isfinite(sumRgb(transmission)) ||
+            !std::isfinite(sumRgb(throughputRgb))) {
+            ++nonFinitePixels;
+            continue;
+        }
+        const auto layers = static_cast<uint32_t>(std::lround(throughputTexel.a));
+        if (layers == 0) {
+            const auto first = static_cast<std::ptrdiff_t>(texel * 4);
+            const bool isTouched = !std::equal(run.passOff.begin() + first, run.passOff.begin() + first + 3,
+                                               run.transmission.begin() + first);
+            touchedPixels += isTouched ? 1u : 0u;
+            continue;
+        }
+        ++layerPixels[std::min<uint32_t>(layers, 3) - 1];
+        if (layers > 2) {
+            continue;
+        }
+        const glm::vec3 expected = throughputRgb * passOff;
+        const glm::vec3 error = glm::abs(transmission - expected);
+        compared.push_back({sumRgb(expected), sumRgb(error)});
+    }
+    double expectedSum = 0.0;
+    for (const Compared& pixel : compared) {
+        expectedSum += pixel.expected;
+    }
+    const double darkLimit =
+        compared.empty() ? 0.0 : kThroughputDarkShare * expectedSum / static_cast<double>(compared.size());
+    std::vector<float> errors;
+    errors.reserve(compared.size());
+    for (const Compared& pixel : compared) {
+        if (pixel.expected > darkLimit) {
+            errors.push_back(pixel.error / pixel.expected);
+        }
+    }
+    const std::string name = kShots[shotIndex].name;
+    if (errors.size() < kMinThroughputPixels) {
+        logError(std::format("FAIL glass throughput ({}): {} px behind one or two lit layers, {} needed", name,
+                             errors.size(), kMinThroughputPixels),
+                 "GuideCapture");
+        return false;
+    }
+    std::ranges::sort(errors);
+    const auto quantile = [&errors](double share) {
+        return errors[static_cast<size_t>(share * static_cast<double>(errors.size() - 1))];
+    };
+    const double median = quantile(0.5);
+    const double p90 = quantile(0.9);
+    const bool isPassed = touchedPixels == 0 && nonFinitePixels == 0 && median <= kMaxThroughputMedianError &&
+        p90 <= kMaxThroughputP90Error;
+    const std::string detail = std::format(
+        "{}: pass on / off against the pass's throughput over {} px ({} below {:.1f}% of the mean skipped): median "
+        "{:.3f}% / p90 {:.3f}% / max {:.3f}%; layers 1 / 2 / 3+: {} / {} / {} px; {} px without glass changed, "
+        "nonFinite {}",
+        name, errors.size(), compared.size() - errors.size(), kThroughputDarkShare * 100.0, median * 100.0,
+        p90 * 100.0, errors.back() * 100.0, layerPixels[0], layerPixels[1], layerPixels[2], touchedPixels,
+        nonFinitePixels);
+    if (isPassed) {
+        logInfo(std::format("PASS glass throughput ({})", detail), "GuideCapture");
+    } else {
+        logError(std::format("FAIL glass throughput ({})", detail), "GuideCapture");
+    }
+    return isPassed;
 }
 
 bool EngineGuideCapture::finishShot()
@@ -251,6 +413,13 @@ bool EngineGuideCapture::finishShot()
         logInfo(convergenceSummary, "GuideCapture");
     } else {
         logError(convergenceSummary, "GuideCapture");
+    }
+    const std::string throughputSummary =
+        std::format("Glass throughput checks: {} of {} passed", throughputPassedCount, kThroughputShots.size());
+    if (throughputCheckCount == kThroughputShots.size() && throughputPassedCount == kThroughputShots.size()) {
+        logInfo(throughputSummary, "GuideCapture");
+    } else {
+        logError(throughputSummary, "GuideCapture");
     }
     isFinished = true;
     return true;

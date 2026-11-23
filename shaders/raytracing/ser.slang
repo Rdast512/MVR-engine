@@ -43,9 +43,9 @@ public bool traceShaded(uint64_t tlas, RayDesc ray, out RayHit hit, bool isActiv
     HitObject hitObject = HitObject::MakeNop();
     if (isActive)
     {
-        // same flags as traceClosest: no facing cull, OMM 2-state from the ray (PTLAS has no instance flag for it)
+        // same flags and mask as traceClosest: no facing cull, OMM 2-state from the ray (PTLAS has no instance flag for it)
         hitObject = HitObject::TraceRay(RaytracingAccelerationStructure(tlas),
-                                        RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OMM_2_STATE, 0xFF, 0, 0, 0,
+                                        RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_FORCE_OMM_2_STATE, kRayMaskOpaque, 0, 0, 0,
                                         ray, payload);
     }
     const bool isHit = hitObject.IsHit();

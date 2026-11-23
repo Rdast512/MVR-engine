@@ -1,5 +1,6 @@
 #pragma once
 
+#include "render/glass_settings.hpp"
 #include "render/indirect_mode.hpp"
 #include "render/vk_dlss.hpp"
 #include "render/vk_nrc.hpp"
@@ -26,6 +27,7 @@ struct LabConfig
     Dlss::Settings dlss{};
     NrcCache::Settings nrc{};
     bool isJitterEnabled = true;
+    GlassSettings glass{};
 };
 
 enum class LabSwitchType : uint8_t

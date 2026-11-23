@@ -120,6 +120,8 @@ public:
         vk::raii::ShaderEXT giDuplication = nullptr;
         // passes/combine.slang: noisyColor, the DLSS-RR color input
         vk::raii::ShaderEXT combine = nullptr;
+        // passes/glass.slang: thin-walled glass layers over noisyColor (m8 I13)
+        vk::raii::ShaderEXT glass = nullptr;
         // passes/exposure.slang: luminance histogram of the DLSS-RR output, then the adapted exposure
         vk::raii::ShaderEXT exposureHistogram = nullptr;
         vk::raii::ShaderEXT exposureAdapt = nullptr;

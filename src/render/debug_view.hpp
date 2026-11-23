@@ -57,6 +57,8 @@ enum class DebugView : uint32_t
     IndirectRadiance,
     // classify's resolve bin per pixel (spec/m7/e1_material_binning.md): Background black, Standard grey, Unlit orange
     MaterialBin,
+    // the glass pass's throughput through the glass in front of each pixel, or its reflection term (m8 I13)
+    Glass,
     Count,
 };
 
@@ -74,6 +76,8 @@ static_assert(std::to_underlying(DebugView::NrcCache) == 28);
 static_assert(std::to_underlying(DebugView::IndirectRadiance) == 29);
 // shaders/types.slang kDebugViewMaterialBin
 static_assert(std::to_underlying(DebugView::MaterialBin) == 30);
+// shaders/types.slang kDebugViewGlass
+static_assert(std::to_underlying(DebugView::Glass) == 31);
 
 enum class DebugViewCategory : uint8_t
 {
@@ -147,6 +151,7 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"NRC cache", DebugViewCategory::Lighting, true},
     {"Indirect radiance", DebugViewCategory::Lighting, true},
     {"Material bin", DebugViewCategory::Geometry, true},
+    {"Glass", DebugViewCategory::RayTracing, true},
 }};
 
 [[nodiscard]] constexpr const DebugViewInfo& debugViewInfo(DebugView view)
@@ -158,16 +163,21 @@ struct DebugViewSettings
 {
     // shaders/types.slang kDebugViewFlagEdges
     static constexpr uint32_t kFlagEdges = 1u << 8;
+    // shaders/types.slang kDebugViewFlagGlassReflection
+    static constexpr uint32_t kFlagGlassReflection = 1u << 9;
 
     DebugView view = DebugView::Lit;
     // analytic-barycentric triangle edges over every view
     bool showEdges = false;
     // DebugView::HiZPyramid; clamped to the last mip
     uint32_t hizMip = 0;
+    // DebugView::Glass: the reflection term instead of the throughput
+    bool showGlassReflection = false;
 
     // GpuFrameRoot::debugView: mode in the low byte, flags above
     [[nodiscard]] uint32_t packed() const
     {
-        return std::to_underlying(view) | (showEdges ? kFlagEdges : 0u);
+        return std::to_underlying(view) | (showEdges ? kFlagEdges : 0u) |
+            (showGlassReflection ? kFlagGlassReflection : 0u);
     }
 };

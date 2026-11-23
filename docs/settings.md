@@ -26,7 +26,7 @@ Deviations from NVIDIA's sample defaults:
 - **Resolution.** The RTXDI sample renders at native resolution, which is DLSS-RR's DLAA mode in the engine. Set the mode to DLAA before comparing images or costs with that sample.
 
 Buttons:
-- **Ray tracing panel → Defaults:** resets PTLAS, RTXDI and DLSS-RR.
+- **Ray tracing panel → Defaults:** resets PTLAS, RTXDI, DLSS-RR, NRC, the indirect mode and the glass settings.
 - **RTXDI section → NVIDIA defaults / Converged:** switch between the two RTXDI sets (§3.2).
 - **Sun and Post panels:** each has its own Defaults button.
 
@@ -152,13 +152,14 @@ CLAS and cluster BLAS are built once at load, with fast trace. They have no runt
 | Check | Command (from `build/windows-clang-release`) | Pass |
 |---|---|---|
 | Cost | `ENGINE_BENCH_FRAMES=6000 VK_LOADER_LAYERS_DISABLE='*validation*' VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false ./engine.exe` → `[Bench]` lines in `logs/engine.log` | compare spans; noise is ±5%, so alternate variants over 2 rounds |
-| Bench scene selectors | with `ENGINE_BENCH_FRAMES`: `ENGINE_BENCH_FIELD=n` (n×n instance field), `ENGINE_BENCH_FIELD_MOVE=1` (field rows move across the PTLAS partitions every frame), `ENGINE_BENCH_MODEL=path` (startup model), `ENGINE_BENCH_POSE=courtyard` (the GI check's sunlit pose). Any run: `ENGINE_DI_SAMPLING=regir\|power_ris\|uniform` (ReSTIR DI local light sampling), `ENGINE_PTLAS_REASSIGN=0` (keep layout-time partitions), `ENGINE_PTLAS_FULL_BUILD=1` (write every instance every frame) | `[Bench]` also logs async light prep, the CPU frame split and the last frame's async overlap |
+| Bench scene selectors | with `ENGINE_BENCH_FRAMES`: `ENGINE_BENCH_FIELD=n` (n×n instance field), `ENGINE_BENCH_FIELD_MOVE=1` (field rows move across the PTLAS partitions every frame), `ENGINE_BENCH_MODEL=path` (startup model), `ENGINE_BENCH_POSE=courtyard` (the GI check's sunlit pose) or `ENGINE_BENCH_POSE='street windows'` / `'bar shelf'` (Bistro's glass poses under their sun, with `ENGINE_MODEL=models/bistro/bistro.gltf`). Any run: `ENGINE_MODEL=path` (startup model, relative to the repository root). Any run: `ENGINE_DI_SAMPLING=regir\|power_ris\|uniform` (ReSTIR DI local light sampling), `ENGINE_PTLAS_REASSIGN=0` (keep layout-time partitions), `ENGINE_PTLAS_FULL_BUILD=1` (write every instance every frame) | `[Bench]` also logs async light prep, the CPU frame split and the last frame's async overlap |
 | ReSTIR port correctness | `ENGINE_GUIDE_CAPTURE=1 ./engine.exe` → `Convergence check: passed` | runs the Converged set, not the current settings |
 | Alpha in raster and rays | `ENGINE_GUIDE_CAPTURE=1 ENGINE_RT_CHECK=1 ./engine.exe` → `AlphaBlendModeTest_sun`, `Sponza_plants` and `Sponza_terminator` PNGs in `logs/guides`, `[RayCheck]` lines | `Ray check: N of N frames matched`; `alpha edges` (raster vs OMM next to a cut) are logged, not failures ([d4_ray_contract.md](../spec/m6/d4_ray_contract.md)) |
 | Ray contract | any runner from `build/windows-clang-debug` → `[RayContract]` lines | `Ray contract: 0 ray-query candidates over N frames`; Release does not count |
 | ReSTIR GI against the ground truth | `ENGINE_GI_CHECK=1 VK_LOADER_LAYERS_DISABLE='*validation*' VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false ./engine.exe` (~3.5 min; `ENGINE_GI_CHECK_SEED=n` for another realization) → `[GiCheck]` lines | `ReSTIR GI convergence: 8 of 8 passed` (G5's phases and ReSTIR GI mode against a one-bounce ground truth); the `MEASURED` lines give the bias of NRC, NRC mode and the NVIDIA GI defaults ([g5_restir_gi.md](../spec/m4/g5_restir_gi.md) §3, [g7_indirect_modes.md](../spec/m4/g7_indirect_modes.md) §3) |
 | Stability, light change, screen edges | `ENGINE_STABILITY_CHECK=1`, `ENGINE_LIGHT_CHANGE_CHECK=1` or `ENGINE_SCREEN_EDGE_CHECK=1` with the layer variables of the GI check (~2–3 min each) → `[TemporalCheck]` `MEASURED` lines | `0 failed`; compare the lines with the baseline in [i1_check_runners.md](../spec/fixesM1-6/i1_check_runners.md) §5. Runs repeat byte for byte |
 | Bistro café interior | `ENGINE_CHECK_SCENE=bistro_cafe` with `ENGINE_GI_CHECK=1` or `ENGINE_STABILITY_CHECK=1` (light change and screen edge too) and the layer variables (GI ~6 min, stability ~10 min) → the same `MEASURED` lines on two café poses | measured, not gated. Stability adds `Direct lighting` per DI set against RTXDI's reference (bias, dark leak, dim tiles), the DI sets and the NRC modes through DLSS-RR; compare with F22 / F23 in [m8_optimization_and_fixes.md](../spec/fixesM1-6/m8_optimization_and_fixes.md). `ENGINE_CHECK_STEPS='a\|b'` keeps the stability steps whose label contains `a` or `b`; `ENGINE_CHECK_PNG=1` writes frame, mean, noise and error maps to `logs/checks`. Café runs repeat to ~0.2% (Bistro's async loads), not byte for byte |
+| Glass (M8 I13) | `ENGINE_GUIDE_CAPTURE=1` → `Glass throughput checks: 2 of 2 passed`; `ENGINE_CHECK_SCENE=bistro` with `ENGINE_STABILITY_CHECK=1` or `ENGINE_SCREEN_EDGE_CHECK=1` (~3 min each) → `MEASURED` lines per glass state (shipped, pass off, shadow transmittance, blended guides) on the street-windows and bar-shelf poses | throughput: median ≤ 1%, p90 ≤ 3%, no pixel without glass changed; the Bistro lines are measured, compare with [i13_glass_transmission.md](../spec/fixesM1-6/i13_glass_transmission.md) §8 |
 | Indirect modes under switching | `ENGINE_INDIRECT_MODE=cycle ENGINE_BENCH_FRAMES=3000` at a 2560×1369 window | no device loss; a mode id instead of `cycle` pins one mode for per-mode timings |
 | Bias of a setting | `Direct lighting` view with the setting, then with Reference on (`ENGINE_RTXDI_REFERENCE=1` or the checkbox) | same brightness after a few seconds |
 | Validation | `VK_LOADER_LAYERS_ENABLE='*validation' VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true VK_KHRONOS_VALIDATION_VALIDATE_BEST_PRACTICES=true VK_KHRONOS_VALIDATION_VALIDATE_BEST_PRACTICES_NVIDIA=true VK_KHRONOS_VALIDATION_GPUAV_ENABLE=false VK_KHRONOS_VALIDATION_LOG_FILENAME=<file>` | only NGX's known messages (considerations C-H1-2) |
@@ -208,6 +209,22 @@ The NRC controls under `Indirect mode` act only in the NRC modes; ReSTIR GI mode
 
 - **Cost** (NRC + ReSTIR GI mode, 1280×720 window (853×480 render, DLSS-RR Quality), post-I8 2026-11-22, [i8_nrc_cost.md](../spec/fixesM1-6/i8_nrc_cost.md)): `C-G3-6` host wait disabled by default (`recordIsolated` alone survived 18,000 uncapped stress frames across 1280×720 and 2560×1369; `ENGINE_NRC_HOST_WAIT=1` fallback kept), cutting wall `drawFrame` by **−0.560 ms (−13.6%)**; idle training cuts steady-state GPU total by **−0.288 ms (−8.3%)** Sponza gallery (`drawFrame` `4.468 → 3.396 ms`, −24.0%), **−0.375 ms (−9.6%)** courtyard (`4.827 → 3.649 ms`, −24.4%), and **−0.412 ms (−14.0%)** Bistro street (`4.042 → 2.762 ms`, −31.7%, only `+0.274 ms` above 1-bounce `ReSTIR GI` mode).
 - **Bias** (after M8 I7–I8, 2026-11-22, [i7_nrc_bias.md](../spec/fixesM1-6/i7_nrc_bias.md), [i8_nrc_cost.md](../spec/fixesM1-6/i8_nrc_cost.md)): C-G5-3 resolved via the sentinel zero-continuation workaround for NRC 0.16's `hasExitedScene` direct-light leak (C-G3-7). Both NRC phases stay gated in `ENGINE_GI_CHECK=1` (`14 of 14` pass on seeds 0–2 with `idleTrainingFrames = 512`: gallery `NRC+GI −3.88…−2.64%` / `NRC mode −4.96…−3.83%`, courtyard `+0.59…+0.61%` / `−0.69…−0.36%`).
+
+### 7.2 Glass
+
+Thin-walled smooth glass (`KHR_materials_transmission`, roughness ≤ 0.3) is traced and composited after `combine`, before DLSS-RR ([i13_glass_transmission.md](../spec/fixesM1-6/i13_glass_transmission.md), engine spec §12.4). The `Glass` section of the Ray tracing panel shows the glass instance count, the pixels behind glass, early stops and pixels at the layer cap. The `Glass` debug view shows `ΠT` (white without glass), or the reflection term with its checkbox. Lab switches: `glass.pass`, `glass.maxLayers`, `glass.reflection`, `glass.diffuseShare`, `glass.emission`, `glass.shadowTransmittance`, `glass.blendGuides`.
+
+| Setting | Default | Effect |
+|---|---|---|
+| Glass pass | on | off: glass is neither rasterized nor composited, so it is invisible (a debug switch) |
+| Max glass layers | 4 (RTXDI FullSample: 8) | crossings a camera or shadow ray composites. At 4, 1% of Bistro's street glass pixels and 23% of the bar shelf's reach the cap; 8 costs `+0.29 / +0.31 ms` for them |
+| Glass reflection | on | mirror ray shaded as X₂ (emission + one light sample); `~60%` of the pass's cost |
+| Glass diffuse share | on | the dielectric's non-transmitted share lit by one light sample, Lambert only |
+| Glass emission | on | the glass material's emission |
+| Shadow transmittance | off (as RTXDI's FullSample, whose shadows ignore glass) | final DI, X₂ direct light and final ReSTIR GI shading multiply the glass transmittance along their segment; `+0.68 ms` GPU total on the street pose, `−0.9%` Direct lighting |
+| Blend DLSS guides with glass | off | on: DLSS-RR's albedo guides blend the glass layers with the surface behind (I13 §4 variant b); measured a tie with off (§8 of the step) |
+
+- **Cost** (1280×720 window, DLSS-RR Quality, RTX 5070, 2026-11-23): glass pass `0.98–1.10 ms` on Bistro's street windows (99K px behind glass), `0.79–0.83 ms` on the bar shelf (24K px); walking the layers alone is `0.15–0.22 ms`, reflection `0.41–0.59 ms`, diffuse share `0.22 ms`. A scene without glass (Sponza) skips the pass: `0.0006 ms`, the empty scope.
 
 ## 8. Components not built yet
 

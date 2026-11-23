@@ -71,6 +71,18 @@ namespace
         config.gi.*Field = fromDouble<T>(value);
     }
 
+    template <auto Field>
+    double getGlass(const LabConfig& config)
+    {
+        return toDouble(config.glass.*Field);
+    }
+    template <auto Field>
+    void setGlass(LabConfig& config, double value)
+    {
+        using T = std::remove_cvref_t<decltype(config.glass.*Field)>;
+        config.glass.*Field = fromDouble<T>(value);
+    }
+
     constexpr std::array<const char* const, 3> kDiSamplingNames{"uniform", "power_ris", "regir"};
     // RTXDI_BIAS_CORRECTION_* values: off 0, basic 1, pairwise 2, raytraced 3; empty slots are never valid input
     constexpr std::array<const char* const, 4> kDiTemporalCorrectionNames{"off", "basic", "", "raytraced"};
@@ -242,6 +254,22 @@ namespace
              [](const LabConfig& config) { return toDouble(config.nrc.resolveMode); },
              [](LabConfig& config, double value) { config.nrc.resolveMode = fromDouble<NrcResolveMode>(value); },
              "NrcGuide.md §Debugging"},
+
+            // thin-walled glass (m8 I13)
+            {"glass.pass", LabSwitchType::Bool, {}, getGlass<&GlassSettings::isPassEnabled>,
+             setGlass<&GlassSettings::isPassEnabled>, "RTXDI FullSample GlassPass"},
+            {"glass.maxLayers", LabSwitchType::Uint, {}, getGlass<&GlassSettings::maxLayers>,
+             setGlass<&GlassSettings::maxLayers>, "RTXDI FullSample GlassPass (8)"},
+            {"glass.reflection", LabSwitchType::Bool, {}, getGlass<&GlassSettings::isReflectionEnabled>,
+             setGlass<&GlassSettings::isReflectionEnabled>, "RTXDI FullSample GlassPass"},
+            {"glass.diffuseShare", LabSwitchType::Bool, {}, getGlass<&GlassSettings::isDiffuseShareEnabled>,
+             setGlass<&GlassSettings::isDiffuseShareEnabled>, kEngineOnly},
+            {"glass.emission", LabSwitchType::Bool, {}, getGlass<&GlassSettings::isEmissionEnabled>,
+             setGlass<&GlassSettings::isEmissionEnabled>, "RTXDI FullSample GlassPass"},
+            {"glass.shadowTransmittance", LabSwitchType::Bool, {}, getGlass<&GlassSettings::isShadowTransmittanceEnabled>,
+             setGlass<&GlassSettings::isShadowTransmittanceEnabled>, kEngineOnly},
+            {"glass.blendGuides", LabSwitchType::Bool, {}, getGlass<&GlassSettings::isGuideBlendEnabled>,
+             setGlass<&GlassSettings::isGuideBlendEnabled>, kEngineOnly},
 
             // planned: their engine features are not built (spec §7)
             {"frame.historyConfidence", LabSwitchType::Bool, {}, planned, plannedSet, "RTXDI Confidence.md", "T8"},
@@ -522,6 +550,7 @@ void applyLabConfig(const LabConfig& config, Renderer& renderer, Camera& camera)
     renderer.getDlss().settings = config.dlss;
     renderer.getNrc().settings = config.nrc;
     camera.isJitterEnabled = config.isJitterEnabled;
+    renderer.glass = config.glass;
 }
 
 LabConfig captureLabConfig(Renderer& renderer, const Camera& camera)
@@ -535,6 +564,7 @@ LabConfig captureLabConfig(Renderer& renderer, const Camera& camera)
     config.dlss = renderer.getDlss().settings;
     config.nrc = renderer.getNrc().settings;
     config.isJitterEnabled = camera.isJitterEnabled;
+    config.glass = renderer.glass;
     return config;
 }
 

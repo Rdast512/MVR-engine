@@ -1,6 +1,7 @@
 import types;
 import core.binding;
 import core.frame;
+import lighting.glass;
 
 static const uint kRtxdiTile = 8; // matches src/render/vk_renderer.cpp
 
@@ -88,6 +89,11 @@ void rtxdiShadeMain(uint3 id : SV_DispatchThreadID)
                                                    constants.temporalResampling.enableVisibilityShortcut != 0);
             }
             radiance = shade * visibility * RTXDI_GetDIReservoirInvPdf(reservoir);
+            // m8 I13 §3: light through glass; the reservoir's visibility and the resampling stay glass-free
+            if (any(radiance > 0.0))
+            {
+                radiance *= shadowTransmittance(root, rasterRayOrigin(surface, sample.l), sample.l, sample.distance);
+            }
         }
     }
     RTXDI_StoreDIReservoir(reservoir, constants.reservoirBuffer, reservoirPosition,

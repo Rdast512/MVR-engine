@@ -48,6 +48,8 @@ enum class GpuTimerScope : uint32_t
     // ReSTIR GI spatial resampling and final shading into indirectRadiance
     GiShade,
     Combine,
+    // thin-walled glass layers over noisyColor (m8 I13); zero without glass instances
+    Glass,
     // zero while a debug view is shown: the DLSS-RR evaluation is skipped
     Dlss,
     // exposure histogram, adaptation and tonemap; zero with DLSS-RR
@@ -113,6 +115,8 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "ReSTIR GI shade";
     case GpuTimerScope::Combine:
         return "Combine";
+    case GpuTimerScope::Glass:
+        return "Glass";
     case GpuTimerScope::Dlss:
         return "DLSS-RR";
     case GpuTimerScope::Post:

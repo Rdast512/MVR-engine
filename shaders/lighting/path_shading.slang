@@ -1,10 +1,11 @@
 #ifndef ENGINE_LIGHTING_PATH_SHADING_SLANG
 #define ENGINE_LIGHTING_PATH_SHADING_SLANG
 
-// path vertices of the shaded-ray passes (indirect query, NRC update): a ray hit as an RAB_Surface, and one RIS-sampled
-// light at a vertex through the same RTXDI sampling and bridge as ReSTIR DI's initial pass. Textual, after
-// lighting/rtxdi_bridge.slang
+// path vertices of the shaded-ray passes (indirect query, NRC update, glass): a ray hit as an RAB_Surface, and one
+// RIS-sampled light at a vertex through the same RTXDI sampling and bridge as ReSTIR DI's initial pass. Textual, after
+// lighting/rtxdi_bridge.slang; the including pass imports lighting.glass and material.brdf
 #include "Rtxdi/DI/InitialSampling.hlsli"
+#include "Rtxdi/DI/SpatialResampling.hlsli"
 
 // where a vertex's rays start: the traced triangle or the raster pixel
 interface IRayOrigin
@@ -70,6 +71,98 @@ float3 directLightAt<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, Gp
     RAB_LightSample lightSample;
     const RTXDI_DIReservoir reservoir = sampleLightsAt(surface, constants, rng, coherentRng, lightSample);
     return shadeLightReservoir(surface, origin, reservoir, lightSample);
+}
+
+// RTXDI sample Ultra preset secondarySurfaceReSTIRDIParams: 2 samples, 4 px (1 px truncates all 8192 offsets to
+// (0, 0)), ray-traced. Unbiased only on unbiased DI reservoirs: NVIDIA's Medium DI darkens them (m8 O2, §2.7)
+RTXDI_DISpatialResamplingParameters secondaryResamplingParams(GpuRtxdiConstants constants)
+{
+    RTXDI_DISpatialResamplingParameters params = constants.spatialResampling;
+    params.numSamples = 2;
+    params.numDisocclusionBoostSamples = 0;
+    params.samplingRadius = 4.0;
+    params.biasCorrectionMode = RTXDI_BIAS_CORRECTION_RAY_TRACED;
+    params.depthThreshold = 0.1;
+    params.normalThreshold = 0.9;
+    params.enableMaterialSimilarityTest = 0;
+    params.discountNaiveSamples = 0;
+    params.targetHistoryLength = 0;
+    return params;
+}
+
+// X2's direct light (the indirect pass, the glass pass's reflections); with kGiFlagSecondaryResampling the sampled
+// light is resampled against this frame's final ReSTIR DI reservoirs around X2's pixel when X2 is on screen, as the
+// RTXDI sample's ShadeSecondarySurfaces. Light through glass is attenuated here, not in the resampling (m8 I13 §3)
+float3 secondaryDirectLight(GpuFrameRoot root, RAB_Surface surface, HitOrigin origin, GpuRtxdiConstants constants,
+                            inout RTXDI_RandomSamplerState rng, inout RTXDI_RandomSamplerState coherentRng)
+{
+    if (gRtxdiBridge.lightCount == 0 || !surface.isLit)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    RAB_LightSample lightSample;
+    RTXDI_DIReservoir reservoir = sampleLightsAt(surface, constants, rng, coherentRng, lightSample);
+    if ((constants.giFlags & kGiFlagSecondaryResampling) != 0)
+    {
+        const GpuCameraData camera = loadCamera(root);
+        const float4 clip = mul(camera.viewProj, float4(surface.position, 1.0));
+        // the guides were rasterized jittered
+        const float2 ndc = clip.xy / max(clip.w, 1e-6) + camera.jitterOffset;
+        if (clip.w > 0.0 && all(abs(ndc) < 1.0))
+        {
+            const uint2 pixel = min(uint2((ndc * 0.5 + 0.5) * float2(gRtxdiBridge.renderSize)),
+                                    gRtxdiBridge.renderSize - 1);
+            // the neighbor tests compare view depths
+            RAB_Surface center = surface;
+            center.viewDepth = clip.w;
+            reservoir = RTXDI_DISpatialResampling(pixel, center, reservoir, rng, constants.runtime,
+                                                  constants.reservoirBuffer,
+                                                  constants.bufferIndices.shadingInputBufferIndex,
+                                                  secondaryResamplingParams(constants), lightSample);
+            if (RTXDI_IsValidDIReservoir(reservoir))
+            {
+                // the resampling may have taken a neighbor's light: evaluate it at X2
+                lightSample =
+                    RAB_SamplePolymorphicLight(RAB_LoadLightInfo(RTXDI_GetDIReservoirLightIndex(reservoir), false),
+                                               surface, RTXDI_GetDIReservoirSampleUV(reservoir));
+            }
+        }
+    }
+    const float3 radiance = shadeLightReservoir(surface, origin, reservoir, lightSample);
+    if (!any(radiance > 0.0))
+    {
+        return radiance;
+    }
+    return radiance * shadowTransmittance(root, origin.spawn(lightSample.l), lightSample.l, lightSample.distance);
+}
+
+// the glass's diffuse share (m8 I13 §2): one RIS-sampled light with its visibility and shadow transmittance, shaded
+// Lambert only. The RIS target is the bridge BRDF of the same surface, non-zero wherever Lambert is
+float3 lambertLightAt(GpuFrameRoot root, RAB_Surface surface, HitOrigin origin, GpuRtxdiConstants constants,
+                      inout RTXDI_RandomSamplerState rng, inout RTXDI_RandomSamplerState coherentRng)
+{
+    if (gRtxdiBridge.lightCount == 0 || !surface.isLit)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    RAB_LightSample lightSample;
+    const RTXDI_DIReservoir reservoir = sampleLightsAt(surface, constants, rng, coherentRng, lightSample);
+    if (!RTXDI_IsValidDIReservoir(reservoir))
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    const float nDotL = dot(surface.normal, lightSample.l);
+    if (nDotL <= 0.0)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    const float3 spawn = origin.spawn(lightSample.l);
+    if (!traceVisibility(gRtxdiBridge.rays, spawn, lightSample.l, 0.0, lightSample.distance))
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    return surface.diffuseAlbedo * (nDotL / kPi) * lightSample.radiance * RTXDI_GetDIReservoirInvPdf(reservoir) *
+           shadowTransmittance(root, spawn, lightSample.l, lightSample.distance);
 }
 
 struct PathHit

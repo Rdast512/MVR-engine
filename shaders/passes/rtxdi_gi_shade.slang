@@ -1,6 +1,7 @@
 import types;
 import core.binding;
 import core.frame;
+import lighting.glass;
 
 static const uint kRtxdiTile = 8; // matches src/render/vk_renderer.cpp
 
@@ -149,14 +150,43 @@ float glossyMisWeight(RAB_Surface surface, float3 samplePosition)
     return weight * weight * weight;
 }
 
-float3 shadeFinalReservoir(RAB_Surface surface, RTXDI_GIReservoir reservoir, RTXDI_GIReservoir initial,
-                           RTXDI_GIFinalShadingParameters params)
+// m8 I13 §3: the glass on the primary-to-X2 segment, as the reconnection ray sees it; targets and the resampling
+// stay glass-free
+float3 reconnectionTransmittance(GpuFrameRoot root, RAB_Surface surface, float3 samplePosition)
+{
+    if ((root.glassFlags & kGlassFlagShadowTransmittance) == 0)
+    {
+        return float3(1.0, 1.0, 1.0);
+    }
+    const float3 toSample = samplePosition - surface.position;
+    const float distance = length(toSample);
+    if (distance <= 0.0)
+    {
+        return float3(1.0, 1.0, 1.0);
+    }
+    const float3 l = toSample / distance;
+    return glassTransmittance(root, rasterRayOrigin(surface, l), l, distance * (1.0 - kReconnectionShortening));
+}
+
+// the shadow transmittance's uniform switch: without it the shading keeps its pre-I13 expressions, so a scene without
+// glass reads bit for bit as before (folding a 1.0 factor in changes the driver's FMA contraction)
+bool isGiShadowTransmitted(GpuFrameRoot root)
+{
+    return (root.glassFlags & kGlassFlagShadowTransmittance) != 0;
+}
+
+float3 shadeFinalReservoir(GpuFrameRoot root, RAB_Surface surface, RTXDI_GIReservoir reservoir,
+                           RTXDI_GIReservoir initial, RTXDI_GIFinalShadingParameters params)
 {
     if (!RTXDI_IsValidGIReservoir(reservoir))
     {
         return float3(0.0, 0.0, 0.0);
     }
     float3 radiance = shadeGiSample(surface, reservoir.position, reservoir.radiance) * reservoir.weightSum;
+    if (isGiShadowTransmitted(root) && any(radiance > 0.0))
+    {
+        radiance *= reconnectionTransmittance(root, surface, reservoir.position);
+    }
     // the sample may be a neighbor's or last frame's: X2 can be hidden from this surface
     if (params.enableFinalVisibility != 0 && any(radiance > 0.0) &&
         !isReconnectionVisible(surface, reservoir.position))
@@ -171,8 +201,17 @@ float3 shadeFinalReservoir(RAB_Surface surface, RTXDI_GIReservoir reservoir, RTX
     // traced from this surface this frame: visible by construction
     if (RTXDI_IsValidGIReservoir(initial))
     {
-        radiance += shadeGiSample(surface, initial.position, initial.radiance) * initial.weightSum *
-                    glossyMisWeight(surface, initial.position);
+        if (isGiShadowTransmitted(root))
+        {
+            radiance += shadeGiSample(surface, initial.position, initial.radiance) * initial.weightSum *
+                        reconnectionTransmittance(root, surface, initial.position) *
+                        glossyMisWeight(surface, initial.position);
+        }
+        else
+        {
+            radiance += shadeGiSample(surface, initial.position, initial.radiance) * initial.weightSum *
+                        glossyMisWeight(surface, initial.position);
+        }
     }
     return radiance;
 }
@@ -201,11 +240,15 @@ uint duplicationSampleId(RTXDI_GIReservoir reservoir)
 
 // the initial sample alone: the reference's estimate, and a decorrelated pixel's. The MIS of a sample with itself is
 // the identity, and it was traced from this surface this frame, so it needs no visibility ray
-float3 shadeInitialSample(RAB_Surface surface, RTXDI_GIReservoir initial)
+float3 shadeInitialSample(GpuFrameRoot root, RAB_Surface surface, RTXDI_GIReservoir initial)
 {
-    return RTXDI_IsValidGIReservoir(initial)
-        ? shadeGiSample(surface, initial.position, initial.radiance) * initial.weightSum
-        : float3(0.0, 0.0, 0.0);
+    if (!RTXDI_IsValidGIReservoir(initial))
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    const float3 radiance = shadeGiSample(surface, initial.position, initial.radiance) * initial.weightSum;
+    return isGiShadowTransmitted(root) ? radiance * reconnectionTransmittance(root, surface, initial.position)
+                                       : radiance;
 }
 
 [shader("compute")]
@@ -233,7 +276,7 @@ void rtxdiGiShadeMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_GroupTh
     if (constants.giResamplingMode == 0)
     {
         // the unbiased 1-sample estimate the reuse converges to
-        radiance = shadeInitialSample(surface, initial);
+        radiance = shadeInitialSample(root, surface, initial);
     }
     else
     {
@@ -312,11 +355,11 @@ void rtxdiGiShadeMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_GroupTh
                 initial.weightSum =
                     min(decorrelation.fireflyReplacementMultiplyBound * reservoir.weightSum, initial.weightSum);
             }
-            radiance = shadeInitialSample(surface, initial);
+            radiance = shadeInitialSample(root, surface, initial);
         }
         else
         {
-            radiance = shadeFinalReservoir(surface, reservoir, initial, constants.giFinalShading);
+            radiance = shadeFinalReservoir(root, surface, reservoir, initial, constants.giFinalShading);
         }
     }
     if (!isInBounds)

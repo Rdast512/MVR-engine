@@ -685,7 +685,14 @@ void EngineUi::drawDebugViewPanel()
         }
         break;
     case DebugViewCategory::RayTracing:
-        ImGui::TextDisabled("primary rays through the TLAS: match the raster view away from edges");
+        if (settings.view == DebugView::Glass) {
+            ImGui::Checkbox("Reflection term", &settings.showGlassReflection);
+            ImGui::TextDisabled(settings.showGlassReflection
+                                    ? "Fresnel-weighted mirror radiance of the glass layers"
+                                    : "throughput through the glass in front of each pixel: white without glass");
+        } else {
+            ImGui::TextDisabled("primary rays through the TLAS: match the raster view away from edges");
+        }
         break;
     case DebugViewCategory::Lighting:
         if (settings.view == DebugView::DirectLighting) {
@@ -1066,6 +1073,35 @@ void EngineUi::drawRayTracingPanel()
                           "fallback, permutation or boiling filter");
     ImGui::EndDisabled();
 
+    ImGui::SeparatorText("Glass");
+    GlassSettings& glass = context.renderer.glass;
+    const uint32_t glassInstances = context.renderer.getRayTracingScene().glassRowCount();
+    const GpuGlassCounters& glassStats = context.renderer.getGlassCounters();
+    ImGui::Text("%u glass instances; %u pixels behind glass, %u early stops, %u at the cap", glassInstances,
+                glassStats.pixels, glassStats.earlyStops, glassStats.capped);
+    ImGui::SetItemTooltip("smooth thin-walled KHR_materials_transmission (roughness <= %.1f, no roughness texture): not "
+                          "rasterized, on its own ray mask; other transmissive materials render opaque (m8 I13)",
+                          kGlassMaxRoughness);
+    ImGui::BeginDisabled(glassInstances == 0);
+    ImGui::Checkbox("Glass pass", &glass.isPassEnabled);
+    ImGui::SetItemTooltip("composite the glass layers in front of each pixel before DLSS-RR; off: glass is invisible");
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
+    sliderU32("Max glass layers", glass.maxLayers, 1, kGlassMaxLayersLimit);
+    ImGui::SetItemTooltip("crossings a camera or shadow ray composites at most; back faces of single-sided glass do not "
+                          "count");
+    ImGui::Checkbox("Glass reflection", &glass.isReflectionEnabled);
+    ImGui::SetItemTooltip("Fresnel-weighted mirror ray per layer, shaded with emission and one light, no indirect");
+    ImGui::Checkbox("Glass diffuse share", &glass.isDiffuseShareEnabled);
+    ImGui::SetItemTooltip("the untransmitted dielectric share, Lambert with one sampled light");
+    ImGui::Checkbox("Glass emission", &glass.isEmissionEnabled);
+    ImGui::Checkbox("Shadow transmittance", &glass.isShadowTransmittanceEnabled);
+    ImGui::SetItemTooltip("final DI, X2's direct light and final ReSTIR GI shading multiply the transmittance of the "
+                          "glass on their segment; sampling and reuse stay glass-free");
+    ImGui::Checkbox("Blend DLSS guides with glass", &glass.isGuideBlendEnabled);
+    ImGui::SetItemTooltip("off: DLSS-RR's albedo guides are the surface behind the glass; on: blended with the glass "
+                          "layers' reflectance and diffuse share");
+    ImGui::EndDisabled();
+
     ImGui::SeparatorText("DLSS Ray Reconstruction");
     Dlss& dlss = context.renderer.getDlss();
     const vk::Extent2D render = dlss.getRenderExtent();
@@ -1107,6 +1143,7 @@ void EngineUi::drawRayTracingPanel()
         dlss.settings = {};
         context.renderer.getNrc().settings = {};
         context.renderer.indirectMode = IndirectMode::RestirGi;
+        glass = {};
     }
     // the settings lab's config string (spec/features/full_testing.md §2.1): an A/B found here becomes a plan line
     // or an ENGINE_CONFIG value

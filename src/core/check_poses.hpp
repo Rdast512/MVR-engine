@@ -20,8 +20,10 @@ inline constexpr CourtyardPose kCourtyardPose{{6.0f, 2.5f, 1.5f}, {-10.0f, 1.0f,
 enum class CheckScene : uint8_t
 {
     Sponza,
-    // Bistro's café interior: lit by emissive triangles only, the windows' glass blocks the sun (m8 F21)
+    // Bistro's café interior: lit by emissive triangles only (m8 F21)
     BistroCafe,
+    // Bistro's glass (m8 I13) under kBistroGlassSun*: the café windows from the street, the bar shelf's bottles
+    Bistro,
 };
 
 struct CheckPose
@@ -45,19 +47,42 @@ inline constexpr std::array<CheckPose, 2> kBistroCafeCheckPoses = {{
     {"cafe dining", false, {-5.5f, 1.7f, 8.0f}, {-7.0f, 1.0f, 15.5f}},
 }};
 
+// the café's big street windows face +z at z 13.6..16.1 (normal (-0.37, 0, 0.93)); the bar shelf's bottles stand at
+// x 0..1, z 8..9. Street: through the windows into the café; bar: the shelf from across the counter
+inline constexpr std::array<CheckPose, 2> kBistroGlassCheckPoses = {{
+    {"street windows", false, {-7.5f, 1.7f, 20.0f}, {-6.0f, 1.5f, 14.5f}},
+    {"bar shelf", false, {-3.5f, 1.7f, 9.0f}, {1.2f, 1.7f, 8.8f}},
+}};
+// from the street side of the windows (normal azimuth ~112 deg), lighting the terrace. No angle puts direct sun on
+// the café floor behind them: the awning blocks a high sun, the buildings across the street a low one (I13 §8)
+inline constexpr float kBistroGlassSunAzimuthDegrees = 110.0f;
+inline constexpr float kBistroGlassSunElevationDegrees = 35.0f;
+
 [[nodiscard]] inline CheckScene readCheckScene()
 {
     const char* text = std::getenv("ENGINE_CHECK_SCENE");
-    return text != nullptr && std::string_view(text) == "bistro_cafe" ? CheckScene::BistroCafe : CheckScene::Sponza;
+    const std::string_view scene = text != nullptr ? std::string_view(text) : std::string_view();
+    if (scene == "bistro_cafe") {
+        return CheckScene::BistroCafe;
+    }
+    return scene == "bistro" ? CheckScene::Bistro : CheckScene::Sponza;
 }
 
 [[nodiscard]] inline const std::array<CheckPose, 2>& checkPoses(CheckScene scene)
 {
-    return scene == CheckScene::BistroCafe ? kBistroCafeCheckPoses : kSponzaCheckPoses;
+    switch (scene) {
+    case CheckScene::BistroCafe:
+        return kBistroCafeCheckPoses;
+    case CheckScene::Bistro:
+        return kBistroGlassCheckPoses;
+    case CheckScene::Sponza:
+        break;
+    }
+    return kSponzaCheckPoses;
 }
 
 // below ENGINE_MODELS_DIR; nullptr: the engine's startup model
 [[nodiscard]] inline const char* checkSceneModel(CheckScene scene)
 {
-    return scene == CheckScene::BistroCafe ? "bistro/bistro.gltf" : nullptr;
+    return scene == CheckScene::Sponza ? nullptr : "bistro/bistro.gltf";
 }

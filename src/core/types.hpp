@@ -155,6 +155,8 @@ namespace GpuMaterialFlag
     inline constexpr uint32_t UvTransformEmissive = 1u << 8;
     // KHR_materials_pbrSpecularGlossiness: the base-color slot holds diffuse, the metal-rough slot specular-glossiness
     inline constexpr uint32_t SpecularGlossiness = 1u << 9;
+    // packed rows only (packMaterial): smooth thin-walled glass, out of the vis buffer, on kRayMaskGlass (m8 I13)
+    inline constexpr uint32_t Transmissive = 1u << 10;
 } // namespace GpuMaterialFlag
 
 inline constexpr uint32_t kMaterialUvSlotCount = 5;
@@ -1078,11 +1080,50 @@ struct GpuTargets
     // pass (m8 O11)
     uint32_t giSampleIdsStorage = 0;
     uint32_t giDuplicationStorage = 0;
+    // RGBA8 DLSS-RR albedo guides blended with the glass layers, written by passes/glass.slang under
+    // GlassFlag::BlendGuides (m8 I13 §4 variant b)
+    uint32_t glassDiffuseAlbedoStorage = 0;
+    uint32_t glassSpecAlbedoStorage = 0;
 };
-static_assert(sizeof(GpuTargets) == 200);
+static_assert(sizeof(GpuTargets) == 208);
+static_assert(offsetof(GpuTargets, glassDiffuseAlbedoStorage) == 200);
 static_assert(offsetof(GpuTargets, giStagnancyStorage) == 184);
 static_assert(offsetof(GpuTargets, binIdsStorage) == 176);
 static_assert(offsetof(GpuTargets, current) == 32);
+
+// GpuFrameRoot::glassFlags (m8 I13), matches shaders/types.slang kGlassFlag*
+namespace GlassFlag
+{
+    // the glass pass composites the layers in front of the vis-buffer surface
+    inline constexpr uint32_t Pass = 1u << 0;
+    // final DI, X2's direct light and final ReSTIR GI shading multiply the glass transmittance of their segment
+    inline constexpr uint32_t ShadowTransmittance = 1u << 1;
+    // the layer terms of the composite: Fresnel reflection, the diffuse share, the glass's emission
+    inline constexpr uint32_t Reflection = 1u << 2;
+    inline constexpr uint32_t DiffuseShare = 1u << 3;
+    inline constexpr uint32_t Emission = 1u << 4;
+    // DLSS-RR albedo guides blended with the layers (I13 §4 variant b); off: the surface behind (variant a)
+    inline constexpr uint32_t BlendGuides = 1u << 5;
+} // namespace GlassFlag
+
+// the most layers a glass walk crosses (GlassSettings::maxLayers)
+inline constexpr uint32_t kGlassMaxLayersLimit = 8;
+
+// glass pass counters of one frame slot, reset by the host before the slot's submit (m8 I13 §6)
+struct GpuGlassCounters
+{
+    // pixels with at least one glass layer in front of their surface
+    uint32_t pixels = 0;
+    // walks stopped at luminance(throughput) < kGlassMinThroughput
+    uint32_t earlyStops = 0;
+    // walks that reached glassMaxLayers with throughput left
+    uint32_t capped = 0;
+    uint32_t pad0 = 0;
+    // [n]: pixels whose walk crossed n + 1 layers
+    std::array<uint32_t, kGlassMaxLayersLimit> layerPixels{};
+};
+static_assert(sizeof(GpuGlassCounters) == 48);
+static_assert(offsetof(GpuGlassCounters, layerPixels) == 16);
 
 // GpuFrameRoot::frameFlags, matches shaders/types.slang kFrameFlag*
 namespace FrameFlag
@@ -1125,6 +1166,8 @@ namespace GpuRayInstanceBuildFlag
 {
     // the primitive's clusters carry a micromap: the instance drops FORCE_OPAQUE
     inline constexpr uint32_t OpacityMicromap = 1u << 0;
+    // thin-walled glass (m8 I13): the instance goes on kRayMaskGlass instead of kRayMaskOpaque
+    inline constexpr uint32_t Glass = 1u << 1;
 } // namespace GpuRayInstanceBuildFlag
 static_assert(offsetof(GpuRayInstance, primitiveRow) == 4);
 
@@ -1210,8 +1253,16 @@ struct GpuFrameRoot
     // world row of triangle light 0: the point and spot rows come first
     uint32_t firstTriangleLight = 0;
     uint32_t triangleLightCount = 0;
+    // GlassFlag (m8 I13); 0 without glass instances or with the glass pass off
+    uint32_t glassFlags = 0;
+    // layers the glass pass and the shadow transmittance cross at most
+    uint32_t glassMaxLayers = 0;
+    // GpuGlassCounters of this frame slot
+    vk::DeviceAddress glassCounters = 0;
 };
-static_assert(sizeof(GpuFrameRoot) == 224);
+static_assert(sizeof(GpuFrameRoot) == 240);
+static_assert(offsetof(GpuFrameRoot, glassFlags) == 224);
+static_assert(offsetof(GpuFrameRoot, glassCounters) == 232);
 static_assert(offsetof(GpuFrameRoot, rayInstanceLights) == 208);
 static_assert(offsetof(GpuFrameRoot, firstTriangleLight) == 216);
 static_assert(offsetof(GpuFrameRoot, triangleLightCount) == 220);

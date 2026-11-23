@@ -90,6 +90,8 @@ public:
     }
     // triangle lights of the layout as of the last prepareFrame
     [[nodiscard]] uint32_t triangleLightCount() const noexcept { return templates.triangleLightCount; }
+    // kRayMaskGlass instances of the layout (m8 I13); 0 skips the glass pass and the shadow transmittance
+    [[nodiscard]] uint32_t glassRowCount() const noexcept { return templates.glassRowCount; }
     [[nodiscard]] Stats getStats() const noexcept;
     // world box of every ray instance as of the last prepareFrame: what a ray can hit (NRC scene bounds, M4 G3);
     // empty (bboxMin > bboxMax) without instances
@@ -142,6 +144,7 @@ private:
         glm::vec2 gridExtent{1.0f};
         uint32_t gridAxis = 1;
         uint32_t triangleLightCount = 0;
+        uint32_t glassRowCount = 0;
         PtlasShape shape;
         // FrameData::layoutGeneration and the grid density they were built for
         uint32_t layoutGeneration = ~0u;

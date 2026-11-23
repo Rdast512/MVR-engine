@@ -50,6 +50,10 @@ struct FrameRootInputs {
     vk::DeviceAddress rayDebug;
     // RenderTargets' GpuMaterialBins, shared by both slots
     vk::DeviceAddress materialBins;
+    // GlassFlag, the layer cap and the GpuGlassCounters of this slot (m8 I13)
+    uint32_t glassFlags;
+    uint32_t glassMaxLayers;
+    vk::DeviceAddress glassCounters;
 };
 
 // Per-frame-slot host-visible data rewritten by the CPU every frame: the GpuFrameRoot, the GpuObjectUB rows and the

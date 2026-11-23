@@ -49,7 +49,8 @@ public void countCandidate(uint64_t rayDebug, bool isProceeding)
     }
 }
 
-// true when nothing in [tMin, tMax] blocks the segment; the first hit ends the search
+// true when nothing opaque in [tMin, tMax] blocks the segment; the first hit ends the search. Glass never blocks
+// (m8 I13): final shading multiplies its transmittance instead
 public bool traceVisibility(RayScene scene, float3 origin, float3 direction, float tMin, float tMax)
 {
     RayDesc ray;
@@ -60,7 +61,7 @@ public bool traceVisibility(RayScene scene, float3 origin, float3 direction, flo
     requireOmm2StateRayFlag();
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES |
              RAY_FLAG_FORCE_OMM_2_STATE> query;
-    query.TraceRayInline(RaytracingAccelerationStructure(scene.tlas), RAY_FLAG_NONE, 0xFF, ray);
+    query.TraceRayInline(RaytracingAccelerationStructure(scene.tlas), RAY_FLAG_NONE, kRayMaskOpaque, ray);
     countCandidate(scene.rayDebug, query.Proceed());
     return query.CommittedStatus() == COMMITTED_NOTHING;
 }

@@ -108,6 +108,9 @@ void FrameData::writeFrameRoot(uint32_t frameSlot, const FrameRootInputs& inputs
         .rayInstanceLights = inputs.rayInstanceLights,
         .firstTriangleLight = inputs.firstTriangleLight,
         .triangleLightCount = inputs.triangleLightCount,
+        .glassFlags = inputs.glassFlags,
+        .glassMaxLayers = inputs.glassMaxLayers,
+        .glassCounters = inputs.glassCounters,
     };
 }
 
