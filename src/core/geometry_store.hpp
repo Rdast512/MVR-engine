@@ -47,6 +47,9 @@ public:
     std::vector<PrimitiveDraw> primitiveDraws;
     // catalog, kept after the upload: the cull templates build one draw record per group
     std::vector<GpuMeshletGroup> meshletGroups;
+    // catalog, kept after the upload: active primitive-local meshlet triangle indices for partial textured emitters
+    // (m8 I14 F27); indexed by PrimitiveDraw::{firstEmissiveTriangle, emissiveTriangleCount}
+    std::vector<uint32_t> emissiveActiveTriangles;
     // mesh placements; a mesh's primitives appear once in primitiveDraws however many nodes place it
     std::vector<NodeDraw> nodeDraws;
 
@@ -69,6 +72,7 @@ public:
     uint32_t flushedAuxBlobCount = 0;
     uint32_t flushedNodeCount = 0;
     uint32_t flushedGroupCount = 0;
+    uint32_t flushedEmissiveActiveTriCount = 0;
 
     // grow SoA + packed GpuVertex to newCount; new verts get default attrs
     void resizeVertices(uint32_t newCount);

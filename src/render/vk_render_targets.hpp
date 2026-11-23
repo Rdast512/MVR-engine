@@ -11,7 +11,7 @@
 #include <array>
 #include <vulkan/vulkan_raii.hpp>
 
-// render-resolution targets of the visibility-buffer path (spec/features/visibility_buffer.md §3.6): the depth
+// render-resolution targets of the visibility-buffer path (spec/features/done/visibility_buffer.md §3.6): the depth
 // attachment, the R32_UINT vis buffer, two guide sets by frame parity, the direct radiance, the noisy color and the
 // debug display image, plus the display-resolution DLSS-RR output and one GpuTargets block per frame slot.
 // Every storage target stays in eGeneral; the vis buffer is a color attachment while rastering and

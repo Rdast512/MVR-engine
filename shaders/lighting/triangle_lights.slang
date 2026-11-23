@@ -2,6 +2,7 @@ module triangle_lights;
 
 import types;
 import core.binding;
+import core.frame;
 import core.math;
 import geometry.hit;
 import lighting.lights;
@@ -36,8 +37,8 @@ public TriangleLightTable loadTriangleLightTable(GpuFrameRoot root)
     return table;
 }
 
-// a ray instance's first triangle-region row; kNoneIndex unless its material emits
-public uint rayInstanceFirstLight(TriangleLightTable table, uint rayInstance)
+// a ray instance's triangle-light header: kNoneIndex unless emissive; high bit set -> sparse remap offset
+public uint rayInstanceLightEntry(TriangleLightTable table, uint rayInstance)
 {
     if (table.lightCount == 0)
     {
@@ -46,18 +47,12 @@ public uint rayInstanceFirstLight(TriangleLightTable table, uint rayInstance)
     return bdaPtr<uint>(table.rayInstanceLights)[rayInstance];
 }
 
-// true when every triangle of the hit's primitive is a sampled light (one emission rule)
-public bool isLightHit(TriangleLightTable table, RayHit hit)
-{
-    return rayInstanceFirstLight(table, hit.rayInstance) != kNoneIndex;
-}
-
 // world row of the triangle light a hit names, or kNoneIndex. A primitive's triangles are stored in meshlet order
 // (GeometryStore), so the hit meshlet's triangleOffset gives its place in the primitive
 public uint hitLightIndex(TriangleLightTable table, RayHit hit)
 {
-    const uint firstLight = rayInstanceFirstLight(table, hit.rayInstance);
-    if (firstLight == kNoneIndex)
+    const uint entry = rayInstanceLightEntry(table, hit.rayInstance);
+    if (entry == kNoneIndex)
     {
         return kNoneIndex;
     }
@@ -66,7 +61,20 @@ public uint hitLightIndex(TriangleLightTable table, RayHit hit)
     GpuMeshletDesc* meshlets = bdaPtr<GpuMeshletDesc>(bdaPtr<GpuModel>(table.models)[modelIndex].meshlets);
     const uint firstMeshlet = bdaPtr<GpuPrimitive>(table.primitives)[instance.primitiveRow].firstMeshlet;
     const uint corner = meshlets[hit.meshletRow].triangleOffset - meshlets[firstMeshlet].triangleOffset;
-    return table.firstLight + firstLight + corner / 3 + hit.triangle;
+    const uint localTri = corner / 3 + hit.triangle;
+    if ((entry & kRayInstanceLightSparseBit) != 0)
+    {
+        const uint remapOffset = entry & ~kRayInstanceLightSparseBit;
+        const uint triRow = bdaPtr<uint>(table.rayInstanceLights)[remapOffset + localTri];
+        return triRow == kNoneIndex ? kNoneIndex : table.firstLight + triRow;
+    }
+    return table.firstLight + entry + localTri;
+}
+
+// true when the hit triangle is a sampled light (one emission rule)
+public bool isLightHit(TriangleLightTable table, RayHit hit)
+{
+    return hitLightIndex(table, hit) != kNoneIndex;
 }
 
 // uniform point on a triangle: barycentrics of (v0, v1, v2) from u in [0, 1)^2 (SampleTriangle)

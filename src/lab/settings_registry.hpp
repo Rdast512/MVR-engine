@@ -15,7 +15,7 @@
 class Camera;
 class Renderer;
 
-// the settings lab's switch registry (spec/features/full_testing.md §2, §3): every lighting field the lab can set,
+// the settings lab's switch registry (spec/features/planned/full_testing.md §2, §3): every lighting field the lab can set,
 // by name. The engine checks never read it: they keep their own settings sets and measure what ships
 struct LabConfig
 {

@@ -14,10 +14,11 @@
 
 namespace
 {
-    constexpr std::array<std::pair<const char*, EngineTemporalCheck::Kind>, 3> kKindVariables = {{
+    constexpr std::array<std::pair<const char*, EngineTemporalCheck::Kind>, 4> kKindVariables = {{
         {"ENGINE_STABILITY_CHECK", EngineTemporalCheck::Kind::Stability},
         {"ENGINE_LIGHT_CHANGE_CHECK", EngineTemporalCheck::Kind::LightChange},
         {"ENGINE_SCREEN_EDGE_CHECK", EngineTemporalCheck::Kind::ScreenEdge},
+        {"ENGINE_EMISSIVE_CHECK", EngineTemporalCheck::Kind::EmissiveRef},
     }};
 
     bool isVariableSet(const char* name)
@@ -90,6 +91,8 @@ const char* EngineTemporalCheck::kindName(Kind kind)
         return "light change";
     case Kind::ScreenEdge:
         return "screen edge";
+    case Kind::EmissiveRef:
+        return "emissive reference";
     }
     return "";
 }
@@ -222,6 +225,7 @@ std::vector<EngineTemporalCheck::Step> EngineTemporalCheck::buildSteps(Kind kind
                 }
                 break;
             case Kind::LightChange:
+            case Kind::EmissiveRef:
                 break;
             case Kind::ScreenEdge:
                 for (const Motion motion : {Motion::Pan, Motion::Dolly}) {
@@ -320,6 +324,16 @@ std::vector<EngineTemporalCheck::Step> EngineTemporalCheck::buildSteps(Kind kind
                 }
             }
             break;
+        case Kind::EmissiveRef:
+            // independent exact textured-emission reference (BRDF-only, areTriangleLightsSampled=false, glass off):
+            // DlssInput = 0 + exact_BRDF_direct + primary_emissive, matching DirectLighting = Power_RIS_direct + primary_emissive
+            add({StepType::EmissiveReference, pose, GiSettingsSet::Converged, DebugView::DlssInput, SunState::Off,
+                 SunState::Off, Motion::Pan, false, 16, 2048, kNoChange, DiSet::Reference, IndirectMode::RestirGi,
+                 GlassState::PassOff});
+            add({StepType::EmissiveCompare, pose, GiSettingsSet::Converged, DebugView::DirectLighting, SunState::Off,
+                 SunState::Off, Motion::Pan, false, 16, 1024, kNoChange, DiSet::Reference, IndirectMode::RestirGi,
+                 GlassState::PassOff});
+            break;
         }
     }
     return steps;
@@ -403,6 +417,10 @@ std::string EngineTemporalCheck::stepLabel(const Step& step) const
         return std::format("screen edge, {}, {}, {}{}, {}", pose,
                            step.motion == Motion::Pan ? "pan 10 deg" : "dolly back 1 m", giSettingsSetName(step.set),
                            glass, view);
+    case StepType::EmissiveReference:
+        return std::format("emissive ref (BRDF-only exact), {}, {}", pose, view);
+    case StepType::EmissiveCompare:
+        return std::format("emissive compare (Power_RIS DI), {}, {}", pose, view);
     }
     return "";
 }
@@ -417,7 +435,7 @@ void EngineTemporalCheck::startStep(Camera& camera, Renderer& renderer)
     renderer.indirectMode = step.mode;
     rtxdi.isReference = step.di == DiSet::Reference;
     rtxdi.settings = diSettingsFor(step.di, *startupDiSettings);
-    rtxdi.isGiReference = false;
+    rtxdi.isGiReference = step.type == StepType::EmissiveReference;
     rtxdi.giReferenceBounces = 0;
     rtxdi.giSettings = giSettingsFor(step.set);
     if (!startupGlassSettings) {
@@ -426,6 +444,7 @@ void EngineTemporalCheck::startStep(Camera& camera, Renderer& renderer)
     renderer.glass = glassSettingsFor(step.glass, *startupGlassSettings);
     renderer.debugView.view = step.view;
     renderer.getWorldLights().sun = sunFor(step.sun);
+    renderer.getWorldLights().areTriangleLightsSampled = step.type != StepType::EmissiveReference;
     const PoseView& canonical = poses[step.pose];
     const bool isStartPose = step.type == StepType::EdgeMove || (step.type == StepType::Depth && !step.isFinalPose);
     const PoseView pose = isStartPose ? startPose(canonical, step.motion) : canonical;
@@ -547,6 +566,8 @@ void EngineTemporalCheck::accumulate(const Camera& camera, const Renderer::Displ
 
     switch (step.type) {
     case StepType::Stability:
+    case StepType::EmissiveReference:
+    case StepType::EmissiveCompare:
         if (sum.empty()) {
             sum.assign(texels, 0.0);
             squaredSum.assign(texels, 0.0);
@@ -683,6 +704,8 @@ void EngineTemporalCheck::finishStep()
     } else {
         switch (step.type) {
         case StepType::Stability:
+        case StepType::EmissiveReference:
+        case StepType::EmissiveCompare:
             logStability(step);
             break;
         case StepType::LightReference: {
@@ -765,7 +788,8 @@ void EngineTemporalCheck::logStability(const Step& step)
         // coefficient of variation of lit pixels, white at 100%
         writeCheckUnitPng(std::format("{} cv", stepLabel(step)), extent, variation);
     }
-    if (step.view == DebugView::DirectLighting) {
+    if (step.view == DebugView::DirectLighting || step.type == StepType::EmissiveReference ||
+        step.type == StepType::EmissiveCompare) {
         logDirectBias(step, means);
     }
     const double change = signal > 0.0 ? frameChange / (frames - 1.0) / signal : 0.0;
@@ -793,7 +817,8 @@ void EngineTemporalCheck::logStability(const Step& step)
 
 void EngineTemporalCheck::logDirectBias(const Step& step, const std::vector<double>& mean)
 {
-    if (step.di == DiSet::Reference) {
+    if (step.type == StepType::EmissiveReference ||
+        (step.type != StepType::EmissiveCompare && step.di == DiSet::Reference)) {
         directReference = mean;
         directReferencePose = step.pose;
         return;

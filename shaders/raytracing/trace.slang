@@ -4,7 +4,7 @@ import types;
 import core.binding;
 import core.counters;
 
-// the ray contract (PBR plan D4, spec/m6/d4_ray_contract.md, spec/features/ray_tracing_mega_geometry.md §6.2): every
+// the ray contract (PBR plan D4, spec/m6/d4_ray_contract.md, spec/features/planned/ray_tracing_mega_geometry.md §6.2): every
 // query takes one Proceed() and no candidate loop. Instances are FORCE_OPAQUE or carry 2-state micromaps, so no
 // candidate can reach a query; no FORCE_OPAQUE ray flag, which would override the OMM state. No facing cull: a back
 // face blocks light. traceVisibility and geometry/hit.slang traceClosest are the only TraceRayInline calls

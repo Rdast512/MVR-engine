@@ -3,7 +3,7 @@
 **Status** — Built. `RenderTargets` owns the current images and descriptors.\
 **Depends on** — [M0 A1](../m0/a1_gpu_contracts.md).\
 **Used by** — [V2 depth](v2_reverse_z.md), [V5 raster](v5_visibility_output.md) and [V6 resolve](v6_material_resolve.md).
-[Visibility-buffer design](../features/visibility_buffer.md)
+[Visibility-buffer design](../features/done/visibility_buffer.md)
 
 ## Decisions and implementation
 

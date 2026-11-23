@@ -85,6 +85,8 @@ public:
     [[nodiscard]] PostProcess& getPost() noexcept { return post; }
     // the next Lit frame starts DLSS-RR without history
     void resetDlssHistory() noexcept { isDlssHistoryValid = false; }
+    // extra GpuFrameRoot::frameFlags bits for self-test runners (ENGINE_DLSS_CHECK, m8 I14 F25)
+    uint32_t extraFrameFlags = 0;
     // Lit with at least one light: present shows DLSS-RR. Lit without lights would be black, so it shows the unlit
     // albedo of the debug view pass, as before H1
     [[nodiscard]] bool isDlssPresented() const
@@ -193,6 +195,7 @@ private:
     SwapChain& swapChain;
     const VkAllocator& allocator;
     FrameSync& frameSync;
+    const Scene& scene;
     FrameData& frameData;
     DescriptorManager& descriptorManager;
     Camera& camera;
@@ -289,4 +292,5 @@ private:
     std::array<std::optional<vk::Extent2D>, MAX_FRAMES_IN_FLIGHT> displayCaptureExtents;
     bool isDisplayCapturePending = false;
     bool isSwapchainRecreatePending = false;
+    bool hasDumpedLightPdfStats = false;
 };

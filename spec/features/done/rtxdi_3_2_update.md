@@ -1,8 +1,8 @@
 # Feature: RTXDI 3.2 update
 
 **Date:** 2026-11-15 · **Status:** built and checked (2026-11-15, RTX 5070) · **Milestone:** M4 (current), a dependency update of M3's ReSTIR DI
-**Implements:** a new pin of `NVIDIA-RTX/RTXDI-Library` (`f12037fa` 3.1 → `b67f61cd` 3.2, upstream commit "3.2 Update", 2026-11-09); changes PBR plan F1 and F3 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
-**Touches:** considerations C-F2-2, C-F3-1, C-F3-2, C-F3-3, C-F3-8, C-M4-1, C-M4-2; adds C-R32-1, C-R32-2 ([considerations.md](../considerations.md))
+**Implements:** a new pin of `NVIDIA-RTX/RTXDI-Library` (`f12037fa` 3.1 → `b67f61cd` 3.2, upstream commit "3.2 Update", 2026-11-09); changes PBR plan F1 and F3 ([pbr_implementation_plan.md](../../pbr_implementation_plan.md))
+**Touches:** considerations C-F2-2, C-F3-1, C-F3-2, C-F3-3, C-F3-8, C-M4-1, C-M4-2; adds C-R32-1, C-R32-2 ([considerations.md](../../considerations.md))
 
 RTXDI 3.2 removes the fused spatiotemporal DI path that the engine's `rtxdi_shade` pass is built on. The update therefore splits that pass in two, the library's `TemporalAndSpatial` mode. The workaround and the measurements that depended on the fused code (C-F3-2, C-F3-3) are redone against the separate passes. That re-measurement needs a convergence check, which F3 only had as temporary code (C-F3-8), so this update makes it permanent.
 

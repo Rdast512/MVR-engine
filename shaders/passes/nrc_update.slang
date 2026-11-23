@@ -161,6 +161,7 @@ void nrcUpdateMain(uint3 id : SV_DispatchThreadID)
         }
         HitOrigin origin;
         origin.hit = hit;
+        origin.geoNormal = vertex.surface.geoNormal;
         radiance += throughput *
                     (vertex.emissive + directLightAt(vertex.surface, origin, rtxdiConstants, lightRng, coherentRng));
         // without cached direct light, NRC ends a path after the direct light of its last vertex

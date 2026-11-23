@@ -2,7 +2,7 @@ module visbuffer;
 
 import types;
 
-// R32_UINT visibility buffer (spec/features/visibility_buffer.md §3.1): (visibleRow << kVisTriangleBits) | triangle.
+// R32_UINT visibility buffer (spec/features/done/visibility_buffer.md §3.1): (visibleRow << kVisTriangleBits) | triangle.
 // Empty pixels are decided by depth (reverse-Z clear 0), never by the payload
 
 static const uint kVisTriangleMask = (1u << kVisTriangleBits) - 1u;

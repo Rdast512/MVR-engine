@@ -1,7 +1,7 @@
 # M6 · D4: ray contract
 
 **Status:** built 2026-11-20; `pointOffset` and `minT` not needed (terminator shot, 0 self-hits); M6 complete · **Milestone:** M6 (closes it)
-**Implements:** engine spec §10.5, §11.1; feature spec [ray_tracing_mega_geometry.md](../features/ray_tracing_mega_geometry.md) §6; plan D4 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
+**Implements:** engine spec §10.5, §11.1; feature spec [ray_tracing_mega_geometry.md](../features/planned/ray_tracing_mega_geometry.md) §6; plan D4 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
 **Depends on:** [D2](./d2_micromap_clas.md) (OMMs on rays), [D3](./d3_alpha_raster_bin.md) (cut-outs in raster), F2 (`traceVisibility`), C3 (`traceClosest`), G1 (SER trace)
 **Considerations:** C-D4-1 (closed here), C-D-1 (closed here), C-C4-3 (stays)
 **Reference:** nvpro `vk_raytrace` `render_shading.glsl` (`pointOffset` :510, `minT` :570); RTXMG `self_intersection_avoidance.hlsli` (`SafeSpawnPoint`, already ported as `safeSpawnPoint`)

@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-// scripted motion-vector checks (spec/features/motion_vectors.md §5) on the startup scene, read from the motion_check
+// scripted motion-vector checks (spec/features/done/motion_vectors.md §5) on the startup scene, read from the motion_check
 // pass after every frame. ENGINE_MOTION_TEST=1 enables the run; the engine quits once the summary is logged
 class EngineMotionTest
 {

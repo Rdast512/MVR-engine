@@ -21,33 +21,6 @@ static const uint kLightWorldGroupSize = 64; // matches src/render/vk_world_ligh
 
 [[vk::push_constant]] ConstantBuffer<LightWorldPushData> push;
 
-// the task holding triangle light `index`: firstLight <= index < firstLight + triangleCount (FindTask)
-bool findTask(uint index, out GpuTriangleLightTask task)
-{
-    task = {};
-    GpuTriangleLightTask* tasks = bdaPtr<GpuTriangleLightTask>(push.triangleLightTasks);
-    int left = 0;
-    int right = int(push.triangleLightTaskCount) - 1;
-    while (left <= right)
-    {
-        const int middle = (left + right) / 2;
-        task = tasks[middle];
-        if (index < task.firstLight)
-        {
-            right = middle - 1;
-        }
-        else if (index - task.firstLight < task.triangleCount)
-        {
-            return true;
-        }
-        else
-        {
-            left = middle + 1;
-        }
-    }
-    return false;
-}
-
 // the meshlet holding the primitive's triangle `index`: its triangles are dense in meshlet order (GeometryStore), so
 // the last meshlet whose triangleOffset is at most the triangle's
 uint findMeshlet(GpuMeshletDesc* meshlets, GpuPrimitive primitive, uint index, out uint triangle)
@@ -94,7 +67,8 @@ void centroidFootprint(float2 uv[3], out float2 center, out float2 ddx, out floa
     ddy = (longEdge2 - longEdge1) / 3.0;
 }
 
-// emissiveFactor x the emissive texture once per triangle, clamped at 0
+// emissiveFactor x the emissive texture averaged over 4 equal-area sub-triangles at half footprint (m8 I14 F27):
+// reduces coarse-mip bleed across UV-atlas boundaries on large housing triangles and catches partial emitters
 float3 triangleRadiance(GpuMaterial material, DrawContext draw, TriangleCorners corners)
 {
     if (material.emissiveTex == kNoneIndex || material.emissiveSamp == kNoneIndex)
@@ -112,8 +86,29 @@ float3 triangleRadiance(GpuMaterial material, DrawContext draw, TriangleCorners 
         }
     }
     const uint set = min(material.emissiveUv, 1u);
-    centroidFootprint(uv, surface.uv[set], surface.uvDdx[set], surface.uvDdy[set]);
-    return max(sampleEmissive(material, surface, 0.0), 0.0);
+    float2 center;
+    float2 ddx;
+    float2 ddy;
+    centroidFootprint(uv, center, ddx, ddy);
+    // each of the 4 equal-area sub-triangles has half the linear span; cap footprint to prevent full-atlas mip bleed
+    const float2 subDdx = ddx * 0.5;
+    const float2 subDdy = ddy * 0.5;
+    surface.uvDdx[set] = subDdx;
+    surface.uvDdy[set] = subDdy;
+    const float2 taps[4] = {
+        center,
+        (4.0 * uv[0] + uv[1] + uv[2]) / 6.0,
+        (uv[0] + 4.0 * uv[1] + uv[2]) / 6.0,
+        (uv[0] + uv[1] + 4.0 * uv[2]) / 6.0,
+    };
+    float3 sum = float3(0.0, 0.0, 0.0);
+    [unroll]
+    for (uint i = 0; i < 4; ++i)
+    {
+        surface.uv[set] = taps[i];
+        sum += max(sampleEmissive(material, surface, 0.0), 0.0);
+    }
+    return sum * 0.25;
 }
 
 // triangle light `index` of the triangle region, in world space
@@ -121,19 +116,19 @@ GpuTriangleLight triangleLight(GpuFrameRoot root, uint index)
 {
     GpuTriangleLight light = {};
     light.type = LightType.Triangle;
-    GpuTriangleLightTask task;
-    if (!findTask(index, task))
+    if (index >= push.triangleLightRefCount)
     {
         return light;
     }
-    const GpuRayInstance instance = bdaPtr<GpuRayInstance>(root.rayInstances)[task.rayInstance];
+    const GpuTriangleLightRef ref = bdaPtr<GpuTriangleLightRef>(push.triangleLightRefs)[index];
+    const GpuRayInstance instance = bdaPtr<GpuRayInstance>(root.rayInstances)[ref.rayInstance];
     const GpuPrimitive primitive = bdaPtr<GpuPrimitive>(root.primitives)[instance.primitiveRow];
     const uint modelIndex = bdaPtr<GpuNodeInstance>(root.nodeInstances)[instance.nodeInstanceIndex].modelIndex;
     GpuMeshletDesc* meshlets = bdaPtr<GpuMeshletDesc>(bdaPtr<GpuModel>(root.models)[modelIndex].meshlets);
     uint triangle;
     GpuVisibleMeshlet visible;
     visible.nodeInstanceIndex = instance.nodeInstanceIndex;
-    visible.meshletRow = findMeshlet(meshlets, primitive, index - task.firstLight, triangle);
+    visible.meshletRow = findMeshlet(meshlets, primitive, ref.localTriangle, triangle);
     const DrawContext draw = loadDrawContext(root, visible, kNoneIndex);
 
     // meshlet corner order, as the CLAS the hits come from: hit barycentrics map onto (v0, edge1, edge2)

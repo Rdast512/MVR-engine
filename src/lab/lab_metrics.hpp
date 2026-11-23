@@ -8,7 +8,7 @@
 #include <span>
 #include <vector>
 
-// the settings lab's accumulators and metrics (spec/features/full_testing.md §4.2). Definitions follow the I1 runners'
+// the settings lab's accumulators and metrics (spec/features/planned/full_testing.md §4.2). Definitions follow the I1 runners'
 // (engine_temporal_check.cpp) in the lab's own copy, so the checks never change for the lab (§0); tile comparisons go
 // through the shared convergence_metrics.hpp
 namespace labMetrics

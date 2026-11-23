@@ -1,6 +1,6 @@
 # VK_NV_partitioned_acceleration_structure — Implementation Spec
 
-**Status in this repo (2026-11-14): REQUIRED by the engine spec (§10.3), NOT CONSUMED yet.** The device enables it when present and caches its properties, but still treats it as optional; PBR plan C4 makes it required and replaces the per-slot full TLAS build with one PTLAS. Design: [ray_tracing_mega_geometry.md §3.6](../features/ray_tracing_mega_geometry.md).
+**Status in this repo (2026-11-14): REQUIRED by the engine spec (§10.3), NOT CONSUMED yet.** The device enables it when present and caches its properties, but still treats it as optional; PBR plan C4 makes it required and replaces the per-slot full TLAS build with one PTLAS. Design: [ray_tracing_mega_geometry.md §3.6](../features/planned/ray_tracing_mega_geometry.md).
 
 Official sources:
 
@@ -143,7 +143,7 @@ PBR plan C4 and feature-spec step RT9 hold the order and the done-when. In short
 
 ## 6. Concrete integration sketch
 
-See [ray_tracing_mega_geometry.md §3.6](../features/ray_tracing_mega_geometry.md) (API summary, engine mapping, frames in flight).
+See [ray_tracing_mega_geometry.md §3.6](../features/planned/ray_tracing_mega_geometry.md) (API summary, engine mapping, frames in flight).
 
 ---
 

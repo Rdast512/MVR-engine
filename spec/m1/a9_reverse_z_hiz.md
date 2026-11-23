@@ -3,7 +3,7 @@
 **Status** — Built and verified on RTX 5070.\
 **Implements** — Visibility-buffer V2–V3 and engine spec §8.1 A9.\
 **Depends on** — [M0 A10 culling capacities](../m0/a10_culling_baseline.md).
-[Visibility-buffer feature](../features/visibility_buffer.md) · [Culling comparison](../../reference/culling_comparison.md)
+[Visibility-buffer feature](../features/done/visibility_buffer.md) · [Culling comparison](../../reference/culling_comparison.md)
 
 ## Depth and pyramid
 

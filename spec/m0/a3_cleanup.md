@@ -10,7 +10,7 @@ A3 removed the obsolete G-buffer shader and `evalLambert`. The RT pipeline,
 SER and cluster AS device paths stayed available for later milestones.
 AU7 removed empty shader and C++ scaffolding. Files return with their
 implementation, as `raytracing/trace.slang` did in M3.
-[Dead code removal](../features/dead_code_removal.md)
+[Dead code removal](../features/done/dead_code_removal.md)
 
 | Audit | As built |
 |---|---|
@@ -20,7 +20,7 @@ implementation, as `raytracing/trace.slang` did in M3.
 | AU8, C-M0-3 | `engine_util` owns the whole-archive link of `ThirdPartyImpl` on Windows. `implementations.cpp` compiles tinygltf once. Coverage defaults to OFF for fresh configurations. |
 | AU10, C-M0-2 | Resize and out-of-date or suboptimal swapchain results request recreation. `Engine::recreateSwapchain` services the request before building the next eligible frame. The renderer passes the old swapchain to creation, and the engine updates ImGui. |
 
-[Resource split](../features/resource_manager_split.md) · [UI split](../features/engine_ui_split.md) · [Color-space policy](../../src/core/texture_color_space.hpp) · [Link ownership](../../src/util/CMakeLists.txt) · [Recreate path](../../src/core/vk_engine.cpp)
+[Resource split](../features/done/resource_manager_split.md) · [UI split](../features/done/engine_ui_split.md) · [Color-space policy](../../src/core/texture_color_space.hpp) · [Link ownership](../../src/util/CMakeLists.txt) · [Recreate path](../../src/core/vk_engine.cpp)
 
 ## Original A3 and audit decisions
 

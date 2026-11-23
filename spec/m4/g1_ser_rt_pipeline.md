@@ -4,7 +4,7 @@
 **Implements:** engine spec §11.1 (ray model), §2.2 SER row, Q8; plan G1 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
 **Depends on:** M2 (cluster RT scene, `GpuRayInstance`, `decodeHit`), M3 (`sampleMaterial`, BRDF, RTXDI sampling)
 **Used by:** [G2 indirect pass](./g2_indirect_pass.md), [G3 NRC](./g3_nrc.md) update paths
-**Related:** [Slang SER reference](../../ThirdParty/Slang-win/share/doc/slang/shader-execution-reordering.md) (pinned v2026.22), [vk_raytracing_tutorial_v2_reference.md](../../reference/vk_raytracing_tutorial_v2_reference.md), [ray_tracing_mega_geometry.md](../features/ray_tracing_mega_geometry.md) §6
+**Related:** [Slang SER reference](../../ThirdParty/Slang-win/share/doc/slang/shader-execution-reordering.md) (pinned v2026.22), [vk_raytracing_tutorial_v2_reference.md](../../reference/vk_raytracing_tutorial_v2_reference.md), [ray_tracing_mega_geometry.md](../features/planned/ray_tracing_mega_geometry.md) §6
 **Considerations:** C-G1-1 (`ClusterIDNV` through `spirv_asm`), C-G1-2 (no subgroup ops after `ReorderThread`)
 **Follow-ups:** [g1_ser_followups.md](./g1_ser_followups.md) (alignment with NVIDIA's SER code)
 **History:** written 2026-11-08 as `spec/features/shader_execution_reordering.md`; moved here on 2026-11-16 when M4 started

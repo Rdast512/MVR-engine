@@ -9,7 +9,7 @@
 #include <string_view>
 #include <vector>
 
-// a metric of a lab kind (spec/features/full_testing.md §4.2); names are unique across kinds, so `view:metric` names
+// a metric of a lab kind (spec/features/planned/full_testing.md §4.2); names are unique across kinds, so `view:metric` names
 // both the kind and the view
 struct LabMetricInfo
 {

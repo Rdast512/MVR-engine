@@ -9,7 +9,7 @@
 #include <optional>
 #include <string_view>
 
-// what a lab run measures (spec/features/full_testing.md §4.2)
+// what a lab run measures (spec/features/planned/full_testing.md §4.2)
 enum class LabKind : uint8_t
 {
     Stability,

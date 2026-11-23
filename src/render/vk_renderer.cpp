@@ -29,7 +29,7 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
                    const Scene& scene, const AssetBuffers& assets, FrameData& frameData,
                    DescriptorManager& descriptorManager, ShaderObjects& shaderObjects, Camera& camera,
                    const NrcLibrary& nrcLibrary, VkTracyContext* tracyContext) :
-    device(device), swapChain(swapChain), allocator(allocator), frameSync(frameSync), frameData(frameData),
+    device(device), swapChain(swapChain), allocator(allocator), frameSync(frameSync), scene(scene), frameData(frameData),
     descriptorManager(descriptorManager), camera(camera), shaderObjects(shaderObjects),
     dgc(device, allocator, descriptorManager, shaderObjects),
     culling(device, allocator, scene, assets, frameData, shaderObjects, dgc),
@@ -229,10 +229,17 @@ void Renderer::drawFrame()
     vmaSetCurrentFrameIndex(allocator.allocator, ++frameNumber);
     allocator.tracyPlotMemoryBudget();
 
-    // after the fence: this slot's camera buffer and query results are no longer touched by the GPU
+    if (WorldLights::isPdfStatsRequested() && !hasDumpedLightPdfStats && frameNumber > MAX_FRAMES_IN_FLIGHT &&
+        worldLights.localLightCount() > 0) {
+        // the slot fence and compute timeline just completed, so this slot's worldLights hold valid GPU output
+        worldLights.dumpLightPdfStats(currentFrame, frameSync, scene, camera.cameraData.viewProj);
+        hasDumpedLightPdfStats = true;
+    }
+    // after the fence: prepare RT scene before reading isDlssPresented() so frame 0 of emissive-only scenes sees its
+    // triangle lights and aligns camera jitter with DLSS-RR (m8 I14 F25)
+    rtScene.prepareFrame(currentFrame, frameNumber - 1);
     camera.updateCameraData(currentFrame, frameNumber, isDlssPresented());
     targets.prepareFrame(currentFrame, frameNumber, isDlssPresented());
-    rtScene.prepareFrame(currentFrame, frameNumber - 1);
     {
         const IndirectState indirect{.mode = indirectMode,
                                      .isGiReference = rtxdi.isGiReference,
@@ -355,7 +362,8 @@ void Renderer::drawFrame()
                             .debugView = debugView.packed(),
                             .frameFlags = (isHistoryReset ? FrameFlag::HistoryReset : 0u) |
                                 (isIndirectHistoryReset ? FrameFlag::IndirectHistoryReset : 0u) |
-                                (worldLights.areTriangleLightsSampled ? 0u : FrameFlag::TriangleLightsUnsampled),
+                                (worldLights.areTriangleLightsSampled ? 0u : FrameFlag::TriangleLightsUnsampled) |
+                                extraFrameFlags,
                             .frameIndex = frameNumber,
                             .lightCount = worldLights.lightCount(),
                             .localLightCount = worldLights.localLightCount(),
@@ -389,7 +397,7 @@ void Renderer::drawFrame()
         const auto submitStart = std::chrono::steady_clock::now();
         submitComputeCommands();
         // after submitComputeCommands() updates computeTimelineValues[currentFrame] = frameNumber; the first stage
-        // that traces waits for this frame's TLAS (spec/features/ray_tracing_mega_geometry.md §3.5)
+        // that traces waits for this frame's TLAS (spec/features/planned/ray_tracing_mega_geometry.md §3.5)
         tlasWait = vk::SemaphoreSubmitInfo{.semaphore = *frameSync.computeTimeline,
                                            .value = computeTimelineValues[currentFrame],
                                            .stageMask = vk::PipelineStageFlagBits2::eComputeShader |

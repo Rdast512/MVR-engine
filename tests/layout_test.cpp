@@ -373,8 +373,8 @@ namespace
             LAYOUT_FIELD(LightWorldPushData, sunIlluminance),
             LAYOUT_FIELD(LightWorldPushData, sunColor),
             LAYOUT_FIELD(LightWorldPushData, assetLightCount),
-            LAYOUT_FIELD(LightWorldPushData, triangleLightTasks),
-            LAYOUT_FIELD(LightWorldPushData, triangleLightTaskCount),
+            LAYOUT_FIELD(LightWorldPushData, triangleLightRefs),
+            LAYOUT_FIELD(LightWorldPushData, triangleLightRefCount),
             LAYOUT_FIELD(LightWorldPushData, lightPdf),
             LAYOUT_FIELD(LightWorldPushData, lightPdfTexelCount),
             LAYOUT_FIELD(LightWorldPushData, pad0),
@@ -550,10 +550,9 @@ namespace
             LAYOUT_FIELD(GpuRayInstance, nodeInstanceIndex),
             LAYOUT_FIELD(GpuRayInstance, primitiveRow),
         }},
-        {"GpuTriangleLightTask", sizeof(GpuTriangleLightTask), {
-            LAYOUT_FIELD(GpuTriangleLightTask, firstLight),
-            LAYOUT_FIELD(GpuTriangleLightTask, triangleCount),
-            LAYOUT_FIELD(GpuTriangleLightTask, rayInstance),
+        {"GpuTriangleLightRef", sizeof(GpuTriangleLightRef), {
+            LAYOUT_FIELD(GpuTriangleLightRef, rayInstance),
+            LAYOUT_FIELD(GpuTriangleLightRef, localTriangle),
         }},
         {"GpuRayInstanceBuild", sizeof(GpuRayInstanceBuild), {
             LAYOUT_FIELD(GpuRayInstanceBuild, blas),

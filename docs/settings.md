@@ -232,7 +232,7 @@ OMM (M6) has no settings yet; its defaults will come from the OMM SDK. SER is sh
 
 ## 9. Settings lab: trying settings and finding the culprit
 
-The engine checks (§6) measure what ships against how it should look. The settings lab tries other settings and ranks the switches by what they change ([full_testing.md](../spec/features/full_testing.md)). The two never mix: the checks ignore `ENGINE_CONFIG`, and `ENGINE_LAB` refuses to start next to any check or bench variable.
+The engine checks (§6) measure what ships against how it should look. The settings lab tries other settings and ranks the switches by what they change ([full_testing.md](../spec/features/planned/full_testing.md)). The two never mix: the checks ignore `ENGINE_CONFIG`, and `ENGINE_LAB` refuses to start next to any check or bench variable.
 
 | Variable | What it does |
 |---|---|
@@ -268,7 +268,7 @@ Kinds: `stability` (temporal std, flicker share, f2f, 8-frame swing, lag-1 corre
 
 **Finding a culprit.**
 
-1. Name the symptom by its metrics, not by eye: run the base on the case (`sets` plan, or a plan with `seeds 3` and nothing else) and read the pattern off [full_testing.md](../spec/features/full_testing.md) §4.1. Confetti under DLSS-RR with a calm raw view and a high `lag1` is temporal correlation; a high raw `std` is too few samples; `dimBias > 0` with `darkLeak` 0 is reuse brightening dim places; `darkLeak > 0` is visibility (also present in the reference) or a ray bug, not a setting.
+1. Name the symptom by its metrics, not by eye: run the base on the case (`sets` plan, or a plan with `seeds 3` and nothing else) and read the pattern off [full_testing.md](../spec/features/planned/full_testing.md) §4.1. Confetti under DLSS-RR with a calm raw view and a high `lag1` is temporal correlation; a high raw `std` is too few samples; `dimBias > 0` with `darkLeak` 0 is reuse brightening dim places; `darkLeak > 0` is visibility (also present in the reference) or a ray bug, not a setting.
 2. Take the candidates from §3's "If wrong" column for that pattern and write a plan: `ofat` between the base and a config without the symptom (NVIDIA's set is usually one), on the case and the view that shows it.
 3. Read the ranking. A switch on top with several floors is the lead; one with an effect from the base and none in the target (an `interaction candidate`) needs a partner: `pairs` it with the next switch.
 4. If the one-factor effects do not add up to the base → target difference, `bisect` on the metric finds the smallest set.

@@ -1,9 +1,9 @@
 # Feature: ray tracing with RTX Mega Geometry (patterns from `vk_lod_clusters`)
 
 **Date:** 2026-11-13 · **Status:** C1 built (CLAS + cluster BLAS per primitive), RT1–RT3 done (C2 built), RT4–RT5 done (C3 built); PTLAS required since 2026-11-14 and built (C4, RT9 done); the RT pipeline not started · **Milestone:** M2 (C2, C3, C4), M4 (RT pipeline, SER), M6 (OMM), post-1.0 (LOD, §16.3)
-**Implements:** engine spec §10 (RT scene), §11.1 (ray model); plan C2, C3, D4, G1 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
-**Re-check 2026-11-17:** [reference/mega_geometry_comparison.md](../../reference/mega_geometry_comparison.md) (updated samples: ray queries vs pipeline, static CLAS vs triangle BLAS, RT clustering, truncation in raster, PTLAS layout)
-**Related:** [g1_ser_rt_pipeline.md](../m4/g1_ser_rt_pipeline.md), [visibility_buffer.md](./visibility_buffer.md), sample [README](../../reference/vk_lod_clusters/README.md) and [docs/](../../reference/vk_lod_clusters/docs/); secondary references in §1.1
+**Implements:** engine spec §10 (RT scene), §11.1 (ray model); plan C2, C3, D4, G1 ([pbr_implementation_plan.md](../../pbr_implementation_plan.md))
+**Re-check 2026-11-17:** [reference/mega_geometry_comparison.md](../../../reference/mega_geometry_comparison.md) (updated samples: ray queries vs pipeline, static CLAS vs triangle BLAS, RT clustering, truncation in raster, PTLAS layout)
+**Related:** [g1_ser_rt_pipeline.md](../../m4/g1_ser_rt_pipeline.md), [visibility_buffer.md](../done/visibility_buffer.md), sample [README](../../../reference/vk_lod_clusters/README.md) and [docs/](../../../reference/vk_lod_clusters/docs/); secondary references in §1.1
 
 This document maps the NVIDIA sample `reference/vk_lod_clusters` onto the engine: what it does for ray tracing, which parts the engine takes as they are, which parts it changes, and in what order to build them. Sample paths are relative to `reference/vk_lod_clusters/` unless a section names another reference. Line numbers are from the vendored copy and are given for orientation only.
 
@@ -13,7 +13,7 @@ This document maps the NVIDIA sample `reference/vk_lod_clusters` onto the engine
 
 | Piece | Sample file | Engine status |
 |---|---|---|
-| CLAS per cluster, built once (preloaded mode) | `src/scene_preloaded.cpp` (`initClas`) | **built** (C1), [vk_mega_geometry.cpp](../../src/core/vk_mega_geometry.cpp) |
+| CLAS per cluster, built once (preloaded mode) | `src/scene_preloaded.cpp` (`initClas`) | **built** (C1), [vk_mega_geometry.cpp](../../../src/core/vk_mega_geometry.cpp) |
 | Prebuilt low-detail BLAS per geometry | `src/scene_preloaded.cpp`, `traversal_init.comp.glsl:303` | not needed until LOD (§9) |
 | Per-frame cluster BLAS builds (implicit, GPU count) | `src/renderer_raytrace_clusters_lod.cpp` ~950–1075, `blas_setup_insertion.comp.glsl`, `blas_clusters_insert.comp.glsl` | not needed until LOD (§9) |
 | TLAS instance patch (BLAS address per instance) | `instance_assign_blas.comp.glsl` | C2 (§3) |
@@ -200,7 +200,7 @@ Required since 2026-11-14 (engine spec §10.3); built 2026-11-14 (plan C4, step 
 
 ### 4.2 Closest-hit payload
 
-The sample's path-trace closest-hit (`render_pathtrace_clusters.rchit.glsl`) writes `{hitT, instanceID, clusterID, triangleID, barycentrics}` plus either the 3 fetched positions or the world geometric normal (`PATHTRACE_HIT_POSITIONS`). The engine's SER design ([g1_ser_rt_pipeline.md](../m4/g1_ser_rt_pipeline.md) §3) writes `{clusterId, triangle, barycentrics, hitT}` (24 B) and takes the positions from `HitObject::GetTriangleVertexPositions` in raygen, which keeps the payload small across `ReorderThread`.
+The sample's path-trace closest-hit (`render_pathtrace_clusters.rchit.glsl`) writes `{hitT, instanceID, clusterID, triangleID, barycentrics}` plus either the 3 fetched positions or the world geometric normal (`PATHTRACE_HIT_POSITIONS`). The engine's SER design ([g1_ser_rt_pipeline.md](../../m4/g1_ser_rt_pipeline.md) §3) writes `{clusterId, triangle, barycentrics, hitT}` (24 B) and takes the positions from `HitObject::GetTriangleVertexPositions` in raygen, which keeps the payload small across `ReorderThread`.
 
 **Reading `ClusterID` in Slang.** The sample declares it in GLSL with `spirv_decorate(extensions = ["SPV_NV_cluster_acceleration_structure"], capabilities = [5437], 11, 5436) in int gl_ClusterIDNV_` (BuiltIn `ClusterIDNV` = 5436, capability `RayTracingClusterAccelerationStructureNV` = 5437). If the pinned Slang has no closest-hit intrinsic for it, use the same SPIR-V through `spirv_asm` in one helper in `raytracing.hit`. The SER4 compile probe answers which.
 
@@ -272,7 +272,7 @@ The origin offset uses the **geometric** normal, never the shading normal.
 **As built (RT4):** `safeSpawnPoint(hit, direction)` in `geometry/hit.slang`, offsetting to `direction`'s side of the triangle. `ENGINE_RT_CHECK` spawns one cosine-weighted ray from every matched interior primary hit: 0 self-hits over about 385 million rays (cull check, motion test, guide capture). The truncation bound is not added, since positions are untruncated (§9.4). `pointOffset` and `minT` stay with D4.
 
 **As built (D4, 2026-11-20): neither `pointOffset` nor `minT` is built.**
-- **`pointOffset`:** the guide capture's `Sponza_terminator` shot (upper colonnade, sun at azimuth 20°, elevation 40°) shows the column shafts and arches shading smoothly into shadow in `Shadowed lights`, with no faceted terminator. The rule of [d4_ray_contract.md](../m6/d4_ray_contract.md) builds it only when an image shows the artifact.
+- **`pointOffset`:** the guide capture's `Sponza_terminator` shot (upper colonnade, sun at azimuth 20°, elevation 40°) shows the column shafts and arches shading smoothly into shadow in `Shadowed lights`, with no faceted terminator. The rule of [d4_ray_contract.md](../../m6/d4_ray_contract.md) builds it only when an image shows the artifact.
 - **`minT`:** with OMMs on, `ENGINE_RT_CHECK` reads 0 self-hits from the hemisphere rays of 7.8 M interior pixels on Sponza and of 24.4 M over a full guide capture, which includes `AlphaBlendModeTest` and two Sponza poses under the sun. `tMin = 0` stays.
 
 ### 6.2 Visibility rays
@@ -348,7 +348,7 @@ None of this is built before the DAG exists. It is listed so the C1/C2 data mode
 - Inputs: `maxClusterCountPerAccelerationStructure = min(maxPerGeometryClusters, maxRenderClusters)`, `maxTotalClusterCount = maxRenderClusters`; build count capacity = instances, or geometries × 2 with sharing + merging (plus cached builds). Capacities and overflow counters as for every GPU list.
 - This changes C2's instance pass: it reads a build index per instance (low detail / own / shared / cached bits) instead of the static per-primitive address.
 
-### 9.3 BLAS reuse ([blas_sharing.md](../../reference/vk_lod_clusters/docs/blas_sharing.md), [blas_merging.md](../../reference/vk_lod_clusters/docs/blas_merging.md), [blas_caching.md](../../reference/vk_lod_clusters/docs/blas_caching.md))
+### 9.3 BLAS reuse ([blas_sharing.md](../../../reference/vk_lod_clusters/docs/blas_sharing.md), [blas_merging.md](../../../reference/vk_lod_clusters/docs/blas_merging.md), [blas_caching.md](../../../reference/vk_lod_clusters/docs/blas_caching.md))
 
 | Technique | Idea | Requirement |
 |---|---|---|

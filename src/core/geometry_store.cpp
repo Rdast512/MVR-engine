@@ -464,6 +464,7 @@ void GeometryStore::clearScratch()
     flushedAuxBlobCount = static_cast<uint32_t>(auxBlobs.size());
     flushedNodeCount = static_cast<uint32_t>(nodeDraws.size());
     flushedGroupCount = static_cast<uint32_t>(meshletGroups.size());
+    flushedEmissiveActiveTriCount = static_cast<uint32_t>(emissiveActiveTriangles.size());
 }
 
 void GeometryStore::discardScratch()
@@ -472,5 +473,6 @@ void GeometryStore::discardScratch()
     auxBlobs.resize(flushedAuxBlobCount);
     nodeDraws.resize(flushedNodeCount);
     meshletGroups.resize(flushedGroupCount);
+    emissiveActiveTriangles.resize(flushedEmissiveActiveTriCount);
     clearScratch();
 }

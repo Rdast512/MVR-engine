@@ -139,9 +139,9 @@ struct LightWorldPushData {
     // rows of the light asset buffer, with the triangle region after their point and spot rows; the sun, when
     // enabled, follows them
     uint32_t assetLightCount;
-    // GpuTriangleLightTask[triangleLightTaskCount] (RayTracingScene)
-    vk::DeviceAddress triangleLightTasks;
-    uint32_t triangleLightTaskCount;
+    // GpuTriangleLightRef[triangleLightRefCount] (RayTracingScene)
+    vk::DeviceAddress triangleLightRefs;
+    uint32_t triangleLightRefCount;
     // resource heap: storage view of the local light PDF's mip 0 (RtxdiContext)
     uint32_t lightPdf;
     // texels of lightPdf's mip 0, each written every frame: a local light's power at its Z-curve texel, 0 past them
@@ -152,7 +152,7 @@ struct LightWorldPushData {
 static_assert(sizeof(LightWorldPushData) == 64);
 static_assert(offsetof(LightWorldPushData, sunDirection) == 8);
 static_assert(offsetof(LightWorldPushData, assetLightCount) == 36);
-static_assert(offsetof(LightWorldPushData, triangleLightTasks) == 40);
+static_assert(offsetof(LightWorldPushData, triangleLightRefs) == 40);
 static_assert(offsetof(LightWorldPushData, lightPdf) == 52);
 
 // light_pdf_mips pass, one dispatch per level; must match shaders/types.slang LightPdfMipsPushData

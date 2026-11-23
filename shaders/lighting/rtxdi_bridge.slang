@@ -129,6 +129,8 @@ struct RtxdiBridgeState
     uint lightPdfSide;
     // GpuRtxdiConstants, for regirParameters
     uint64_t rtxdiConstants;
+    // offset origin stashed by RAB_SurfaceImportanceSampleBrdf for RAB_TraceRayForLocalLight (m8 I14 F24, C-I14-1)
+    float3 brdfRayOrigin;
 };
 
 static RtxdiBridgeState gRtxdiBridge;
@@ -169,6 +171,7 @@ void rtxdiBridgeInit(GpuFrameRoot root)
     gRtxdiBridge.lightPdf = constants[0].lightPdf;
     gRtxdiBridge.lightPdfSide = constants[0].lightPdfSize.x;
     gRtxdiBridge.rtxdiConstants = root.rtxdiConstants;
+    gRtxdiBridge.brdfRayOrigin = float3(0.0, 0.0, 0.0);
 }
 
 // ReGIR's parameters for RTXDI's sampling functions, read in place
@@ -332,13 +335,29 @@ float RAB_SurfaceEvaluateBrdfPdf(RAB_Surface surface, float3 direction)
                    direction);
 }
 
+// raster surfaces carry no traced triangle, so safeSpawnPoint does not apply: offset strictly along the viewer-facing
+// geometric normal, scaled by the larger of the position's magnitude and its view depth (m8 I14 F24)
+static const float kRasterOriginScale = 1.0 / 65536.0;
+
+float3 rasterRayOrigin(RAB_Surface surface)
+{
+    const float scale = kRasterOriginScale * max(length(surface.position), surface.viewDepth);
+    return surface.position + surface.geoNormal * scale;
+}
+
 bool RAB_SurfaceImportanceSampleBrdf(RAB_Surface surface, inout RTXDI_RandomSamplerState rng, out float3 direction)
 {
     const float3 u = float3(RTXDI_GetNextRandom(rng), RTXDI_GetNextRandom(rng), RTXDI_GetNextRandom(rng));
     const BrdfSample brdf =
         sampleBrdf(surface.normal, surface.diffuseAlbedo, surface.specularF0, surface.roughness, surface.viewDir, u);
     direction = brdf.l;
-    return brdf.pdf > 0.0;
+    if (brdf.pdf <= 0.0 || dot(surface.geoNormal, brdf.l) <= 0.0)
+    {
+        return false;
+    }
+    // RTXDI_SampleBrdf passes raw surface position into RAB_TraceRayForLocalLight immediately after this call (C-I14-1)
+    gRtxdiBridge.brdfRayOrigin = rasterRayOrigin(surface);
+    return true;
 }
 
 //
@@ -359,9 +378,10 @@ struct RAB_LightSample
     float solidAnglePdf; // area samples; 0 for deltas and for an area sample that carries no light
 };
 
-// an area sample's visibility ray ends this share of the distance short of the light, which lies on a triangle the
-// ray would otherwise hit
-static const float kLightSampleShortening = 1.0e-3;
+// bounded endpoint margin for area targets (triangle lights and GI X2, m8 I14 F24): avoids close-range overshoot
+// and far-range cm-scale gaps compared to fractional distance shortening
+static const float kMinEndOffset = 5.0e-4;
+static const float kMaxEndOffset = 2.0e-3;
 
 RAB_LightInfo RAB_EmptyLightInfo()
 {
@@ -437,7 +457,7 @@ RAB_LightSample RAB_SamplePolymorphicLight(RAB_LightInfo light, RAB_Surface surf
     {
         const TriangleLightSample area = sampleTriangleLight(asTriangleLight(light), surface.position, uv);
         sample.l = area.l;
-        sample.distance = area.distance * (1.0 - kLightSampleShortening);
+        sample.distance = area.distance;
         sample.radiance = area.solidAnglePdf > 0.0 ? area.radiance / area.solidAnglePdf : float3(0.0, 0.0, 0.0);
         sample.position = area.position;
         sample.solidAnglePdf = area.solidAnglePdf;
@@ -508,7 +528,8 @@ float3 shadeLightSample(RAB_Surface surface, RAB_LightSample sample)
         return float3(0.0, 0.0, 0.0);
     }
     const float nDotL = dot(surface.normal, sample.l);
-    if (nDotL <= 0.0)
+    // normal maps can tilt n past the triangle plane; reject lights behind geoNormal (m8 I14 F24, RAB_Surface.hlsli)
+    if (nDotL <= 0.0 || dot(surface.geoNormal, sample.l) <= 0.0)
     {
         return float3(0.0, 0.0, 0.0);
     }
@@ -523,19 +544,62 @@ float RAB_GetLightSampleTargetPdfForSurface(RAB_LightSample sample, RAB_Surface 
 }
 
 //
-// visibility: traceVisibility from the guide surface
+// visibility: offset-origin segments with bounded endpoint margins (m8 I14 F24)
 //
 
-// raster surfaces carry no traced triangle, so safeSpawnPoint does not apply: the reference offset of
-// spec/features/ray_tracing_mega_geometry.md §6.1 (offsetRay), along the geometric normal on the ray's side, scaled
-// by the larger of the position's magnitude and its view depth (the resolve's reconstruction error grows with both)
-static const float kRasterOriginScale = 1.0 / 65536.0;
-
-float3 rasterRayOrigin(RAB_Surface surface, float3 direction)
+// direction and bounded tMax from an already-offset origin to target; false when target lies inside the margin
+bool visibilitySegment(float3 origin, float3 target, bool isAreaTarget, out float3 direction, out float tMax)
 {
-    const float side = dot(surface.geoNormal, direction) < 0.0 ? -1.0 : 1.0;
-    const float scale = kRasterOriginScale * max(length(surface.position), surface.viewDepth);
-    return surface.position + surface.geoNormal * (side * scale);
+    const float3 toTarget = target - origin;
+    const float dist = length(toTarget);
+    if (dist <= 0.0)
+    {
+        direction = float3(0.0, 0.0, 1.0);
+        tMax = 0.0;
+        return false;
+    }
+    tMax = isAreaTarget ? dist - clamp(dist * 1.0e-4, kMinEndOffset, kMaxEndOffset) : dist;
+    if (tMax <= 0.0)
+    {
+        direction = float3(0.0, 0.0, 1.0);
+        tMax = 0.0;
+        return false;
+    }
+    direction = toTarget / dist;
+    return true;
+}
+
+bool traceSegmentVisibility(float3 origin, float3 target, bool isAreaTarget)
+{
+    float3 direction;
+    float tMax;
+    if (!visibilitySegment(origin, target, isAreaTarget, direction, tMax))
+    {
+        return true;
+    }
+    return traceVisibility(gRtxdiBridge.rays, origin, direction, 0.0, tMax);
+}
+
+bool lightVisibilitySegment(float3 origin, RAB_LightSample sample, out float3 direction, out float tMax)
+{
+    if (sample.distance >= kInfiniteDistance)
+    {
+        direction = sample.l;
+        tMax = kInfiniteDistance;
+        return true;
+    }
+    return visibilitySegment(origin, sample.position, sample.solidAnglePdf > 0.0, direction, tMax);
+}
+
+bool traceLightVisibility(float3 origin, RAB_LightSample sample)
+{
+    float3 direction;
+    float tMax;
+    if (!lightVisibilitySegment(origin, sample, direction, tMax))
+    {
+        return true;
+    }
+    return traceVisibility(gRtxdiBridge.rays, origin, direction, 0.0, tMax);
 }
 
 bool RAB_GetConservativeVisibility(RAB_Surface surface, RAB_LightSample sample)
@@ -544,7 +608,7 @@ bool RAB_GetConservativeVisibility(RAB_Surface surface, RAB_LightSample sample)
     {
         return false;
     }
-    return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(surface, sample.l), sample.l, 0.0, sample.distance);
+    return traceLightVisibility(rasterRayOrigin(surface), sample);
 }
 
 // no previous TLAS: trace from previousSurface through this frame's TLAS. Under permutation sampling the temporal
@@ -556,30 +620,18 @@ bool RAB_GetTemporalConservativeVisibility(RAB_Surface currentSurface, RAB_Surfa
     {
         return false;
     }
-    if (sample.distance >= kInfiniteDistance)
-    {
-        return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(previousSurface, sample.l), sample.l, 0.0,
-                               kInfiniteDistance);
-    }
-    const float3 toLight = sample.position - previousSurface.position;
-    const float distance = length(toLight);
-    if (distance <= 0.0)
-    {
-        return true;
-    }
-    const float3 l = toLight / distance;
-    const float shortening = sample.solidAnglePdf > 0.0 ? kLightSampleShortening : 0.0;
-    return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(previousSurface, l), l, 0.0,
-                           distance * (1.0 - shortening));
+    return traceLightVisibility(rasterRayOrigin(previousSurface), sample);
 }
 
 // BRDF rays (BrdfRayTracing in the RTXDI sample): the closest hit names its triangle light, and randXY replays the hit
-// point through RAB_SamplePolymorphicLight
+// point through RAB_SamplePolymorphicLight. Uses the offset origin stashed by RAB_SurfaceImportanceSampleBrdf with
+// TMin = 0 to avoid grazing self-hits and sub-mm occluder skips (m8 I14 F24, C-I14-1)
 bool RAB_TraceRayForLocalLight(float3 origin, float3 direction, float tMin, float tMax, out uint lightIndex,
                                out float2 randXY)
 {
     lightIndex = RTXDI_InvalidLightIndex;
     randXY = float2(0.0, 0.0);
+    const float3 rayOrigin = gRtxdiBridge.brdfRayOrigin;
     // no hit can name a light: without an environment light the return value is unused (InitialSampling.hlsli:554;
     // m8 I6 O8); with one, a first-hit visibility query answers whether the sky is blocked
     if (gRtxdiBridge.triangleLights.lightCount == 0)
@@ -589,12 +641,12 @@ bool RAB_TraceRayForLocalLight(float3 origin, float3 direction, float tMin, floa
         {
             return true;
         }
-        return !traceVisibility(gRtxdiBridge.rays, origin, direction, tMin, tMax);
+        return !traceVisibility(gRtxdiBridge.rays, rayOrigin, direction, 0.0, tMax);
     }
     RayDesc ray;
-    ray.Origin = origin;
+    ray.Origin = rayOrigin;
     ray.Direction = direction;
-    ray.TMin = tMin;
+    ray.TMin = 0.0;
     ray.TMax = tMax;
     RayHit hit;
     if (!traceClosest(gRtxdiBridge.rays, ray, hit))
@@ -660,10 +712,7 @@ bool RAB_ValidateGISampleWithJacobian(inout float jacobian)
     return jacobian <= 3.0 && jacobian >= 1.0 / 3.0;
 }
 
-// the ray ends this share of the distance short of X2, which lies on the triangle that traced it
-static const float kReconnectionShortening = 1.0e-3;
-
-// from a guide surface to a sample point
+// from a guide surface to a sample point (m8 I14 F24: offset-origin segment with bounded endpoint margin)
 bool isReconnectionVisible(RAB_Surface surface, float3 samplePosition)
 {
     if (!RAB_IsSurfaceValid(surface))
@@ -671,18 +720,11 @@ bool isReconnectionVisible(RAB_Surface surface, float3 samplePosition)
         return false;
     }
     const float3 toSample = samplePosition - surface.position;
-    const float distance = length(toSample);
-    if (distance <= 0.0)
+    if (dot(toSample, toSample) <= 0.0 || dot(surface.geoNormal, toSample) <= 0.0)
     {
         return false;
     }
-    const float3 l = toSample / distance;
-    if (dot(surface.geoNormal, l) <= 0.0)
-    {
-        return false;
-    }
-    return traceVisibility(gRtxdiBridge.rays, rasterRayOrigin(surface, l), l, 0.0,
-                           distance * (1.0 - kReconnectionShortening));
+    return traceSegmentVisibility(rasterRayOrigin(surface), samplePosition, true);
 }
 
 bool RAB_GetConservativeVisibility(RAB_Surface surface, float3 samplePosition)

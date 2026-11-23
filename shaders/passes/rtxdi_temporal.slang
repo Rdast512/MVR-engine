@@ -15,7 +15,7 @@ static const uint kRtxdiTile = 8; // matches src/render/vk_renderer.cpp
 #include "Rtxdi/DI/TemporalResampling.hlsli"
 #include "Rtxdi/Utils/RandomSamplerPerPassSeeds.hlsli"
 
-// ReSTIR DI temporal resampling (spec/features/rtxdi_3_2_update.md §3.1): this pixel's initial reservoir against last
+// ReSTIR DI temporal resampling (spec/features/done/rtxdi_3_2_update.md §3.1): this pixel's initial reservoir against last
 // frame's final reservoirs at the reprojected pixel and its neighbors, then the boiling filter. The output buffer is
 // the initial one, written in place, so without temporal resampling or without history the pass writes nothing
 

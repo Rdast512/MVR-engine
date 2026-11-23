@@ -1,4 +1,4 @@
-// settings lab registry and plans (spec/features/full_testing.md §7 T1, T4): config strings round-trip, sets apply
+// settings lab registry and plans (spec/features/planned/full_testing.md §7 T1, T4): config strings round-trip, sets apply
 // before overrides, every built-in plan parses. CPU only: no device, no engine run
 #include "test_support.hpp"
 

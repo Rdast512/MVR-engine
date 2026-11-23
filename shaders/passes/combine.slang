@@ -19,9 +19,26 @@ void combineMain(uint3 id : SV_DispatchThreadID)
     {
         return;
     }
-    const float3 direct = tex2D(targets.directRadianceSampled).Load(int3(id.xy, 0)).rgb;
-    const float3 indirect = tex2D(targets.indirectRadianceSampled).Load(int3(id.xy, 0)).rgb;
     const float3 emissive = tex2D(targets.current.sampled[kGuideEmissive]).Load(int3(id.xy, 0)).rgb;
-    storageTex2D<float4, kImageFormatRgba16f>(targets.noisyColorStorage)[id.xy] =
-        float4(direct + indirect + emissive, 1.0);
+    float3 color;
+    if ((root.frameFlags & kFrameFlagCleanDlssInput) != 0)
+    {
+        // ENGINE_DLSS_CHECK (m8 I14 F25): noise-free analytical radiance identical across guide-perturbation controls
+        float3 normal = tex2D(targets.current.sampled[kGuideNormalRoughness]).Load(int3(id.xy, 0)).xyz;
+        if ((root.frameFlags & kFrameFlagInvertDlssNormal) != 0)
+        {
+            normal = -normal;
+        }
+        const float3 albedo = tex2D(targets.current.sampled[kGuideDiffuseAlbedo]).Load(int3(id.xy, 0)).rgb;
+        const float3 lightDir = normalize(float3(0.4, 0.8, 0.3));
+        const bool hasSurface = dot(normal, normal) > 0.0;
+        color = hasSurface ? albedo * (0.25 + 0.75 * saturate(dot(normal, lightDir))) + emissive : float3(0.0, 0.0, 0.0);
+    }
+    else
+    {
+        const float3 direct = tex2D(targets.directRadianceSampled).Load(int3(id.xy, 0)).rgb;
+        const float3 indirect = tex2D(targets.indirectRadianceSampled).Load(int3(id.xy, 0)).rgb;
+        color = direct + indirect + emissive;
+    }
+    storageTex2D<float4, kImageFormatRgba16f>(targets.noisyColorStorage)[id.xy] = float4(color, 1.0);
 }

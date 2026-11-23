@@ -247,7 +247,7 @@ vk::Extent2D Dlss::recreate(vk::Extent2D display)
     create.InPerfQualityValue = quality;
     // motion in render pixels, reverse z, scene-linear color
     create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
-                                  NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
+                                  (debug.isDepthInverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0);
 
     const FrameSync::OneTimeCommands commands = frameSync.computeCommands();
     commands.cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
@@ -257,6 +257,7 @@ vk::Extent2D Dlss::recreate(vk::Extent2D display)
     submitAndWait(commands.cmd, commands.queue);
     checkNgx(result, "DLSSD feature creation");
     appliedSettings = settings;
+    appliedDepthInverted = debug.isDepthInverted;
     logInfo(std::format("DLSS-RR mode {} preset {}: render {}x{} -> display {}x{}", std::to_underlying(settings.quality),
                         std::to_underlying(settings.preset), renderExtent.width, renderExtent.height, display.width,
                         display.height),
@@ -277,6 +278,9 @@ void Dlss::evaluate(const vk::raii::CommandBuffer& cmd, const Frame& frame) cons
     // (reference/vk_denoise_dlssrr/dlss_rr/src/dlssrr_wrapper.cpp:379-385). Copies: NGX takes non-const pointers
     glm::mat4 worldToView = frame.view;
     glm::mat4 viewToClip = frame.proj;
+    if (debug.isProjYFlipped) {
+        viewToClip[1][1] = -viewToClip[1][1];
+    }
 
     NVSDK_NGX_VK_DLSSD_Eval_Params eval{};
     eval.pInColor = &color;
@@ -290,9 +294,11 @@ void Dlss::evaluate(const vk::raii::CommandBuffer& cmd, const Frame& frame) cons
     eval.pInRoughness = &normalRoughness;
     // keep the post exposure feedback outside ray reconstruction
     eval.pInExposureTexture = nullptr;
+    eval.InPreExposure = debug.preExposure;
     // same sign as the raster offset: measured, the opposite sign shimmers ~20x more on a still camera
-    eval.InJitterOffsetX = frame.jitterPixels.x;
-    eval.InJitterOffsetY = frame.jitterPixels.y;
+    const float jitterSign = debug.isJitterInverted ? -1.0f : 1.0f;
+    eval.InJitterOffsetX = frame.jitterPixels.x * jitterSign;
+    eval.InJitterOffsetY = frame.jitterPixels.y * jitterSign;
     eval.InRenderSubrectDimensions = {renderExtent.width, renderExtent.height};
     eval.InReset = frame.isReset ? 1 : 0;
     eval.InMVScaleX = 1.0f;

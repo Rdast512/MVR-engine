@@ -3,7 +3,7 @@
 **Status** — C1–C4 built. M2 was reopened for mandatory PTLAS and closed
 on 2026-11-14. The async overlap capture and RTX 2060 Super checks remain open.\
 **Reviewed** — 2026-11-16 against the working tree at `9ae42eac2`.
-[Engine spec](../../docs/engine_spec.md) · [PBR plan](../pbr_implementation_plan.md) · [RTX Mega Geometry feature](../features/ray_tracing_mega_geometry.md) · [Considerations](../considerations.md)
+[Engine spec](../../docs/engine_spec.md) · [PBR plan](../pbr_implementation_plan.md) · [RTX Mega Geometry feature](../features/planned/ray_tracing_mega_geometry.md) · [Considerations](../considerations.md)
 
 | Task | Contract |
 |---|---|

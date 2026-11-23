@@ -1,8 +1,8 @@
 # Feature: motion vectors
 
-**Date:** 2026-11-08, updated 2026-11-13 · **Status:** computed in the resolve (M1); history bugs fixed, reset flag and reprojection view in (MV1–MV3); the §5 test list runs as a scripted check and passes (§5.1); MV4–MV5 done with DLSS-RR (plan H1, 2026-11-14) · **Milestone:** M3 ([engine_spec.md](../../docs/engine_spec.md) §16.2), before DLSS-RR and RTXDI temporal reuse
+**Date:** 2026-11-08, updated 2026-11-13 · **Status:** computed in the resolve (M1); history bugs fixed, reset flag and reprojection view in (MV1–MV3); the §5 test list runs as a scripted check and passes (§5.1); MV4–MV5 done with DLSS-RR (plan H1, 2026-11-14) · **Milestone:** M3 ([engine_spec.md](../../../docs/engine_spec.md) §16.2), before DLSS-RR and RTXDI temporal reuse
 **Implements:** engine spec §9.2 step 3, §9.3 `motion`, §12.2
-**Related:** [visibility_buffer.md](./visibility_buffer.md) §3.6, §10; [pbr_implementation_plan.md](../pbr_implementation_plan.md) E1, H1
+**Related:** [visibility_buffer.md](./visibility_buffer.md) §3.6, §10; [pbr_implementation_plan.md](../../pbr_implementation_plan.md) E1, H1
 
 Every temporal consumer (DLSS-RR, RTXDI and ReSTIR GI temporal reuse) finds a pixel's previous-frame position through the `Motion` guide. Wrong motion vectors show up as ghosting and smearing after DLSS, and as reuse of the wrong reservoirs, which looks like lighting noise rather than a motion bug. This spec fixes the convention, closes the history bugs, and adds a debug view that proves the vectors right.
 
@@ -44,7 +44,7 @@ All fixed (MV1). B4 needs no code of its own: every recreation goes through `Ren
 
 | # | Bug | Effect | Fix |
 |---|---|---|---|
-| B1 | `ObjectStorage::create` initializes `prevModelMatrices` to **identity** ([object_storage.cpp:16](../../src/core/object_storage.cpp#L16)) | a newly loaded entity's first frame has motion from the world origin to its position; the early-phase Hi-Z test (which uses `prevWorldMatrix`) tests the wrong place for one frame | initialize to `computeModelMatrix(transform)` at create, so a new entity has zero motion |
+| B1 | `ObjectStorage::create` initializes `prevModelMatrices` to **identity** ([object_storage.cpp:16](../../../src/core/object_storage.cpp#L16)) | a newly loaded entity's first frame has motion from the world origin to its position; the early-phase Hi-Z test (which uses `prevWorldMatrix`) tests the wrong place for one frame | initialize to `computeModelMatrix(transform)` at create, so a new entity has zero motion |
 | B2 | a camera cut or projection change (`Camera::isCut()`: teleport, resize, FOV change) keeps the old `prevViewProj` | one frame of huge camera motion; after resize the previous guide set has undefined content of the old size | on a cut frame set `prevViewProj = viewProj` and report a history reset (§4) |
 | B3 | inactive entities skip the prev update in `updateUniformBuffers` | reactivation after a pause jumps by the whole pause's motion | advance `prevModelMatrices` for inactive entities too, or set it to the current matrix on activation |
 | B4 | `drawFrame` can return after `updateCameraData` (swapchain out of date); since present got its own submit, the frame work still runs, but its image is never presented | the next frame's `prevViewProj` is a frame that was never shown | treat a recreate as a cut (B2) |

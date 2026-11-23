@@ -5,7 +5,7 @@ RTXDI 3.2 split from 2026-11-15.\
 **Implements** — PBR F3 and engine spec §11.2.\
 **Depends on** — [F1 host context](f1_rtxdi_context.md) and [F2 bridge](f2_rtxdi_bridge.md).\
 **Used by** — [H1 reconstruction](h1_dlss_ray_reconstruction.md) and [M4 combine](../m4/g6_combine.md).
-[PBR plan](../pbr_implementation_plan.md) · [RTXDI 3.2 update](../features/rtxdi_3_2_update.md)
+[PBR plan](../pbr_implementation_plan.md) · [RTXDI 3.2 update](../features/done/rtxdi_3_2_update.md)
 
 ## Current passes
 
@@ -54,7 +54,7 @@ C-F3-1's bounds checks remain required for BDA. C-R32-4 records that
 the default final-visibility cache can reuse a value from a different
 pixel near hard shadow boundaries. The default is distinct from the
 regression configuration, so report the mode and toggles with a capture.
-[Bridge safeguards](../../shaders/lighting/rtxdi_bridge.slang) · [RTXDI 3.2 pass and settings history](../features/rtxdi_3_2_update.md)
+[Bridge safeguards](../../shaders/lighting/rtxdi_bridge.slang) · [RTXDI 3.2 pass and settings history](../features/done/rtxdi_3_2_update.md)
 
 ## Tasks and evidence
 

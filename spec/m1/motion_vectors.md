@@ -3,7 +3,7 @@
 **Status** — Resolve motion and scripted verification complete for M1. M3
 adds jittered raster, RTXDI depth delta and DLSS-RR input wiring.\
 **Implements** — Visibility-buffer V6 and PBR E1.
-[Motion-vector feature](../features/motion_vectors.md) · [PBR plan](../pbr_implementation_plan.md)
+[Motion-vector feature](../features/done/motion_vectors.md) · [PBR plan](../pbr_implementation_plan.md)
 
 ## Resolve contract
 
@@ -46,7 +46,7 @@ Reprojection debug samples prior albedo at `pixel + motion` and shows
 absolute RGB error. Camera-only validation independently reconstructs
 a world point from current depth. When the object moves, the
 script compares albedo reprojection against the zero-motion control.
-[Debug view](../../shaders/passes/debug_view.slang) · [Feature scenarios](../features/motion_vectors.md)
+[Debug view](../../shaders/passes/debug_view.slang) · [Feature scenarios](../features/done/motion_vectors.md)
 
 ## Tasks and recorded diagnostics
 
@@ -71,7 +71,7 @@ Still frames measured 2.2×10⁻⁵ px maximum motion. C-T-1 and C-T-3 document
 why GPU-assisted validation and forced jitter change the scripted pass/fail
 results. Use the default jitter-off run with GPU-AV disabled for comparison
 to the recorded baseline.
-[Motion check shader](../../shaders/passes/motion_check.slang) · [Scripted test](../../src/core/engine_motion_test.cpp) · [Motion results](../features/motion_vectors.md#51-scripted-check-2026-11-13) · [Considerations](../considerations.md)
+[Motion check shader](../../shaders/passes/motion_check.slang) · [Scripted test](../../src/core/engine_motion_test.cpp) · [Motion results](../features/done/motion_vectors.md#51-scripted-check-2026-11-13) · [Considerations](../considerations.md)
 
 ## Log
 

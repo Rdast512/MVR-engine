@@ -412,10 +412,10 @@ public struct GpuTriangleLight
     public float3 edge1;
     public float3 edge2;
     public uint flags; // kTriangleLightFlag*
-    public float pad0;
+    public uint pad0;
     public LightType type;
     public float3 radiance;
-    public float pad1;
+    public uint pad1;
 };
 
 // GpuTriangleLight.flags; must match GpuTriangleLightFlag in src/core/types.hpp
@@ -579,8 +579,8 @@ public struct LightWorldPushData
     public float sunIlluminance;  // lux
     public float3 sunColor;
     public uint assetLightCount;  // asset rows, with the triangle region after their point and spot rows; then the sun
-    public uint64_t triangleLightTasks; // GpuTriangleLightTask[triangleLightTaskCount]
-    public uint triangleLightTaskCount;
+    public uint64_t triangleLightRefs; // GpuTriangleLightRef[triangleLightRefCount]
+    public uint triangleLightRefCount;
     public uint lightPdf;           // resource heap: storage view of the local light PDF's mip 0
     public uint lightPdfTexelCount; // mip 0 texels; every one is written each frame
     public uint pad0;
@@ -807,13 +807,14 @@ public struct GpuRayInstance
     public uint primitiveRow;      // row in GpuFrameRoot.primitives
 };
 
-// one emissive ray instance's triangle lights, rows [firstLight, +triangleCount) of the triangle region in meshlet
-// order; sorted by firstLight. Matches src/core/types.hpp
-public struct GpuTriangleLightTask
+// high bit of rayInstanceLights[rayInstance]: sparse remap offset into rayInstanceLights tail (m8 I14 F27)
+public static const uint kRayInstanceLightSparseBit = 0x80000000u;
+
+// one active triangle light for light_world (m8 I14 F27); matches src/core/types.hpp
+public struct GpuTriangleLightRef
 {
-    public uint firstLight;
-    public uint triangleCount;
     public uint rayInstance;
+    public uint localTriangle;
 };
 
 // parallel to GpuRayInstance, per scene layout: the PTLAS instance write's inputs beyond the node instance
@@ -837,6 +838,9 @@ public static const uint kRayMaskGlass = 0x02u;
 public static const uint kFrameFlagHistoryReset = 1u << 0;
 public static const uint kFrameFlagIndirectHistoryReset = 1u << 1;
 public static const uint kFrameFlagTriangleLightsUnsampled = 1u << 2;
+public static const uint kFrameFlagCleanDlssInput = 1u << 3;
+public static const uint kFrameFlagInvertDlssNormal = 1u << 4;
+public static const uint kFrameFlagSquareDlssRoughness = 1u << 5;
 
 // per-frame root, matches GpuFrameRoot in src/core/types.hpp
 public struct GpuFrameRoot

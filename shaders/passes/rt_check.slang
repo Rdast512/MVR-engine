@@ -318,7 +318,7 @@ void rayCheckMain(uint3 id : SV_DispatchThreadID)
 
                 RayDesc spawned;
                 spawned.Direction = hemisphereDirection(traced.geoNormal, id.xy);
-                spawned.Origin = safeSpawnPoint(hit, spawned.Direction);
+                spawned.Origin = safeSpawnPoint(hit, traced.geoNormal);
                 spawned.TMin = 0.0;
                 spawned.TMax = camera.farZ;
                 RayHit next;

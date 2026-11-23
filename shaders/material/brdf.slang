@@ -175,13 +175,20 @@ public BrdfSample sampleBrdf(float3 n, float3 cDiff, float3 f0, float roughness,
     return result;
 }
 
-// split-sum environment BRDF, analytic fit (Karis, "Physically Based Shading on Mobile"): f0 * scale + bias
+// NVIDIA EnvBRDFApprox2 (Ray Tracing Gems ch. 32, reference/vk_gltf_renderer/shaders/dlss_util.h): scales additive
+// bias by saturate(max(f0) * 50) so f0 == 0 materials (e.g. Bistro spec-gloss) do not leak grazing SpecAlbedo (m8 I14)
 public float3 envBrdfApprox(float3 f0, float nDotV, float roughness)
 {
-    const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
-    const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
-    const float4 r = roughness * c0 + c1;
-    const float a004 = min(r.x * r.x, exp2(-9.28 * nDotV)) * r.x + r.y;
-    const float2 scaleBias = float2(-1.04, 1.04) * a004 + r.zw;
-    return f0 * scaleBias.x + scaleBias.y;
+    const float alpha = roughness * roughness;
+    const float noV = abs(nDotV);
+    const float4 x = float4(1.0, noV, noV * noV, noV * noV * noV);
+    const float4 y = float4(1.0, alpha, alpha * alpha, alpha * alpha * alpha);
+    const float2x2 m1 = float2x2(0.99044, -1.28514, 1.29678, -0.755907);
+    const float3x3 m2 = float3x3(1.0, 2.92338, 59.4188, 20.3225, -27.0302, 222.592, 121.563, 626.13, 316.627);
+    const float2x2 m3 = float2x2(0.0365463, 3.32707, 9.0632, -9.04756);
+    const float3x3 m4 = float3x3(1.0, 3.59685, -1.36772, 9.04401, -16.3174, 9.22949, 5.56589, 19.7886, -20.2123);
+    float bias = dot(mul(m1, x.xy), y.xy) * rcp(dot(mul(m2, x.xyw), y.xyw));
+    const float scale = dot(mul(m3, x.xy), y.xy) * rcp(dot(mul(m4, x.xzw), y.xyw));
+    bias *= saturate(max(f0.r, max(f0.g, f0.b)) * 50.0);
+    return mad(f0, max(0.0, scale), max(0.0, bias));
 }

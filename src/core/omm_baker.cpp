@@ -167,6 +167,70 @@ OmmAlphaTexture decodeBc7Alpha(std::span<const uint8_t> blocks, uint32_t width, 
     return alpha;
 }
 
+OmmAlphaTexture extractMaxRgb(std::span<const uint8_t> rgba, uint32_t width, uint32_t height)
+{
+    const size_t texelCount = size_t{width} * height;
+    if (rgba.size() < texelCount * kRgbaBytes) {
+        throw std::runtime_error(std::format("RGBA8 pixels too small for {}x{}", width, height));
+    }
+    OmmAlphaTexture mask{.texels = std::vector<uint8_t>(texelCount), .width = width, .height = height};
+    for (size_t i = 0; i < texelCount; ++i) {
+        const size_t base = i * kRgbaBytes;
+        mask.texels[i] = std::max({rgba[base], rgba[base + 1], rgba[base + 2]});
+    }
+    return mask;
+}
+
+namespace
+{
+    template <size_t BlockBytes, typename DecodeFn>
+    OmmAlphaTexture decodeBcMaxRgb(std::span<const uint8_t> blocks, uint32_t width, uint32_t height,
+                                   const char* formatName, DecodeFn&& decodeBlock)
+    {
+        const uint32_t blocksX = (width + kBcBlockExtent - 1) / kBcBlockExtent;
+        const uint32_t blocksY = (height + kBcBlockExtent - 1) / kBcBlockExtent;
+        if (blocks.size() < size_t{blocksX} * blocksY * BlockBytes) {
+            throw std::runtime_error(std::format("{} data too small for {}x{}", formatName, width, height));
+        }
+        OmmAlphaTexture mask{.texels = std::vector<uint8_t>(size_t{width} * height), .width = width, .height = height};
+        std::array<uint8_t, kBcBlockExtent * kBcBlockExtent * kRgbaBytes> block{};
+        for (uint32_t by = 0; by < blocksY; ++by) {
+            for (uint32_t bx = 0; bx < blocksX; ++bx) {
+                decodeBlock(blocks.data() + (size_t{by} * blocksX + bx) * BlockBytes, block.data(),
+                            kBcBlockExtent * kRgbaBytes);
+                const uint32_t rows = std::min(kBcBlockExtent, height - by * kBcBlockExtent);
+                const uint32_t columns = std::min(kBcBlockExtent, width - bx * kBcBlockExtent);
+                for (uint32_t y = 0; y < rows; ++y) {
+                    const size_t row = size_t{by * kBcBlockExtent + y} * width + bx * kBcBlockExtent;
+                    for (uint32_t x = 0; x < columns; ++x) {
+                        const size_t base = (y * kBcBlockExtent + x) * kRgbaBytes;
+                        mask.texels[row + x] = std::max({block[base], block[base + 1], block[base + 2]});
+                    }
+                }
+            }
+        }
+        return mask;
+    }
+} // namespace
+
+OmmAlphaTexture decodeBc7MaxRgb(std::span<const uint8_t> blocks, uint32_t width, uint32_t height)
+{
+    ZoneScopedN("decodeBc7MaxRgb");
+    return decodeBcMaxRgb<BCDEC_BC7_BLOCK_SIZE>(blocks, width, height, "BC7", bcdec_bc7);
+}
+
+OmmAlphaTexture decodeBc1MaxRgb(std::span<const uint8_t> blocks, uint32_t width, uint32_t height)
+{
+    ZoneScopedN("decodeBc1MaxRgb");
+    return decodeBcMaxRgb<BCDEC_BC1_BLOCK_SIZE>(blocks, width, height, "BC1", bcdec_bc1);
+}
+
+OmmAlphaTexture decodeBc3MaxRgb(std::span<const uint8_t> blocks, uint32_t width, uint32_t height)
+{
+    ZoneScopedN("decodeBc3MaxRgb");
+    return decodeBcMaxRgb<BCDEC_BC3_BLOCK_SIZE>(blocks, width, height, "BC3", bcdec_bc3);
+}
+
 void OmmBaker::BakerDeleter::operator()(ommBaker handle) const noexcept
 {
     (void)ommDestroyBaker(handle);

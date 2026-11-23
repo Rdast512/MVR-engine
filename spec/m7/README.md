@@ -54,4 +54,4 @@ Engine spec §16.2 also names "Bistro emissives lit". Bistro was not in the repo
 - `reference/RTXDI/Samples/FullSample` — light preparation, presampling, ReGIR, the bridge (`RtxdiApplicationBridge/`), and the `Medium` preset. NVIDIA RTX SDKs license, like the RTXDI SDK.
 - `ThirdParty/_deps/src/rtxdi` — `ImportanceSamplingContext`, `ReGIR/`, `LightSampling/`.
 - [reference/dgc_comparison.md](../../reference/dgc_comparison.md) §7, §9 and `reference/vk_device_generated_cmds-master` — DGC execution sets and preprocess.
-- [visibility_buffer.md](../features/visibility_buffer.md) §7 — the M7 binning hook.
+- [visibility_buffer.md](../features/done/visibility_buffer.md) §7 — the M7 binning hook.

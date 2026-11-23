@@ -117,6 +117,12 @@ struct PrimitiveDraw
     // catalog-absolute rows of GeometryStore::meshletGroups; the groups cover the meshlets in order
     uint32_t firstGroup = 0;
     uint32_t groupCount = 0;
+    // m8 I14 F27: zero-flux triangle light filter for partial textured emitters (catalog-absolute rows of
+    // GeometryStore::emissiveActiveTriangles). When hasEmissiveFilter is false, every triangle of an emissive
+    // primitive is active.
+    uint32_t firstEmissiveTriangle = 0;
+    uint32_t emissiveTriangleCount = 0;
+    bool hasEmissiveFilter = false;
 };
 
 namespace NodeFlag
@@ -515,7 +521,7 @@ struct GpuSerCheckStats {
 static_assert(sizeof(GpuSerCheckStats) == 28);
 static_assert(offsetof(GpuSerCheckStats, maxDistanceErrorBits) == 24);
 
-// motion_check pass, ENGINE_MOTION_TEST only (spec/features/motion_vectors.md §5); zeroed by the CPU per frame
+// motion_check pass, ENGINE_MOTION_TEST only (spec/features/done/motion_vectors.md §5); zeroed by the CPU per frame
 struct GpuMotionCheckStats {
     uint32_t pixels = 0;
     uint32_t emptyPixels = 0;
@@ -835,11 +841,11 @@ struct GpuTriangleLight
     glm::vec3 edge2{0.0f};
     // GpuTriangleLightFlag bits
     uint32_t flags = 0;
-    float pad0 = 0.0f;
+    uint32_t pad0 = 0;
     GpuLightType type = GpuLightType::Triangle;
-    // emitted radiance, W / (sr m^2) in scene units
+    // emitted radiance, W / (sr m^2) in scene units (multi-tap average in light_world)
     glm::vec3 radiance{0.0f};
-    float pad1 = 0.0f;
+    uint32_t pad1 = 0;
 };
 static_assert(sizeof(GpuTriangleLight) == sizeof(GpuLight));
 static_assert(offsetof(GpuTriangleLight, edge1) == 12);
@@ -1135,6 +1141,10 @@ namespace FrameFlag
     // WorldLights::areTriangleLightsSampled off: RTXDI's local region holds the point and spot rows only, BRDF rays
     // name no light and hits on light triangles add their emission
     inline constexpr uint32_t TriangleLightsUnsampled = 1u << 2;
+    // ENGINE_DLSS_CHECK (m8 I14 F25): synthetic clean radiance and guide perturbation controls
+    inline constexpr uint32_t CleanDlssInput = 1u << 3;
+    inline constexpr uint32_t InvertDlssNormal = 1u << 4;
+    inline constexpr uint32_t SquareDlssRoughness = 1u << 5;
 } // namespace FrameFlag
 
 // [InstanceIndex()] of a TLAS instance; written by the CPU per scene layout (RayTracingScene)
@@ -1171,19 +1181,20 @@ namespace GpuRayInstanceBuildFlag
 } // namespace GpuRayInstanceBuildFlag
 static_assert(offsetof(GpuRayInstance, primitiveRow) == 4);
 
-// one emissive ray instance's triangle lights (light_world's task, PrepareLightsTask in the RTXDI sample): rows
-// [firstLight, firstLight + triangleCount) of the triangle region, the primitive's triangles in meshlet order. Sorted by
-// firstLight, contiguous
-struct GpuTriangleLightTask
+// high bit of a rayInstanceLights[rayInstance] entry: the entry is an offset into the sparse remap tail of
+// rayInstanceLights rather than a dense firstLight (m8 I14 F27 zero-flux triangle light culling)
+inline constexpr uint32_t kRayInstanceLightSparseBit = 0x80000000u;
+
+// one active triangle light (m8 I14 F27): direct O(1) lookup for light_world after zero-flux culling
+struct GpuTriangleLightRef
 {
-    uint32_t firstLight = 0;
-    uint32_t triangleCount = 0;
     // row of GpuFrameRoot::rayInstances
     uint32_t rayInstance = 0;
+    // triangle index in the primitive's meshlet order
+    uint32_t localTriangle = 0;
 };
-static_assert(sizeof(GpuTriangleLightTask) == 12);
-static_assert(offsetof(GpuTriangleLightTask, triangleCount) == 4);
-static_assert(offsetof(GpuTriangleLightTask, rayInstance) == 8);
+static_assert(sizeof(GpuTriangleLightRef) == 8);
+static_assert(offsetof(GpuTriangleLightRef, localTriangle) == 4);
 
 // per-frame entry point for every shader: the only address the push data carries
 struct GpuFrameRoot

@@ -3,7 +3,7 @@
 **Status** — Built. V7 cleanup done.\
 **Implements** — Engine spec §8.1 A6 and §8.3. Visibility-buffer V4, V5 and V7.\
 **Used by** — [E1 resolve](e1_resolve_guides.md).
-[Visibility-buffer feature](../features/visibility_buffer.md) · [Engine spec](../../docs/engine_spec.md)
+[Visibility-buffer feature](../features/done/visibility_buffer.md) · [Engine spec](../../docs/engine_spec.md)
 
 ## Raster and payload
 

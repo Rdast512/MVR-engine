@@ -1,7 +1,7 @@
 # M8 · I15: Café DI and GI settings from the lab (F22, F23)
 
 **Status:** planned 2026-11-22 · **Milestone:** M8 ([README](./README.md))
-**Implements:** the settings fixes for F22 and F23 ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §5) found by the settings lab's first runs (`f22_quick`, `di-ofat`, `gi-ofat`, 2026-11-22, [features/full_testing.md](../features/full_testing.md)). Also T6's validation half for the lab (does the lab name the culprit the hand runs found)
+**Implements:** the settings fixes for F22 and F23 ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §5) found by the settings lab's first runs (`f22_quick`, `di-ofat`, `gi-ofat`, 2026-11-22, [features/planned/full_testing.md](../features/planned/full_testing.md)). Also T6's validation half for the lab (does the lab name the culprit the hand runs found)
 **Depends on:** I1, I5, I6, the settings lab (T1–T5). Phase 2 lands after I14 Phase 3 ([i14_bistro_sampling_and_rays.md](./i14_bistro_sampling_and_rays.md))
 **Feeds:** I12 (re-checks both phases on Bistro after I14)
 **References:**
@@ -142,4 +142,4 @@ Use Phase 1's choice in `fix`; the B shown is the current front-runner.
 - [ ] Phase 1: A or B shipped in `defaultSettings()` with the 5-seed café, Sponza and Bistro numbers and the cost line; F22 marked fixed in the findings
 - [ ] Phase 2: the plan run now and again on the I14 Phase 3 tree; the winning GI change shipped in `defaultGiSettings()` by the rule above, or F23 left open with the numbers if nothing qualifies
 - [ ] every runner in Verification passes; NVIDIA's DI and GI sets unchanged and callable
-- [ ] T6's GI-half note in [full_testing.md](../features/full_testing.md) §9; I12's F22 / F23 item reduced to the Bistro re-check of both phases
+- [ ] T6's GI-half note in [full_testing.md](../features/planned/full_testing.md) §9; I12's F22 / F23 item reduced to the Bistro re-check of both phases

@@ -18,7 +18,7 @@
 // guide captures for the E1 comparison with the Khronos screenshots and the A4 shading-attribute checks
 // (spec/pbr_implementation_plan.md E1, A4): each model alone at the origin, framed from a fixed direction, every guide
 // view written as a PNG under logs/guides; then the normal checks compare captures pixel by pixel, and the convergence
-// check compares ReSTIR DI's mean against the exact punctual sum (spec/features/rtxdi_3_2_update.md §4), or against
+// check compares ReSTIR DI's mean against the exact punctual sum (spec/features/done/rtxdi_3_2_update.md §4), or against
 // RTXDI's no-reuse mode where triangle lights take part (spec/m7/e2_emissive_triangles.md), and the glass
 // throughput check holds the glass pass's composite against its throughput (m8 I13 §5).
 // ENGINE_GUIDE_CAPTURE=1 enables the run; the engine quits once the last shot is written and the checks are logged

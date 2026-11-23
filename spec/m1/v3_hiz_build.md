@@ -2,7 +2,7 @@
 
 **Status** — Built. RTX 5070 combined cull/preprocess/Hi-Z timing recorded.\
 **Depends on** — [V2 reverse Z](v2_reverse_z.md).
-[Visibility-buffer design](../features/visibility_buffer.md) · [A9 history](a9_reverse_z_hiz.md)
+[Visibility-buffer design](../features/done/visibility_buffer.md) · [A9 history](a9_reverse_z_hiz.md)
 
 ## Decisions and data flow
 

@@ -4,7 +4,7 @@
 **Implements** — PBR C2 and engine spec §10.3 and §13.1 X2.\
 **Depends on** — [C1 model AS](c1_cluster_acceleration_structures.md).\
 **Current AS build** — [C4 PTLAS](c4_partitioned_tlas.md).
-[PBR plan](../pbr_implementation_plan.md) · [RTX Mega Geometry feature](../features/ray_tracing_mega_geometry.md)
+[PBR plan](../pbr_implementation_plan.md) · [RTX Mega Geometry feature](../features/planned/ray_tracing_mega_geometry.md)
 
 ## Instance and queue contract
 

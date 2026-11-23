@@ -4,7 +4,7 @@
 **Implements** — PBR C3 and engine spec §10.1, §10.3 and §10.4.\
 **Depends on** — [C1 geometry IDs](c1_cluster_acceleration_structures.md), [C2 instance rows](c2_gpu_instances_async_compute.md) and [M1 resolve](../m1/e1_resolve_guides.md).\
 **Used by** — [M4 G1](../m4/g1_ser_rt_pipeline.md).
-[PBR plan](../pbr_implementation_plan.md) · [RTX Mega Geometry feature](../features/ray_tracing_mega_geometry.md)
+[PBR plan](../pbr_implementation_plan.md) · [RTX Mega Geometry feature](../features/planned/ray_tracing_mega_geometry.md)
 
 ## Hit contract
 

@@ -654,6 +654,9 @@ void AssetBuffers::flush()
                   static_cast<uint32_t>(geometryStore.nodeDraws.size()) - geometryStore.flushedNodeCount},
         .meshletGroups = {geometryStore.flushedGroupCount,
                           static_cast<uint32_t>(geometryStore.meshletGroups.size()) - geometryStore.flushedGroupCount},
+        .emissiveActiveTriangles = {geometryStore.flushedEmissiveActiveTriCount,
+                                    static_cast<uint32_t>(geometryStore.emissiveActiveTriangles.size()) -
+                                        geometryStore.flushedEmissiveActiveTriCount},
         .key = objectStorage.names[entity],
         .meshletDraw = {},
         .localBounds = glm::vec4{0.0f},
@@ -966,8 +969,10 @@ void AssetBuffers::rebaseCatalog(ModelId modelId, const ModelAllocation& removed
     eraseSlice(geometry.auxBlobs, removed.auxBlobs);
     eraseSlice(geometry.nodeDraws, removed.nodes);
     eraseSlice(geometry.meshletGroups, removed.meshletGroups);
+    eraseSlice(geometry.emissiveActiveTriangles, removed.emissiveActiveTriangles);
     geometry.flushedNodeCount -= removed.nodes.count;
     geometry.flushedGroupCount -= removed.meshletGroups.count;
+    geometry.flushedEmissiveActiveTriCount -= removed.emissiveActiveTriangles.count;
     geometry.flushedPrimitiveCount -= removed.primitives.count;
     geometry.flushedAuxBlobCount -= removed.auxBlobs.count;
 
@@ -977,6 +982,9 @@ void AssetBuffers::rebaseCatalog(ModelId modelId, const ModelAllocation& removed
         shift(draw.firstVertex, gpuRange(AssetBuffer::Vertices));
         shift(draw.firstIndex, gpuRange(AssetBuffer::Indices));
         shift(draw.firstGroup, removed.meshletGroups);
+        if (draw.hasEmissiveFilter) {
+            shift(draw.firstEmissiveTriangle, removed.emissiveActiveTriangles);
+        }
     }
     for (NodeDraw& node : geometry.nodeDraws) {
         shift(node.firstPrimitive, removed.primitives);
@@ -999,6 +1007,7 @@ void AssetBuffers::rebaseCatalog(ModelId modelId, const ModelAllocation& removed
         shift(allocation.auxBlobs.first, removed.auxBlobs);
         shift(allocation.nodes.first, removed.nodes);
         shift(allocation.meshletGroups.first, removed.meshletGroups);
+        shift(allocation.emissiveActiveTriangles.first, removed.emissiveActiveTriangles);
         shift(allocation.meshletDraw.firstMeshlet, gpuRange(AssetBuffer::Meshlets));
     }
 }

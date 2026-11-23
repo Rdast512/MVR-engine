@@ -4,7 +4,7 @@
 **Implements** — PBR C1 and engine spec §10.1–10.2.\
 **Depends on** — [M0 A4](../m0/a4_shading_attributes.md).\
 **Used by** — [C2 instance rows](c2_gpu_instances_async_compute.md) and [C3 hit decode](c3_ray_hit_decode.md).
-[PBR plan](../pbr_implementation_plan.md) · [RTX Mega Geometry feature](../features/ray_tracing_mega_geometry.md)
+[PBR plan](../pbr_implementation_plan.md) · [RTX Mega Geometry feature](../features/planned/ray_tracing_mega_geometry.md)
 
 ## Build and ownership
 

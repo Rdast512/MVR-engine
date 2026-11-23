@@ -12,7 +12,7 @@ description: Task plan for glTF metallic-roughness PBR on the engine_spec archit
 | Doc | Role |
 |---|---|
 | [engine_spec.md](../docs/engine_spec.md) | Target architecture, milestones, budgets (normative) |
-| [visibility_buffer.md](./features/visibility_buffer.md) | Vis buffer and resolve design, as-built notes (§10) |
+| [visibility_buffer.md](./features/done/visibility_buffer.md) | Vis buffer and resolve design, as-built notes (§10) |
 | [pbr_lighting_materials.md](./pbr_lighting_materials.md) | Shading rules (normative for agents) |
 | [pbr_lighting_materials.html](../docs/pbr_lighting_materials.html) | Human explainer with live graphs and scenes |
 | glTF 2.0 [§3.9 Materials](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#materials), [Appendix B](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#appendix-b-brdf-implementation), [Khronos extension specs](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos) | Normative glTF math |
@@ -97,7 +97,7 @@ Every ray pass reads the TLAS address from `GpuFrameRoot.tlas`: the one PTLAS (C
 | 9 | **Default material:** metallic 1, roughness 1, white. It renders dark without GI, which is correct |
 | 10 | **AO:** sampled in the resolve and stored with the guides. Applied only to the radiance-cache query term at the primary vertex. Never on direct light |
 | 11 | **GI cache:** NRC only, on every tier (M4), with no cache interface: the indirect pass calls the NRC bridge directly. Kept built as a runtime comparison switch since 2026-11-20 (spec §11.7); 1.0 ships ReSTIR GI mode (NRC paused) until C-G5-3 is fixed |
-| 12 | **RTXDI light sampling:** `Uniform` for punctual-only scenes (M3). Since M7 F1 presampled as the RTXDI sample's `Medium`: `ReGIR_RIS` by default, its cells filled from `Power_RIS` tiles (presample passes + PDF texture); `Power_RIS` and `Uniform` selectable ([m7/f1_light_presampling.md](./m7/f1_light_presampling.md)). Resampling: `TemporalAndSpatial` (RTXDI 3.2 dropped `FusedSpatiotemporal`; [rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md)) |
+| 12 | **RTXDI light sampling:** `Uniform` for punctual-only scenes (M3). Since M7 F1 presampled as the RTXDI sample's `Medium`: `ReGIR_RIS` by default, its cells filled from `Power_RIS` tiles (presample passes + PDF texture); `Power_RIS` and `Uniform` selectable ([m7/f1_light_presampling.md](./m7/f1_light_presampling.md)). Resampling: `TemporalAndSpatial` (RTXDI 3.2 dropped `FusedSpatiotemporal`; [rtxdi_3_2_update.md](./features/done/rtxdi_3_2_update.md)) |
 | 13 | **Scene data per frame:** the CPU writes `GpuFrameRoot`, the camera and changed transforms. Ray instance ops, the PTLAS update and the RTXDI light buffer are written on the GPU from the persistent tables (spec P2) |
 | 14 | **C++ style** (`cpp-guidelines` skill, `.clang-tidy`): PascalCase types and `enum class` enumerators; camelCase functions, members, locals; class constants `kPascalCase`; getters `getX` / `isX` / `hasX`; no `m_` or trailing `_`. RAII owners of AS, micromaps, RT pipelines and SDK objects are move-only (Rule of Five); everything else follows the Rule of Zero. `const`/`constexpr` by default, `explicit` single-argument constructors, `[[nodiscard]]` on getters, named constants instead of magic numbers. Failures throw `std::runtime_error` with context. `.hpp` + `#pragma once`, no `using namespace` in headers |
 | 15 | **Comments** (`main-guidelines` skill), in C++ and Slang: lowercase, 2–8 words, why or non-obvious behavior only, no trailing period |
@@ -110,7 +110,7 @@ Every ray pass reads the TLAS address from `GpuFrameRoot.tlas`: the one PTLAS (C
 
 ## 3. Current state (verified 2026-11-20)
 
-Resource details: [resource_architecture.md](./resource_architecture.md). Vis-buffer details: [visibility_buffer.md §10](./features/visibility_buffer.md#10-as-built-2026-11-07).
+Resource details: [resource_architecture.md](./resource_architecture.md). Vis-buffer details: [visibility_buffer.md §10](./features/done/visibility_buffer.md#10-as-built-2026-11-07).
 
 | Piece | State |
 |---|---|
@@ -255,7 +255,7 @@ See the [M0 as-built specs](./m0/README.md) for implementation contracts, verifi
 - **Do:**
   - Slang `AlphaMode`, `LightType` and material flag constants mirroring `GpuMaterialFlag` (§4.2); move `kMaterialFlagUnlit` out of `material/pbr.slang`.
   - `enum class GpuLightType : uint32_t { Directional, Point, Spot }` (values used by `lightTypeFromName`); `GpuLight.type` becomes `GpuLightType`. Keep 64 B.
-  - `GpuRayInstance` (8 B) and the `GpuFrameRoot` fields of §4.2 plus `frameFlags` (`kFrameFlagHistoryReset`, [motion_vectors.md](./features/motion_vectors.md) §4), with size and offset asserts.
+  - `GpuRayInstance` (8 B) and the `GpuFrameRoot` fields of §4.2 plus `frameFlags` (`kFrameFlagHistoryReset`, [motion_vectors.md](./features/done/motion_vectors.md) §4), with size and offset asserts.
   - Cache `vk::PhysicalDeviceOpacityMicromapPropertiesEXT` in `HardwareCapabilities::opacityMicromap`, and `vk::PhysicalDeviceRayTracingInvocationReorderPropertiesEXT` with its hint logged at startup ([g1_ser_rt_pipeline.md](./m4/g1_ser_rt_pipeline.md) SER1).
   - **Core-material data lives in `GpuMaterial`** (decided 2026-11-08). The resolve and every hit already load one `GpuMaterial` row; a second table would add a pointer load and a second row of cache lines per pixel, and `GpuMaterialExtension` (724 B per row) is mostly data no shader reads yet. So:
     - `KHR_materials_emissive_strength` is folded into `emissiveFactor` on the CPU when the row is packed: no field, no shader math;
@@ -452,7 +452,7 @@ This is the only punctual light evaluation. `RAB_SamplePolymorphicLight` wraps i
 
 ### Phase C — Ray-tracing scene (M2)
 
-Spec §10. Reference: `vk_lod_clusters` (`renderer_raytrace_clusters_lod.cpp`, `instance_assign_blas.comp.glsl`). **Feature spec:** [ray_tracing_mega_geometry.md](./features/ray_tracing_mega_geometry.md) (sample patterns mapped onto C2, C3, D4, G1; steps RT1–RT8).
+Spec §10. Reference: `vk_lod_clusters` (`renderer_raytrace_clusters_lod.cpp`, `instance_assign_blas.comp.glsl`). **Feature spec:** [ray_tracing_mega_geometry.md](./features/planned/ray_tracing_mega_geometry.md) (sample patterns mapped onto C2, C3, D4, G1; steps RT1–RT8).
 
 #### C1 · CLAS per cluster + cluster BLAS per primitive — built (M2)
 
@@ -470,7 +470,7 @@ Spec §10. Reference: `vk_lod_clusters` (`renderer_raytrace_clusters_lod.cpp`, `
   - Real sizes against the implicit-mode host estimate: Sponza 3500 CLAS in 4.72 MiB (estimate 15.81 MiB), BLAS 0.24 MiB; the build adds about 6 ms to the Sponza flush.
   - `ENGINE_GUIDE_CAPTURE` loads each shot's model before unloading the previous one, so model 0 is erased 8 times while model 1 stays; validation stays clean, and the normal checks still pass 2 of 2. The motion test passes 13 of 13 and ctest 7 of 7.
   - A second Sponza: `loadModel` takes the `instantiateModel` path, which `MegaGeometry` never sees (no diff there).
-  - **Revisited (2026-11-13, [ray_tracing_mega_geometry.md](./features/ray_tracing_mega_geometry.md) RT1):** CLAS and BLAS are built with `PREFER_FAST_TRACE | ALLOW_DATA_ACCESS`, which position fetch requires (VUID-HitTriangleVertexPositionsKHR-None-08751, VUID-RuntimeSpirv-flags-08761). Sizes are unchanged at log precision, and validation stays clean on the motion test and the guide capture. Startup logs `accelerationStructureIndirectBuild` (false on the 5070) and `maxInstanceCount` for C2.
+  - **Revisited (2026-11-13, [ray_tracing_mega_geometry.md](./features/planned/ray_tracing_mega_geometry.md) RT1):** CLAS and BLAS are built with `PREFER_FAST_TRACE | ALLOW_DATA_ACCESS`, which position fetch requires (VUID-HitTriangleVertexPositionsKHR-None-08751, VUID-RuntimeSpirv-flags-08761). Sizes are unchanged at log precision, and validation stays clean on the motion test and the guide capture. Startup logs `accelerationStructureIndirectBuild` (false on the 5070) and `maxInstanceCount` for C2.
   - **Closed by C3 (2026-11-13):** the remaining model stays *traceable*. Under `ENGINE_GUIDE_CAPTURE` with `ENGINE_RT_CHECK`, every frame's primary rays match the vis buffer across the 8 erasures of model 0 (70 of 70 frames, 0 misses, 0 hits on empty pixels).
 - **Must not:** build KHR triangle BLASes, build from a CPU-side ray mesh, or reorder cluster triangles between raster and CLAS.
 
@@ -482,11 +482,11 @@ Spec §10. Reference: `vk_lod_clusters` (`renderer_raytrace_clusters_lod.cpp`, `
   - Full TLAS build every frame (`PREFER_FAST_TRACE`) on the async compute queue; graphics waits on a timeline semaphore before the first ray pass. Per-slot TLAS storage, scratch, instance and `GpuRayInstance` buffers. `GpuFrameRoot.tlas` and `GpuFrameRoot.rayInstances` point at them.
   - ~~PTLAS only if the measured TLAS build exceeds 0.3 ms~~. Since 2026-11-14 PTLAS is required (spec §10.3): C4 replaces this build.
 - **Done when:** a yawing entity moves without BLAS rebuilds; Tracy/Nsight show the TLAS build overlapping the raster; no CPU loop over instances.
-- **As built** ([ray_tracing_mega_geometry.md](./features/ray_tracing_mega_geometry.md) §3, RT2–RT3):
+- **As built** ([ray_tracing_mega_geometry.md](./features/planned/ray_tracing_mega_geometry.md) §3, RT2–RT3):
   - `GpuRayInstance` rows and a parallel BLAS-address table only change with the scene layout, so the CPU writes them per slot when `FrameData::layoutGeneration` moves (the same filter as the cull templates: active entities, primitives with a BLAS). Per frame the GPU writes each instance's transform from the slot's `GpuNodeInstance`; the CPU writes nothing per instance.
   - `instanceCustomIndex` = absolute primitive row (checked < 2^24), mask `0xFF`, `FORCE_OPAQUE` until D.
   - The count is exact on the CPU, so the build range is a host value (`accelerationStructureIndirectBuild` is false on the 5070) and nothing can overflow; the capacity doubles with the layout and is shown in the UI.
-  - Queue: `Device::computeQueue` (family 2 on the 5070, its own family). Buffers are `CONCURRENT` over all families, so no ownership transfers. Each submit signals the frame number on `FrameSync::computeTimeline`; the CPU waits for the slot's last value before rewriting its node instances or buffers. Nothing on the graphics queue waited yet; since C3, the ray command buffer does ([ray_tracing_mega_geometry.md](./features/ray_tracing_mega_geometry.md) §3.5).
+  - Queue: `Device::computeQueue` (family 2 on the 5070, its own family). Buffers are `CONCURRENT` over all families, so no ownership transfers. Each submit signals the frame number on `FrameSync::computeTimeline`; the CPU waits for the slot's last value before rewriting its node instances or buffers. Nothing on the graphics queue waited yet; since C3, the ray command buffer does ([ray_tracing_mega_geometry.md](./features/planned/ray_tracing_mega_geometry.md) §3.5).
   - Requires the Vulkan 1.2 feature `timelineSemaphore`, now in the required set.
 - **Checked (2026-11-13, RTX 5070, driver 621.1):**
   - A temporary readback compared every written instance against a CPU reference (transform from the entity and node matrices, custom index, mask, flags, BLAS address): 0 mismatches and transform error 0 for Sponza (103 instances) and instance fields of side 8, 16 and 64 (167, 359 and 4199 instances).
@@ -508,7 +508,7 @@ public DecodedHit decodeHit(GpuFrameRoot root, RayHit hit, float3 rayDirection, 
 
 - **Debug pass:** a ray-query CS traces primary rays and colors by `meshletRow` and by `rayInstances[…].nodeInstanceIndex`, using the same palette as the vis-buffer `Meshlets` / `NodeInstances` debug views.
 - **Done when:** the ray-traced debug view matches the vis-buffer debug view pixel for pixel away from silhouettes; a decoded primary hit gives the same shading normal as the resolve.
-- **As built** ([ray_tracing_mega_geometry.md](./features/ray_tracing_mega_geometry.md) §3.5, §5–7, RT4–RT5):
+- **As built** ([ray_tracing_mega_geometry.md](./features/planned/ray_tracing_mega_geometry.md) §3.5, §5–7, RT4–RT5):
   - `shaders/geometry/hit.slang` holds the following. `primaryRay`: through the pixel center minus the jitter, from the near to the far plane, with a ray cone. `traceClosest`: a ray query returning the committed hit with its cluster id, fetched positions and instance matrices. `decodeHit`, which returns `{DrawContext, Surface}`. `safeSpawnPoint`, a port of RTXMG's. The decode runs the resolve's functions (`loadDrawContext`, `loadCornerVertices`, and `buildRaySurface` beside `buildSurface`); only the positions (fetched), the facing and the gradients (cone) come from the ray.
   - The debug views `Ray meshlets`, `Ray node instances` and `Ray shading normal` (category "Ray tracing") trace from `debug_view` with the vis-buffer palettes. There is no separate `rt_debug` pass.
   - The ray passes run in a second graphics command buffer per slot. It is submitted with the frame and waits for the slot's compute timeline value, so raster and resolve do not wait for the TLAS.
@@ -538,7 +538,7 @@ public DecodedHit decodeHit(GpuFrameRoot root, RayHit hit, float3 rayDirection, 
 
 #### C4 · PTLAS (M2, reopened 2026-11-14)
 
-PTLAS became required on 2026-11-14 (spec §10.3). Design: [ray_tracing_mega_geometry.md](./features/ray_tracing_mega_geometry.md) §3.6, step RT9.
+PTLAS became required on 2026-11-14 (spec §10.3). Design: [ray_tracing_mega_geometry.md](./features/planned/ray_tracing_mega_geometry.md) §3.6, step RT9.
 
 - **Device:** `VK_NV_partitioned_acceleration_structure` moves into the required set: device creation throws when it is missing, as for cluster AS. Sizes and limits from `HardwareCapabilities::partitionedAccelerationStructure` (`maxPartitionCount` bounds partitions plus global-partition instances, VUID-10535).
 - **One PTLAS, updated in place** (src = dst; VUID-10549 forbids overlap only when they differ, and the sample does the same). It replaces C2's per-slot TLAS and full build. One scratch buffer, 256-byte aligned. Frame N's update waits for frame N−1's last ray pass: the ray command buffer signals a graphics timeline value that the compute submit waits on.
@@ -547,7 +547,7 @@ PTLAS became required on 2026-11-14 (spec §10.3). Design: [ray_tracing_mega_geo
 - **OMM:** alpha-tested instances drop `FORCE_OPAQUE` and carry no opacity flag. Every ray sets the 2-state ray flag (`0x400`): add it to the built `traceVisibility` (F2) and `traceClosest` (C3) now, and G1's SER trace has it from the start. With no OMMs before M6, the images do not change.
 - **Done when:** `ENGINE_RT_CHECK` matches every frame of the cull check, the motion test and the guide capture (with unloads) as before; a still frame writes zero ops; validation clean (core, sync, best practices + NVIDIA); update and trace times recorded on the 5070 against C2's full-build numbers for Sponza and the 8 to 64 instance fields, including a case with moving entities.
 - **Must not:** write ops on the CPU, rebuild every instance on frames without a layout change, or keep a per-slot TLAS.
-- **As built** ([ray_tracing_mega_geometry.md](./features/ray_tracing_mega_geometry.md) §3.6, RT9):
+- **As built** ([ray_tracing_mega_geometry.md](./features/planned/ray_tracing_mega_geometry.md) §3.6, RT9):
   - `Device` requires `VK_NV_partitioned_acceleration_structure` and its `partitionedAccelerationStructure` feature. The optional-extension path is gone, and `maxPartitionCount` is logged (16,777,215 on the 5070).
   - `RayTracingScene` owns one PTLAS (storage and scratch 256-byte aligned) and a state buffer with one 48-byte row per instance: the transform the PTLAS holds. Each frame slot owns its `GpuRayInstance` rows, a parallel `GpuRayInstanceBuild {blas, partition}` table (both CPU-written per layout), a write-instance list and a host-visible op entry with its op count.
   - **Partitions:** a uniform XZ grid over the instances' world-space centers at layout time, with about 64 instances per cell (Sponza 2×2, the side-64 field 9×9). An instance keeps its cell until the next layout change. There is no global partition: the measured update was slower with it (Checked).
@@ -616,7 +616,7 @@ Spec §8.2, §10.5. Planned 2026-11-20. Each step has its own spec under [m6/](.
     - On by default since H1, which resolves it. `ENGINE_JITTER=0` or the Camera panel's `Jitter` checkbox turns it off. The motion test and the guide capture default to off, since they compare frames pixel by pixel.
   - ~~**`lodBias`** = `log2(render / display)` (B1).~~ Done with H1: `Camera::updateProjection` writes `GpuCameraData.lodBias` (the former `pad0`) from the render and swapchain widths, −0.585 at Quality, and the resolve passes it to `sampleMaterial`.
   - ~~`DebugView::LightingOnly`~~ done with F3 (`directRadiance` + emissive). ~~`DlssInput`~~ done with H1: it shows `noisyColor`.
-  - **Motion vectors:** [motion_vectors.md](./features/motion_vectors.md): history bugs B1–B4, the history-reset flag, and a reprojection debug view that proves the vectors (MV1–MV5).
+  - **Motion vectors:** [motion_vectors.md](./features/done/motion_vectors.md): history bugs B1–B4, the history-reset flag, and a reprojection debug view that proves the vectors (MV1–MV5).
   - Spec §2.3 timings deferred (2026-11-08); take them on a release build with validation off (vulkan-dev skill §6.1).
   - M7 splits the resolve into per-material-bin shaders (spec §9.1–9.2); the per-pixel body stays this one.
 - **Unlit specular (done 2026-11-14, before E2/F1):** unlit surfaces reached the guides with `f0` 0.04 and roughness 1, so a light loop would add a specular term that `KHR_materials_unlit` forbids. `f0` 0 alone is not enough, since Schlick's grazing term remains.
@@ -628,7 +628,7 @@ Spec §8.2, §10.5. Planned 2026-11-20. Each step has its own spec under [m6/](.
   - `TwoSidedPlane`: both sides draw the same albedo and roughness. The shading and geometric normals read +Y from above and −Y from below.
   - `UnlitTest`: diffuse albedo 0; emissive uniform at sRGB (255, 128, 0) and (0, 128, 255). The README says `#FF7F00` / `#007FFF`, but the factor 0.2176 is 0.5 under gamma 2.2, so 128 is its exact sRGB encoding. On scattered pixels a 1.0 channel reads one storage step low (254 or 253): the interpolated `surface.color` sums to 1 − ε, and the B10G11R11 store rounds toward zero. This is storage precision, not shading.
 
-  ~~Motion is zero for a static scene and consistent under rotation~~: done 2026-11-13 by the scripted motion test ([motion_vectors.md](./features/motion_vectors.md) §5.1).
+  ~~Motion is zero for a static scene and consistent under rotation~~: done 2026-11-13 by the scripted motion test ([motion_vectors.md](./features/done/motion_vectors.md) §5.1).
 - **Checked (2026-11-14, RTX 5070):**
   - **AO and unlit:** the `Ambient occlusion` view shows `TextureTransformMultiTest`'s occlusion row (checkmarks in UV 0, UV 1 and Sample), and 1 elsewhere. `f0` is black on `UnlitTest` and on that model's Unlit row.
   - **Culling with jitter on:** `ENGINE_CULL_CHECK` 16 of 16 bit-identical. Its unculled captures now come a whole number of jitter cycles after the culled ones, so both sit on the same phase. Without the widening the 16 poses still pass, so Sponza does not exercise it; the widening is the spec's conservative rule.
@@ -680,7 +680,7 @@ SDK: `NVIDIA-RTX/RTXDI-Library` (host C++ + HLSL headers), pinned in `ThirdParty
 #### F1 · Host context — built (2026-11-14)
 
 - `rtxdi::ReSTIRDIContext` with `ReSTIRDIStaticParameters { renderWidth, renderHeight, CheckerboardMode::Off }`. `SetFrameIndex` each frame; recreate on resize with `RenderTargets::recreate`.
-- Local light sampling `Uniform` until M7; since M7 F1 `ReGIR_RIS` over `Power_RIS` tiles (presample passes + PDF texture), with the host context an `rtxdi::ImportanceSamplingContext`. Resampling `TemporalAndSpatial` (§2 #12) since the RTXDI 3.2 update (2026-11-15, [rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md)); F1–F3 below describe the 3.1 build, with `FusedSpatiotemporal`.
+- Local light sampling `Uniform` until M7; since M7 F1 `ReGIR_RIS` over `Power_RIS` tiles (presample passes + PDF texture), with the host context an `rtxdi::ImportanceSamplingContext`. Resampling `TemporalAndSpatial` (§2 #12) since the RTXDI 3.2 update (2026-11-15, [rtxdi_3_2_update.md](./features/done/rtxdi_3_2_update.md)); F1–F3 below describe the 3.1 build, with `FusedSpatiotemporal`.
 - Buffers: DI reservoirs (`RTXDI_PackedDIReservoir`, sized by the context), neighbor offsets (`rtxdi::FillNeighborOffsetBuffer` once), one host-visible constants block per frame slot reached through `GpuFrameRoot.rtxdiConstants`.
 - **As built:** `RtxdiContext` (`src/render/vk_rtxdi.*`), owned by `Renderer`.
   - **Context:** created in `recreate(renderExtent)`, which `Renderer::rebuildSwapchainResources` calls after `RenderTargets::recreate` with the device idle. It is configured with `FusedSpatiotemporal` (the library default is `TemporalAndSpatial`) and `Uniform` local light sampling; every other parameter keeps the library default. `prepareFrame(slot, frameNumber)` runs after the slot's fence: `SetFrameIndex`, then the slot's constants.
@@ -758,7 +758,7 @@ SDK: `NVIDIA-RTX/RTXDI-Library` (host C++ + HLSL headers), pinned in `ThirdParty
 
 #### F3 · Passes — built (2026-11-14), split for RTXDI 3.2 (2026-11-15)
 
-Since the RTXDI 3.2 update the fused `rtxdi_shade` below is three passes: `rtxdi_initial`, `rtxdi_temporal` (`RTXDI_DITemporalResampling` + boiling filter) and `rtxdi_shade` (`RTXDI_DISpatialResampling` + final visibility + shading). The configuration, the convergence numbers and the guide capture's permanent convergence check are in [rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md); the text below records the 3.1 build.
+Since the RTXDI 3.2 update the fused `rtxdi_shade` below is three passes: `rtxdi_initial`, `rtxdi_temporal` (`RTXDI_DITemporalResampling` + boiling filter) and `rtxdi_shade` (`RTXDI_DISpatialResampling` + final visibility + shading). The configuration, the convergence numbers and the guide capture's permanent convergence check are in [rtxdi_3_2_update.md](./features/done/rtxdi_3_2_update.md); the text below records the 3.1 build.
 
 | Pass | Calls |
 |---|---|
@@ -784,7 +784,7 @@ Output: `directRadiance` (RGBA16F, linear HDR, render res), a new `GpuTargets` e
     - **`numBrdfSamples` 0** until emissive triangles (M7). No BRDF ray can find a light before then, so each one was a wasted ray per pixel.
     - **`reuseFinalVisibility` off:** one final visibility ray per pixel (spec §11.2).
     - Every other parameter keeps the library default: 8 local and 1 infinite candidates, history 20, boiling filter 0.2, 1 spatial sample, 8 on disocclusion.
-    - Superseded on 2026-11-15: the defaults are the RTXDI sample's `Medium` preset, and the measured configuration lives on as `RtxdiContext::convergedSettings`, which the convergence check holds ([rtxdi_3_2_update.md](./features/rtxdi_3_2_update.md) §3.3, §6.4; considerations C-R32-1).
+    - Superseded on 2026-11-15: the defaults are the RTXDI sample's `Medium` preset, and the measured configuration lives on as `RtxdiContext::convergedSettings`, which the convergence check holds ([rtxdi_3_2_update.md](./features/done/rtxdi_3_2_update.md) §3.3, §6.4; considerations C-R32-1).
   - **Reference** (ground truth): resampling `None` with 32 local and 8 infinite candidates. Select it with `ENGINE_RTXDI_REFERENCE=1` or the `ReSTIR DI reference` checkbox under `Lighting only`.
   - **Constants:** `GpuRtxdiConstants` gains `isFusedResampling` and `reservoirCount` (360 B).
   - **Bounds-checked reads in the bridge.** RTXDI reads its buffers as structured buffers under robust access, where out-of-range reads return zeros.

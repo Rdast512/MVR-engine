@@ -1,9 +1,9 @@
 # Feature: visibility buffer
 
-**Date:** 2026-11-07 · **Status:** V1–V7 implemented (§10), M1 done 2026-11-13; RTX 5070 timings in engine spec §2.3; V8 deferred; motion vectors continue in [motion_vectors.md](./motion_vectors.md) · **Milestone:** M1 ([engine_spec.md](../../docs/engine_spec.md) §16.2)
+**Date:** 2026-11-07 · **Status:** V1–V7 implemented (§10), M1 done 2026-11-13; RTX 5070 timings in engine spec §2.3; V8 deferred; motion vectors continue in [motion_vectors.md](./motion_vectors.md) · **Milestone:** M1 ([engine_spec.md](../../../docs/engine_spec.md) §16.2)
 **Implements:** engine spec §8.1 (A6, A9), §8.2, §8.3, §9.2 (single-dispatch form), §9.3, §12.2 (partial)
 **Depends on:** M0: `GpuTargets` block, shading attributes (PBR A4: normals and tangents for every primitive), animation removal (§7.3)
-**Related:** [resource_architecture.md](../resource_architecture.md), [shader_architecture_plan.md](../shader_architecture_plan.md), [culling_comparison.md](../../reference/culling_comparison.md), [pbr_implementation_plan.md](../pbr_implementation_plan.md) B1
+**Related:** [resource_architecture.md](../../resource_architecture.md), [shader_architecture_plan.md](../../shader_architecture_plan.md), [culling_comparison.md](../../../reference/culling_comparison.md), [pbr_implementation_plan.md](../../pbr_implementation_plan.md) B1
 
 Replace the forward raster pass with a visibility buffer: raster writes only depth and a 32-bit triangle id, and one compute pass rebuilds each pixel's surface to write the shading surface and DLSS guides. Every later lighting pass reads those guides.
 
@@ -25,8 +25,8 @@ Replace the forward raster pass with a visibility buffer: raster writes only dep
 
 ## 2. Current state (`7dc04f965`)
 
-- `mesh_raster` + `mesh_fragment` draw straight into the swapchain image (`B8G8R8A8_SRGB`), with interpolated color, UV and material row; `sampleBaseColor` is the whole material. Early phase clears, late phase loads ([vk_renderer.cpp](../../src/render/vk_renderer.cpp) `recordPhase`).
-- Depth `D32_SFLOAT`, standard Z: clear 1, `LESS`. The Hi-Z build runs after each phase, one mip per dispatch, max reduction ([hiz_build.slang](../../shaders/passes/hiz_build.slang), [vk_hiz.cpp](../../src/render/vk_hiz.cpp)).
+- `mesh_raster` + `mesh_fragment` draw straight into the swapchain image (`B8G8R8A8_SRGB`), with interpolated color, UV and material row; `sampleBaseColor` is the whole material. Early phase clears, late phase loads ([vk_renderer.cpp](../../../src/render/vk_renderer.cpp) `recordPhase`).
+- Depth `D32_SFLOAT`, standard Z: clear 1, `LESS`. The Hi-Z build runs after each phase, one mip per dispatch, max reduction ([hiz_build.slang](../../../shaders/passes/hiz_build.slang), [vk_hiz.cpp](../../../src/render/vk_hiz.cpp)).
 - Two state groups (`SingleSided`, `DoubleSided` with cull mode none and no cone test), so 2 DGC executes per phase.
 - Geometry debug views are a second raster variant (`mesh_debug`, `RasterVariant::GeometryDebug`), with its own DGC shader info and state command buffers.
 - Render extent = swapchain extent everywhere (viewport, Hi-Z, `GpuCameraData::renderTargetSize`).
@@ -49,7 +49,7 @@ Replace the forward raster pass with a visibility buffer: raster writes only dep
 - **Empty pixels are decided by depth** (`depth == 0`, the reverse-Z clear), never by the payload. The vis buffer needs no clear: early load op `DONT_CARE`, late `LOAD`.
 - The resolve turns a pixel into `(nodeInstance, meshletRow, triangle)` through one load: `visibleMeshlets[visibleRow]`. That triple is what a ray hit also decodes to (spec §10.1), so the shared surface code (§3.5) takes the triple, not the row.
 
-**Why 32-bit, against the spec's 64-bit default (spec §8.3, Q3).** `vk_lod_clusters`' software raster, planned for L1, writes `packUint2x32(value32, depthBits)` into an `R64_UINT` image with `imageAtomicMax`, from both the compute and the hardware raster path ([render_raster_clusters_sw.comp.glsl:325](../../reference/vk_lod_clusters/shaders/render_raster_clusters_sw.comp.glsl), [render_raster.frag.glsl:364](../../reference/vk_lod_clusters/shaders/render_raster.frag.glsl)). The sample stores a shaded color in the 32-bit slot; the engine stores the vis payload there. A 64-bit payload cannot share that atomic with depth. With a 32-bit payload, L1 changes only the image format and the write path, not the encoding or any reader. It also halves vis-buffer bandwidth. Decided 2026-11-07 (§9 D1); the real-runtime comparison with 64-bit is engine spec Q3.
+**Why 32-bit, against the spec's 64-bit default (spec §8.3, Q3).** `vk_lod_clusters`' software raster, planned for L1, writes `packUint2x32(value32, depthBits)` into an `R64_UINT` image with `imageAtomicMax`, from both the compute and the hardware raster path ([render_raster_clusters_sw.comp.glsl:325](../../../reference/vk_lod_clusters/shaders/render_raster_clusters_sw.comp.glsl), [render_raster.frag.glsl:364](../../../reference/vk_lod_clusters/shaders/render_raster.frag.glsl)). The sample stores a shaded color in the 32-bit slot; the engine stores the vis payload there. A 64-bit payload cannot share that atomic with depth. With a 32-bit payload, L1 changes only the image format and the write path, not the encoding or any reader. It also halves vis-buffer bandwidth. Decided 2026-11-07 (§9 D1); the real-runtime comparison with 64-bit is engine spec Q3.
 
 ### 3.2 Reverse Z (A9)
 
@@ -58,18 +58,18 @@ Replace the forward raster pass with a visibility buffer: raster writes only dep
 | Projection | `glm::perspective(fov, aspect, far, near)` (zero-to-one is already forced in `pch.h`), as the reference's `perspectiveRH_ZO(fov, aspect, far, near)`. `nearZ` / `farZ` in `GpuCameraData` keep their meaning; finite far plane |
 | Depth | clear 0, compare `GREATER` (both phases) |
 | Hi-Z | the pyramid keeps the farthest depth, which is now the minimum: min reduction, `SamplerReductionMode::eMin` |
-| Culling | reverse Z in [culling.slang](../../shaders/core/culling.slang): nearest depth, occlusion compare and nudge sign, near-plane clip bit. Already written, untested |
+| Culling | reverse Z in [culling.slang](../../../shaders/core/culling.slang): nearest depth, occlusion compare and nudge sign, near-plane clip bit. Already written, untested |
 | `hiz_view` | linearization formula for reverse Z |
 | Tests | `hiz_footprint_test` runs every case in both depth conventions |
 
 ### 3.3 Hi-Z build (`nvhiz` port)
 
-Port [nvhiz-update.comp.glsl](../../reference/vk_lod_clusters/shaders/nvhiz-update.comp.glsl) to Slang: 3 levels per dispatch (`NV_HIZ_LEVELS`), `WaveReadLaneAt` for `subgroupShuffle`, `NV_HIZ_REVERSED_Z 1`. Keep the Apache-2.0 header with a "modified" note. The far pyramid is the only output (`NV_HIZ_OUTPUT_NEAR 0`). Pyramid sizing (today the previous power of two of the depth size) follows what the port requires. The C1 footprint rule in `isHiZOccluded` must keep holding: re-run `hiz_footprint_test` against the new pyramid.
+Port [nvhiz-update.comp.glsl](../../../reference/vk_lod_clusters/shaders/nvhiz-update.comp.glsl) to Slang: 3 levels per dispatch (`NV_HIZ_LEVELS`), `WaveReadLaneAt` for `subgroupShuffle`, `NV_HIZ_REVERSED_Z 1`. Keep the Apache-2.0 header with a "modified" note. The far pyramid is the only output (`NV_HIZ_OUTPUT_NEAR 0`). Pyramid sizing (today the previous power of two of the depth size) follows what the port requires. The C1 footprint rule in `isHiZOccluded` must keep holding: re-run `hiz_footprint_test` against the new pyramid.
 
 ### 3.4 Raster
 
 **Bins (A6).** `MeshStateGroup { SingleSided, DoubleSided }` becomes `RasterBin { Opaque, AlphaTested }`; only `Opaque` is populated in M1 (alpha-masked materials stay opaque, as today). One raster state for all bins: back-face culling on.
-- Two-sided triangles: the mesh shader swaps two corners when `!isFrontFacingHW(a, b, c)` for a double-sided material, the same branch as `FlipWinding` (`vk_lod_clusters` [render_raster_clusters.mesh.glsl:320](../../reference/vk_lod_clusters/shaders/render_raster_clusters.mesh.glsl)). The triangle index is unchanged.
+- Two-sided triangles: the mesh shader swaps two corners when `!isFrontFacingHW(a, b, c)` for a double-sided material, the same branch as `FlipWinding` (`vk_lod_clusters` [render_raster_clusters.mesh.glsl:320](../../../reference/vk_lod_clusters/shaders/render_raster_clusters.mesh.glsl)). The triangle index is unchanged.
 - Cull: the cone test is skipped by a `TwoSided` bit in `GpuDrawRecord::flags` (set by the CPU template builder from the material), replacing the state-group bits. Groups never span primitives, so `*_MIXED` bits are not needed.
 - DGC: one execute per (phase, bin) → 2 per frame in M1, 4 from M6.
 
@@ -231,13 +231,13 @@ All decided 2026-11-07.
 
 | Step | State | Deviation from this spec |
 |---|---|---|
-| V1 | done: `ResourceManager::renderExtent`, `RenderTargets` ([vk_render_targets.cpp](../../src/render/vk_render_targets.cpp)), `GpuTargets` behind `GpuFrameRoot::targets` (one host block per frame slot) | built before M0 finished; since then A4 generates normals and tangents for every primitive (checked by the guide capture's normal checks) and the animation removal deleted morph targets, so the resolve reads the stored attributes only |
+| V1 | done: `ResourceManager::renderExtent`, `RenderTargets` ([vk_render_targets.cpp](../../../src/render/vk_render_targets.cpp)), `GpuTargets` behind `GpuFrameRoot::targets` (one host block per frame slot) | built before M0 finished; since then A4 generates normals and tangents for every primitive (checked by the guide capture's normal checks) and the animation removal deleted morph targets, so the resolve reads the stored attributes only |
 | V2 | done; `hiz_footprint_test` runs the reverse-Z convention (the forward-Z branch was removed, AU5) | not compared against standard Z: reverse Z is the reference. Instead, `ENGINE_CULL_CHECK=1` shows culling is lossless, with images identical with every cull test on and off on 16 Sponza poses (2026-11-13) |
-| V3 | done: 3 levels per dispatch ([hiz_build.slang](../../shaders/passes/hiz_build.slang)) | groupshared reductions instead of `subgroupShuffle` (no wave-size assumption); pyramid layout unchanged (previous power of two, level 0 reduces the 1–3 texel footprint), so `hizMip` and its test are untouched. Hi-Z time not recorded |
+| V3 | done: 3 levels per dispatch ([hiz_build.slang](../../../shaders/passes/hiz_build.slang)) | groupshared reductions instead of `subgroupShuffle` (no wave-size assumption); pyramid layout unchanged (previous power of two, level 0 reduces the 1–3 texel footprint), so `hizMip` and its test are untouched. Hi-Z time not recorded |
 | V4 | done: `RasterBin`, `DrawRecordFlag::TwoSided`, winding flip in `mesh_raster` | one DGC state command buffer for both bins until M6 gives `AlphaTested` its own fragment shader |
 | V5 | done: vis-buffer raster, `debug_view`, `present`; `mesh_debug`, `RasterVariant` and `fragmentShaderBarycentric` removed | barycentrics from Olano–Greer homogeneous edge functions, valid for triangles crossing the eye plane. The Hi-Z view now draws in the present pass, so it shows the final pyramid (the next frame's early test) |
 | V6 | done: resolve, `sampleMaterial`, all §3.6 guides, motion | guide storage writes go through typed images (`RWTexture2D<T, 0, format>`, AU5) with a startup format-feature check; sampled views serve the reads. Checked on Sponza: unit normals, shading and geometric normals in one hemisphere, geometric normal facing the viewer, zero motion for a static camera. Motion under camera and entity motion checked by the scripted motion test ([motion_vectors.md](./motion_vectors.md) §5.1, 2026-11-13). Guides of `MetalRoughSpheres`, `TwoSidedPlane` and `UnlitTest` match the Khronos screenshots in kind (`ENGINE_GUIDE_CAPTURE`, PBR plan E1, 2026-11-13) |
-| V7 | cleanup done | RTX 5070 stage timings recorded on 2026-11-13 (engine spec §2.3). RTX 2060 Super timings remain open under [M0 A10 and C-M0-1](../m0/a10_culling_baseline.md). |
+| V7 | cleanup done | RTX 5070 stage timings recorded on 2026-11-13 (engine spec §2.3). RTX 2060 Super timings remain open under [M0 A10 and C-M0-1](../../m0/a10_culling_baseline.md). |
 | V8 | deferred (2026-11-08): 32-bit payload kept | |
 
 Validation: no errors after startup, during frames, or on resize. The remaining best-practice warnings come from pre-existing code or the ImGui backend, apart from `Depth32Format`, which reverse Z justifies (commented at `findDepthFormat`).
@@ -246,6 +246,6 @@ Present on its own submit (done 2026-11-08): the frame work (cull, raster, Hi-Z,
 
 ## References
 
-- Engine: [engine_spec.md](../../docs/engine_spec.md) §8–§9, §12.2, §16; [culling_comparison.md](../../reference/culling_comparison.md) A6, A8, A9
-- vk_lod_clusters: [render_raster.frag.glsl](../../reference/vk_lod_clusters/shaders/render_raster.frag.glsl) (`clusterID << 8 | primitive` id for picking, 64-bit `{color, depth}` atomic path), [render_raster_clusters_sw.comp.glsl](../../reference/vk_lod_clusters/shaders/render_raster_clusters_sw.comp.glsl), [render_raster_clusters.mesh.glsl](../../reference/vk_lod_clusters/shaders/render_raster_clusters.mesh.glsl) (two-sided winding flip), [nvhiz-update.comp.glsl](../../reference/vk_lod_clusters/shaders/nvhiz-update.comp.glsl)
-- Current code: [mesh_raster.slang](../../shaders/passes/mesh_raster.slang), [mesh_fragment.slang](../../shaders/passes/mesh_fragment.slang), [resolve.slang](../../shaders/passes/resolve.slang), [debug_view.slang](../../shaders/passes/debug_view.slang), [present.slang](../../shaders/passes/present.slang), [hiz_build.slang](../../shaders/passes/hiz_build.slang), [vk_renderer.cpp](../../src/render/vk_renderer.cpp), [vk_hiz.cpp](../../src/render/vk_hiz.cpp), [debug_view.hpp](../../src/render/debug_view.hpp)
+- Engine: [engine_spec.md](../../../docs/engine_spec.md) §8–§9, §12.2, §16; [culling_comparison.md](../../../reference/culling_comparison.md) A6, A8, A9
+- vk_lod_clusters: [render_raster.frag.glsl](../../../reference/vk_lod_clusters/shaders/render_raster.frag.glsl) (`clusterID << 8 | primitive` id for picking, 64-bit `{color, depth}` atomic path), [render_raster_clusters_sw.comp.glsl](../../../reference/vk_lod_clusters/shaders/render_raster_clusters_sw.comp.glsl), [render_raster_clusters.mesh.glsl](../../../reference/vk_lod_clusters/shaders/render_raster_clusters.mesh.glsl) (two-sided winding flip), [nvhiz-update.comp.glsl](../../../reference/vk_lod_clusters/shaders/nvhiz-update.comp.glsl)
+- Current code: [mesh_raster.slang](../../../shaders/passes/mesh_raster.slang), [mesh_fragment.slang](../../../shaders/passes/mesh_fragment.slang), [resolve.slang](../../../shaders/passes/resolve.slang), [debug_view.slang](../../../shaders/passes/debug_view.slang), [present.slang](../../../shaders/passes/present.slang), [hiz_build.slang](../../../shaders/passes/hiz_build.slang), [vk_renderer.cpp](../../../src/render/vk_renderer.cpp), [vk_hiz.cpp](../../../src/render/vk_hiz.cpp), [debug_view.hpp](../../../src/render/debug_view.hpp)

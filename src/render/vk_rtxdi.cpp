@@ -542,6 +542,8 @@ void RtxdiContext::configure()
     initialSampling.numInfiniteLightSamples =
         isReference ? kReferenceInfiniteLightSamples : settings.infiniteLightSamples;
     initialSampling.enableInitialVisibility = settings.isInitialVisibilityEnabled ? 1u : 0u;
+    // RAB_TraceRayForLocalLight traces from the offset brdfRayOrigin stashed in RAB_SurfaceImportanceSampleBrdf (I14)
+    initialSampling.brdfRayMinT = 0.0f;
     context.SetInitialSamplingParameters(initialSampling);
 
     RTXDI_DITemporalResamplingParameters temporal = context.GetTemporalResamplingParameters();

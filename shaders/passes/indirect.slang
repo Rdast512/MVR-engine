@@ -61,7 +61,7 @@ PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
         bounce.pdf = brdf.pdf;
         // normal maps can tilt n so a sample lies below the triangle's geometric plane (RTXDI BrdfRayTracing.hlsl)
         bounce.isActive = brdf.pdf > 0.0 && dot(primary.geoNormal, brdf.l) > 0.0;
-        bounce.ray.Origin = rasterRayOrigin(primary, brdf.l);
+        bounce.ray.Origin = rasterRayOrigin(primary);
         bounce.ray.Direction = brdf.l;
     }
     return bounce;
@@ -119,6 +119,7 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
             RTXDI_SECONDARY_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
         HitOrigin origin;
         origin.hit = hit;
+        origin.geoNormal = secondary.surface.geoNormal;
         // m8 O9: the reservoir stores X2's radiance as non-directional, so a sharp glossy lobe at X2 becomes a
         // caustic outlier that reuse spreads (Doc/RestirGI.md). X2's own shading only: the NRC query keeps the
         // roughness the cache trains on

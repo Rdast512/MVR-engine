@@ -2,7 +2,7 @@
 
 **Status** — Built. Separate present submit landed on 2026-11-08.\
 **Depends on** — [V1 targets](v1_render_targets.md) and [V4 bins](v4_raster_bins.md).
-[Visibility-buffer V5](../features/visibility_buffer.md) · [Raster integration](v4_v5_visibility_raster.md)
+[Visibility-buffer V5](../features/done/visibility_buffer.md) · [Raster integration](v4_v5_visibility_raster.md)
 
 ## Decision and producer/consumer edges
 
@@ -33,4 +33,4 @@ same rendering scope.
 | Show the final pyramid in present | Done. V5 as-built notes and present overlay. |
 | Split acquire-dependent present | Done. Core and sync validation clean through repeated resize in the feature record. |
 
-[As-built validation](../features/visibility_buffer.md) · [V7 timings](v7_cleanup_and_timings.md)
+[As-built validation](../features/done/visibility_buffer.md) · [V7 timings](v7_cleanup_and_timings.md)

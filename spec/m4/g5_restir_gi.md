@@ -4,7 +4,7 @@
 **Implements:** engine spec §11.5, the §14 ground truth; plan G5 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
 **Depends on:** [G2](./g2_indirect_pass.md) (initial samples), [G3](./g3_nrc.md) (resolved sample radiance), F1 (RTXDI context)
 **Used by:** [G6](./g6_combine.md), [G7](./g7_indirect_modes.md) (runs in the NRC → ReSTIR GI and ReSTIR GI modes; one-bounce samples when NRC is paused)
-**Related:** [rtxdi_3_2_update.md](../features/rtxdi_3_2_update.md) (pinned RTXDI version)
+**Related:** [rtxdi_3_2_update.md](../features/done/rtxdi_3_2_update.md) (pinned RTXDI version)
 **Reference:** RTXDI 3.2 sample (`reference/RTXDI`, commit `fdbd9b3` "3.2 Update", cloned 2026-11-18): `Samples/FullSample/Shaders/LightingPasses/GI/{TemporalResampling,SpatialResampling,FinalShading}.hlsl`, `RtxdiApplicationBridge/RAB_{LightSampling,SpatialHelpers,VisibilityTest}.hlsli`, `Source/RenderPasses/LightingPasses/ReSTIRGIRenderPasses.cpp`, `UserInterface.cpp`
 **Considerations:** C-G5-1 (sample age limit), C-G5-2 (Basic bias correction), C-G5-3 (NRC bias against the ground truth)
 

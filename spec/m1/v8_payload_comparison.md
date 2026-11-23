@@ -3,7 +3,7 @@
 **Status** — Deferred. M1 shipped the 32-bit payload.\
 **Implements** — Visibility-buffer V8 and engine spec Q3.\
 **Depends on** — [Visibility raster and payload](v4_v5_visibility_raster.md) and [E1 resolve](e1_resolve_guides.md).
-[Visibility-buffer feature](../features/visibility_buffer.md) · [Engine spec §8.3 and Q3](../../docs/engine_spec.md)
+[Visibility-buffer feature](../features/done/visibility_buffer.md) · [Engine spec §8.3 and Q3](../../docs/engine_spec.md)
 
 ## Comparison
 

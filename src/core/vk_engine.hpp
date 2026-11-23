@@ -3,6 +3,7 @@
 #include "assets_loader.hpp"
 #include "engine_bench.hpp"
 #include "engine_cull_check.hpp"
+#include "engine_dlss_check.hpp"
 #include "engine_gi_check.hpp"
 #include "engine_ray_check.hpp"
 #include "engine_guide_capture.hpp"
@@ -74,11 +75,13 @@ class Engine
     // set from the environment: culling image check on the startup scene, quits after logging the results
     std::optional<EngineCullCheck> cullCheck;
     std::optional<EngineGiCheck> giCheck;
+    // set from the environment: DLSS-RR clean-input and perturbation check (ENGINE_DLSS_CHECK=1, m8 I14 F25)
+    std::optional<EngineDlssCheck> dlssCheck;
     // set from the environment: one M8 I1 temporal runner (stability, light change, screen edge), quits after it
     std::optional<EngineTemporalCheck> temporalCheck;
     // set from the environment: primary rays against the vis buffer every frame, alongside another runner or alone
     std::optional<EngineRayCheck> rayCheck;
-    // ENGINE_LAB=<plan>: the settings lab, alone in its process (spec/features/full_testing.md §8), quits after the plan
+    // ENGINE_LAB=<plan>: the settings lab, alone in its process (spec/features/planned/full_testing.md §8), quits after the plan
     std::optional<EngineLab> lab;
     // ENGINE_INDIRECT_MODE=cycle: the indirect mode follows the frame number
     bool isIndirectModeCycling = false;

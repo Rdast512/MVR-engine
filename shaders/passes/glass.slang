@@ -38,7 +38,7 @@ float3 reflectedRadiance(GpuFrameRoot root, GpuRtxdiConstants constants, RayHit 
     {
         return float3(0.0, 0.0, 0.0);
     }
-    mirror.Origin = safeSpawnPoint(hit, mirror.Direction);
+    mirror.Origin = safeSpawnPoint(hit, layer.geoNormal);
     mirror.TMin = 0.0;
     mirror.TMax = kMissDistance;
     RayHit reflected;
@@ -49,6 +49,7 @@ float3 reflectedRadiance(GpuFrameRoot root, GpuRtxdiConstants constants, RayHit 
     const PathHit x2 = shadeRayHit(root, reflected, mirror, coneDistance, true);
     HitOrigin origin;
     origin.hit = reflected;
+    origin.geoNormal = x2.surface.geoNormal;
     return x2.emissive + secondaryDirectLight(root, x2.surface, origin, constants, rng, coherentRng);
 }
 
@@ -68,6 +69,7 @@ float3 diffuseShare(GpuFrameRoot root, GpuRtxdiConstants constants, RayHit hit, 
     surface.isLit = true;
     HitOrigin origin;
     origin.hit = hit;
+    origin.geoNormal = layer.geoNormal;
     return lambertLightAt(root, surface, origin, constants, rng, coherentRng);
 }
 

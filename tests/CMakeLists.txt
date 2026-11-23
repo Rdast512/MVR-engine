@@ -116,7 +116,7 @@ if (WIN32)
 endif ()
 add_test(NAME layout COMMAND layout_test)
 
-# --- Settings lab: registry round trips and built-in plans (spec/features/full_testing.md T1, T4), CPU only ---
+# --- Settings lab: registry round trips and built-in plans (spec/features/planned/full_testing.md T1, T4), CPU only ---
 add_executable(lab_registry_test lab_registry_test.cpp)
 target_link_libraries(lab_registry_test PRIVATE engine_runtime engine_test_support)
 # engine headers rely on the engine's precompiled header

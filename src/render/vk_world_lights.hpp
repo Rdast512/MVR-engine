@@ -81,6 +81,10 @@ public:
     [[nodiscard]] uint32_t infiniteLightCount() const;
     [[nodiscard]] bool hasLights() const { return lightCount() > 0; }
 
+    // ENGINE_LIGHT_PDF_STATS=1 diagnostic (m8 I14 F27): one-shot readback and per-material PDF breakdown
+    [[nodiscard]] static bool isPdfStatsRequested();
+    void dumpLightPdfStats(uint32_t frameSlot, FrameSync& sync, const Scene& scene, const glm::mat4& viewProj) const;
+
     // read by the next prepareFrame and recordUpdate
     Sun sun = defaultSun();
     // off: the triangle rows are still written, but RTXDI samples the punctual lights only and ray hits add the

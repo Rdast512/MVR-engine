@@ -4,7 +4,7 @@ import core.frame;
 import core.math;
 import core.counters;
 
-// motion vector self-test, ENGINE_MOTION_TEST only (spec/features/motion_vectors.md §5): checks every pixel's motion
+// motion vector self-test, ENGINE_MOTION_TEST only (spec/features/done/motion_vectors.md §5): checks every pixel's motion
 // against the camera-only motion rebuilt from depth, and counts albedo reprojection errors. Reads the guides of this
 // frame and the previous one after the resolve; writes only GpuMotionCheckStats
 
@@ -20,23 +20,24 @@ static const float kCameraErrorRelative = 1e-3;
 // the motion the resolve must write if no entity moved: last frame's projection of this pixel's world point
 float2 cameraOnlyMotion(GpuCameraData camera, float2 ndc, float depth, float2 targetSize)
 {
+    const float2 unjitteredNdc = ndc - camera.jitterOffset;
     float4 previousClip;
     if (depth == 0.0)
     {
         // empty pixel: a direction at infinity, rotation only
-        const float4 farPoint = mul(camera.invViewProj, float4(ndc, 0.0, 1.0));
+        const float4 farPoint = mul(camera.invViewProj, float4(unjitteredNdc, 0.0, 1.0));
         previousClip = mul(camera.prevViewProj, float4(farPoint.xyz / farPoint.w - camera.cameraPos, 0.0));
     }
     else
     {
-        const float4 world = mul(camera.invViewProj, float4(ndc, depth, 1.0));
+        const float4 world = mul(camera.invViewProj, float4(unjitteredNdc, depth, 1.0));
         previousClip = mul(camera.prevViewProj, float4(world.xyz / world.w, 1.0));
     }
     if (previousClip.w <= 0.0)
     {
-        return float2(0.0, 0.0);
+        return -2.0 * targetSize;
     }
-    return (previousClip.xy / previousClip.w - ndc) * 0.5 * targetSize;
+    return (previousClip.xy / previousClip.w - unjitteredNdc) * 0.5 * targetSize;
 }
 
 float maxComponent(float3 value)

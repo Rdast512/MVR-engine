@@ -21,7 +21,7 @@ M2 supplies the RT scene addresses. M3 supplies jitter, world lights, RTXDI
 constants and the exposure image. M4 uses the SER properties and owns
 `cacheConstants`. M6 uses the OMM properties, M7 owns shading from the material
 extension rows, and M9 uses the decompression properties.
-[Visibility buffer](../features/visibility_buffer.md) · [M4 SER](../m4/g1_ser_rt_pipeline.md) · [M4 NRC](../m4/g3_nrc.md)
+[Visibility buffer](../features/done/visibility_buffer.md) · [M4 SER](../m4/g1_ser_rt_pipeline.md) · [M4 NRC](../m4/g3_nrc.md)
 
 C-M0-1 owns the closure evidence. C-M0-5 tracks the optional GPU scene update,
 and C-M0-7 tracks the Debug `gltf_ktx2` failure.

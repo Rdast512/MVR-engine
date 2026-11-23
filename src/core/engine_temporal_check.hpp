@@ -30,6 +30,8 @@ public:
         Stability,
         LightChange,
         ScreenEdge,
+        // m8 I14 F27: Power_RIS DI against independent BRDF-only exact textured emission (areTriangleLightsSampled=false)
+        EmissiveRef,
     };
 
     // the first requested kind in Kind's order; a second one is logged and ignored
@@ -64,6 +66,10 @@ private:
         EdgeReference,
         // the motion's start pose, then the pose at changeAt without a cut
         EdgeMove,
+        // m8 I14 F27: independent exact textured emission reference (areTriangleLightsSampled=false, 1-bounce BRDF)
+        EmissiveReference,
+        // m8 I14 F27: Power_RIS DI reference compared against EmissiveReference
+        EmissiveCompare,
     };
 
     enum class SunState : uint8_t

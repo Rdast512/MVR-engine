@@ -708,7 +708,7 @@ void EngineUi::drawDebugViewPanel()
     }
 }
 
-// moves an entity by hand: the motion test cases of spec/features/motion_vectors.md §5
+// moves an entity by hand: the motion test cases of spec/features/done/motion_vectors.md §5
 void EngineUi::drawEntityTransformControls()
 {
     ObjectStorage& storage = context.scene.objectStorage;
@@ -1145,7 +1145,7 @@ void EngineUi::drawRayTracingPanel()
         context.renderer.indirectMode = IndirectMode::RestirGi;
         glass = {};
     }
-    // the settings lab's config string (spec/features/full_testing.md §2.1): an A/B found here becomes a plan line
+    // the settings lab's config string (spec/features/planned/full_testing.md §2.1): an A/B found here becomes a plan line
     // or an ENGINE_CONFIG value
     const std::string config = formatLabConfig(captureLabConfig(context.renderer, context.camera));
     if (ImGui::Button("Copy config")) {

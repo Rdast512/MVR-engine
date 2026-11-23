@@ -13,7 +13,7 @@
 
 namespace
 {
-    // spec/features/full_testing.md §6.1; shipped and NVIDIA differ in 6 DI and 9 GI switches (§6.4)
+    // spec/features/planned/full_testing.md §6.1; shipped and NVIDIA differ in 6 DI and 9 GI switches (§6.4)
     constexpr std::string_view kSetsPlan = R"(# shipped, NVIDIA and converged on every case
 base di=shipped gi=shipped
 seeds 3

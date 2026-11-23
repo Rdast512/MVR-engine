@@ -16,7 +16,7 @@
 #include <tuple>
 #include <vector>
 
-// the settings lab (spec/features/full_testing.md): ENGINE_LAB=<plan> runs a plan's configs on its cases and quits.
+// the settings lab (spec/features/planned/full_testing.md): ENGINE_LAB=<plan> runs a plan's configs on its cases and quits.
 // It tries settings; the engine checks measure the shipped state and never read the lab (§0). Every run starts from a
 // camera cut at a fixed frame clock, seeded from a hash of its case, kind, view, config and seed, so a run's numbers do
 // not depend on what ran before it. Results: [Lab] MEASURED lines in logs/engine.log, logs/lab/<plan>.csv, a ranking per

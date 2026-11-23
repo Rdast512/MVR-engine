@@ -1,8 +1,8 @@
 # Feature: GPU-AV with the resolve's execution set (C-E1-3)
 
 **Date:** 2026-11-22 · **Status:** dropped 2026-11-22 (user): the local patched layer is not pursued. The analysis in §0 stays as reference for an upstream report. VVL #13244 (heap shader-object crash in `DescriptorHeapPass`, fixed for 1.4.363) is a different bug · **Milestone:** M8 tooling; unblocks GPU-AV for I10 (MG-P2, MG-P4, MG-P5, MG-S1) and every later shader step
-**Fixes:** considerations C-E1-3 ([considerations.md](../considerations.md)): GPU-AV turns itself off at the three `INDIRECT_BINDABLE` resolve shaders, and the process then crashes in frame 1
-**Touches:** [m7/e1_material_binning.md](../m7/e1_material_binning.md) (the execution set), `src/render/vk_shader_objects.cpp:131`, `src/render/vk_dgc.cpp:163-236`, `src/render/vk_renderer.cpp:43-46`
+**Fixes:** considerations C-E1-3 ([considerations.md](../../considerations.md)): GPU-AV turns itself off at the three `INDIRECT_BINDABLE` resolve shaders, and the process then crashes in frame 1
+**Touches:** [m7/e1_material_binning.md](../../m7/e1_material_binning.md) (the execution set), `src/render/vk_shader_objects.cpp:131`, `src/render/vk_dgc.cpp:163-236`, `src/render/vk_renderer.cpp:43-46`
 **Reference:** Vulkan-ValidationLayers at tags `vulkan-sdk-1.4.363.0` and `.1` (both match the installed SDK 1.4.363.0 byte for byte in the lines below) and `main` at `c70feb6` (2026-11-20), all with the same code:
 - `layers/gpuav/instrumentation/gpuav_shader_instrumentor.cpp`:
   - `PreCallRecordCreateShadersEXT` (main :664-760): the check at :700-705, heap mode at :733-740;

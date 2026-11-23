@@ -3,7 +3,7 @@
 **Status** — M1 resolve and guide verification complete on 2026-11-13.\
 **Implements** — Visibility-buffer V1 and V6, PBR E1 and engine spec §9.\
 **Depends on** — [Visibility raster](v4_v5_visibility_raster.md), [B1 sampling](b1_material_sampling.md) and [M0 target bindings](../m0/a1_gpu_contracts.md).
-[Visibility-buffer feature](../features/visibility_buffer.md) · [PBR plan](../pbr_implementation_plan.md)
+[Visibility-buffer feature](../features/done/visibility_buffer.md) · [PBR plan](../pbr_implementation_plan.md)
 
 ## Resolve
 

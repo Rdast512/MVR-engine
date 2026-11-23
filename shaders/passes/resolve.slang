@@ -7,7 +7,7 @@ import geometry.visbuffer;
 import material.brdf;
 import material.pbr;
 
-// vis buffer -> shading surface -> guides of this frame's set (spec/features/visibility_buffer.md §3.5). One entry per
+// vis buffer -> shading surface -> guides of this frame's set (spec/features/done/visibility_buffer.md §3.5). One entry per
 // material bin, launched by the resolve's DGC execute with one group per tile of the bin's list
 // (spec/m7/e1_material_binning.md)
 
@@ -17,13 +17,17 @@ import material.pbr;
 // here (clip w), RTXDI's expected previous linear depth offset
 float3 motionPixels(GpuFrameRoot root, float4 currentClip, float4 previousClip, float2 targetSize)
 {
-    // a point behind either camera has no screen position
-    if (!hasHistory(root) || previousClip.w <= 0.0 || currentClip.w <= 0.0)
+    if (!hasHistory(root) || currentClip.w <= 0.0)
     {
         return float3(0.0, 0.0, 0.0);
     }
-    return float3((previousClip.xy / previousClip.w - currentClip.xy / currentClip.w) * 0.5 * targetSize,
-                  previousClip.w - currentClip.w);
+    const float depthDelta = previousClip.w - currentClip.w;
+    if (previousClip.w <= 0.0)
+    {
+        // behind last frame's camera plane: off-screen sentinel finite in RGBA16F (Pathtracer.hlsl:832, m8 I14 F25)
+        return float3(-2.0 * targetSize, depthDelta);
+    }
+    return float3((previousClip.xy / previousClip.w - currentClip.xy / currentClip.w) * 0.5 * targetSize, depthDelta);
 }
 
 // diffuseAlbedo.a = ao; surfaceGuide packs viewDepth, shading/geo normals, specularF0, roughness and isLit (m8 O4)
@@ -44,7 +48,8 @@ void resolveBackground(GpuFrameRoot root, GpuTargets targets, uint2 pixel)
 {
     const GpuCameraData camera = loadCamera(root);
     const float2 targetSize = float2(targets.renderSize);
-    const float2 ndc = pixelToNdc(float2(pixel) + 0.5, targetSize);
+    // match the jittered raster ray so sky motion aligns with surface motion (m8 I14 F25)
+    const float2 ndc = pixelToNdc(float2(pixel) + 0.5, targetSize) - camera.jitterOffset;
     // a direction at infinity moves with the camera rotation only
     const float4 farPoint = mul(camera.invViewProj, float4(ndc, 0.0, 1.0));
     const float3 direction = farPoint.xyz / farPoint.w - camera.cameraPos;
@@ -85,7 +90,11 @@ void resolveSurface(GpuFrameRoot root, GpuTargets targets, uint2 pixel, bool isU
     const float4 previousClip = mul(camera.prevViewProj, float4(surface.prevPosition, 1.0));
     const uint4 surfaceGuide = uint4(asuint(currentClip.w), packOct16(material.n), packOct16(surface.geoNormal),
                                      packSurfaceMaterial(f0, material.roughness, material.specularWeight > 0.0));
-    writeGuides(targets.current, pixel, float4(material.n, material.roughness), float4(brdfInputs.cDiff, material.ao),
+    const float3 dlssNormal = (root.frameFlags & kFrameFlagInvertDlssNormal) != 0 ? -material.n : material.n;
+    const float dlssRoughness = (root.frameFlags & kFrameFlagSquareDlssRoughness) != 0
+        ? material.roughness * material.roughness
+        : material.roughness;
+    writeGuides(targets.current, pixel, float4(dlssNormal, dlssRoughness), float4(brdfInputs.cDiff, material.ao),
                 specAlbedo, material.emissive, motionPixels(root, currentClip, previousClip, targetSize),
                 surfaceGuide);
 }

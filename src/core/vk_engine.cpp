@@ -109,12 +109,15 @@ void Engine::initialize()
     if (EngineGiCheck::isRequested()) {
         giCheck.emplace();
     }
+    if (EngineDlssCheck::isRequested()) {
+        dlssCheck.emplace();
+    }
     if (EngineRayCheck::isRequested()) {
         rayCheck.emplace();
     }
     if (const std::optional<EngineTemporalCheck::Kind> kind = EngineTemporalCheck::requestedKind()) {
         // each drives the camera and the lighting settings
-        if (motionTest || guideCapture || cullCheck || giCheck) {
+        if (motionTest || guideCapture || cullCheck || giCheck || dlssCheck) {
             logError("temporal check ignored: another scene runner is requested", "Engine");
         } else {
             temporalCheck.emplace(*kind);
@@ -123,7 +126,7 @@ void Engine::initialize()
 
     if (const std::optional<std::string> planName = EngineLab::requestedPlan()) {
         // one tool per process: it measures the shipped state or tries settings, never both (full_testing.md §8)
-        if (motionTest || guideCapture || cullCheck || giCheck || rayCheck || temporalCheck ||
+        if (motionTest || guideCapture || cullCheck || giCheck || dlssCheck || rayCheck || temporalCheck ||
             EngineBench::readConfig(0)) {
             throw std::runtime_error("ENGINE_LAB refused: an engine check or bench variable is set too");
         }
@@ -143,7 +146,8 @@ void Engine::initialize()
     swapChain = std::make_unique<SwapChain>(window, *device);
     swapChain->isUncapped =
         bench.has_value() || motionTest.has_value() || guideCapture.has_value() || cullCheck.has_value() ||
-        giCheck.has_value() || rayCheck.has_value() || temporalCheck.has_value() || lab.has_value();
+        giCheck.has_value() || dlssCheck.has_value() || rayCheck.has_value() || temporalCheck.has_value() ||
+        lab.has_value();
     swapChain->init();
 
     camera = std::make_unique<Camera>(*swapChain);
@@ -161,7 +165,7 @@ void Engine::initialize()
     const glm::vec3 initialAssetPos{0.0f, 0.0f, 0.0f};
     // a check scene (ENGINE_CHECK_SCENE) selects the model of the GI and temporal checks; ENGINE_MODEL any run's
     // (m8 I13), relative to the repository root like the lab cases
-    const char* checkModel = (giCheck || temporalCheck) ? checkSceneModel(readCheckScene()) : nullptr;
+    const char* checkModel = (giCheck || dlssCheck || temporalCheck) ? checkSceneModel(readCheckScene()) : nullptr;
     const char* modelOverride = std::getenv("ENGINE_MODEL");
     const auto repositoryPath = [](const char* path) {
         const std::filesystem::path model(path);
@@ -296,9 +300,11 @@ bool Engine::run()
     auto& deviceRef = device->vkdevice;
     // the bench, motion-test, guide-capture and cull-check views move only as they script it
     const bool isCameraInputEnabled =
-        !bench && !motionTest && !guideCapture && !cullCheck && !rayCheck && !giCheck && !temporalCheck && !lab;
+        !bench && !motionTest && !guideCapture && !cullCheck && !rayCheck && !giCheck && !dlssCheck &&
+        !temporalCheck && !lab;
     // no other runner drives the camera or the scene: the ray check holds the startup view and ends the run
-    const bool isRayCheckStandalone = !bench && !motionTest && !guideCapture && !cullCheck && !giCheck && !temporalCheck;
+    const bool isRayCheckStandalone =
+        !bench && !motionTest && !guideCapture && !cullCheck && !giCheck && !dlssCheck && !temporalCheck;
 
     // game focus captures the mouse and hides the cursor; UI focus (I key) frees both
     const auto setGameFocus = [this](bool gameFocused)
@@ -442,6 +448,10 @@ bool Engine::run()
                 isCaptureRequested = true;
                 renderer->requestDisplayCapture();
             }
+            if (dlssCheck && dlssCheck->beginFrame(*camera, *renderer).shouldCapture) {
+                isCaptureRequested = true;
+                renderer->requestDisplayCapture();
+            }
             if (temporalCheck && temporalCheck->beginFrame(*camera, *renderer).shouldCapture) {
                 isCaptureRequested = true;
                 renderer->requestDisplayCapture();
@@ -493,6 +503,13 @@ bool Engine::run()
                 quit = giCheck->endFrame(isCaptureRequested ? renderer->getLastDisplayCapture() : std::nullopt) ||
                     quit;
             }
+            if (dlssCheck) {
+                if (isCaptureRequested) {
+                    deviceRef.waitIdle();
+                }
+                quit = dlssCheck->endFrame(isCaptureRequested ? renderer->getLastDisplayCapture() : std::nullopt) ||
+                    quit;
+            }
             if (temporalCheck) {
                 if (isCaptureRequested) {
                     deviceRef.waitIdle();
@@ -519,7 +536,8 @@ bool Engine::run()
 
         // unfocused windows often lose vsync pacing and burn CPU/GPU; automated runners stay uncapped
         const bool isAutomatedRunner =
-            bench || motionTest || guideCapture || cullCheck || giCheck || rayCheck || temporalCheck || lab;
+            bench || motionTest || guideCapture || cullCheck || giCheck || dlssCheck || rayCheck || temporalCheck ||
+            lab;
         if (!windowFocused && !minimized && !quit && !isAutomatedRunner) {
             ZoneScopedN("UnfocusedFramePacing");
             const auto frameEndTime = std::chrono::high_resolution_clock::now();
@@ -554,6 +572,9 @@ bool Engine::run()
     }
     if (giCheck) {
         isPassed = giCheck->isPassed() && isPassed;
+    }
+    if (dlssCheck) {
+        isPassed = dlssCheck->isPassed() && isPassed;
     }
     if (rayCheck) {
         isPassed = rayCheck->isPassed() && isPassed;

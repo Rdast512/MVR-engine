@@ -140,17 +140,35 @@ namespace
         const double alpha = std::max(static_cast<double>(c.roughness) * c.roughness, kMinAlpha);
         const double a2 = alpha * alpha;
 
-        // Karis envBrdfApprox reference
-        const double r0 = c.roughness * -1.0 + 1.0;
-        const double r1 = c.roughness * -0.0275 + 0.0425;
-        const double r2 = c.roughness * -0.572 + 1.04;
-        const double r3 = c.roughness * 0.022 - 0.04;
-        const double a004 = std::min(r0 * r0, std::exp2(-9.28 * nDotV)) * r0 + r1;
-        const double envScale = -1.04 * a004 + r2;
-        const double envBias = 1.04 * a004 + r3;
-        const Vec3 envBrdf{static_cast<float>(c.f0.x * envScale + envBias),
-                           static_cast<float>(c.f0.y * envScale + envBias),
-                           static_cast<float>(c.f0.z * envScale + envBias)};
+        // NVIDIA EnvBRDFApprox2 reference (Ray Tracing Gems ch. 32, m8 I14 F25)
+        const double envAlpha = static_cast<double>(c.roughness) * c.roughness;
+        const double noV = std::abs(nDotV);
+        const std::array<double, 4> x{1.0, noV, noV * noV, noV * noV * noV};
+        const std::array<double, 4> y{1.0, envAlpha, envAlpha * envAlpha, envAlpha * envAlpha * envAlpha};
+        const auto m2x = [&](double a, double b, double c0, double d, double vx, double vy, double ux, double uy) {
+            return (a * vx + b * vy) * ux + (c0 * vx + d * vy) * uy;
+        };
+        const auto m3x = [&](const std::array<double, 9>& m, double vx, double vy, double vz, double ux, double uy,
+                             double uz) {
+            return (m[0] * vx + m[1] * vy + m[2] * vz) * ux + (m[3] * vx + m[4] * vy + m[5] * vz) * uy +
+                (m[6] * vx + m[7] * vy + m[8] * vz) * uz;
+        };
+        constexpr std::array<double, 9> kM2{1.0, 2.92338, 59.4188, 20.3225, -27.0302, 222.592, 121.563, 626.13,
+                                            316.627};
+        constexpr std::array<double, 9> kM4{1.0, 3.59685, -1.36772, 9.04401, -16.3174, 9.22949, 5.56589, 19.7886,
+                                            -20.2123};
+        double envBias = m2x(0.99044, -1.28514, 1.29678, -0.755907, x[0], x[1], y[0], y[1]) /
+            m3x(kM2, x[0], x[1], x[3], y[0], y[1], y[3]);
+        const double envScale = m2x(0.0365463, 3.32707, 9.0632, -9.04756, x[0], x[1], y[0], y[1]) /
+            m3x(kM4, x[0], x[2], x[3], y[0], y[1], y[3]);
+        const double maxF0 = std::max({static_cast<double>(c.f0.x), static_cast<double>(c.f0.y),
+                                       static_cast<double>(c.f0.z)});
+        envBias *= std::clamp(maxF0 * 50.0, 0.0, 1.0);
+        const double clampedScale = std::max(0.0, envScale);
+        const double clampedBias = std::max(0.0, envBias);
+        const Vec3 envBrdf{static_cast<float>(c.f0.x * clampedScale + clampedBias),
+                           static_cast<float>(c.f0.y * clampedScale + clampedBias),
+                           static_cast<float>(c.f0.z * clampedScale + clampedBias)};
 
         if (nDotL <= 0.0) {
             return {kBlack, 0.0f, envBrdf};

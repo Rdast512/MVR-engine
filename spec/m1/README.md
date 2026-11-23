@@ -7,7 +7,7 @@ M1 establishes primary visibility and the shading guides. It consumes M0's
 GPU layouts, target bindings and static vertex streams. The engine spec §16.2
 owns milestone acceptance. The visibility-buffer feature spec holds the V1–V8
 design and implementation history.
-[Engine spec](../../docs/engine_spec.md) · [Visibility-buffer feature](../features/visibility_buffer.md) · [PBR plan](../pbr_implementation_plan.md) · [M0 contracts](../m0/README.md)
+[Engine spec](../../docs/engine_spec.md) · [Visibility-buffer feature](../features/done/visibility_buffer.md) · [PBR plan](../pbr_implementation_plan.md) · [M0 contracts](../m0/README.md)
 
 | Task | Contract |
 |---|---|

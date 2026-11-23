@@ -9,7 +9,7 @@ static const uint kRtxdiTile = 8; // matches src/render/vk_renderer.cpp
 #include "Rtxdi/DI/SpatialResampling.hlsli"
 #include "Rtxdi/Utils/RandomSamplerPerPassSeeds.hlsli"
 
-// ReSTIR DI spatial resampling and shading (spec/features/rtxdi_3_2_update.md §3.1): this pixel's temporal reservoir
+// ReSTIR DI spatial resampling and shading (spec/features/done/rtxdi_3_2_update.md §3.1): this pixel's temporal reservoir
 // against this frame's neighbors, the final visibility, then directRadiance = evalBrdf · L_i · NdotL · W. Without
 // spatial resampling (the reference) it shades the reservoir it loads. Neighbors are read from the temporal output
 // and the result is written to the shading buffer, a different one, which is next frame's temporal input. The final
@@ -65,9 +65,9 @@ void rtxdiShadeMain(uint3 id : SV_DispatchThreadID)
     if (RTXDI_IsValidDIReservoir(reservoir))
     {
         // the resampling may have taken a neighbor's light: evaluate it at this surface
-        const RAB_LightSample sample =
-            RAB_SamplePolymorphicLight(RAB_LoadLightInfo(RTXDI_GetDIReservoirLightIndex(reservoir), false), surface,
-                                       RTXDI_GetDIReservoirSampleUV(reservoir));
+        const RAB_LightInfo lightInfo = RAB_LoadLightInfo(RTXDI_GetDIReservoirLightIndex(reservoir), false);
+        const float2 lightUv = RTXDI_GetDIReservoirSampleUV(reservoir);
+        RAB_LightSample sample = RAB_SamplePolymorphicLight(lightInfo, surface, lightUv);
         const float3 shade = shadeLightSample(surface, sample);
         if (any(shade > 0.0))
         {
@@ -92,7 +92,13 @@ void rtxdiShadeMain(uint3 id : SV_DispatchThreadID)
             // m8 I13 §3: light through glass; the reservoir's visibility and the resampling stay glass-free
             if (any(radiance > 0.0))
             {
-                radiance *= shadowTransmittance(root, rasterRayOrigin(surface, sample.l), sample.l, sample.distance);
+                const float3 origin = rasterRayOrigin(surface);
+                float3 dir;
+                float tMax;
+                if (lightVisibilitySegment(origin, sample, dir, tMax))
+                {
+                    radiance *= shadowTransmittance(root, origin, dir, tMax);
+                }
             }
         }
     }

@@ -158,14 +158,14 @@ float3 reconnectionTransmittance(GpuFrameRoot root, RAB_Surface surface, float3 
     {
         return float3(1.0, 1.0, 1.0);
     }
-    const float3 toSample = samplePosition - surface.position;
-    const float distance = length(toSample);
-    if (distance <= 0.0)
+    const float3 origin = rasterRayOrigin(surface);
+    float3 l;
+    float tMax;
+    if (!visibilitySegment(origin, samplePosition, true, l, tMax))
     {
         return float3(1.0, 1.0, 1.0);
     }
-    const float3 l = toSample / distance;
-    return glassTransmittance(root, rasterRayOrigin(surface, l), l, distance * (1.0 - kReconnectionShortening));
+    return glassTransmittance(root, origin, l, tMax);
 }
 
 // the shadow transmittance's uniform switch: without it the shading keeps its pre-I13 expressions, so a scene without

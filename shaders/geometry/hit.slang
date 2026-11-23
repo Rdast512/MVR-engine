@@ -7,7 +7,7 @@ import core.math;
 import geometry.surface;
 import raytracing.trace;
 
-// ray hits -> the Surface the vis-buffer resolve builds (plan C3, spec/features/ray_tracing_mega_geometry.md §5-7)
+// ray hits -> the Surface the vis-buffer resolve builds (plan C3, spec/features/planned/ray_tracing_mega_geometry.md §5-7)
 
 // width at the ray origin and growth per unit distance (improved ray cones, JCGT 2021)
 public struct RayCone
@@ -125,11 +125,16 @@ static const float kSpawnObjectError = 5.9604644775390625E-8;
 static const float kSpawnExtentError = 1.788139769587360206060111522674560546875E-7;
 static const float kSpawnTransformError = 1.19209317972490680404007434844970703125E-7;
 
-// origin for a ray leaving the hit toward `direction`'s side of the triangle. Port of SafeSpawnPoint from
-// RTXMG demo/shaders/self_intersection_avoidance.hlsli (Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES,
-// BSD-3-Clause): the hit point rebuilt from the traced triangle, pushed along the world geometric normal by a bound
-// on its float error instead of a fixed fraction of its distance (spec/features/ray_tracing_mega_geometry.md §6.1)
-public float3 safeSpawnPoint(RayHit hit, float3 direction)
+// below this normalize/rsqrt can return inf or NaN (matches surface.slang)
+static const float kMinSpawnNormalLengthSq = 1e-30;
+
+// origin for a ray leaving the hit toward `sideVector`'s side of the triangle (opaque hits pass facing-corrected
+// surface.geoNormal so rays stay strictly on the front side; glass transmission passes ray.Direction to advance past
+// the pane). Port of SafeSpawnPoint from RTXMG demo/shaders/self_intersection_avoidance.hlsli (Copyright (c) 2023
+// NVIDIA CORPORATION & AFFILIATES, BSD-3-Clause): the hit point rebuilt from the traced triangle, pushed along the
+// world geometric normal by a bound on its float error instead of a fixed fraction of its distance
+// (spec/features/planned/ray_tracing_mega_geometry.md §6.1)
+public float3 safeSpawnPoint(RayHit hit, float3 sideVector)
 {
     const float3 v0 = hit.objectPos[0];
     precise const float3 edge1 = hit.objectPos[1] - v0;
@@ -147,7 +152,13 @@ public float3 safeSpawnPoint(RayHit hit, float3 direction)
 
     // inverse transpose: the rows of worldToObject are the columns
     float3 worldNormal = mul(transpose((float3x3)hit.worldToObject), objectNormal);
-    const float worldScale = rsqrt(dot(worldNormal, worldNormal));
+    const float worldNormalLenSq = dot(worldNormal, worldNormal);
+    // zero-area triangles (e.g. Bistro degenerate geometry, m8 I14 F24) would otherwise produce NaN
+    if (!(worldNormalLenSq > kMinSpawnNormalLengthSq))
+    {
+        return worldPos;
+    }
+    const float worldScale = rsqrt(worldNormalLenSq);
     worldNormal *= worldScale;
 
     const float3 extent3 = abs(edge1) + abs(edge2) + abs(edge1 - edge2);
@@ -163,7 +174,7 @@ public float3 safeSpawnPoint(RayHit hit, float3 direction)
 
     const float offset =
         mad(worldScale, dot(objectError, abs(objectNormal)), dot(worldError, abs(worldNormal)));
-    const float side = dot(worldNormal, direction) < 0.0 ? -1.0 : 1.0;
+    const float side = dot(worldNormal, sideVector) < 0.0 ? -1.0 : 1.0;
     precise const float3 spawn = mad(offset * side, worldNormal, worldPos);
     return spawn;
 }

@@ -345,6 +345,9 @@ namespace
         bool needsAlpha = false;
         // kept from predecoded before its release; otherwise decoded by bakeGltfOmms
         OmmAlphaTexture alpha;
+        // emissive texture of an emitting material (m8 I14 F27): zero-flux triangle light culling reads max(R, G, B)
+        bool needsEmissiveMask = false;
+        OmmAlphaTexture emissiveMax;
     };
 
     struct GltfResolvedTexture
@@ -1268,6 +1271,10 @@ namespace
                 imageRow && hasAlphaMode(material)) {
                 ctx.images[*imageRow].needsAlpha = true;
             }
+            if (const std::optional<uint32_t> imageRow = textureImageRow(ctx, material.emissive_texture.index);
+                imageRow) {
+                ctx.images[*imageRow].needsEmissiveMask = true;
+            }
             GpuMaterial gpu{};
             MaterialPbrExtension ext{};
             parseGltfMaterialPbrExtensions(ctx, material, gpu, ext, std::format("material[{}]", i));
@@ -1333,6 +1340,11 @@ namespace
                 if (image.needsAlpha && image.predecoded.pixels) {
                     image.alpha = extractAlpha(image.predecoded.rgba(), static_cast<uint32_t>(image.predecoded.width),
                                                static_cast<uint32_t>(image.predecoded.height));
+                }
+                if (image.needsEmissiveMask && image.predecoded.pixels) {
+                    image.emissiveMax = extractMaxRgb(image.predecoded.rgba(),
+                                                      static_cast<uint32_t>(image.predecoded.width),
+                                                      static_cast<uint32_t>(image.predecoded.height));
                 }
                 // host image copy has consumed the pixels synchronously
                 image.predecoded = {};
@@ -2252,6 +2264,336 @@ namespace
                 "AssetLoader");
     }
 
+    // mip 0 max(R, G, B) of an emissive texture, from the same source loadGltfImage uploads (m8 I14 F27)
+    static OmmAlphaTexture loadEmissiveMaxRgb(const GltfImageSrc& image)
+    {
+        if (!image.decodedRgba.empty()) {
+            return extractMaxRgb(image.decodedRgba, static_cast<uint32_t>(image.width),
+                                 static_cast<uint32_t>(image.height));
+        }
+        if (!image.encoded.empty() || (!image.path.empty() && !TextureManager::isKtxPath(image.path))) {
+            const TextureManager::DecodedImage decoded = image.encoded.empty()
+                                                             ? TextureManager::decodeRgba8File(image.path)
+                                                             : TextureManager::decodeRgba8(image.encoded);
+            if (!decoded.pixels) {
+                throw std::runtime_error("decode failed");
+            }
+            return extractMaxRgb(decoded.rgba(), static_cast<uint32_t>(decoded.width),
+                                 static_cast<uint32_t>(decoded.height));
+        }
+        if (image.path.empty()) {
+            throw std::runtime_error("no image source");
+        }
+        const TextureManager::KtxBaseLevel level = TextureManager::readKtxBaseLevel(image.path);
+        switch (level.format) {
+        case vk::Format::eBc7UnormBlock:
+        case vk::Format::eBc7SrgbBlock:
+            return decodeBc7MaxRgb(level.bytes, level.width, level.height);
+        case vk::Format::eBc1RgbUnormBlock:
+        case vk::Format::eBc1RgbSrgbBlock:
+        case vk::Format::eBc1RgbaUnormBlock:
+        case vk::Format::eBc1RgbaSrgbBlock:
+            return decodeBc1MaxRgb(level.bytes, level.width, level.height);
+        case vk::Format::eBc3UnormBlock:
+        case vk::Format::eBc3SrgbBlock:
+            return decodeBc3MaxRgb(level.bytes, level.width, level.height);
+        case vk::Format::eR8G8B8A8Unorm:
+        case vk::Format::eR8G8B8A8Srgb:
+            return extractMaxRgb(level.bytes, level.width, level.height);
+        default:
+            throw std::runtime_error(std::format("no emissive decoder for {}", vk::to_string(level.format)));
+        }
+    }
+
+    struct EmissiveSat
+    {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        // (height + 1) * (width + 1) prefix sums of nonzero texels
+        std::vector<uint32_t> sat;
+
+        [[nodiscard]] bool hasNonZeroInRect(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1) const noexcept
+        {
+            const size_t stride = size_t{width} + 1;
+            const uint32_t count = sat[size_t{y1 + 1} * stride + (x1 + 1)] - sat[size_t{y0} * stride + (x1 + 1)] -
+                sat[size_t{y1 + 1} * stride + x0] + sat[size_t{y0} * stride + x0];
+            return count > 0;
+        }
+    };
+
+    static EmissiveSat buildEmissiveSat(const OmmAlphaTexture& mask)
+    {
+        EmissiveSat result{.width = mask.width, .height = mask.height, .sat = {}};
+        if (mask.width == 0 || mask.height == 0 || mask.texels.size() < size_t{mask.width} * mask.height) {
+            return result;
+        }
+        const size_t stride = size_t{mask.width} + 1;
+        result.sat.assign(size_t{mask.height + 1} * stride, 0);
+        for (uint32_t y = 0; y < mask.height; ++y) {
+            uint32_t rowSum = 0;
+            const size_t srcRow = size_t{y} * mask.width;
+            const size_t prevRow = size_t{y} * stride;
+            const size_t curRow = size_t{y + 1} * stride;
+            for (uint32_t x = 0; x < mask.width; ++x) {
+                rowSum += mask.texels[srcRow + x] > 0 ? 1u : 0u;
+                result.sat[curRow + x + 1] = result.sat[prevRow + x + 1] + rowSum;
+            }
+        }
+        return result;
+    }
+
+    // axis texel intervals (1 or 2 inclusive ranges in [0, size - 1]) covering [minCoord, maxCoord] with a +-1 texel
+    // bilinear margin under the glTF sampler wrap mode
+    struct AxisSpans
+    {
+        std::array<std::pair<uint32_t, uint32_t>, 2> spans{};
+        uint32_t count = 0;
+    };
+
+    static AxisSpans uvAxisSpans(float minCoord, float maxCoord, uint32_t size, int32_t wrap) noexcept
+    {
+        AxisSpans out{};
+        const auto fullSpan = [&]() {
+            out.spans[0] = {0u, size - 1u};
+            out.count = 1;
+            return out;
+        };
+        if (!std::isfinite(minCoord) || !std::isfinite(maxCoord) || size == 0) {
+            return fullSpan();
+        }
+        const auto sizeI = static_cast<int64_t>(size);
+        const auto sizeD = static_cast<double>(size);
+        if (wrap == TG3_TEXTURE_WRAP_CLAMP_TO_EDGE) {
+            const int64_t lo = std::clamp<int64_t>(static_cast<int64_t>(std::floor(minCoord * sizeD)) - 1, 0, sizeI - 1);
+            const int64_t hi = std::clamp<int64_t>(static_cast<int64_t>(std::floor(maxCoord * sizeD)) + 1, 0, sizeI - 1);
+            out.spans[0] = {static_cast<uint32_t>(lo), static_cast<uint32_t>(hi)};
+            out.count = 1;
+            return out;
+        }
+        if (maxCoord - minCoord >= 1.0f) {
+            return fullSpan();
+        }
+        if (wrap == TG3_TEXTURE_WRAP_MIRRORED_REPEAT) {
+            const auto mirror = [](double u) {
+                const double m = std::fmod(std::fmod(u, 2.0) + 2.0, 2.0);
+                return m <= 1.0 ? m : 2.0 - m;
+            };
+            double loU = mirror(minCoord);
+            double hiU = mirror(maxCoord);
+            if (loU > hiU) {
+                std::swap(loU, hiU);
+            }
+            const int64_t f0 = static_cast<int64_t>(std::floor(minCoord));
+            const int64_t f1 = static_cast<int64_t>(std::floor(maxCoord));
+            if (f0 != f1) {
+                // crossed an integer boundary: include the fold extremum (even -> 0, odd -> 1)
+                if ((f1 & 1) == 0) {
+                    loU = 0.0;
+                } else {
+                    hiU = 1.0;
+                }
+            }
+            const int64_t lo = std::clamp<int64_t>(static_cast<int64_t>(std::floor(loU * sizeD)) - 1, 0, sizeI - 1);
+            const int64_t hi = std::clamp<int64_t>(static_cast<int64_t>(std::floor(hiU * sizeD)) + 1, 0, sizeI - 1);
+            out.spans[0] = {static_cast<uint32_t>(lo), static_cast<uint32_t>(hi)};
+            out.count = 1;
+            return out;
+        }
+        // TG3_TEXTURE_WRAP_REPEAT (default)
+        const int64_t lo = static_cast<int64_t>(std::floor(minCoord * sizeD)) - 1;
+        const int64_t hi = static_cast<int64_t>(std::floor(maxCoord * sizeD)) + 1;
+        if (hi - lo + 1 >= sizeI) {
+            return fullSpan();
+        }
+        const auto loMod = static_cast<uint32_t>(((lo % sizeI) + sizeI) % sizeI);
+        const auto hiMod = static_cast<uint32_t>(((hi % sizeI) + sizeI) % sizeI);
+        if (loMod <= hiMod) {
+            out.spans[0] = {loMod, hiMod};
+            out.count = 1;
+        } else {
+            out.spans[0] = {loMod, size - 1u};
+            out.spans[1] = {0u, hiMod};
+            out.count = 2;
+        }
+        return out;
+    }
+
+    // m8 I14 F27: cull provably zero-flux triangles from textured emissive primitives using a conservative 2D prefix
+    // sum over mip 0 max(R, G, B). Triangles whose 1-texel-padded UV bounding box contains only zero texels are dropped
+    // from the triangle light list while hitEmission still evaluates exact shading emission if ever struck.
+    static void cullGltfEmissiveTriangles(GltfLoadCtx& ctx, const tg3_model& model)
+    {
+        ZoneScopedN("AssetLoader::cullGltfEmissiveTriangles");
+        GeometryStore& geometry = ctx.geometry;
+        const auto primitiveCount = static_cast<uint32_t>(ctx.primitiveMaterials.size());
+        const uint32_t firstPrimitive = static_cast<uint32_t>(geometry.primitiveDraws.size()) - primitiveCount;
+
+        struct Job
+        {
+            uint32_t primitive = 0;
+            uint32_t image = 0;
+            uint32_t uvSet = 0;
+            int32_t wrapS = TG3_TEXTURE_WRAP_REPEAT;
+            int32_t wrapT = TG3_TEXTURE_WRAP_REPEAT;
+            std::optional<GpuUvMatrix> uvMatrix;
+        };
+
+        std::vector<Job> jobs;
+        for (uint32_t p = 0; p < primitiveCount; ++p) {
+            const PrimitiveDraw& draw = geometry.primitiveDraws[firstPrimitive + p];
+            if (draw.meshlets.triangleCount == 0 || draw.materialId == kNoneIndex) {
+                continue;
+            }
+            const MaterialStore::MaterialInfo& info = ctx.materials.infos[draw.materialId];
+            const GpuMaterial packed = packMaterial(info.material, info.extension);
+            if (!isLightEmitter(packed) || packed.emissiveTex == kNoneIndex) {
+                continue;
+            }
+            const int32_t gltfMat = ctx.primitiveMaterials[p];
+            if (gltfMat < 0 || static_cast<uint32_t>(gltfMat) >= model.materials_count) {
+                continue;
+            }
+            const int32_t texture = model.materials[gltfMat].emissive_texture.index;
+            const std::optional<uint32_t> image = textureImageRow(ctx, texture);
+            if (!image) {
+                continue;
+            }
+            int32_t wrapS = TG3_TEXTURE_WRAP_REPEAT;
+            int32_t wrapT = TG3_TEXTURE_WRAP_REPEAT;
+            const int32_t sampler = model.textures[texture].sampler;
+            if (sampler >= 0 && static_cast<uint32_t>(sampler) < model.samplers_count) {
+                wrapS = model.samplers[sampler].wrap_s;
+                wrapT = model.samplers[sampler].wrap_t;
+            }
+            jobs.push_back(Job{
+                .primitive = p,
+                .image = *image,
+                .uvSet = std::min<uint32_t>(info.material.emissiveUv, 1u),
+                .wrapS = wrapS,
+                .wrapT = wrapT,
+                .uvMatrix = (packed.flags & GpuMaterialFlag::UvTransformEmissive) != 0
+                                ? std::optional(packed.uvMatrices[4])
+                                : std::nullopt,
+            });
+        }
+        if (jobs.empty()) {
+            return;
+        }
+
+        const auto start = std::chrono::steady_clock::now();
+        std::vector<uint32_t> uniqueImages;
+        std::vector<uint32_t> imageToSlot(ctx.images.size(), kNoneIndex);
+        for (const Job& job : jobs) {
+            if (imageToSlot[job.image] == kNoneIndex) {
+                imageToSlot[job.image] = static_cast<uint32_t>(uniqueImages.size());
+                uniqueImages.push_back(job.image);
+            }
+        }
+
+        std::vector<EmissiveSat> sats(uniqueImages.size());
+        std::vector<std::string> imageErrors(uniqueImages.size());
+        parallelFor(uniqueImages.size(), [&](size_t k) {
+            GltfImageSrc& image = ctx.images[uniqueImages[k]];
+            try {
+                if (image.emissiveMax.texels.empty()) {
+                    image.emissiveMax = loadEmissiveMaxRgb(image);
+                }
+                sats[k] = buildEmissiveSat(image.emissiveMax);
+            } catch (const std::exception& error) {
+                imageErrors[k] = error.what();
+            }
+            image.emissiveMax = {};
+        });
+        for (size_t k = 0; k < uniqueImages.size(); ++k) {
+            if (!imageErrors[k].empty()) {
+                logInfo(std::format("Emissive cull skipped for image '{}': {}", ctx.images[uniqueImages[k]].cacheKey,
+                                    imageErrors[k]),
+                        "AssetLoader");
+            }
+        }
+
+        std::vector<std::vector<uint32_t>> activePerJob(jobs.size());
+        std::vector<uint8_t> filteredPerJob(jobs.size(), 0);
+        parallelFor(jobs.size(), [&](size_t j) {
+            const Job& job = jobs[j];
+            const EmissiveSat& sat = sats[imageToSlot[job.image]];
+            if (sat.sat.empty()) {
+                return;
+            }
+            const PrimitiveDraw& draw = geometry.primitiveDraws[firstPrimitive + job.primitive];
+            const std::vector<glm::vec2>& sourceUvs =
+                (job.uvSet != 0 && !geometry.uv1.empty()) ? geometry.uv1 : geometry.uv0;
+            const auto xformUv = [&](uint32_t vertex) {
+                const glm::vec2 uv = sourceUvs[vertex];
+                return job.uvMatrix ? glm::vec2{glm::dot(job.uvMatrix->row0, glm::vec3{uv, 1.0f}),
+                                                glm::dot(job.uvMatrix->row1, glm::vec3{uv, 1.0f})}
+                                    : uv;
+            };
+            std::vector<uint32_t> active;
+            active.reserve(draw.meshlets.triangleCount);
+            uint32_t localTri = 0;
+            for (uint32_t m = draw.meshlets.firstMeshlet; m < draw.meshlets.firstMeshlet + draw.meshlets.meshletCount;
+                 ++m) {
+                const GpuMeshletDesc& meshlet = geometry.meshlets[m];
+                for (uint32_t t = 0; t < meshlet.triangleCount; ++t, ++localTri) {
+                    const uint32_t base = meshlet.triangleOffset + t * 3u;
+                    const glm::vec2 uv0 = xformUv(geometry.meshletVertices[meshlet.vertexOffset + geometry.meshletTriangles[base]]);
+                    const glm::vec2 uv1 = xformUv(geometry.meshletVertices[meshlet.vertexOffset + geometry.meshletTriangles[base + 1]]);
+                    const glm::vec2 uv2 = xformUv(geometry.meshletVertices[meshlet.vertexOffset + geometry.meshletTriangles[base + 2]]);
+                    const float minU = std::min({uv0.x, uv1.x, uv2.x});
+                    const float maxU = std::max({uv0.x, uv1.x, uv2.x});
+                    const float minV = std::min({uv0.y, uv1.y, uv2.y});
+                    const float maxV = std::max({uv0.y, uv1.y, uv2.y});
+                    const AxisSpans xs = uvAxisSpans(minU, maxU, sat.width, job.wrapS);
+                    const AxisSpans ys = uvAxisSpans(minV, maxV, sat.height, job.wrapT);
+                    bool emits = false;
+                    for (uint32_t xi = 0; xi < xs.count && !emits; ++xi) {
+                        for (uint32_t yi = 0; yi < ys.count && !emits; ++yi) {
+                            if (sat.hasNonZeroInRect(xs.spans[xi].first, ys.spans[yi].first, xs.spans[xi].second,
+                                                     ys.spans[yi].second)) {
+                                emits = true;
+                            }
+                        }
+                    }
+                    if (emits) {
+                        active.push_back(localTri);
+                    }
+                }
+            }
+            if (active.size() < draw.meshlets.triangleCount) {
+                filteredPerJob[j] = 1;
+                activePerJob[j] = std::move(active);
+            }
+        });
+
+        uint32_t filteredPrims = 0;
+        uint32_t totalTris = 0;
+        uint32_t keptTris = 0;
+        for (size_t j = 0; j < jobs.size(); ++j) {
+            PrimitiveDraw& draw = geometry.primitiveDraws[firstPrimitive + jobs[j].primitive];
+            totalTris += draw.meshlets.triangleCount;
+            if (filteredPerJob[j] != 0) {
+                ++filteredPrims;
+                draw.hasEmissiveFilter = true;
+                draw.firstEmissiveTriangle = static_cast<uint32_t>(geometry.emissiveActiveTriangles.size());
+                draw.emissiveTriangleCount = static_cast<uint32_t>(activePerJob[j].size());
+                geometry.emissiveActiveTriangles.insert(geometry.emissiveActiveTriangles.end(),
+                                                        activePerJob[j].begin(), activePerJob[j].end());
+                keptTris += draw.emissiveTriangleCount;
+            } else {
+                keptTris += draw.meshlets.triangleCount;
+            }
+        }
+        const double ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        logInfo(std::format("Emissive cull: {} of {} textured emissive primitives filtered in {:.1f} ms ({} images): "
+                            "kept {} / {} tris (culled {}, {:.1f}%)",
+                            filteredPrims, jobs.size(), ms, uniqueImages.size(), keptTris, totalTris,
+                            totalTris - keptTris,
+                            totalTris > 0 ? 100.0 * static_cast<double>(totalTris - keptTris) / totalTris : 0.0),
+                "AssetLoader");
+    }
+
     // Textures a load picked up. Until commit, a failed load frees the ones no other model retains.
     struct ModelTextureRefs
     {
@@ -2435,6 +2777,7 @@ std::optional<EntityId> AssetsLoader::loadGltfModel(const std::string& modelPath
     appendGltfGeometry(ctx, model);
     bakeGltfOmms(ctx, model, std::filesystem::path(modelPath),
                  textureManager.deviceWrapper.capabilities.opacityMicromap.maxOpacity4StateSubdivisionLevel);
+    cullGltfEmissiveTriangles(ctx, model);
     const uint32_t primitiveCount = static_cast<uint32_t>(geometryStore.primitiveDraws.size()) - firstPrimitive;
 
     MeshletDraw unionDraw{};

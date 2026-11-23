@@ -1,10 +1,10 @@
 # Feature: Engine and UI split
 
-**Date:** 2026-11-11 · **Status:** UI1–UI4 built; builds clean (ImGui on/off, debug/release); §4 runtime checks pending · **Milestone:** before M2 ([engine_spec.md](../../docs/engine_spec.md) §16.2)
+**Date:** 2026-11-11 · **Status:** UI1–UI4 built; builds clean (ImGui on/off, debug/release); §4 runtime checks pending · **Milestone:** before M2 ([engine_spec.md](../../../docs/engine_spec.md) §16.2)
 **Implements:** engine spec §20.2 AU3
 **Related:** [resource_manager_split.md](./resource_manager_split.md) (AU2), engine spec §20.2 AU10 (one swapchain recreate path)
 
-`Engine` ([vk_engine.hpp](../../src/core/vk_engine.hpp), [vk_engine.cpp](../../src/core/vk_engine.cpp), 1,514 lines) runs the application and also is the debug UI: about 900 of its lines are ImGui panels and their helpers, and half of its members are panel state. This spec splits it in two: `Engine` keeps the application, `EngineUi` gets everything ImGui.
+`Engine` ([vk_engine.hpp](../../../src/core/vk_engine.hpp), [vk_engine.cpp](../../../src/core/vk_engine.cpp), 1,514 lines) runs the application and also is the debug UI: about 900 of its lines are ImGui panels and their helpers, and half of its members are panel state. This spec splits it in two: `Engine` keeps the application, `EngineUi` gets everything ImGui.
 
 This is a move of code. Panels look and behave the same afterwards.
 

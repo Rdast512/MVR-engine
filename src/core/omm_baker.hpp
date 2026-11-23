@@ -64,6 +64,11 @@ struct OmmAlphaTexture
 [[nodiscard]] OmmAlphaTexture extractAlpha(std::span<const uint8_t> rgba, uint32_t width, uint32_t height);
 // alpha of BC7 blocks (row-major, 16 B each); throws when blocks is too small
 [[nodiscard]] OmmAlphaTexture decodeBc7Alpha(std::span<const uint8_t> blocks, uint32_t width, uint32_t height);
+// max(R, G, B) of RGBA8 / BC7 / BC1 / BC3 pixels (m8 I14 F27: zero-flux emissive triangle culling)
+[[nodiscard]] OmmAlphaTexture extractMaxRgb(std::span<const uint8_t> rgba, uint32_t width, uint32_t height);
+[[nodiscard]] OmmAlphaTexture decodeBc7MaxRgb(std::span<const uint8_t> blocks, uint32_t width, uint32_t height);
+[[nodiscard]] OmmAlphaTexture decodeBc1MaxRgb(std::span<const uint8_t> blocks, uint32_t width, uint32_t height);
+[[nodiscard]] OmmAlphaTexture decodeBc3MaxRgb(std::span<const uint8_t> blocks, uint32_t width, uint32_t height);
 
 struct OmmBakeInput
 {

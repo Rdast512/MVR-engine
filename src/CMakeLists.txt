@@ -75,6 +75,7 @@ add_library(engine_runtime SHARED core/vk_engine.cpp core/vk_engine.hpp core/eng
     core/engine_cull_check.cpp core/engine_cull_check.hpp
     core/engine_ray_check.cpp core/engine_ray_check.hpp
     core/engine_gi_check.cpp core/engine_gi_check.hpp
+    core/engine_dlss_check.cpp core/engine_dlss_check.hpp
     core/engine_temporal_check.cpp core/engine_temporal_check.hpp core/check_poses.hpp core/check_images.cpp core/check_images.hpp core/gi_settings_sets.hpp
     core/convergence_metrics.cpp core/convergence_metrics.hpp
     lab/engine_lab.cpp lab/engine_lab.hpp lab/lab_cases.hpp lab/lab_metrics.cpp lab/lab_metrics.hpp

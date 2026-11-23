@@ -1,8 +1,8 @@
 # Feature: Dead scaffolding removal
 
-**Date:** 2026-11-12 · **Status:** built; debug + release build clean, ctest 5/5 in both; runtime check pending · **Milestone:** before M2 ([engine_spec.md](../../docs/engine_spec.md) §16.2)
+**Date:** 2026-11-12 · **Status:** built; debug + release build clean, ctest 5/5 in both; runtime check pending · **Milestone:** before M2 ([engine_spec.md](../../../docs/engine_spec.md) §16.2)
 **Implements:** engine spec §20.2 AU7
-**Related:** engine spec §17 (the PBR plan A3 row this reverses), [shader_architecture_plan.md](../shader_architecture_plan.md) (owner of shader file status)
+**Related:** engine spec §17 (the PBR plan A3 row this reverses), [shader_architecture_plan.md](../../shader_architecture_plan.md) (owner of shader file status)
 
 Zero-byte sources, stub shaders and unused types stay in the tree from earlier plans. Some are compiled, some declare module names that collide, and the stubs describe designs §10–§11 have since replaced. AU7 deletes them; a file returns with the milestone that fills it.
 
@@ -55,7 +55,7 @@ None of these is compiled by an `engine_add_slang_pass` or by a test.
 | `passes/pathtrace.slang`, `pathtrace_query.slang`, `pathtrace_update.slang` | imports and SHaRC defines only | each other | delete |
 | `passes/sharc_resolve.slang` | include only | nothing | delete |
 | `gi/rtxgi.slang` | `GI_CACHE_MODE` define, `kGiCache*` constants | `passes/pathtrace` | delete |
-| `postprocessing/dlss.slang` | `DlssFrameContract` struct | `passes/composite` | delete (orphaned; [shader_architecture_plan.md](../shader_architecture_plan.md) already marks it `[delete]`) |
+| `postprocessing/dlss.slang` | `DlssFrameContract` struct | `passes/composite` | delete (orphaned; [shader_architecture_plan.md](../../shader_architecture_plan.md) already marks it `[delete]`) |
 
 `gi/sharc.slang` stays: `tests/shaders/sharc_roundtrip.slang` includes it. The `raytracing/` and `postprocessing/` directories become empty and go; M2–M4 recreate `raytracing/`.
 
@@ -89,7 +89,7 @@ None of these is compiled by an `engine_add_slang_pass` or by a test.
 | DC1 | Delete the zero-byte C++ files and their CMake list entries | §1.1 |
 | DC2 | Delete the unused types and the descriptor-set mode; shader objects always use descriptor heaps | `types.hpp`, `vk_descriptors.hpp`, `vk_shader_objects.*`, `vk_dgc.cpp`, `vk_device.cpp` |
 | DC3 | Delete the stub shaders and `intersectSize` | §1.3, `core/culling.slang` |
-| DC4 | Documents: `shaders/README.md` layer table matches the tree; [shader_architecture_plan.md](../shader_architecture_plan.md) marks deleted stubs `[new]` at their milestone; engine spec §17 row, §16.2, §20.2 AU7 status, changelog | docs |
+| DC4 | Documents: `shaders/README.md` layer table matches the tree; [shader_architecture_plan.md](../../shader_architecture_plan.md) marks deleted stubs `[new]` at their milestone; engine spec §17 row, §16.2, §20.2 AU7 status, changelog | docs |
 
 ---
 

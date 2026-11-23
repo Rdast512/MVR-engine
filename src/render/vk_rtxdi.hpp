@@ -252,7 +252,7 @@ public:
         bool operator==(const GiSettings&) const = default;
     };
 
-    // the RTXDI sample's default Medium preset (spec/features/rtxdi_3_2_update.md §3.3)
+    // the RTXDI sample's default Medium preset (spec/features/done/rtxdi_3_2_update.md §3.3)
     [[nodiscard]] static Settings nvidiaSettings();
     // shipped: Power_RIS, fresh final visibility, ray-traced disocclusion boost only (spec/fixesM1-6/i6_restir_di_tuning.md)
     [[nodiscard]] static Settings defaultSettings();

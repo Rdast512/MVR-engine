@@ -1,8 +1,8 @@
 # Feature: Full settings testing (settings lab)
 
-**Date:** 2026-11-22 · **Status:** T1–T5, T7, T9 built, not run yet (§9); T6, T8, T10–T12 open · **Milestone:** M8 tooling, ahead of I12 ([README](../fixesM1-6/README.md)); used by I7, I12, I13 and every later tuning step
+**Date:** 2026-11-22 · **Status:** T1–T5, T7, T9 built, not run yet (§9); T6, T8, T10–T12 open · **Milestone:** M8 tooling, ahead of I12 ([README](../../fixesM1-6/README.md)); used by I7, I12, I13 and every later tuning step
 **Implements:** a settings lab, separate from the engine checks: a switch catalog (the logic of every lighting setting), a case catalog (scenes and poses that each stress one failure), and a matrix runner that tries settings and finds the switch behind a measured error by one-factor runs and bisection
-**Touches:** findings F22, F23 ([m8_optimization_and_fixes.md](../fixesM1-6/m8_optimization_and_fixes.md)); considerations C-I12-1, C-I12-2 ([considerations.md](../considerations.md)); stands beside M8 I1's engine checks ([i1_check_runners.md](../fixesM1-6/i1_check_runners.md)) without changing them (§0)
+**Touches:** findings F22, F23 ([m8_optimization_and_fixes.md](../../fixesM1-6/m8_optimization_and_fixes.md)); considerations C-I12-1, C-I12-2 ([considerations.md](../../considerations.md)); stands beside M8 I1's engine checks ([i1_check_runners.md](../../fixesM1-6/i1_check_runners.md)) without changing them (§0)
 **Reference:** RTXDI `Doc/NoiseAndBias.md`, `Doc/RestirPT.md` (DLSS-RR decorrelation, duplication history reduction), `Doc/Confidence.md`, `Doc/RestirGI.md`; FullSample `UserInterface.cpp` (`ApplyPreset`, `ApplyReSTIRPTPreset`, `ApplyDenoiserCompatDefaults`); library defaults in `Source/ReSTIRDI.cpp`, `ReSTIRGI.cpp`, `ReSTIRPT.cpp`; `reference/NrcGuide.md` (resolve modes, §Debugging); `reference/vk_denoise_dlssrr/README.md` (guide buffers). NVIDIA's samples ship presets and on-screen toggles, no automated A/B runner.
 
 The café findings took a day of hand-written variants to pin down, and both were explained by NVIDIA's own documents once the right switch was in view:

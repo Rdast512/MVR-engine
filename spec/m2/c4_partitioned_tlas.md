@@ -3,7 +3,7 @@
 **Status** — Required and built on 2026-11-14.\
 **Implements** — PBR C4 and engine spec §10.3.\
 **Depends on** — [C1 cluster BLAS](c1_cluster_acceleration_structures.md), [C2 async compute](c2_gpu_instances_async_compute.md) and [C3 ray checks](c3_ray_hit_decode.md).
-[PBR plan](../pbr_implementation_plan.md) · [RTX Mega Geometry feature](../features/ray_tracing_mega_geometry.md) · [Considerations C-C4-1–5](../considerations.md)
+[PBR plan](../pbr_implementation_plan.md) · [RTX Mega Geometry feature](../features/planned/ray_tracing_mega_geometry.md) · [Considerations C-C4-1–5](../considerations.md)
 
 ## Build path
 

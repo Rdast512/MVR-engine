@@ -1,7 +1,7 @@
 # M1 · V4 — Raster bins and winding
 
 **Status** — Opaque raster built. M6 owns alpha-tested coverage.
-[Visibility-buffer V4](../features/visibility_buffer.md) · [A6 and raster integration](v4_v5_visibility_raster.md)
+[Visibility-buffer V4](../features/done/visibility_buffer.md) · [A6 and raster integration](v4_v5_visibility_raster.md)
 
 ## Decision and shader path
 

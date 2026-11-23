@@ -7,23 +7,24 @@
 #include "Rtxdi/DI/InitialSampling.hlsli"
 #include "Rtxdi/DI/SpatialResampling.hlsli"
 
-// where a vertex's rays start: the traced triangle or the raster pixel
+// where a vertex's rays start: the traced triangle or the raster pixel (strictly front-side along geoNormal, m8 I14)
 interface IRayOrigin
 {
-    float3 spawn(float3 direction);
+    float3 spawn();
 };
 
 struct HitOrigin : IRayOrigin
 {
     RayHit hit;
-    float3 spawn(float3 direction) { return safeSpawnPoint(hit, direction); }
+    float3 geoNormal;
+    float3 spawn() { return safeSpawnPoint(hit, geoNormal); }
 };
 
 // the primary surface is a raster pixel, no traced triangle
 struct RasterOrigin : IRayOrigin
 {
     RAB_Surface surface;
-    float3 spawn(float3 direction) { return rasterRayOrigin(surface, direction); }
+    float3 spawn() { return rasterRayOrigin(surface); }
 };
 
 // one RIS-sampled light at a lit vertex, without reuse. Light candidates alone reach every light, triangles included;
@@ -51,8 +52,7 @@ float3 shadeLightReservoir<Origin : IRayOrigin>(RAB_Surface surface, Origin orig
         return float3(0.0, 0.0, 0.0);
     }
     const float3 shade = shadeLightSample(surface, lightSample);
-    if (all(shade <= 0.0) ||
-        !traceVisibility(gRtxdiBridge.rays, origin.spawn(lightSample.l), lightSample.l, 0.0, lightSample.distance))
+    if (all(shade <= 0.0) || !traceLightVisibility(origin.spawn(), lightSample))
     {
         return float3(0.0, 0.0, 0.0);
     }
@@ -133,7 +133,14 @@ float3 secondaryDirectLight(GpuFrameRoot root, RAB_Surface surface, HitOrigin or
     {
         return radiance;
     }
-    return radiance * shadowTransmittance(root, origin.spawn(lightSample.l), lightSample.l, lightSample.distance);
+    const float3 spawn = origin.spawn();
+    float3 dir;
+    float tMax;
+    if (!lightVisibilitySegment(spawn, lightSample, dir, tMax))
+    {
+        return radiance;
+    }
+    return radiance * shadowTransmittance(root, spawn, dir, tMax);
 }
 
 // the glass's diffuse share (m8 I13 §2): one RIS-sampled light with its visibility and shadow transmittance, shaded
@@ -156,13 +163,18 @@ float3 lambertLightAt(GpuFrameRoot root, RAB_Surface surface, HitOrigin origin, 
     {
         return float3(0.0, 0.0, 0.0);
     }
-    const float3 spawn = origin.spawn(lightSample.l);
-    if (!traceVisibility(gRtxdiBridge.rays, spawn, lightSample.l, 0.0, lightSample.distance))
+    const float3 spawn = origin.spawn();
+    float3 dir;
+    float tMax;
+    const bool hasSegment = lightVisibilitySegment(spawn, lightSample, dir, tMax);
+    if (hasSegment && !traceVisibility(gRtxdiBridge.rays, spawn, dir, 0.0, tMax))
     {
         return float3(0.0, 0.0, 0.0);
     }
+    const float3 transmittance =
+        hasSegment ? shadowTransmittance(root, spawn, dir, tMax) : float3(1.0, 1.0, 1.0);
     return surface.diffuseAlbedo * (nDotL / kPi) * lightSample.radiance * RTXDI_GetDIReservoirInvPdf(reservoir) *
-           shadowTransmittance(root, spawn, lightSample.l, lightSample.distance);
+           transmittance;
 }
 
 struct PathHit
@@ -172,10 +184,18 @@ struct PathHit
 };
 
 // the one emission rule (spec/m7/e2_emissive_triangles.md): a light triangle's light reaches every vertex through
-// light sampling, so its hit adds no emission; other emitters (unlit) add theirs. Counting both would double it
+// light sampling, so its hit adds no emission; other emitters (unlit, or baked zero-power triangles that NEE cannot
+// sample, m8 I14 F27) add theirs. Counting both would double it
 float3 hitEmission(GpuFrameRoot root, RayHit hit, float3 emissive)
 {
-    return isLightHit(loadTriangleLightTable(root), hit) ? float3(0.0, 0.0, 0.0) : emissive;
+    const TriangleLightTable table = loadTriangleLightTable(root);
+    const uint lightIndex = hitLightIndex(table, hit);
+    if (lightIndex == kNoneIndex)
+    {
+        return emissive;
+    }
+    const GpuTriangleLight light = asTriangleLight(bdaPtr<GpuLight>(root.worldLights)[lightIndex]);
+    return any(light.radiance > 0.0) ? float3(0.0, 0.0, 0.0) : emissive;
 }
 
 // decode + material at a hit. coneDistance is camera to ray.Origin; decodeHit adds cone.spread * hit.t. No DLSS LOD
@@ -215,7 +235,7 @@ bool scatterBrdf<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, inout 
     }
     throughput *= brdf.weight;
     pdf = brdf.pdf;
-    ray.Origin = origin.spawn(brdf.l);
+    ray.Origin = origin.spawn();
     ray.Direction = brdf.l;
     return true;
 }
@@ -252,6 +272,7 @@ float3 referencePathRadiance(GpuFrameRoot root, RAB_Surface start, HitOrigin sta
         const PathHit next = shadeRayHit(root, hit, ray, pathLength);
         pathLength += hit.t;
         origin.hit = hit;
+        origin.geoNormal = next.surface.geoNormal;
         radiance += throughput * (next.emissive + directLightAt(next.surface, origin, constants, lightRng, coherentRng));
         vertex = next.surface;
     }

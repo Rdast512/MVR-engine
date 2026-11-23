@@ -42,6 +42,15 @@ public:
         bool operator==(const Settings&) const = default;
     };
 
+    // ENGINE_DLSS_CHECK perturbation and A/B controls (m8 I14 F25); defaults match shipped behavior
+    struct DebugControls
+    {
+        bool isDepthInverted = true;
+        bool isJitterInverted = false;
+        bool isProjYFlipped = false;
+        float preExposure = 1.0f;
+    };
+
     // one NGX input or output; the image stays in the layout its pass left it in
     struct Image
     {
@@ -84,7 +93,10 @@ public:
     // device idle: recreates the feature for displayExtent with settings and returns its render extent
     [[nodiscard]] vk::Extent2D recreate(vk::Extent2D displayExtent);
     // settings differ from the feature's: the render extent may change, so the caller rebuilds its targets
-    [[nodiscard]] bool isRecreateNeeded() const noexcept { return settings != appliedSettings; }
+    [[nodiscard]] bool isRecreateNeeded() const noexcept
+    {
+        return settings != appliedSettings || debug.isDepthInverted != appliedDepthInverted;
+    }
     // NGX binds its own pipelines and descriptor sets: rebind the heaps after it
     void evaluate(const vk::raii::CommandBuffer& cmd, const Frame& frame) const;
 
@@ -93,6 +105,7 @@ public:
 
     // edited by the UI; applied by the next recreate
     Settings settings;
+    DebugControls debug;
 
 private:
     void releaseFeature();
@@ -106,4 +119,5 @@ private:
     vk::Extent2D renderExtent{};
     vk::Extent2D displayExtent{};
     Settings appliedSettings;
+    bool appliedDepthInverted = true;
 };

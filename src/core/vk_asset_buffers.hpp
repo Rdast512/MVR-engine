@@ -68,6 +68,7 @@ struct ModelAllocation {
     ElementRange auxBlobs;     // GeometryStore::auxBlobs
     ElementRange nodes;        // GeometryStore::nodeDraws
     ElementRange meshletGroups; // GeometryStore::meshletGroups
+    ElementRange emissiveActiveTriangles; // GeometryStore::emissiveActiveTriangles
     // resolved model file (AssetsLoader::resolveModelPath), the cache key
     std::string key;
     // union over the model's primitives, copied into every instance

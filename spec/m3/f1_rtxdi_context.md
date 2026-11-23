@@ -4,7 +4,7 @@
 **Implements** — PBR F1 and engine spec §11.2.\
 **Depends on** — [E2 world-light regions](e2_world_light_buffer.md).\
 **Used by** — [F2 bridge](f2_rtxdi_bridge.md) and [F3 DI passes](f3_restir_di.md).
-[PBR plan](../pbr_implementation_plan.md) · [RTXDI 3.2 update](../features/rtxdi_3_2_update.md)
+[PBR plan](../pbr_implementation_plan.md) · [RTXDI 3.2 update](../features/done/rtxdi_3_2_update.md)
 
 ## Context and storage
 

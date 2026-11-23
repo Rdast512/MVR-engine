@@ -116,7 +116,7 @@ float depthShade(float depth, GpuCameraData camera)
     return 1.0 - saturate(log(linearZ / camera.nearZ) / log(camera.farZ / camera.nearZ));
 }
 
-// this frame's albedo against last frame's at the reprojected position (spec/features/motion_vectors.md §5)
+// this frame's albedo against last frame's at the reprojected position (spec/features/done/motion_vectors.md §5)
 float3 reprojectionError(GpuTargets targets, uint2 pixel)
 {
     const float2 motion = loadGuide(targets.current, kGuideMotion, pixel).xy;

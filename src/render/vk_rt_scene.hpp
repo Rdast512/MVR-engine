@@ -14,7 +14,7 @@
 #include <vector>
 #include <vulkan/vulkan_raii.hpp>
 
-// The per-frame ray-tracing scene (PBR plan C2 + C4, spec/features/ray_tracing_mega_geometry.md §3): one PTLAS
+// The per-frame ray-tracing scene (PBR plan C2 + C4, spec/features/planned/ray_tracing_mega_geometry.md §3): one PTLAS
 // instance per (node instance, mesh primitive with meshlets). A single PTLAS is updated in place every frame on the
 // async compute queue from instance writes the GPU appends: every row after a layout change (a full build), otherwise
 // only the rows whose transform changed, each in its grid partition. The ray-instance rows only change with the scene
@@ -74,22 +74,24 @@ public:
     {
         return frames[frameSlot].rayInstances.address;
     }
-    // uint[], parallel to the ray instances: the first triangle-region row, kNoneIndex unless the material emits
+    // uint[], headers parallel to rayInstances (dense firstLight or kRayInstanceLightSparseBit | remapOffset)
+    // followed by per-primitive sparse remap tails (m8 I14 F27)
     [[nodiscard]] vk::DeviceAddress rayInstanceLightsAddress(uint32_t frameSlot) const noexcept
     {
         return frames[frameSlot].rayInstanceLights.address;
     }
-    // GpuTriangleLightTask[triangleLightTaskCount()]
-    [[nodiscard]] vk::DeviceAddress triangleLightTasksAddress(uint32_t frameSlot) const noexcept
+    // GpuTriangleLightRef[triangleLightCount()]
+    [[nodiscard]] vk::DeviceAddress triangleLightRefsAddress(uint32_t frameSlot) const noexcept
     {
-        return frames[frameSlot].triangleLightTasks.address;
-    }
-    [[nodiscard]] uint32_t triangleLightTaskCount() const noexcept
-    {
-        return static_cast<uint32_t>(templates.lightTasks.size());
+        return frames[frameSlot].triangleLightRefs.address;
     }
     // triangle lights of the layout as of the last prepareFrame
     [[nodiscard]] uint32_t triangleLightCount() const noexcept { return templates.triangleLightCount; }
+    [[nodiscard]] std::span<const GpuTriangleLightRef> getTriangleLightRefs() const noexcept
+    {
+        return templates.lightRefs;
+    }
+    [[nodiscard]] std::span<const GpuRayInstance> getRayInstances() const noexcept { return templates.rows; }
     // kRayMaskGlass instances of the layout (m8 I13); 0 skips the glass pass and the shadow transmittance
     [[nodiscard]] uint32_t glassRowCount() const noexcept { return templates.glassRowCount; }
     [[nodiscard]] Stats getStats() const noexcept;
@@ -132,10 +134,10 @@ private:
         std::vector<GpuRayInstanceBuild> builds;
         // parallel to rows: primitive center in entity space (before entityMatrix), for partition reassignment
         std::vector<glm::vec3> rowLocalCenters;
-        // parallel to rows: first triangle-region row, kNoneIndex unless the primitive's material emits
-        std::vector<uint32_t> firstLights;
-        // one per emissive row, in row order
-        std::vector<GpuTriangleLightTask> lightTasks;
+        // per-row headers followed by sparse remap tails for partial textured emitters (m8 I14 F27)
+        std::vector<uint32_t> rayInstanceLights;
+        // one per active triangle light (m8 I14 F27)
+        std::vector<GpuTriangleLightRef> lightRefs;
         std::vector<DynamicEntity> dynamicEntities;
         std::vector<uint32_t> partitionOccupancy;
         // dense cell (cy * gridAxis + cx) -> compacted Z-order partition index in [0, shape.partitions) (m8 MG-P5)
@@ -168,12 +170,12 @@ private:
 
     struct FrameBuffers
     {
-        // host-written per layout: GpuRayInstance[capacity], GpuRayInstanceBuild[capacity], uint[capacity] first
-        // lights and GpuTriangleLightTask[capacity] (at most one per instance)
+        // host-written per layout: GpuRayInstance[capacity], GpuRayInstanceBuild[capacity], rayInstanceLights
+        // (headers + sparse remap tails), and GpuTriangleLightRef[triangleLightRefsCapacity]
         HostBuffer rayInstances;
         HostBuffer builds;
         HostBuffer rayInstanceLights;
-        HostBuffer triangleLightTasks;
+        HostBuffer triangleLightRefs;
         // host-reset per frame, GPU-appended: the build's one write-instance op and its op count
         HostBuffer operation;
         // host-cached 4-byte readback of operation.argCount (MG-B2)
@@ -181,6 +183,8 @@ private:
         // GPU-written VkPartitionedAccelerationStructureWriteInstanceDataNV[capacity]
         AlignedBuffer writeInfos;
         uint32_t capacity = 0;
+        uint32_t rayInstanceLightsCapacity = 0;
+        uint32_t triangleLightRefsCapacity = 0;
         uint32_t count = 0;
         // template version uploaded
         uint32_t version = ~0u;

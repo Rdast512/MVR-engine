@@ -23,7 +23,7 @@ namespace
     constexpr const char* kRayInstancesTracyName = "GPU/RayInstances";
     constexpr const char* kRayBuildsTracyName = "GPU/RayInstanceBuilds";
     constexpr const char* kRayInstanceLightsTracyName = "GPU/RayInstanceLights";
-    constexpr const char* kTriangleLightTasksTracyName = "GPU/TriangleLightTasks";
+    constexpr const char* kTriangleLightRefsTracyName = "GPU/TriangleLightRefs";
     constexpr const char* kPtlasOperationTracyName = "GPU/PtlasOperation";
     constexpr const char* kPtlasArgCountReadbackTracyName = "GPU/PtlasArgCountReadback";
     // first allocation, in instances
@@ -184,8 +184,8 @@ void RayTracingScene::buildTemplates()
     templates.rows.clear();
     templates.builds.clear();
     templates.rowLocalCenters.clear();
-    templates.firstLights.clear();
-    templates.lightTasks.clear();
+    templates.rayInstanceLights.clear();
+    templates.lightRefs.clear();
     templates.dynamicEntities.clear();
     templates.partitionOccupancy.clear();
     templates.cellToPartition.clear();
@@ -221,6 +221,9 @@ void RayTracingScene::buildTemplates()
     const uint32_t entityCount = assets.asset(AssetBuffer::Primitives).address == 0 ? 0 : storage.size();
     const std::span<const uint32_t> nodeInstanceFirsts = frameData.entityNodeInstanceFirst();
     std::vector<glm::vec2> centers;
+    std::vector<uint32_t> firstLights;
+    std::vector<uint32_t> sparseLightTail;
+    uint32_t emissiveInstanceCount = 0;
     for (EntityId id = 0; id < entityCount; ++id) {
         // an entity whose load is not flushed yet has no GPU model and no node-instance rows
         if ((storage.flags[id] & EntityFlag::Active) == 0 || storage.modelIds[id] == kInvalidModelId) {
@@ -256,16 +259,34 @@ void RayTracingScene::buildTemplates()
                                                                            : 0u) |
                         (isGlassRow ? GpuRayInstanceBuildFlag::Glass : 0u),
                 });
+                const auto rayInstance = static_cast<uint32_t>(templates.rows.size() - 1);
                 if (isEmissive(primitive.materialId)) {
-                    templates.firstLights.push_back(templates.triangleLightCount);
-                    templates.lightTasks.push_back(GpuTriangleLightTask{
-                        .firstLight = templates.triangleLightCount,
-                        .triangleCount = primitive.meshlets.triangleCount,
-                        .rayInstance = static_cast<uint32_t>(templates.rows.size() - 1),
-                    });
-                    templates.triangleLightCount += primitive.meshlets.triangleCount;
+                    if (!primitive.hasEmissiveFilter) {
+                        ++emissiveInstanceCount;
+                        firstLights.push_back(templates.triangleLightCount);
+                        for (uint32_t t = 0; t < primitive.meshlets.triangleCount; ++t) {
+                            templates.lightRefs.push_back(
+                                GpuTriangleLightRef{.rayInstance = rayInstance, .localTriangle = t});
+                        }
+                        templates.triangleLightCount += primitive.meshlets.triangleCount;
+                    } else if (primitive.emissiveTriangleCount == 0) {
+                        firstLights.push_back(kNoneIndex);
+                    } else {
+                        ++emissiveInstanceCount;
+                        const auto tailOffset = static_cast<uint32_t>(sparseLightTail.size());
+                        firstLights.push_back(kRayInstanceLightSparseBit | tailOffset);
+                        sparseLightTail.resize(tailOffset + primitive.meshlets.triangleCount, kNoneIndex);
+                        for (uint32_t i = 0; i < primitive.emissiveTriangleCount; ++i) {
+                            const uint32_t localTri =
+                                geometry.emissiveActiveTriangles[primitive.firstEmissiveTriangle + i];
+                            sparseLightTail[tailOffset + localTri] = templates.triangleLightCount;
+                            templates.lightRefs.push_back(
+                                GpuTriangleLightRef{.rayInstance = rayInstance, .localTriangle = localTri});
+                            ++templates.triangleLightCount;
+                        }
+                    }
                 } else {
-                    templates.firstLights.push_back(kNoneIndex);
+                    firstLights.push_back(kNoneIndex);
                 }
                 const glm::vec3 localCenter =
                     glm::vec3(node.localToModel * glm::vec4(0.5f * (box.bboxMin + box.bboxMax), 1.0f));
@@ -289,6 +310,17 @@ void RayTracingScene::buildTemplates()
     }
 
     const auto count = static_cast<uint32_t>(templates.rows.size());
+    templates.rayInstanceLights.resize(firstLights.size() + sparseLightTail.size());
+    for (size_t i = 0; i < firstLights.size(); ++i) {
+        const uint32_t entry = firstLights[i];
+        templates.rayInstanceLights[i] = (entry != kNoneIndex && (entry & kRayInstanceLightSparseBit) != 0)
+            ? (kRayInstanceLightSparseBit | (count + (entry & ~kRayInstanceLightSparseBit)))
+            : entry;
+    }
+    if (!sparseLightTail.empty()) {
+        std::memcpy(templates.rayInstanceLights.data() + count, sparseLightTail.data(),
+                    std::span(sparseLightTail).size_bytes());
+    }
     const uint64_t maxInstances = device.capabilities.accelerationStructure.maxInstanceCount;
     if (count > maxInstances) {
         throw std::runtime_error(std::format("rt: {} instances exceed maxInstanceCount {}", count, maxInstances));
@@ -393,7 +425,7 @@ void RayTracingScene::buildTemplates()
     logInfo(std::format("rt templates: {} instances, {} partitions ({}x{} grid, Z-order), at most {} per partition; {} "
                         "triangle lights in {} emissive instances; {} glass instances",
                         count, templates.shape.partitions, templates.gridAxis, templates.gridAxis,
-                        templates.shape.maxPerPartition, templates.triangleLightCount, templates.lightTasks.size(),
+                        templates.shape.maxPerPartition, templates.triangleLightCount, emissiveInstanceCount,
                         templates.glassRowCount),
             "RayTracingScene");
 }
@@ -483,13 +515,38 @@ void RayTracingScene::uploadTemplates(uint32_t frameSlot)
             std::max<uint64_t>({count, static_cast<uint64_t>(buffers.capacity) * 2, kMinCapacity});
         createFrameBuffers(frameSlot, static_cast<uint32_t>(std::min(grownCapacity, maxInstances)));
     }
+    const auto lightEntries = static_cast<uint32_t>(templates.rayInstanceLights.size());
+    if (lightEntries > buffers.rayInstanceLightsCapacity || buffers.rayInstanceLights.memory == nullptr) {
+        destroyHostBuffer(allocator.allocator, buffers.rayInstanceLights, kRayInstanceLightsTracyName);
+        buffers.rayInstanceLightsCapacity =
+            std::max({lightEntries, buffers.rayInstanceLightsCapacity * 2u, kMinCapacity});
+        buffers.rayInstanceLights = createHostBuffer(
+            sizeof(uint32_t) * vk::DeviceSize{buffers.rayInstanceLightsCapacity}, allocator.allocator, device.vkdevice,
+            device.queueFamilyIndices, std::format("RayInstanceLights_{}", frameSlot), kRayInstanceLightsTracyName);
+    }
+    const auto lightRefCount = static_cast<uint32_t>(templates.lightRefs.size());
+    if (lightRefCount > buffers.triangleLightRefsCapacity || buffers.triangleLightRefs.memory == nullptr) {
+        destroyHostBuffer(allocator.allocator, buffers.triangleLightRefs, kTriangleLightRefsTracyName);
+        buffers.triangleLightRefsCapacity =
+            std::max({lightRefCount, buffers.triangleLightRefsCapacity * 2u, kMinCapacity});
+        buffers.triangleLightRefs = createHostBuffer(
+            sizeof(GpuTriangleLightRef) * vk::DeviceSize{buffers.triangleLightRefsCapacity}, allocator.allocator,
+            device.vkdevice, device.queueFamilyIndices, std::format("TriangleLightRefs_{}", frameSlot),
+            kTriangleLightRefsTracyName);
+    }
     // write-combined memory: whole arrays, never read back
-    std::memcpy(buffers.rayInstances.mapped, templates.rows.data(), std::span(templates.rows).size_bytes());
-    std::memcpy(buffers.builds.mapped, templates.builds.data(), std::span(templates.builds).size_bytes());
-    std::memcpy(buffers.rayInstanceLights.mapped, templates.firstLights.data(),
-                std::span(templates.firstLights).size_bytes());
-    std::memcpy(buffers.triangleLightTasks.mapped, templates.lightTasks.data(),
-                std::span(templates.lightTasks).size_bytes());
+    if (!templates.rows.empty()) {
+        std::memcpy(buffers.rayInstances.mapped, templates.rows.data(), std::span(templates.rows).size_bytes());
+        std::memcpy(buffers.builds.mapped, templates.builds.data(), std::span(templates.builds).size_bytes());
+    }
+    if (!templates.rayInstanceLights.empty()) {
+        std::memcpy(buffers.rayInstanceLights.mapped, templates.rayInstanceLights.data(),
+                    std::span(templates.rayInstanceLights).size_bytes());
+    }
+    if (!templates.lightRefs.empty()) {
+        std::memcpy(buffers.triangleLightRefs.mapped, templates.lightRefs.data(),
+                    std::span(templates.lightRefs).size_bytes());
+    }
     buffers.count = count;
     buffers.version = templates.version;
     buffers.buildsVersion = templates.buildsVersion;
@@ -581,14 +638,6 @@ void RayTracingScene::createFrameBuffers(uint32_t frameSlot, uint32_t capacity)
     buffers.builds = createHostBuffer(sizeof(GpuRayInstanceBuild) * vk::DeviceSize{capacity}, vma, device.vkdevice,
                                       device.queueFamilyIndices, std::format("RayInstanceBuilds_{}", frameSlot),
                                       kRayBuildsTracyName);
-    buffers.rayInstanceLights = createHostBuffer(sizeof(uint32_t) * vk::DeviceSize{capacity}, vma, device.vkdevice,
-                                                 device.queueFamilyIndices,
-                                                 std::format("RayInstanceLights_{}", frameSlot),
-                                                 kRayInstanceLightsTracyName);
-    buffers.triangleLightTasks = createHostBuffer(sizeof(GpuTriangleLightTask) * vk::DeviceSize{capacity}, vma,
-                                                  device.vkdevice, device.queueFamilyIndices,
-                                                  std::format("TriangleLightTasks_{}", frameSlot),
-                                                  kTriangleLightTasksTracyName);
     // the build reads the op and its count as build input; argCount is copied to argCountReadback for CPU telemetry
     buffers.operation = createHostBuffer(kOperationBytes, vma, device.vkdevice, device.queueFamilyIndices,
                                          std::format("PtlasOperation_{}", frameSlot), kPtlasOperationTracyName,
@@ -623,11 +672,13 @@ void RayTracingScene::destroyFrameBuffers(FrameBuffers& buffers)
     destroyHostBuffer(allocator.allocator, buffers.rayInstances, kRayInstancesTracyName);
     destroyHostBuffer(allocator.allocator, buffers.builds, kRayBuildsTracyName);
     destroyHostBuffer(allocator.allocator, buffers.rayInstanceLights, kRayInstanceLightsTracyName);
-    destroyHostBuffer(allocator.allocator, buffers.triangleLightTasks, kTriangleLightTasksTracyName);
+    destroyHostBuffer(allocator.allocator, buffers.triangleLightRefs, kTriangleLightRefsTracyName);
     destroyHostBuffer(allocator.allocator, buffers.operation, kPtlasOperationTracyName);
     destroyHostBuffer(allocator.allocator, buffers.argCountReadback, kPtlasArgCountReadbackTracyName);
     destroyAlignedBuffer(buffers.writeInfos);
     buffers.capacity = 0;
+    buffers.rayInstanceLightsCapacity = 0;
+    buffers.triangleLightRefsCapacity = 0;
     buffers.count = 0;
     buffers.version = ~0u;
     buffers.buildsVersion = ~0u;

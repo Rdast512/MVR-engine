@@ -1,7 +1,7 @@
 # M1 · V7 — Visibility cleanup and stage timing
 
 **Status** — Cleanup done. RTX 5070 baseline recorded on 2026-11-13.
-[Visibility-buffer V7](../features/visibility_buffer.md) · [M0 floor-tier gate](../m0/a10_culling_baseline.md)
+[Visibility-buffer V7](../features/done/visibility_buffer.md) · [M0 floor-tier gate](../m0/a10_culling_baseline.md)
 
 ## Decisions and instrumentation
 

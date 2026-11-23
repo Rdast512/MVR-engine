@@ -196,7 +196,7 @@ float uvDensity(float2 uv[3], float worldArea)
     return worldArea > 0.0 ? sqrt(abs(e1.x * e2.y - e1.y * e2.x) / worldArea) : 0.0;
 }
 
-// ray hit (spec/features/ray_tracing_mega_geometry.md §7, m8 MG-P4): uses hit objectToWorld / worldToObject directly,
+// ray hit (spec/features/planned/ray_tracing_mega_geometry.md §7, m8 MG-P4): uses hit objectToWorld / worldToObject directly,
 // skips prevPosition and normalMatrix() cofactor ALU, and derives isotropic gradients from the ray-cone width
 public Surface buildRaySurface(DrawContext draw, TriangleCorners corners, float2 hitBarycentrics, float coneWidth,
                                float3 rayDirection, float3x4 objectToWorld, float3x4 worldToObject)
