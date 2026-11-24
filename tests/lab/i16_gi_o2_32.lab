@@ -1,0 +1,7 @@
+# I16 phase 2c candidate on 5 seeds: O2 and 32 local candidates
+base    di=shipped gi=shipped frame=shipped gi.secondaryResampling=on di.localSamples=32
+seeds   5
+cases   cafe.tables cafe.dining sponza.gallery sponza.courtyard
+views   Lit "Indirect radiance"
+kinds   stability giBias
+sets    di=shipped gi=shipped frame=shipped gi.secondaryResampling=on di.localSamples=32

@@ -44,6 +44,11 @@ void rtxdiInitialMain(uint3 id : SV_DispatchThreadID)
         {
             sampling.numBrdfSamples = 0;
         }
+        // rtxdi_shade adds them exactly (m8 I16 F28)
+        if ((constants.diFlags & kDiFlagExactInfiniteLights) != 0)
+        {
+            sampling.numInfiniteLightSamples = 0;
+        }
         RAB_LightSample lightSample;
         // RTXDI_SampleLightsForSurface already traces initial visibility when enableInitialVisibility is set
         reservoir = RTXDI_SampleLightsForSurface(rng, coherentRng, surface, sampling, constants.lightBuffer,

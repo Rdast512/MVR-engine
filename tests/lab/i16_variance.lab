@@ -1,0 +1,15 @@
+# I16 phase 2b: what lowers the café's remaining per-frame variance (I16 §7.1 finding 5) after 1a and 2a. Shipped base
+# on 5 seeds; candidate counts, BRDF candidates and spatial sample counts on seed 0; DI bias read alongside
+base    di=shipped gi=shipped frame=shipped
+seeds   5
+cases   cafe.tables cafe.dining
+views   Lit "Direct lighting" "Indirect radiance"
+kinds   stability diBias
+sets    di=shipped gi=shipped frame=shipped di.localSamples=16
+sets    di=shipped gi=shipped frame=shipped di.localSamples=32
+sets    di=shipped gi=shipped frame=shipped di.brdfSamples=0
+sets    di=shipped gi=shipped frame=shipped di.brdfSamples=2
+sets    di=shipped gi=shipped frame=shipped di.spatialSamples=4
+sets    di=shipped gi=shipped frame=shipped gi.spatialSamples=2
+sets    di=shipped gi=shipped frame=shipped gi.spatialSamples=0
+sets    di=shipped gi=shipped frame=shipped di.localSamples=32 di.spatialSamples=4 gi.spatialSamples=2

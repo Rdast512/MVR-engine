@@ -18,6 +18,33 @@ static const uint kRtxdiTile = 8; // matches src/render/vk_renderer.cpp
 
 [[vk::push_constant]] ConstantBuffer<FramePushData> push;
 
+// m8 I13 §3: light through glass; the reservoir's visibility and the resampling stay glass-free
+float3 glassTransmittance(GpuFrameRoot root, RAB_Surface surface, RAB_LightSample sample)
+{
+    const float3 origin = rasterRayOrigin(surface);
+    float3 dir;
+    float tMax;
+    return lightVisibilitySegment(origin, sample, dir, tMax) ? shadowTransmittance(root, origin, dir, tMax)
+                                                             : float3(1.0, 1.0, 1.0);
+}
+
+// directional lights are deltas: one shadow ray each shades them exactly, without RIS noise (m8 I16 F28)
+float3 shadeInfiniteLightsExactly(GpuFrameRoot root, RAB_Surface surface, RTXDI_LightBufferRegion region)
+{
+    float3 radiance = float3(0.0, 0.0, 0.0);
+    for (uint i = 0; i < region.numLights; ++i)
+    {
+        const RAB_LightInfo light = RAB_LoadLightInfo(region.firstLightIndex + i, false);
+        const RAB_LightSample sample = RAB_SamplePolymorphicLight(light, surface, float2(0.0, 0.0));
+        const float3 shade = shadeLightSample(surface, sample);
+        if (any(shade > 0.0) && RAB_GetConservativeVisibility(surface, sample))
+        {
+            radiance += shade * glassTransmittance(root, surface, sample);
+        }
+    }
+    return radiance;
+}
+
 [shader("compute")]
 [numthreads(kRtxdiTile, kRtxdiTile, 1)]
 void rtxdiShadeMain(uint3 id : SV_DispatchThreadID)
@@ -89,18 +116,15 @@ void rtxdiShadeMain(uint3 id : SV_DispatchThreadID)
                                                    constants.temporalResampling.enableVisibilityShortcut != 0);
             }
             radiance = shade * visibility * RTXDI_GetDIReservoirInvPdf(reservoir);
-            // m8 I13 §3: light through glass; the reservoir's visibility and the resampling stay glass-free
             if (any(radiance > 0.0))
             {
-                const float3 origin = rasterRayOrigin(surface);
-                float3 dir;
-                float tMax;
-                if (lightVisibilitySegment(origin, sample, dir, tMax))
-                {
-                    radiance *= shadowTransmittance(root, origin, dir, tMax);
-                }
+                radiance *= glassTransmittance(root, surface, sample);
             }
         }
+    }
+    if ((constants.diFlags & kDiFlagExactInfiniteLights) != 0)
+    {
+        radiance += shadeInfiniteLightsExactly(root, surface, constants.lightBuffer.infiniteLightBufferRegion);
     }
     RTXDI_StoreDIReservoir(reservoir, constants.reservoirBuffer, reservoirPosition,
                            constants.bufferIndices.shadingInputBufferIndex);

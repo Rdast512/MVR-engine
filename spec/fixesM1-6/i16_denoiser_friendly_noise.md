@@ -1,6 +1,6 @@
 # M8 · I16: Noise that DLSS-RR can denoise (F28)
 
-**Status:** Phase 0 measured 2026-11-24 (§7.1); Phase 1 in progress · **Milestone:** M8 ([README](./README.md))
+**Status:** Phase 0 measured 2026-11-24 (§7.1); 1a, 2a shipped; 2b, 2c measured (§7.5, §7.6); Phase 3 next · **Milestone:** M8 ([README](./README.md))
 **Implements:** F28 ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §4): with a still camera the lit image "lives". Light seems to move every frame, and blotches fade in and out over seconds. Games that ship ReSTIR don't show it. Target mode: `NRC + ReSTIR GI`, the default and tuning target since 2026-11-24 ([engine_spec.md](../../docs/engine_spec.md) §11.7). The goal is a still camera that looks still.
 **Depends on:** I14 (correct rays, reuse and light PDF), I15 (DI with two spatial samples, GI sample age 30, NRC + ReSTIR GI default), the settings lab ([full_testing.md](../features/planned/full_testing.md))
 **Feeds:** I12 (final Bistro tuning re-checks this step's decisions), I11 (cost on the 2060 Super)
@@ -142,6 +142,25 @@ Conditional: only if the café is still above target after 1 and 2a.
 - **Then a dominant-light split:** the N lights with the largest PDF share in a 16×16 tile (from the Power_RIS tile build, `ENGINE_LIGHT_PDF_STATS`) get one deterministic sample each, MIS-combined with ReSTIR for the rest.
 - **Ship** only with the DI bias gates and an ABBA cost line.
 
+### 2c. GI variance in emissive interiors
+
+Proposed by 2b (§7.5): DI no longer limits the café, and the raw GI input is at ~470 % std.
+- **Built:** `GiSettings::areInfiniteLightsShadedExactly` (lab `gi.exactInfinite`, UI "Exact directional lights" under GI).
+  - Path vertices (X₂, NRC training paths, the glass pass's diffuse share) drop directional lights from their RIS candidates and shade each one with one shadow ray (`exactInfiniteLightSample` in `lighting/path_shading.slang`).
+  - With O2 on, the host takes DI's switch instead. X₂'s candidates and the reused DI reservoirs then hold the same lights, which closes C-I16-4.
+- **Levers measured** (`i16_gi_variance.lab`):
+  - O2;
+  - the exact sun at path vertices;
+  - 32 local candidates (`di.localSamples` is shared with path-vertex NEE);
+  - the firefly clamp;
+  - DLAA (2.25× the samples per output pixel);
+  - the two other indirect modes.
+- **Diagnostics:**
+  - NRC training (`i16_nrc_training.lab`);
+  - per-pixel CV maps (`i16_cv_maps.lab` with `ENGINE_LAB_PNG=1`);
+  - a no-jitter control (`i16_cv_nojitter.lab`).
+- **Candidates on 5 seeds:** `i16_gi_o2`, `i16_gi_exact` and `i16_gi_o2_32` on the café and Sponza poses.
+
 ## 3. Phase 3 · Give DLSS-RR every guide (approach 3)
 
 | Input | Source in the engine | Notes |
@@ -152,7 +171,7 @@ Conditional: only if the café is still above target after 1 and 2a.
 | `pInDisocclusionMask` | the vis buffer's previous-frame test (already computed for the screen-edge check's masks) | optional |
 
 Each input is a frame flag first, measured, then shipped.
-- **Static camera:** no `Lit` change expected; the check shows none.
+- **Static camera:** since §7.6, the café's remaining `Lit` flicker sits on edges, metal and glass, where DLSS-RR has no specular guide. Measure café `Lit` flicker and the flickering share on edges (`cv_edges` analysis of §7.6) per guide.
 - **Motion:** `ENGINE_SCREEN_EDGE_CHECK` settle frames, and the DLSS check's pan f2f.
 - **C-I14-7's exit:** a guide-sensitive case for `ENGINE_DLSS_CHECK`, a specular highlight under motion.
 
@@ -186,6 +205,35 @@ Each input is a frame flag first, measured, then shipped.
 - **C-I16-1 · Deviation:** DI stagnancy decorrelation (1b) is the engine's port of ReSTIR PT's; RTXDI's DI has none. **Exit:** an RTXDI release with DI decorrelation.
 - **C-I16-2 · Deviation:** directional lights outside ReSTIR DI (2a), if shipped, depart from the RTXDI sample. **Exit:** none planned; recheck if an environment light arrives (it stays in RTXDI).
 - **C-I16-3 · Limitation:** the NRC + ReSTIR GI stability steps don't repeat byte for byte (NRC training, C-T-5); they are read against 5-seed floors.
+- **C-I16-5 · Workaround · the NRC network can diverge, and stays diverged (2c, 2026-11-24).**
+  - **Seen:** in the first `i16_gi_variance` run, the DLAA lever grew the render extent from 853×480 to 1280×720 and `NrcCache::recreate` reconfigured the SDK.
+  - **From then on, every NRC-mode run was wrong:**
+    - café `Indirect radiance` mean 2981 instead of 0.0011;
+    - 99.98 % of pixels lit, sky included;
+    - 1-bounce bias +3.3e8 %;
+    - the same numbers on all 5 seeds;
+    - the `Indirect radiance` view saturated magenta.
+  - **Not affected:** ReSTIR GI-only mode in the same process.
+  - **Training does not recover it:** every camera change restarts the 512-frame countdown.
+  - **Intermittent:** 1 failure in 3 resizes. Not reproduced by a base → DLAA plan, by the same café-tables order rerun, nor by the dining rerun, which resized too.
+  - **What it is:** the network itself diverged; the engine reads its output correctly.
+    - Every pixel rewrites its query path info each frame (`NrcWriteFinalPathInfo` runs on every lane of the indirect pass), so no stale rows are read.
+    - A NaN answer would come out dark: the resolve drops it, since `any(NaN > 0)` is false.
+    - The training countdown was not stuck: `setRenderExtent` makes the next frame a camera cut, and the lab cuts at every phase, so the cache trained after the reconfigure.
+    - NrcGuide.md §Step 3: `Configure` "reloads the neural network configuration", so the resize started a fresh network, which then diverged during training.
+    - Retraining does not bring a diverged network back. `requestReset` keeps the weights (C-G3-5).
+    - The root cause inside the SDK is not known. Suspects: C-G3-6 (CPU-side work overlapping NRC's CUDA kernels) and stochastic training of a fresh network on the café's emitters.
+  - **Fix built (detector and fresh network):**
+    - **Measure:** `passes/nrc_resolve.slang` compares, per wave, the sum of the cache answers with the sum of the radiance traced at the same X₂ vertices. A wave diverges when an answer is non-finite or the ratio exceeds 50. One atomic per wave writes the counts to `GpuNrcHealth`, a host-visible buffer per frame slot.
+    - **Decide:** `NrcCache::isNetworkDiverged` reads the slot after its fence. When more than half of the waves diverged for 64 frames in a row, with at least 256 waves that have traced light per frame, it waits for the device. `recreateNetwork` then destroys the SDK context, creates a new one and configures it: a fresh network, retrained from the next frame.
+    - **Logged:** "the network diverged: …".
+  - **Calibration** (temporary hooks, removed):
+    - healthy café and Sponza poses: at most 13 % of waves above the ratio (dining), 19 % for a moment while retraining after a scene load;
+    - single waves reach 3e5 where X₂'s traced light is near zero, which is why the test is per frame share, not per wave;
+    - a network trained on radiance × 1e9 read 85 % of waves (largest ratio 1e7). It was replaced after 16 frames (the first threshold), and the plan's runs read healthy afterwards: indirect mean 0.00127, `Lit` 0.071;
+    - the guide capture then caught a false positive: a fresh network on a small test scene read 53 % of only 57 waves for 16 frames, an early-training transient. That set the floor of 256 waves and the 64 frames. The poisoned failure stays above 50 % for its whole run, so 64 frames still catch it.
+  - **Cost:** two `WaveActiveSum` calls and up to three atomics per wave in the resolve. Each reset leaks the SDK objects of one `Configure` and context (C-G3-3).
+  - **Exit:** the root cause on an NRC SDK update.
 
 ## 7. Results
 
@@ -233,7 +281,7 @@ Consequence for Phase 1: the goal is DI that is decorrelated and low-variance. E
 
 - [x] Phase 0: the boiling table (§7.1); `corrFrames` and `blotchPx` deferred (raw-view lag-1 sufficed); target numbers proposed, to be confirmed with Phase 1
 - [ ] Phase 1: permutation shipped or its bias root-caused; DI decorrelation built and decided; histories decided, all by the rule with 5-seed numbers and cost
-- [ ] Phase 2: the sun decided (outside ReSTIR DI or kept, with numbers); 2b run if the café is still above target
+- [x] Phase 2: the sun shaded exactly outside ReSTIR DI (§7.4); 2b run (§7.5): cheap levers ≤ 1 floor, DI no longer limits the café; 2c (§7.6): the café's flicker is edge, metal and glass noise that more samples don't reach, the sun exact at path vertices too
 - [ ] Phase 3: specular / diffuse hit distance and reflection motion vectors wired and decided; DLSS check gains its guide-sensitive case
 - [ ] Targets met on the café and Sponza poses, or the gap recorded per approach with F28 left open
 - [ ] Every runner of §4 passes; NVIDIA's DI and GI sets unchanged and callable; no edits under `ThirdParty/`
@@ -288,3 +336,140 @@ Base: I15's B (shipped DI + permutation) on 5 seeds. Each set turns one feature 
 
   That is 2 of 3 by the Converged limits (0.5 % / 3 %). The lamp's 5-seed lab spread for C is −1.04…+0.33 % (mean −0.10 %), so −0.53 % is one window inside it. For comparison: A read +0.36 % / p90 14.6 %, B −1.29 % / 7.1 %. The gated check (Converged set) stays 3 of 3, RT 8890 / 8890.
 - **Cost** (ABBA ×2, 6000 frames, layers off, C against A): DI temporal 0.054 / 0.057 ms gallery, 0.093 / 0.097 courtyard, 0.041 / 0.045 Bistro street. DI shade 0.099 / 0.096, 0.371 / 0.374, 0.063 / 0.062. GPU total within the runs' noise. Permutation and the missing boiling filter cost nothing measurable.
+
+### 7.4 Phase 2a: directional lights shaded exactly (2026-11-24, `i16_sun.lab`)
+
+**Built:**
+- `RtxdiContext::Settings::areInfiniteLightsShadedExactly` → `GpuRtxdiConstants::diFlags` `DiFlag::ExactInfiniteLights`, in the former `pad0`.
+- `rtxdi_initial` sets `numInfiniteLightSamples = 0` for the primary surface only. Path vertices (`sampleLightsAt`) keep the sun as RIS candidates.
+- `rtxdi_shade` adds every directional light with one shadow ray (`shadeInfiniteLightsExactly`), glass transmittance included. The shared transmittance moved to `glassTransmittance`.
+
+Our directional lights are deltas (`evalLight`: fixed direction, `solidAnglePdf = 0`), so this is exact and needs no random numbers. On in the shipped set, and so in Converged, which derives from it: the gated `Sponza_terminator` shot now checks the exact sun. `nvidiaSettings()` keeps the RTXDI path. Lab switch `di.exactInfinite`; UI checkbox "Exact directional lights". The departure from FullSample, which puts the sun in RTXDI as `kDirectional`, is C-I16-2.
+
+5 seeds (exact, shipped) against seed 0 (`di.exactInfinite=off`), target mode:
+
+| | raw `Direct lighting` std | DI bias (dim) | `Lit` std / flicker |
+|---|---|---|---|
+| Sponza courtyard | **0.00** / 31.1 % | **0.00** / −0.04 % | **0.74 / 6.3** / 0.86 / 5.9 |
+| Sponza gallery | **0.00** / 18.6 % | **0.00** / −0.19 % | 4.00 / 6.1 / 4.07 / 5.8 |
+| Bistro street | **0.00** / 9.9 % | **0.00** / −0.01 % | 0.36 / 9.9 / 0.42 / 6.5 (street flicker: 2–35 % seed spread) |
+| café tables | 14.5 / 23.2 % | −0.18 (−1.5) / −0.16 (−1.8) % | **4.06 / 20.6** / 4.92 / 25.8 |
+| `guide.terminator` | — | **0.00** / +0.05 % | — |
+
+- **Guide capture:**
+  - `Sponza_terminator` against `Shadowed lights` reads +0.000 % bias, tile p90 0.00 %: the exact sun is the reference.
+  - Normals 2 / 2, convergence 3 / 3, glass 2 / 2, RT 8890 / 8890.
+- **The café gains too:** the Bistro sun's RIS candidates no longer compete with the emissive triangles (raw DI 23 → 15 % std, `Lit` flicker 25.8 → 20.6 %).
+- **Cost** (ABBA ×2, 6000 frames, layers off, exact / RIS), GPU total:
+  - courtyard **3.66 / 4.02 ms** (DI initial 0.026 / 0.174, temporal 0.046 / 0.095, shade 0.253 / 0.411);
+  - gallery 3.20 / 3.21;
+  - Bistro street 2.92 / 2.95.
+
+  ReSTIR DI has nothing to resample on Sponza now. The −0.36 ms repays I15's spatial-reuse cost on the courtyard.
+- **C-I16-4 · Limitation (closed in 2c, §7.6):** O2 secondary DI resampling (off, I12) would mix X₂'s own sun candidates with primary reservoirs that no longer hold the sun. Its bias correction then assumes the neighbors could have drawn it, which darkens the sun at X₂. If O2 ships, X₂ needs the same exact path.
+
+### 7.5 Phase 2b: variance levers in the café (2026-11-24, `i16_variance.lab`)
+
+Shipped (1a + 2a) on 5 seeds; levers on seed 0. Target mode.
+
+| config | tables `Lit` std / flicker | dining `Lit` std / flicker | tables raw DI / GI std | DI bias tables (dim) |
+|---|---|---|---|---|
+| floor | 0.33 / 4.2 | 0.69 / 3.1 | 1.25 / 12.2 | 0.12 (0.68) |
+| **shipped** | **4.03 / 19.0** | **4.71 / 23.3** | 14.5 / 470 | −0.18 (−1.5) |
+| `di.localSamples=16` | 3.79 / 17.0 | 4.25 / 21.7 | 13.5 / 445 | −0.13 (−1.1) |
+| `di.localSamples=32` | 3.69 / 16.9 | 4.13 / 19.9 | 12.1 / 439 | −0.12 (−1.0) |
+| `di.brdfSamples=0` | 4.98 / 24.8 | 6.02 / 30.0 | 25.8 / 476 | −0.27 (−0.3) |
+| `di.brdfSamples=2` | 3.93 / 19.1 | 4.36 / 22.0 | 13.7 / 465 | −0.15 (−2.2) |
+| `di.spatialSamples=4` | 4.15 / 19.2 | 4.53 / 22.5 | 13.3 / 463 | −0.21 (−2.5) |
+| `gi.spatialSamples=2` / `0` | 3.99 / 18.5 · 3.96 / 19.1 | 4.50 / 23.3 · 4.55 / 22.8 | 15.2 / 464 · 14.3 / 475 | −0.10 · −0.16 |
+| 32 candidates + DI spatial 4 + GI spatial 2 | 3.68 / 16.4 | 4.22 / 21.2 | 11.7 / 466 | −0.12 (−0.8) |
+
+- **1a and 2a together roughly halved the café's flicker:** tables 32.0 → 19.0 %, dining 36.1 → 23.3 % against I15's DI. Dining gained most from the exact sun.
+- **The cheap levers move it by about one floor at best:** 32 local candidates, −2 pts tables, −3 pts dining. One BRDF candidate is needed (0 doubles DI noise); more spatial samples do nothing. Not shipped: one floor, unmeasured cost, and the count is shared with path-vertex NEE (`sampleLightsAt`).
+- **DI no longer limits the café.** With DI 4× noisier but uncorrelated (Phase 0, `di=reference`: raw 56 % std), café flicker was the same ~19 %. The remaining noise does not follow DI's level; it is the GI input's per-frame variance (raw ~470 % std, unchanged by every GI reuse setting).
+- **The dominant-light split (2b's second part) is not built:** it lowers DI variance, which no longer limits the café.
+- **Next (proposed Phase 2c, GI variance in emissive interiors):** the GI sample's own light estimate at X₂ is one RIS sample among 30k emissive triangles. Levers:
+  - O2 secondary DI resampling (built, off; needs C-I16-4's exact-sun path at X₂);
+  - more path-vertex candidates;
+  - more than one GI sample per pixel in the café.
+
+  Each is measured on café `Lit` and the 8-bounce bias, with ABBA cost.
+
+Phase 2 status: 2a shipped; 2b's cheap levers measured, none shipped; café `Lit` 4.0 / 19.0 % and 4.7 / 23.3 % against the proposed ≤ 2 % / ≤ 5 %.
+
+### 7.6 Phase 2c: where the café's flicker comes from (2026-11-24)
+
+- **Plans:** `i16_gi_variance` (levers), `i16_nrc_training`, `i16_cv_maps`, `i16_cv_nojitter`.
+- **Mode and data:** target mode; shipped base on 5 seeds, levers on seed 0.
+- **Sources:** tables come from the clean café-tables rerun and dining from the clean dining rerun. The first full run broke at its DLAA lever (C-I16-5); its runs before the break agree.
+
+| config | tables `Lit` std / flicker | dining `Lit` std / flicker | raw GI std tables / dining | 8-bounce bias tables / dining |
+|---|---|---|---|---|
+| **shipped** (5 seeds) | **4.03 / 18.8** (17.2–21.5) | **4.69 / 23.2** | 468 / 383 | −3.6 (−1.7 … −4.2) / −4.1 |
+| O2 (`gi.secondaryResampling`) | 3.86 / 16.6 | 4.70 / 23.2 | 368 / 339 | −2.9 / −4.3 |
+| exact sun at path vertices | 3.92 / 19.3 | 4.63 / 23.8 | 412 / 364 | −3.9 / −3.5 |
+| 32 local candidates | 3.64 / 16.4 | 4.23 / 20.4 | 434 / 357 | −2.1 / −4.1 |
+| O2 + 32 local candidates | 3.67 / 15.0 | 4.42 / 21.3 | 336 / 324 | −3.9 / −4.4 |
+| firefly clamp | 3.96 / 18.4 | 4.60 / 24.1 | 426 / 340 | −6.3 / −7.2 |
+| DLAA | 3.86 / 22.8 | 4.54 / 23.4 | 474 / 387 | −3.7 / −6.5 |
+| NRC mode | 3.89 / 17.3 | 4.49 / 22.4 | 538 / 440 | −1.4 / +0.5 |
+| ReSTIR GI mode | 4.11 / 20.2 | 4.87 / 24.1 | 550 / 482 | −18.8 / −24.4 (one bounce, as expected) |
+
+Reading guide:
+- Seed-0 levers carry the base's seed spread: tables flicker 17.2–21.5 %; the 8-bounce dim-tile bias spreads 0.2–8.8 % on the same config. One run is not a decision.
+- The first run's "O2 takes the tables' dim-tile bias from +12.8 to +0.8 %" sits inside that spread and is not claimed.
+
+**Findings:**
+1. **GI sample variance does not set the café's flicker.**
+   - O2 and the exact sun lower the raw GI std by 21 % and 12 % on the tables (O2 + 32 candidates: 28 %). `Lit` flicker moves by at most one seed spread.
+   - In dining, O2 leaves `Lit` unchanged (23.2 → 23.2 %) at −11 % raw GI std.
+   - DLAA puts 2.25× the samples into each output pixel and changes nothing.
+   - With Phase 0's DI reference (4× DI noise, no correlation) flicker was also ~19 %. Neither the DI nor the GI input's level sets it.
+2. **NRC training does not set it either** (`i16_nrc_training`, 3 seeds).
+   - The 512-frame countdown covers the first 212 frames of the 480-frame window.
+   - Freezing the cache before the window (`nrc.idleTrainingFrames=256`) gives 16.7 / 23.9 %, and training every frame (`0`) gives 18.9 / 24.3 %. The base is 18.2–21.0 / 22.3–25.6 %.
+3. **The flicker sits on edges, detail, metal and glass** (`i16_cv_maps`, per-pixel CV over the 480 frames).
+   - Edge mask: Sobel on the log mean image, threshold 0.5, dilated 1 px. It covers 64 % (tables) and 52 % (dining) of lit pixels, texture detail included.
+   - 77–87 % of the flickering pixels (CV > 10 %) lie on it.
+   - Off it, flicker is 5–13 % (tables) and 6–7 % (dining), with a median CV of 2.7–3.9 %.
+   - The bright spots of the CV map: the beer taps and glass jars, the window panes and curtain edges against them, and the counter's rim highlight. The walls, floor and bar front stay dark.
+4. **It is not jitter aliasing** (`i16_cv_nojitter`, 3 seeds).
+   - Without camera jitter, café flicker rises to 26.8 / 25.5 % (std 4.9 / 4.9), with 78–83 % of the flickering pixels still on edges.
+   - The edges flicker from lighting noise that DLSS-RR cannot average across a discontinuity. Jitter helps it.
+5. **Consequence:** more samples do not get the café to the proposed ≤ 5 % flicker; better guides might.
+   - The remaining noise is where DLSS-RR has no neighbors to borrow from and no specular guide (Phase 3: specular hit distance, reflection motion vectors).
+   - Phase 3's static-camera measurement now targets this: café `Lit` flicker and the share of flickering pixels on edges, per guide.
+   - The `cv_edges` analysis (numpy, scipy) runs on the lab's `*_cv.png` / `*_mean.png`. It belongs in the lab as an `edgeFlicker` metric before Phase 3 decides on it.
+
+**Candidates on 5 seeds** (`i16_gi_o2`, `i16_gi_exact`, `i16_gi_o2_32`; café tables have a sixth run from the plan's `sets` line):
+
+| config | tables `Lit` std / flicker [range] | dining `Lit` | raw GI std tables / dining | 8-bounce bias tables / dining | courtyard 8b bias / dim tiles / p90 | gallery dim tiles |
+|---|---|---|---|---|---|---|
+| shipped | 4.03 / 18.8 [17.2–21.5] | 4.69 / 23.2 | 468 / 383 | −3.6 / −4.1 | −2.4 / −7.0 / 12.6 | −10.0 |
+| O2 | 3.87 / 17.2 [15.7–20.1] | 4.81 / 23.9 | 379 / 355 | −3.3 / −5.3 | −2.4 / −6.9 / 11.7 | −8.8 |
+| exact sun at path vertices | 3.89 / 17.4 [16.4–19.3] | 4.67 / 23.6 | 424 / 358 | −4.2 / −4.3 | −2.2 / **−0.7** / **7.0** | −10.6 |
+| O2 + 32 local candidates | **3.66 / 15.2** [14.8–15.8] | 4.31 / 21.3 | 332 / 322 | −3.9 / −4.9 | −2.4 / −4.3 / 9.5 | −8.5 |
+
+- **Café noise:**
+  - O2 and the exact sun overlap the base's flicker range on the tables, and dining doesn't move.
+  - O2 + 32 candidates is the only row outside the range (−3.6 pts tables, −1.9 dining). 32 candidates alone read 16.4 / 20.4 % on one seed, so the gain is DI's candidate count (§7.5), not O2.
+  - This confirms findings 1 and 5.
+- **Sponza** `Lit` is unchanged by all three (gallery 4.05–4.10 / 6.1–6.5 %, courtyard 0.74 / 6.3–6.4 %).
+- **The exact sun at path vertices fixes a GI bias:** the courtyard's dim tiles go from −7.0 to −0.7 % (p90 12.6 → 7.0 %), without changing noise.
+  - Taking the sun out of X₂'s RIS removes the sun-versus-emitter selection at X₂. Why the dim tiles gain most is not measured.
+- **O2:** with the exact sun it no longer darkens the courtyard (8-bounce −2.4 %, the same as shipped; −23 % in O2's original measurement), but it buys nothing in `Lit`.
+- **Cost** of the exact sun at path vertices (ABBA ×2, 6000 frames, layers off, exact / shipped), GPU total:
+  - gallery 3.498 / 3.489 ms;
+  - courtyard 3.700 / 3.709 ms;
+  - Bistro street 2.957 / 2.932 ms.
+
+  `Indirect`, NRC update and train are unchanged. On Sponza the exact ray replaces the one RIS spent on the sun.
+- **Decision:**
+  - **Shipped:** the exact sun at path vertices (`defaultGiSettings`: `areInfiniteLightsShadedExactly = true`). Its effect is a bias fix in sunlit GI at no cost, not a noise fix. NVIDIA's GI set and the converged truths keep RIS.
+  - **Not shipped:**
+    - O2: no `Lit` gain;
+    - 32 candidates: the §7.5 decision stands;
+    - the firefly clamp: biased, −3 pts on the 8-bounce bias;
+    - DLAA: no gain.
+  - C-I16-4 is closed: O2 takes DI's exact-sun switch at X₂ (§2c).
+- **Next:** Phase 3. The café's remaining flicker is on edges, metal and glass (findings 3–5).

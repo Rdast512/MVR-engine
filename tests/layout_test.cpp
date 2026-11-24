@@ -637,7 +637,7 @@ namespace
         LAYOUT_FIELD(GpuRtxdiConstants, lightPdfSize),
         LAYOUT_FIELD(GpuRtxdiConstants, giDecorrelation),
         LAYOUT_FIELD(GpuRtxdiConstants, giHistoryReductionStrength),
-        LAYOUT_FIELD(GpuRtxdiConstants, pad0),
+        LAYOUT_FIELD(GpuRtxdiConstants, diFlags),
         LAYOUT_FIELD(GpuRtxdiConstants, diNeighborOffsets),
     }};
 
@@ -656,6 +656,7 @@ namespace
         LAYOUT_FIELD(GpuNrcConstants, queryRadianceCount),
         LAYOUT_FIELD(GpuNrcConstants, flags),
         LAYOUT_FIELD(GpuNrcConstants, trainingLaunch),
+        LAYOUT_FIELD(GpuNrcConstants, health),
     }};
     // clang-format on
 

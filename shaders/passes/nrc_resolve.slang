@@ -15,6 +15,33 @@ static const uint kResolveTile = 8; // matches src/render/vk_renderer.cpp kFulls
 
 [[vk::push_constant]] ConstantBuffer<FramePushData> push;
 
+// a wave's cache answers against the radiance traced at the same X2 vertices: a healthy cache adds indirect light of
+// the traced light's order, a diverged one orders of magnitude more (C-I16-5: 700x poisoned, ~1e6x measured)
+static const float kNrcDivergedRatio = 50.0;
+
+// NrcCache's divergence detector (m8 I16 C-I16-5), per wave so it needs no scale: waves with traced light count,
+// diverged ones answer non-finite or above kNrcDivergedRatio times it. One atomic per wave and counter
+void countNrcHealth(GpuNrcConstants constants, bool isCounted, bool isFinite, float cachedLuminance,
+                    float tracedLuminance)
+{
+    const float cachedSum = WaveActiveSum(isCounted && isFinite ? cachedLuminance : 0.0);
+    const float tracedSum = WaveActiveSum(isCounted ? tracedLuminance : 0.0);
+    const bool hasNonFinite = WaveActiveAnyTrue(isCounted && !isFinite);
+    if (constants.health == 0 || !WaveIsFirstLane() || !(tracedSum > 0.0 || hasNonFinite))
+    {
+        return;
+    }
+    uint* health = bdaPtr<uint>(constants.health);
+    InterlockedAdd(health[kNrcHealthQueried], 1u);
+    const float ratio = tracedSum > 0.0 ? cachedSum / tracedSum : 0.0;
+    if (hasNonFinite || ratio > kNrcDivergedRatio)
+    {
+        InterlockedAdd(health[kNrcHealthDiverged], 1u);
+    }
+    // positive floats order like their bits
+    InterlockedMax(health[kNrcHealthMaxRatio], asuint(ratio));
+}
+
 [shader("compute")]
 [numthreads(kResolveTile, kResolveTile, 1)]
 void nrcResolveMain(uint3 id : SV_DispatchThreadID)
@@ -25,12 +52,19 @@ void nrcResolveMain(uint3 id : SV_DispatchThreadID)
     {
         return;
     }
-    const float3 cached = nrcQueryResult(loadNrcConstants(root), id.xy);
+    const GpuNrcConstants nrcConstants = loadNrcConstants(root);
+    NrcQueryAnswer answer;
+    const bool isQueried = nrcLoadQueryAnswer(nrcConstants, id.xy, answer);
+    const float3 cached = isQueried ? nrcPathRadiance(answer) : float3(0.0, 0.0, 0.0);
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
     const uint2 reservoirPos = RTXDI_PixelPosToReservoirPos(id.xy, constants.runtime.activeCheckerboardField);
     RTXDI_GIReservoir reservoir =
         RTXDI_LoadGIReservoir(constants.giReservoirBuffer, reservoirPos, kGiInitialReservoirArray);
-    if (!RTXDI_IsValidGIReservoir(reservoir))
+    const bool isValid = RTXDI_IsValidGIReservoir(reservoir);
+    // before the early return: the wave ops need every lane that has a reservoir or not
+    countNrcHealth(nrcConstants, isQueried && isValid, isNrcAnswerFinite(answer), luminance(cached),
+                   isValid ? luminance(reservoir.radiance) : 0.0);
+    if (!isValid)
     {
         return;
     }

@@ -30,6 +30,12 @@ struct GpuNrcConstants
     uint queryRadianceCount;
     uint flags;
     uint trainingLaunch; // used training dimensions, width | height << 16: the update dispatch
+    uint64_t health;     // GpuNrcHealth: queries and diverged answers, counted by passes/nrc_resolve.slang
 };
+
+// GpuNrcHealth in src/render/vk_nrc.hpp
+static const uint kNrcHealthQueried = 0;
+static const uint kNrcHealthDiverged = 1;
+static const uint kNrcHealthMaxRatio = 2; // float bits
 
 #endif

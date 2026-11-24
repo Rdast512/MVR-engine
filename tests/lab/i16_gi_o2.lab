@@ -1,0 +1,7 @@
+# I16 phase 2c candidate on 5 seeds: O2 secondary DI resampling (with the exact sun at path vertices, C-I16-4)
+base    di=shipped gi=shipped frame=shipped gi.secondaryResampling=on
+seeds   5
+cases   cafe.tables cafe.dining sponza.gallery sponza.courtyard
+views   Lit "Indirect radiance"
+kinds   stability giBias
+sets    di=shipped gi=shipped frame=shipped gi.secondaryResampling=on

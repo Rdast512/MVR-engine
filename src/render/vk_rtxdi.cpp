@@ -423,6 +423,8 @@ RtxdiContext::Settings RtxdiContext::defaultSettings()
     settings.isPermutationSamplingEnabled = true;
     settings.isBoilingFilterEnabled = false;
     settings.spatialSamples = 2;
+    // - The sun outside RIS (m8 I16 F28): spatial reuse turned the exact delta sun into 21% raw noise in the courtyard
+    settings.areInfiniteLightsShadedExactly = true;
     settings.disocclusionHistoryLength = 4;
     settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
     settings.isFinalVisibilityReused = false;
@@ -508,6 +510,9 @@ RtxdiContext::GiSettings RtxdiContext::defaultGiSettings()
     settings.isDuplicationHistoryReductionEnabled = false;
     settings.isFireflyReplacementBounded = false;
     settings.isFullTileBoilingFilterEnabled = true;
+    // m8 I16 phase 2c: the sun outside X2's RIS takes the courtyard's dim tiles from -7.0% to -0.7% against eight
+    // bounces at no measured cost; noise unchanged
+    settings.areInfiniteLightsShadedExactly = true;
     return settings;
 }
 
@@ -735,7 +740,11 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
                    // without age-based rejection, as ReSTIR PT's DLSS-RR profile
                    (giSettings.maxReservoirAge >= kGiUnlimitedSampleAge ? GiFlag::SpatialAgeReset : 0u) |
                    (isGiDuplicationMapApplied ? GiFlag::DuplicationHistoryReduction : 0u) |
-                   (giSettings.isFullTileBoilingFilterEnabled ? GiFlag::FullTileBoilingFilter : 0u),
+                   (giSettings.isFullTileBoilingFilterEnabled ? GiFlag::FullTileBoilingFilter : 0u) |
+                   ((giSettings.isSecondaryResamplingEnabled ? settings.areInfiniteLightsShadedExactly
+                                                             : giSettings.areInfiniteLightsShadedExactly)
+                        ? GiFlag::ExactInfiniteLights
+                        : 0u),
         .localLightRisBuffer = importanceSampling->GetLocalLightRISBufferSegmentParams(),
         .environmentLightRisBuffer = importanceSampling->GetEnvironmentLightRISBufferSegmentParams(),
         .regir = regirConstants,
@@ -746,7 +755,7 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
         .lightPdfSize = {.width = lightPdfSide, .height = lightPdfSide},
         .giDecorrelation = decorrelationParameters(giSettings),
         .giHistoryReductionStrength = giSettings.historyReductionStrength,
-        .pad0 = 0,
+        .diFlags = settings.areInfiniteLightsShadedExactly ? DiFlag::ExactInfiniteLights : 0u,
         .diNeighborOffsets = diNeighborOffsets.address,
     };
     std::memcpy(constants[frameSlot].mapped, &data, sizeof(data));

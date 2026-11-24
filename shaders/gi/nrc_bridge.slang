@@ -66,22 +66,49 @@ NrcConstants nrcBridgeInit(GpuFrameRoot root)
     return constants.nrc;
 }
 
-// the cache's answer for a query path: prefix throughput x predicted radiance, zero without a query. An untrained
-// network predicts negative radiance (measured on load), which the reservoirs must not take
-float3 nrcQueryResult(GpuNrcConstants constants, uint2 pixel)
+struct NrcQueryAnswer
 {
+    float3 radiance;         // predicted radiance at the query vertex, unclamped
+    float3 prefixThroughput;
+};
+
+// the cache's answer for a pixel's query path; false without a query
+bool nrcLoadQueryAnswer(GpuNrcConstants constants, uint2 pixel, out NrcQueryAnswer answer)
+{
+    answer.radiance = float3(0.0, 0.0, 0.0);
+    answer.prefixThroughput = float3(0.0, 0.0, 0.0);
     const uint pathIndex = NrcCalculateQueryPathIndex(constants.nrc.frameDimensions, pixel, 0, 1);
     if (pathIndex >= constants.queryPathInfoCount)
     {
-        return float3(0.0, 0.0, 0.0);
+        return false;
     }
     const NrcQueryPathInfo path = NrcUnpackQueryPathInfo(bdaPtr<NrcPackedQueryPathInfo>(constants.queryPathInfo)[pathIndex]);
     if (path.queryBufferIndex >= constants.queryRadianceCount)
     {
-        return float3(0.0, 0.0, 0.0);
+        return false;
     }
-    const float3 packed = bdaPtr<float3>(constants.queryRadiance)[path.queryBufferIndex];
-    return max(NrcUnpackQueryRadiance(constants.nrc, packed) * path.prefixThroughput, 0.0);
+    answer.radiance =
+        NrcUnpackQueryRadiance(constants.nrc, bdaPtr<float3>(constants.queryRadiance)[path.queryBufferIndex]);
+    answer.prefixThroughput = path.prefixThroughput;
+    return true;
+}
+
+bool isNrcAnswerFinite(NrcQueryAnswer answer)
+{
+    return !any(isnan(answer.radiance)) && !any(isinf(answer.radiance));
+}
+
+// prefix throughput x predicted radiance, zero without a query. An untrained network predicts negative radiance
+// (measured on load), which the reservoirs must not take
+float3 nrcPathRadiance(NrcQueryAnswer answer)
+{
+    return max(answer.radiance * answer.prefixThroughput, 0.0);
+}
+
+float3 nrcQueryResult(GpuNrcConstants constants, uint2 pixel)
+{
+    NrcQueryAnswer answer;
+    return nrcLoadQueryAnswer(constants, pixel, answer) ? nrcPathRadiance(answer) : float3(0.0, 0.0, 0.0);
 }
 
 // what NRC knows about a surface; no material is a delta lobe (material.brdf clamps alpha >= kMinAlpha)

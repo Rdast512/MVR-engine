@@ -27,6 +27,25 @@ struct RasterOrigin : IRayOrigin
     float3 spawn() { return rasterRayOrigin(surface); }
 };
 
+bool areInfiniteLightsExactAtPathVertices(GpuRtxdiConstants constants)
+{
+    return (constants.giFlags & kGiFlagExactInfiniteLights) != 0;
+}
+
+// directional lights are deltas: a fixed sample, weight 1, shades one exactly without RIS noise
+uint exactInfiniteLightCount(GpuRtxdiConstants constants)
+{
+    return areInfiniteLightsExactAtPathVertices(constants) ? constants.lightBuffer.infiniteLightBufferRegion.numLights
+                                                           : 0u;
+}
+
+RAB_LightSample exactInfiniteLightSample(GpuRtxdiConstants constants, uint index, RAB_Surface surface)
+{
+    const RAB_LightInfo light =
+        RAB_LoadLightInfo(constants.lightBuffer.infiniteLightBufferRegion.firstLightIndex + index, false);
+    return RAB_SamplePolymorphicLight(light, surface, float2(0.0, 0.0));
+}
+
 // one RIS-sampled light at a lit vertex, without reuse. Light candidates alone reach every light, triangles included;
 // a BRDF candidate would spend one more ray per vertex. Local lights are sampled in the primary surface's mode and
 // count (neeLocalLightSampling of the RTXDI sample), from the same presampled tiles and ReGIR cells
@@ -38,9 +57,25 @@ RTXDI_DIReservoir sampleLightsAt(RAB_Surface surface, GpuRtxdiConstants constant
     // m8 I2 F18: shadeLightReservoir traces visibility from origin.spawn (safeSpawnPoint for ray hits); leaving
     // enableInitialVisibility on traces an extra ray from rasterRayOrigin (RTXDI sample LightingPasses.cpp:64)
     sampling.enableInitialVisibility = 0;
+    // each caller adds them through exactInfiniteLightSample (m8 I16 phase 2c)
+    if (areInfiniteLightsExactAtPathVertices(constants))
+    {
+        sampling.numInfiniteLightSamples = 0;
+    }
     return RTXDI_SampleLightsForSurface(rng, coherentRng, surface, sampling, constants.lightBuffer,
                                         constants.localLightRisBuffer, constants.environmentLightRisBuffer,
                                         regirParameters(), lightSample);
+}
+
+// a light sample's contribution with one visibility ray
+float3 shadeVisibleLight<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, RAB_LightSample lightSample)
+{
+    const float3 shade = shadeLightSample(surface, lightSample);
+    if (all(shade <= 0.0) || !traceLightVisibility(origin.spawn(), lightSample))
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    return shade;
 }
 
 // a sampled light's contribution with one visibility ray
@@ -51,15 +86,10 @@ float3 shadeLightReservoir<Origin : IRayOrigin>(RAB_Surface surface, Origin orig
     {
         return float3(0.0, 0.0, 0.0);
     }
-    const float3 shade = shadeLightSample(surface, lightSample);
-    if (all(shade <= 0.0) || !traceLightVisibility(origin.spawn(), lightSample))
-    {
-        return float3(0.0, 0.0, 0.0);
-    }
-    return shade * RTXDI_GetDIReservoirInvPdf(reservoir);
+    return shadeVisibleLight(surface, origin, lightSample) * RTXDI_GetDIReservoirInvPdf(reservoir);
 }
 
-// one RIS-sampled light without reuse and one visibility ray
+// one RIS-sampled light without reuse and one visibility ray, plus the exact directional lights
 float3 directLightAt<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, GpuRtxdiConstants constants,
                                           inout RTXDI_RandomSamplerState rng,
                                           inout RTXDI_RandomSamplerState coherentRng)
@@ -70,7 +100,12 @@ float3 directLightAt<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, Gp
     }
     RAB_LightSample lightSample;
     const RTXDI_DIReservoir reservoir = sampleLightsAt(surface, constants, rng, coherentRng, lightSample);
-    return shadeLightReservoir(surface, origin, reservoir, lightSample);
+    float3 radiance = shadeLightReservoir(surface, origin, reservoir, lightSample);
+    for (uint i = 0; i < exactInfiniteLightCount(constants); ++i)
+    {
+        radiance += shadeVisibleLight(surface, origin, exactInfiniteLightSample(constants, i, surface));
+    }
+    return radiance;
 }
 
 // RTXDI sample Ultra preset secondarySurfaceReSTIRDIParams: 2 samples, 4 px (1 px truncates all 8192 offsets to
@@ -88,6 +123,23 @@ RTXDI_DISpatialResamplingParameters secondaryResamplingParams(GpuRtxdiConstants 
     params.discountNaiveSamples = 0;
     params.targetHistoryLength = 0;
     return params;
+}
+
+// a light's visible contribution attenuated by the glass on its shadow segment (m8 I13 §3)
+float3 throughGlass(GpuFrameRoot root, HitOrigin origin, RAB_LightSample lightSample, float3 radiance)
+{
+    if (!any(radiance > 0.0))
+    {
+        return radiance;
+    }
+    const float3 spawn = origin.spawn();
+    float3 dir;
+    float tMax;
+    if (!lightVisibilitySegment(spawn, lightSample, dir, tMax))
+    {
+        return radiance;
+    }
+    return radiance * shadowTransmittance(root, spawn, dir, tMax);
 }
 
 // X2's direct light (the indirect pass, the glass pass's reflections); with kGiFlagSecondaryResampling the sampled
@@ -128,36 +180,18 @@ float3 secondaryDirectLight(GpuFrameRoot root, RAB_Surface surface, HitOrigin or
             }
         }
     }
-    const float3 radiance = shadeLightReservoir(surface, origin, reservoir, lightSample);
-    if (!any(radiance > 0.0))
+    float3 radiance = throughGlass(root, origin, lightSample, shadeLightReservoir(surface, origin, reservoir, lightSample));
+    for (uint i = 0; i < exactInfiniteLightCount(constants); ++i)
     {
-        return radiance;
+        const RAB_LightSample sun = exactInfiniteLightSample(constants, i, surface);
+        radiance += throughGlass(root, origin, sun, shadeVisibleLight(surface, origin, sun));
     }
-    const float3 spawn = origin.spawn();
-    float3 dir;
-    float tMax;
-    if (!lightVisibilitySegment(spawn, lightSample, dir, tMax))
-    {
-        return radiance;
-    }
-    return radiance * shadowTransmittance(root, spawn, dir, tMax);
+    return radiance;
 }
 
-// the glass's diffuse share (m8 I13 §2): one RIS-sampled light with its visibility and shadow transmittance, shaded
-// Lambert only. The RIS target is the bridge BRDF of the same surface, non-zero wherever Lambert is
-float3 lambertLightAt(GpuFrameRoot root, RAB_Surface surface, HitOrigin origin, GpuRtxdiConstants constants,
-                      inout RTXDI_RandomSamplerState rng, inout RTXDI_RandomSamplerState coherentRng)
+// a light sample shaded Lambert with its visibility and shadow transmittance
+float3 lambertLight(GpuFrameRoot root, RAB_Surface surface, HitOrigin origin, RAB_LightSample lightSample)
 {
-    if (gRtxdiBridge.lightCount == 0 || !surface.isLit)
-    {
-        return float3(0.0, 0.0, 0.0);
-    }
-    RAB_LightSample lightSample;
-    const RTXDI_DIReservoir reservoir = sampleLightsAt(surface, constants, rng, coherentRng, lightSample);
-    if (!RTXDI_IsValidDIReservoir(reservoir))
-    {
-        return float3(0.0, 0.0, 0.0);
-    }
     const float nDotL = dot(surface.normal, lightSample.l);
     if (nDotL <= 0.0 || dot(surface.geoNormal, lightSample.l) <= 0.0)
     {
@@ -173,8 +207,28 @@ float3 lambertLightAt(GpuFrameRoot root, RAB_Surface surface, HitOrigin origin, 
     }
     const float3 transmittance =
         hasSegment ? shadowTransmittance(root, spawn, dir, tMax) : float3(1.0, 1.0, 1.0);
-    return surface.diffuseAlbedo * (nDotL / kPi) * lightSample.radiance * RTXDI_GetDIReservoirInvPdf(reservoir) *
-           transmittance;
+    return surface.diffuseAlbedo * (nDotL / kPi) * lightSample.radiance * transmittance;
+}
+
+// the glass's diffuse share (m8 I13 §2): one RIS-sampled light and the exact directional lights, shaded Lambert
+// only. The RIS target is the bridge BRDF of the same surface, non-zero wherever Lambert is
+float3 lambertLightAt(GpuFrameRoot root, RAB_Surface surface, HitOrigin origin, GpuRtxdiConstants constants,
+                      inout RTXDI_RandomSamplerState rng, inout RTXDI_RandomSamplerState coherentRng)
+{
+    if (gRtxdiBridge.lightCount == 0 || !surface.isLit)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    RAB_LightSample lightSample;
+    const RTXDI_DIReservoir reservoir = sampleLightsAt(surface, constants, rng, coherentRng, lightSample);
+    float3 radiance = RTXDI_IsValidDIReservoir(reservoir)
+                          ? lambertLight(root, surface, origin, lightSample) * RTXDI_GetDIReservoirInvPdf(reservoir)
+                          : float3(0.0, 0.0, 0.0);
+    for (uint i = 0; i < exactInfiniteLightCount(constants); ++i)
+    {
+        radiance += lambertLight(root, surface, origin, exactInfiniteLightSample(constants, i, surface));
+    }
+    return radiance;
 }
 
 struct PathHit

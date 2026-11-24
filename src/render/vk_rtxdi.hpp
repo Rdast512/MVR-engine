@@ -87,7 +87,8 @@ struct GpuRtxdiConstants {
     RTXDI_PTDecorrelationParameters giDecorrelation;
     // RTXDI_PTTemporalResamplingParameters::historyReductionStrength, with GiFlag::DuplicationHistoryReduction
     float giHistoryReductionStrength;
-    uint32_t pad0;
+    // DiFlag bits
+    uint32_t diFlags;
     // float2[neighborOffsetCount], RTXDI_DI_NEIGHBOR_OFFSETS_BUFFER (StratifiedLowDiscrepancy for DI; m8 I2 F16)
     vk::DeviceAddress diNeighborOffsets;
 };
@@ -106,7 +107,15 @@ namespace GiFlag
     // the firefly replacement test averages its 8x8 tile weight over all in-bounds lanes instead of nonzero lanes only;
     // the temporal boiling filter keeps NVIDIA's (m8 I2 F15)
     inline constexpr uint32_t FullTileBoilingFilter = 1u << 5;
+    // path vertices shade directional lights outside RIS, one shadow ray each (m8 I16 phase 2c)
+    inline constexpr uint32_t ExactInfiniteLights = 1u << 6;
 } // namespace GiFlag
+// GpuRtxdiConstants::diFlags; mirrored in shaders/lighting/rtxdi_constants.slang
+namespace DiFlag
+{
+    // Settings::areInfiniteLightsShadedExactly
+    inline constexpr uint32_t ExactInfiniteLights = 1u << 0;
+} // namespace DiFlag
 static_assert(sizeof(ReGIR_Parameters) == 1296);
 static_assert(sizeof(RTXDI_PTDecorrelationParameters) == 32);
 static_assert(sizeof(GpuRtxdiConstants) == 1904);
@@ -155,6 +164,9 @@ public:
         uint32_t brdfSamples = 0;
         // one shadow ray per pixel in the initial pass; occluded candidates are dropped before reuse
         bool isInitialVisibilityEnabled = false;
+        // directional (delta) lights leave the RIS candidates and are shaded exactly in the shade pass, one shadow ray
+        // each: reuse made the sun stochastic (m8 I16 F28). Path vertices follow GiSettings::areInfiniteLightsShadedExactly
+        bool areInfiniteLightsShadedExactly = false;
 
         uint32_t maxHistoryLength = 0;
         ReSTIRDI_TemporalBiasCorrectionMode temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Basic;
@@ -228,6 +240,10 @@ public:
         // X2 shaded with roughness at least 0.5 while GI reuse runs (RTXDI sample minSecondaryRoughness; O9): keeps
         // view-dependent glossy outliers out of the non-directional reservoirs; biased on glossy X2
         bool isSecondaryRoughnessFloorEnabled = false;
+        // path vertices (X2, NRC training, glass) shade directional lights exactly instead of as RIS candidates (m8
+        // I16 phase 2c). Secondary resampling overrides it with Settings::areInfiniteLightsShadedExactly: X2's
+        // candidates and the reused DI reservoirs must hold the same lights (C-I16-4)
+        bool areInfiniteLightsShadedExactly = false;
 
         // DLSS-RR prefers temporally independent samples (RTXDI 3.1, ReSTIR PT's DLSS-RR profile; O11): final shading
         // shades the pixel's initial sample instead of the reused one with probability decorrelationFactor. Stagnancy

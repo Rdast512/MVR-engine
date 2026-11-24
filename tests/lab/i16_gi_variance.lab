@@ -1,0 +1,26 @@
+# I16 phase 2c: what lowers the GI variance of emissive interiors (café raw GI ~470 % std). Shipped base on 5 seeds,
+# levers on seed 0; Lit noise and the 1- / 8-bounce GI bias
+base    di=shipped gi=shipped frame=shipped
+seeds   5
+cases   cafe.tables cafe.dining
+views   Lit "Indirect radiance"
+kinds   stability giBias
+# X2's light: O2 reuses the primary DI reservoirs (with DI's exact sun, C-I16-4), the exact sun at path vertices,
+# more local candidates
+sets    di=shipped gi=shipped frame=shipped gi.secondaryResampling=on
+sets    di=shipped gi=shipped frame=shipped gi.exactInfinite=on
+sets    di=shipped gi=shipped frame=shipped gi.secondaryResampling=on di.localSamples=32
+sets    di=shipped gi=shipped frame=shipped di.localSamples=32
+# X2 outliers
+sets    di=shipped gi=shipped frame=shipped gi.fireflyClamp=on
+# more samples per output pixel (proxy for more GI samples per pixel): native render resolution
+sets    di=shipped gi=shipped frame=shipped frame.dlssQuality=dlaa
+# the other indirect modes
+sets    di=shipped gi=shipped frame=shipped frame.indirectMode=nrc
+sets    di=shipped gi=shipped frame=shipped frame.indirectMode=restirGi
+
+# sunlit: the exact sun at X2 and O2
+cases   sponza.courtyard sponza.gallery
+sets    di=shipped gi=shipped frame=shipped
+sets    di=shipped gi=shipped frame=shipped gi.secondaryResampling=on
+sets    di=shipped gi=shipped frame=shipped gi.exactInfinite=on

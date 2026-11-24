@@ -1000,8 +1000,13 @@ void EngineUi::drawRayTracingPanel()
     sliderU32("Local light candidates", di.activeLocalLightSamples(), 0, 64);
     ImGui::SetItemTooltip("initial RIS candidates per pixel from point, spot and triangle lights; each sampling mode "
                           "keeps its own count");
+    ImGui::Checkbox("Exact directional lights", &di.areInfiniteLightsShadedExactly);
+    ImGui::SetItemTooltip("shade directional lights in the shade pass with one shadow ray each instead of as RIS "
+                          "candidates: no reuse noise on the sun");
+    ImGui::BeginDisabled(di.areInfiniteLightsShadedExactly);
     sliderU32("Infinite light candidates", di.infiniteLightSamples, 0, 16);
     ImGui::SetItemTooltip("initial RIS candidates per pixel from directional lights");
+    ImGui::EndDisabled();
     sliderU32("BRDF candidates", di.brdfSamples, 0, 4);
     ImGui::SetItemTooltip("one ray each along a BRDF sample; a hit on an emissive triangle names its light");
     ImGui::EndDisabled();
@@ -1302,6 +1307,12 @@ void EngineUi::drawRayTracingPanel()
     ImGui::Checkbox("Secondary roughness floor", &gi.isSecondaryRoughnessFloorEnabled);
     ImGui::SetItemTooltip("shades X2 with roughness at least 0.5: no glossy caustics in the reused samples; biased on "
                           "glossy X2");
+    // secondary resampling takes the DI setting
+    ImGui::BeginDisabled(gi.isSecondaryResamplingEnabled);
+    ImGui::Checkbox("Exact directional lights##gi", &gi.areInfiniteLightsShadedExactly);
+    ImGui::SetItemTooltip("path vertices shade directional lights with one shadow ray each instead of as RIS "
+                          "candidates; with secondary DI resampling the DI setting applies");
+    ImGui::EndDisabled();
     if (ImGui::Button("Defaults##gi")) {
         gi = RtxdiContext::defaultGiSettings();
     }

@@ -50,7 +50,7 @@ struct GpuRtxdiConstants
     // ReSTIR PT's DLSS-RR decorrelation, applied to ReSTIR GI by passes/rtxdi_gi_shade.slang (m8 O11)
     RTXDI_PTDecorrelationParameters giDecorrelation;
     float giHistoryReductionStrength; // ReSTIR PT's historyReductionStrength, with kGiFlagDuplicationHistoryReduction
-    uint pad0;
+    uint diFlags;             // kDiFlag* bits
     uint64_t diNeighborOffsets; // float2[neighborOffsetMask + 1], StratifiedLowDiscrepancy for DI (m8 I2 F16)
 };
 
@@ -61,6 +61,10 @@ static const uint kGiFlagSecondaryRoughnessFloor = 1u << 2;
 static const uint kGiFlagSpatialAgeReset = 1u << 3;
 static const uint kGiFlagDuplicationHistoryReduction = 1u << 4;
 static const uint kGiFlagFullTileBoilingFilter = 1u << 5;
+static const uint kGiFlagExactInfiniteLights = 1u << 6;
+
+// DiFlag in src/render/vk_rtxdi.hpp
+static const uint kDiFlagExactInfiniteLights = 1u << 0;
 
 // RtxdiContext::kGiInitialReservoirArray: the indirect pass's initial samples, after RTXDI's two arrays
 static const uint kGiInitialReservoirArray = 2;

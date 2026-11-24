@@ -1,0 +1,9 @@
+# I16 phase 2c: does NRC's training (512 frames after a camera change, spanning the stability window's first 212
+# frames) set the café's Lit flicker? 256 freezes the cache before the window, 0 trains every frame
+base    di=shipped gi=shipped frame=shipped
+seeds   3
+cases   cafe.tables cafe.dining
+views   Lit "Indirect radiance"
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped nrc.idleTrainingFrames=256
+sets    di=shipped gi=shipped frame=shipped nrc.idleTrainingFrames=0

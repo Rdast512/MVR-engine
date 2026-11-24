@@ -1,0 +1,7 @@
+# I16 phase 2c control: the café's Lit flicker without camera jitter (geometry and texture edges hold still), cv maps
+base    di=shipped gi=shipped frame=shipped frame.jitter=off
+seeds   3
+cases   cafe.tables cafe.dining
+views   Lit
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped frame.jitter=off

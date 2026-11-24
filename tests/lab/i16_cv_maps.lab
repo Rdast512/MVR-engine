@@ -1,0 +1,7 @@
+# I16 phase 2c: where the café's Lit flicker sits (ENGINE_LAB_PNG=1 cv maps)
+base    di=shipped gi=shipped frame=shipped
+seeds   3
+cases   cafe.tables cafe.dining
+views   Lit
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped

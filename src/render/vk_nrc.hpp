@@ -36,11 +36,27 @@ struct GpuNrcConstants
     uint32_t flags = 0;
     // used training dimensions, width | height << 16: the update dispatch
     uint32_t trainingLaunch = 0;
+    // GpuNrcHealth of this frame slot, counted by passes/nrc_resolve.slang
+    vk::DeviceAddress health = 0;
 };
 static_assert(sizeof(NrcConstants) == 96);
-static_assert(sizeof(GpuNrcConstants) == 168);
+static_assert(sizeof(GpuNrcConstants) == 176);
 static_assert(offsetof(GpuNrcConstants, queryPathInfo) == 96);
 static_assert(offsetof(GpuNrcConstants, queryPathInfoCount) == 144);
+
+// the resolve's waves with traced light and those whose cache answers diverged (non-finite, or kNrcDivergedRatio in
+// shaders/passes/nrc_resolve.slang times the traced light), read back by NrcCache to reset a diverged network (m8 I16
+// C-I16-5)
+struct GpuNrcHealth
+{
+    uint32_t queried = 0;
+    uint32_t diverged = 0;
+    // the largest wave ratio of cache answers to traced light, float bits
+    uint32_t maxRatioBits = 0;
+};
+// kNrcHealthQueried / kNrcHealthDiverged / kNrcHealthMaxRatio in shaders/gi/nrc_constants.slang
+static_assert(offsetof(GpuNrcHealth, queried) == 0 && offsetof(GpuNrcHealth, diverged) == 4 &&
+              offsetof(GpuNrcHealth, maxRatioBits) == 8);
 
 // NVIDIA Neural Radiance Cache (spec/m4/g3_nrc.md, engine spec §11.4): the SDK context at render resolution, its
 // per-frame settings and constants, and the update (training) paths. The query paths are the indirect pass
@@ -121,6 +137,11 @@ private:
     };
 
     void configure();
+    // device idle: a new SDK context and Configure. Only a new context is sure to start a fresh network: requestReset
+    // keeps the weights (C-G3-5)
+    void recreateNetwork();
+    // the slot is not in flight: counts the frames whose resolve saw a diverged cache, then clears the slot's counts
+    [[nodiscard]] bool isNetworkDiverged(uint32_t frameSlot);
     // device idle: (re)allocates the SDK buffers whose size changed and fills sdkBufferInfo
     void allocateSdkBuffers();
     void destroySdkBuffers();
@@ -134,6 +155,7 @@ private:
     nrc::vulkan::Context* context = nullptr;
     DriverDescriptorHeap driverHeap;
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> constants;
+    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> health;
     std::array<SdkBuffer, static_cast<size_t>(nrc::BufferIdx::Count)> sdkBuffers;
     nrc::vulkan::Buffers sdkBufferInfo{};
     // lazily allocated RGBA32F target for NRC's built-in Resolve debug pass (0 bytes in normal rendering)
@@ -157,4 +179,6 @@ private:
     bool lastIsTrainingEnabled = true;
     uint32_t lastTrainingIterations = 1;
     uint32_t lastIdleTrainingFrames = 0;
+    // consecutive frames whose resolve saw a diverged cache
+    uint32_t divergedFrames = 0;
 };

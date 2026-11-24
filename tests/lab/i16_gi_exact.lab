@@ -1,0 +1,7 @@
+# I16 phase 2c candidate on 5 seeds: the exact sun at path vertices alone
+base    di=shipped gi=shipped frame=shipped gi.exactInfinite=on
+seeds   5
+cases   cafe.tables cafe.dining sponza.gallery sponza.courtyard
+views   Lit "Indirect radiance"
+kinds   stability giBias
+sets    di=shipped gi=shipped frame=shipped gi.exactInfinite=on

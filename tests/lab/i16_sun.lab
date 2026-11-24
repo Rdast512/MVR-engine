@@ -1,0 +1,10 @@
+# I16 phase 2a: directional lights shaded exactly outside ReSTIR DI (shipped) against RIS candidates, 5 seeds, target mode
+base    di=shipped gi=shipped frame=shipped
+seeds   5
+cases   sponza.gallery sponza.courtyard bistro.street cafe.tables
+views   Lit "Direct lighting"
+kinds   stability diBias
+sets    di=shipped gi=shipped frame=shipped di.exactInfinite=off
+cases   guide.terminator
+kinds   diBias
+sets    di=shipped gi=shipped frame=shipped di.exactInfinite=off

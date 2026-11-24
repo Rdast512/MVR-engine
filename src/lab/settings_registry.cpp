@@ -160,6 +160,8 @@ namespace
              setDi<&DiSettings::boilingFilterStrength>, kDiDefaults},
             {"di.finalVisibilityReuse", LabSwitchType::Bool, {}, getDi<&DiSettings::isFinalVisibilityReused>,
              setDi<&DiSettings::isFinalVisibilityReused>, kDiDefaults},
+            {"di.exactInfinite", LabSwitchType::Bool, {}, getDi<&DiSettings::areInfiniteLightsShadedExactly>,
+             setDi<&DiSettings::areInfiniteLightsShadedExactly>, "m8 I16 phase 2a"},
             {"di.reference", LabSwitchType::Bool, {}, [](const LabConfig& config) { return toDouble(config.isDiReference); },
              [](LabConfig& config, double value) { config.isDiReference = value != 0.0; }, "RTXDI ResamplingMode::None"},
 
@@ -200,6 +202,8 @@ namespace
              setGi<&GiSettings::isFireflyClampEnabled>, kEngineOnly},
             {"gi.roughnessFloor", LabSwitchType::Bool, {}, getGi<&GiSettings::isSecondaryRoughnessFloorEnabled>,
              setGi<&GiSettings::isSecondaryRoughnessFloorEnabled>, "FullSample LightingPasses.cpp BRDF ray tracing"},
+            {"gi.exactInfinite", LabSwitchType::Bool, {}, getGi<&GiSettings::areInfiniteLightsShadedExactly>,
+             setGi<&GiSettings::areInfiniteLightsShadedExactly>, "m8 I16 phase 2c"},
             {"gi.decorrelation", LabSwitchType::Enum, kDecorrelationNames, getGi<&GiSettings::decorrelationMode>,
              setGi<&GiSettings::decorrelationMode>, kPtProfile},
             {"gi.decorrelationFactor", LabSwitchType::Float, {}, getGi<&GiSettings::decorrelationFactor>,

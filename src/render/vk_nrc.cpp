@@ -5,6 +5,7 @@
 #include "static_headers/logger.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
@@ -26,6 +27,13 @@ namespace
     constexpr float kPrimarySegmentsToTrainOn = 0.02f;
     // scene bounds grow by this share of their extent: geometry on the boundary must stay inside
     constexpr float kBoundsMargin = 0.01f;
+    // a diverged network (C-I16-5): this share of the resolve's waves diverged for this many frames in a row. Healthy
+    // café and Sponza poses peak at 13 % (19 % while retraining after a load), a poisoned network read 85 %. A fresh
+    // network on a small scene read 53 % of 57 waves for 16 frames: frames with fewer waves are no evidence, and the
+    // failure lasts thousands of frames, so 64 in a row tells it from training transients
+    constexpr double kDivergedWaveShare = 0.5;
+    constexpr uint32_t kDivergedFrames = 64;
+    constexpr uint32_t kMinHealthWaves = 256;
 
     void checkNrc(nrc::Status status, std::string_view what)
     {
@@ -97,6 +105,9 @@ NrcCache::NrcCache(const Device& device, const VkAllocator& allocator, const Nrc
     for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
         constants[slot] = createHostBuffer(sizeof(GpuNrcConstants), allocator.allocator, device.vkdevice,
                                            device.queueFamilyIndices, std::format("NrcConstants_{}", slot), nullptr);
+        health[slot] = createHostBuffer(sizeof(GpuNrcHealth), allocator.allocator, device.vkdevice,
+                                        device.queueFamilyIndices, std::format("NrcHealth_{}", slot), nullptr);
+        std::memset(health[slot].mapped, 0, sizeof(GpuNrcHealth));
     }
     if (const char* idleEnv = std::getenv("ENGINE_NRC_IDLE_FRAMES"); idleEnv != nullptr && *idleEnv != '\0') {
         uint32_t frames = 0;
@@ -118,6 +129,9 @@ NrcCache::~NrcCache()
 {
     destroyDebugResolveTarget();
     for (HostBuffer& slot : constants) {
+        destroyHostBuffer(allocator.allocator, slot, nullptr);
+    }
+    for (HostBuffer& slot : health) {
         destroyHostBuffer(allocator.allocator, slot, nullptr);
     }
     if (context != nullptr) {
@@ -166,6 +180,10 @@ void NrcCache::prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, 
             std::memset(constants[frameSlot].mapped, 0, sizeof(GpuNrcConstants));
             return;
         }
+        if (isNetworkDiverged(frameSlot)) {
+            device.vkdevice.waitIdle();
+            recreateNetwork();
+        }
         if (isDebugResolveActive() &&
             (!*debugResolveImage || debugResolveExtent.width != contextSettings.frameDimensions.x ||
              debugResolveExtent.height != contextSettings.frameDimensions.y)) {
@@ -185,6 +203,46 @@ void NrcCache::prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, 
     lastTrainingIterations = settings.trainingIterations;
     lastIdleTrainingFrames = settings.idleTrainingFrames;
     isTrainingFrame = settings.isTrainingEnabled && (settings.idleTrainingFrames == 0 || trainingFramesRemaining > 0);
+}
+
+bool NrcCache::isNetworkDiverged(uint32_t frameSlot)
+{
+    auto& counts = *static_cast<GpuNrcHealth*>(health[frameSlot].mapped);
+    const GpuNrcHealth last = counts;
+    counts = {};
+    // no resolve in that frame (paused, cache view), or too few lit waves: no evidence either way
+    if (last.queried < kMinHealthWaves) {
+        return false;
+    }
+    const double share = static_cast<double>(last.diverged) / static_cast<double>(last.queried);
+    divergedFrames = share > kDivergedWaveShare ? divergedFrames + 1 : 0;
+    if (divergedFrames < kDivergedFrames) {
+        return false;
+    }
+    logError(std::format("the network diverged: {:.0f}% of {} waves answered non-finite or above the traced light's "
+                         "bound (largest ratio {:.3g}) for {} frames; starting a fresh network (considerations C-I16-5)",
+                         100.0 * share, last.queried, std::bit_cast<float>(last.maxRatioBits), divergedFrames),
+             kSubsystem);
+    return true;
+}
+
+void NrcCache::recreateNetwork()
+{
+    ZoneScopedN("NrcCache::recreateNetwork");
+    api.destroyContext(*context);
+    context = nullptr;
+    checkNrc(api.createContext(*device.vkdevice, *device.physicalDevice, *device.instance, context), "Context::Create");
+    configure();
+    if (isDebugResolveActive()) {
+        ensureDebugResolveTarget();
+    }
+    // the slots' counts were taken from the old network
+    for (HostBuffer& slot : health) {
+        std::memset(slot.mapped, 0, sizeof(GpuNrcHealth));
+    }
+    divergedFrames = 0;
+    // the fresh network trains from its first frame
+    trainingFramesRemaining = settings.idleTrainingFrames;
 }
 
 void NrcCache::configure()
@@ -381,6 +439,7 @@ void NrcCache::recordBeginFrame(const vk::raii::CommandBuffer& cmd, uint32_t fra
     checkNrc(api.populateShaderConstants(context, slotConstants.nrc), "PopulateShaderConstants");
     slotConstants.flags = isCacheView ? kNrcFlagCacheView : 0u;
     slotConstants.trainingLaunch = usedTrainingExtent.width | (usedTrainingExtent.height << 16);
+    slotConstants.health = health[frameSlot].address;
     // host-coherent; the slot is not in flight
     std::memcpy(constants[frameSlot].mapped, &slotConstants, sizeof(slotConstants));
 }
