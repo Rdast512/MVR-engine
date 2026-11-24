@@ -1,0 +1,10 @@
+# I16 phase 1a: permutation without the DI boiling filter on 5 seeds, in the target mode: Lit noise and DI bias (the DI boiling filter darkens, i16_permutation)
+base    di=shipped gi=shipped frame=shipped di.permutation=on di.boilingFilter=off
+seeds   5
+cases   cafe.tables cafe.dining sponza.gallery sponza.courtyard bistro.street
+views   Lit "Direct lighting"
+kinds   stability diBias
+sets    di=shipped gi=shipped frame=shipped
+cases   guide.lamp guide.terminator guide.emissive
+kinds   diBias
+sets    di=shipped gi=shipped frame=shipped di.permutation=on

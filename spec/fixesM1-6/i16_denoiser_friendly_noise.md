@@ -1,6 +1,6 @@
 # M8 · I16: Noise that DLSS-RR can denoise (F28)
 
-**Status:** planned 2026-11-24 · **Milestone:** M8 ([README](./README.md))
+**Status:** Phase 0 measured 2026-11-24 (§7.1); Phase 1 in progress · **Milestone:** M8 ([README](./README.md))
 **Implements:** F28 ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §4): with a still camera the lit image "lives". Light seems to move every frame, and blotches fade in and out over seconds. Games that ship ReSTIR don't show it. Target mode: `NRC + ReSTIR GI`, the default and tuning target since 2026-11-24 ([engine_spec.md](../../docs/engine_spec.md) §11.7). The goal is a still camera that looks still.
 **Depends on:** I14 (correct rays, reuse and light PDF), I15 (DI with two spatial samples, GI sample age 30, NRC + ReSTIR GI default), the settings lab ([full_testing.md](../features/planned/full_testing.md))
 **Feeds:** I12 (final Bistro tuning re-checks this step's decisions), I11 (cost on the 2060 Super)
@@ -189,14 +189,102 @@ Each input is a frame flag first, measured, then shipped.
 
 ## 7. Results
 
-To be filled when built.
+### 7.1 Phase 0 (2026-11-24, `boiling.lab`)
+
+`boiling.lab` ran its 153 runs on 2026-11-24, in NRC + ReSTIR GI, release, layers off, with noise maps in `build/cafe-release/logs/lab`. Shipped means I15's DI (two spatial samples) and GI (age 30). The shipped config ran on 5 seeds, the others on seed 0. Each cell reads temporal std % / flickering px % / lag-1 correlation.
+
+| `cafe.tables` | `Lit` (DLSS-RR output) | raw `Direct lighting` | raw `Indirect radiance` |
+|---|---|---|---|
+| floor (5 seeds) | 0.25 / 2.6 | 0.20 / 0.07 | 8.8 / 0.01 |
+| **shipped** | 6.65 / 32.1 / 0.99 | 7.98 / 94.7 / **0.65** | 469 / 100 / 0.01 |
+| `di=reference` (no reuse) | **3.86 / 19.0** / 0.98 | 56.5 / 92.5 / **0.00** | 426 / 100 / 0.01 |
+| `di.permutation=on` | 4.74 / 24.7 / 0.99 | 21.5 / 95.8 / 0.04 | 488 / 100 / 0.01 |
+| `di.history=4` / `8` | 5.83 / 36.7 · 6.15 / 36.4 | 11.5 / 93.7 / 0.53 · 9.4 / 94.3 / 0.60 | unchanged |
+| `di.localSamples=32` | 6.09 / 30.0 | 7.90 / 94.8 / 0.65 | 436 / 100 / 0.01 |
+| `gi.decorrelationFactor=1`, `gi.history=4` / `8` | 6.60–6.75 / 32.6–34.2 | unchanged | 455–495 / 100 / 0.00–0.02 |
+| `di=reference gi.decorrelationFactor=1` | 3.73 / 19.2 / 0.98 | 58.8 / 92.5 / 0.00 | 476 / 100 / 0.00 |
+| `frame.dlssPreset=d` / `e` | 6.58 / 32.0 · 6.77 / 31.8 | unchanged | unchanged |
+| ReSTIR GI mode | 6.89 / 34.4 | unchanged | 550 / 100 / 0.01 |
+
+| `Lit` · raw `Direct lighting` | Sponza gallery | Sponza courtyard (sun only) |
+|---|---|---|
+| shipped | 4.02 / 6.2 · 11.0 / 64.3 / 0.80 | 1.02 / 5.9 · 21.4 / 98.6 / 0.54 |
+| `di=reference` | 3.97 / 5.7 · 0.00 (exact) | **0.73** / 6.2 · 0.00 (exact) |
+| `di.permutation=on` | 4.16 / 5.7 · 18.5 / 98.0 / 0.12 | 0.86 / 5.8 · 31.1 / 100 / 0.01 |
+| `di.history=4` | 3.92 / 5.7 · 7.8 / 25.3 / 0.68 | 0.90 / 5.9 · 17.9 / 94.4 / 0.45 |
+| `gi.decorrelationFactor=1` | 3.73 / 5.1 | 1.04 / 6.2 |
+| ReSTIR GI mode | 5.31 / 23.9 | 1.00 / 8.7 |
+
+Findings:
+
+1. **The boiling is DI's temporal correlation.** The shipped DI input carries lag-1 0.65 in the café (0.80 gallery, 0.54 courtyard): a pixel's error persists for frames.
+   - DI without reuse is 7× noisier per frame (raw std 56 % against 8 %) but uncorrelated (lag-1 0.00). DLSS-RR turns it into the calmest café of all: `Lit` flicker 32 → 19 %, std 6.7 → 3.9 %. This is NoiseAndBias.md's "too stable" signal, measured.
+   - Permutation decorrelates too (lag-1 0.04), at 21 % raw std; `Lit` 24.7 %.
+   - A shorter DI history keeps the correlation (0.53–0.60) and adds noise: café flicker rises to 36–37 %.
+2. **GI is not the boiling.** The raw GI input is already uncorrelated (lag-1 ≈ 0.01) thanks to stagnancy decorrelation. No GI lever moves café `Lit` beyond its floor. NRC + ReSTIR GI is calmer than ReSTIR GI mode on Sponza (gallery flicker 6.2 % against 23.9 %).
+3. **The sun proves approach 2.** With spatial reuse, the courtyard's raw sun-only DI reads 21 % std at lag-1 0.54; without reuse it is exact, and `Lit` std drops 1.02 → 0.73 %.
+4. **DLSS-RR's model presets change nothing** at a still camera (D / E against the driver default). Approach 3 is a motion item.
+5. **Decorrelation alone does not reach the targets.** With DI and GI both uncorrelated, the café keeps 3.7 % std / 19 % flicker. The rest is per-frame variance: raw GI at ~470 % std, raw DI without reuse at 56 %. After Phases 1–2, the café needs a variance item too: better candidates, or more GI samples where NRC allows. It goes in Phase 2b's conditional list.
+6. **`Lit`'s lag-1 is 0.98–0.99 in every config:** it measures DLSS-RR's accumulation, not the input. The raw views' lag-1 answered Phase 0's question, so `corrFrames` and `blotchPx` are deferred until a decision needs them.
+
+Consequence for Phase 1: the goal is DI that is decorrelated and low-variance. Either fixed permutation sampling (1a: raw lag-1 0.04 at 21 % std) or stagnancy decorrelation (1b). Shorter DI histories (1c) are closed by finding 1. The proposed targets stand until Phase 1's numbers.
 
 ## Done when
 
-- [ ] Phase 0: the boiling table, `corrFrames` and `blotchPx` built, target numbers confirmed by the user
+- [x] Phase 0: the boiling table (§7.1); `corrFrames` and `blotchPx` deferred (raw-view lag-1 sufficed); target numbers proposed, to be confirmed with Phase 1
 - [ ] Phase 1: permutation shipped or its bias root-caused; DI decorrelation built and decided; histories decided, all by the rule with 5-seed numbers and cost
 - [ ] Phase 2: the sun decided (outside ReSTIR DI or kept, with numbers); 2b run if the café is still above target
 - [ ] Phase 3: specular / diffuse hit distance and reflection motion vectors wired and decided; DLSS check gains its guide-sensitive case
 - [ ] Targets met on the café and Sponza poses, or the gap recorded per approach with F28 left open
 - [ ] Every runner of §4 passes; NVIDIA's DI and GI sets unchanged and callable; no edits under `ThirdParty/`
 - [ ] `docs/settings.md`, `m8_optimization_and_fixes.md` (F28), `considerations.md` and the README updated; I12's re-check list includes I16's decisions
+
+### 7.2 Phase 1a: what darkens permutation sampling (2026-11-24, `i16_permutation.lab`)
+
+Base: I15's B (shipped DI + permutation) on 5 seeds. Each set turns one feature off, one of those the unbiased Converged set turns off. DI bias against RTXDI's reference, bias % / dim-tile bias %:
+
+| config | café tables | café dining | EmissiveStrengthTest | lamp |
+|---|---|---|---|---|
+| floor | 0.08 / 0.66 | 0.34 / 0.87 | 0.17 / 0.96 | 1.57 / 3.25 |
+| shipped + permutation (5 seeds) | −0.47 / −9.70 | −1.87 / −8.15 | −0.27 / −0.93 | −0.74 / −2.83 |
+| … boiling filter off | **−0.10 / −1.02** | **−0.30 / +0.00** | −0.03 / −0.88 | +0.33 / +0.31 |
+| … visibility shortcut off | −0.50 / −9.79 | −2.22 / −8.31 | −0.22 / −0.89 | −0.96 / −2.34 |
+| … fallback off | −0.52 / −10.33 | −1.83 / −9.07 | −0.51 / −1.52 | −1.05 / −1.64 |
+| … disocclusion boost 0 | −0.49 / −9.79 | −2.01 / −8.01 | −0.24 / −1.56 | +0.01 / −3.69 |
+| … BRDF candidates 0 | −0.66 / −8.48 | −1.87 / −8.40 | −0.52 / −2.43 | −0.10 / −2.27 |
+| … spatial samples 0 | −0.26 / −2.99 | −0.31 / −2.51 | −0.41 / −1.66 | −1.70 / −2.04 |
+| … material test off | −0.47 / −9.79 | −1.83 / −8.41 | −0.42 / −0.81 | −0.63 / −3.13 |
+| … jitter off | −0.45 / −9.46 | −1.45 / −8.76 | −0.25 / −1.33 | −0.74 / −2.77 |
+| Converged + permutation | −0.17 / +0.31 | −0.48 / −0.13 | −0.05 / −0.05 | +0.01 / +1.85 |
+| Converged | −0.40 / +0.12 | −0.19 / −0.31 | −0.00 / +0.09 | −0.03 / +0.33 |
+| shipped (A, no permutation) | −0.24 / −4.69 | −0.34 / −2.58 | −0.01 / +0.16 | −0.08 / −2.48 |
+
+- **Permutation sampling is unbiased:** Converged + permutation reads within the floors.
+- **The DI boiling filter darkens.** The filter is RTXDI's, NVIDIA `Medium`'s default, on in the shipped set and off in Converged. It drops reservoirs that are bright against their 8×8 group. Permutation adds per-frame variance, so the filter fires more and darkens more: café dim tiles −9.7 / −8.2 % with it, −1.0 / 0.0 % without. It also causes about half of the shipped A's dim-tile darkening (−4.7 / −2.6 %).
+- **Spatial reuse feeds the filter:** reused bright samples spread, and the filter then drops them. Without spatial samples the dim tiles read −3.0 / −2.5 %.
+- **The visibility shortcut, fallback, boost, BRDF candidates, material test and jitter are not the cause.** Each moves the dim tiles by less than 2 floors. I6's bridge fix (temporal visibility from `previousSurface`) holds.
+- **Candidate:** permutation on, DI boiling filter off. Its `Lit` noise (fireflies the filter removed now reach DLSS-RR), its DI bias on 5 seeds, the 2048-frame convergence and the cost follow (`i16_perm_noboil`, `i16_noboil`).
+
+### 7.3 Phase 1a: permutation without the boiling filter (2026-11-24, `i16_perm_noboil`, `i16_noboil`)
+
+5 seeds each, NRC + ReSTIR GI, shipped GI. `Lit` std % / flicker %; raw `Direct lighting` lag-1; DI bias % (dim tiles %) against RTXDI's reference:
+
+| DI config | café tables `Lit` | café dining `Lit` | gallery / courtyard `Lit` std | raw DI lag-1 tables / gallery / courtyard | DI bias tables / dining | lamp / terminator / emissive |
+|---|---|---|---|---|---|---|
+| A (I15 shipped) | 6.70 / 32.0 | 6.83 / 36.1 | 3.98 / 1.02 | 0.65 / 0.80 / 0.54 | −0.24 (−4.7) / −0.34 (−2.6) | −0.08 / +0.01 / −0.01 |
+| B (A + permutation) | 4.79 / 24.1 | 6.18 / 32.7 | 4.01 / 0.86 | 0.04 / 0.12 / 0.01 | −0.47 (−9.7) / −1.87 (−8.2) | −0.74 / −0.01 / −0.27 |
+| **C (B, boiling filter off)** | **5.03 / 27.8** | **6.60 / 34.5** | **4.00 / 0.86** | **0.04 / 0.12 / 0.01** | **−0.17 (−1.8) / −0.04 (+0.4)** | **−0.10 / −0.02 / 0.00** |
+| A, boiling filter off | 6.77 / 34.3 | 6.89 / 37.0 | 3.98 / 1.02 | 0.65 / 0.80 / 0.54 | −0.17 (−1.5) / −0.05 (+0.3) | +0.54 / −0.08 / +0.04 |
+
+- **C decorrelates DI as B does** (lag-1 0.01–0.12), with DI bias at the level of the unbiased set. Dim tiles are within ~2 floors of the reference, and the convergence scenes are within their floors.
+- **B's lower flicker was partly the filter's darkening:** it dropped the bright samples DLSS-RR would otherwise see. C keeps most of the gain over A: tables flicker −4.2 pts (std −1.7 pts), dining −1.6 pts, courtyard `Lit` std 1.02 → 0.86 %.
+- **The filter without permutation only darkens.** Off, A's flicker rises by ~2 pts and its dim tiles lose their darkening. DLSS-RR reads filtered fireflies as signal either way.
+- **Shipped:** C in `RtxdiContext::defaultSettings()` (`isPermutationSamplingEnabled = true`, `isBoilingFilterEnabled = false`). `nvidiaSettings()` is unchanged (permutation on, boiling filter on). The 2048-frame convergence of the shipped set and the ABBA cost follow.
+- **Still above target:** café `Lit` 5.0 % / 27.8 % against ≤ 2 % / ≤ 5 %. Phase 0's finding 5 applies: the remaining noise is per-frame variance, not correlation. Next: 1b (DI stagnancy decorrelation) only if it lowers variance-driven flicker, and Phase 2a (the sun) for Sponza.
+- **Convergence of the shipped set** (guide capture over 2048 frames with `defaultSettings()` in place of the Converged set, a temporary hook, removed):
+  - lamp −0.53 % (RGB −0.41 / −0.59 / −0.77 %), tile p90 4.5 %;
+  - `Sponza_terminator` −0.05 % / p90 0.5 %;
+  - `EmissiveStrengthTest` +0.11 % / p90 1.9 %.
+
+  That is 2 of 3 by the Converged limits (0.5 % / 3 %). The lamp's 5-seed lab spread for C is −1.04…+0.33 % (mean −0.10 %), so −0.53 % is one window inside it. For comparison: A read +0.36 % / p90 14.6 %, B −1.29 % / 7.1 %. The gated check (Converged set) stays 3 of 3, RT 8890 / 8890.
+- **Cost** (ABBA ×2, 6000 frames, layers off, C against A): DI temporal 0.054 / 0.057 ms gallery, 0.093 / 0.097 courtyard, 0.041 / 0.045 Bistro street. DI shade 0.099 / 0.096, 0.371 / 0.374, 0.063 / 0.062. GPU total within the runs' noise. Permutation and the missing boiling filter cost nothing measurable.

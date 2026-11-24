@@ -412,13 +412,16 @@ RtxdiContext::Settings RtxdiContext::defaultSettings()
     //   candidates
     // - Fresh final visibility (isFinalVisibilityReused = false, O10) eliminates shadow-edge light leak and keeps
     //   reservoir age at 0 so the temporal visibility shortcut fires every frame
-    // - Ray-traced disocclusion boost (8 samples while M < 4, F3) and no temporal permutation (F5/F6): permutation
-    //   darkens the lamp convergence shot by 1.3% and the café's dim tiles by 8-10% (m8 I15)
+    // - Ray-traced disocclusion boost (8 samples while M < 4, F3)
     // - Two spatial samples (m8 I15, F22): without spatial reuse DLSS-RR keeps per-pixel sticky DI noise as confetti in
     //   emissive-lit interiors (café Lit flicker 79% / 70% -> 33% / 37%), +0.25 ms on the sunlit courtyard
+    // - Permutation sampling without the boiling filter (m8 I16, F28): permutation decorrelates the DI input DLSS-RR
+    //   sees (lag-1 0.65 -> 0.04 in the café); the boiling filter dropped the extra variance as "boiling" and darkened
+    //   the café's dim tiles by 8-10%, so it goes with it
     Settings settings = nvidiaSettings();
     settings.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Power_RIS;
-    settings.isPermutationSamplingEnabled = false;
+    settings.isPermutationSamplingEnabled = true;
+    settings.isBoilingFilterEnabled = false;
     settings.spatialSamples = 2;
     settings.disocclusionHistoryLength = 4;
     settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
