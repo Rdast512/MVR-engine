@@ -175,6 +175,19 @@ Each input is a frame flag first, measured, then shipped.
 - **Motion:** `ENGINE_SCREEN_EDGE_CHECK` settle frames, and the DLSS check's pan f2f.
 - **C-I14-7's exit:** a guide-sensitive case for `ENGINE_DLSS_CHECK`, a specular highlight under motion.
 
+### 3a. Specular hit distance (built 2026-11-24, frame flag off)
+
+- **Reference-first:**
+  - **`reference/vk_gltf_renderer`:** arms the capture when the first bounce samples a glossy or impulse reflection (`gltf_pathtrace.slang`: `BSDF_EVENT_GLOSSY_REFLECTION` / `BSDF_EVENT_IMPULSE_REFLECTION`). It writes that ray's hit distance, 65504 (fp16 max) on a sky miss and 0 otherwise, to an R16F `eDlssSpecularHitDist`, and passes nullptr when the guide is absent (`dlss_wrapper.cpp`).
+  - **`reference/vk_denoise_dlssrr`:** feeds the same input. Its README: "Providing specular motion vectors is superior."
+  - **RTXDI FullSample:** feeds neither. It replaces mirror and glass primaries with their reflections (PSR) and passes their albedo and normal guides.
+- **Built:**
+  - `BrdfSample::isSpecularLobe` records the lobe that `sampleBrdf` drew.
+  - `passes/indirect.slang` writes the primary bounce's distance to the R16F `RenderTargets::specularHitDistance()` with vk_gltf_renderer's rule, every pixel and frame.
+  - `Dlss::Guides::isSpecularHitDistanceUsed` sets `pInSpecularHitDistance` per evaluate, so the feature is not recreated.
+  - Exposed as lab switch `frame.dlssSpecularHitDistance` and UI checkbox "Specular hit distance guide".
+- **Measured:** `i16_guide_base` / `i16_guide_spec` (5 seeds each, café / Sponza / Bistro street, stability and screenEdge, CV maps), §7.7.
+
 ## 4. Checks
 
 - **Lab plans per phase:** `boiling`; `i16_permutation` (bisect); `i16_di_decorrelation`; `i16_histories`; `i16_sun`; `i16_guides`. Each finalist on 5 seeds as its own base.
@@ -473,3 +486,40 @@ Reading guide:
     - DLAA: no gain.
   - C-I16-4 is closed: O2 takes DI's exact-sun switch at X₂ (§2c).
 - **Next:** Phase 3. The café's remaining flicker is on edges, metal and glass (findings 3–5).
+
+### 7.7 Phase 3a: specular hit distance (2026-11-24, `i16_guide_base`, `i16_guide_spec`)
+
+- **The guide is correct.** New debug view "Specular hit distance": gray d / (d + 1), blue for a sky miss, black without a reflection.
+  - Metal taps, the counter top and glossy walls read solid: the specular lobe every frame.
+  - Rough wood shows sparse dots: the specular lobe some frames.
+  - Window sky misses read blue.
+  - NGX accepts the R16F input: no evaluate error with the guide on.
+- **No measurable effect.** 5 seeds each, same binary, guide off / on:
+
+| pose | `Lit` std | `Lit` flicker [range] | flicker on edges / off edges (% of lit) |
+|---|---|---|---|
+| café tables | 3.79 / 3.80 | 19.1 [15.1–31.3] / 17.9 [15.8–22.9] | 12.8 / 2.5 → 12.1 / 2.3 |
+| café dining | 4.88 / 4.76 | 23.7 / 24.0 | 16.6 / 3.8 → 16.9 / 3.8 |
+| Sponza gallery | 4.04 / 4.05 | 6.5 / 6.3 | 3.6 / 0.6 → 3.5 / 0.5 |
+| Sponza courtyard | 0.74 / 0.74 | 6.2 / 6.3 | 5.3 / 0.1 → 5.4 / 0.1 |
+| Bistro street | 0.40 / 0.41 | 15.3 [1.9–49.5] / 18.0 [6.9–50.7] | 6.1 / 1.1 → 7.3 / 1.3 |
+
+  - `screenEdge`'s pan and dolly settle frames are the same or within spread. Most poses read 257 either way: the metric saturates at its window and cannot see a guide (C-I14-7 stays open).
+  - With a still camera nothing needs reprojecting, so a reflection-reprojection guide has nothing to fix; NVIDIA's README calls it complementary to reflection motion vectors.
+- **What the café's flicker is** (CV maps of the base, 5 seeds; roughness and F0 guides captured for the same poses):
+  - **Not material-driven:**
+    - tables: flicker is 11.5–19.6 % in the second to fourth roughness quartiles; the glossiest quartile reads 46 % but holds 3 % of the flickering pixels;
+    - dining: 14–28 % across the roughness quartiles;
+    - F0 quartiles spread the same way.
+  - **Contrast-driven:** in every roughness and F0 quartile, flicker is 30–50 % on edges (Sobel of the log mean > 0.5) and 4–12 % off them.
+  - **Not input-driven:**
+    - the raw `Direct lighting` is no noisier on edges: the share of pixels with CV > 0.5 is 16 % on edges and 26 % off them (tables), 45 % / 65 % (dining);
+    - the per-pixel correlation of raw DI CV with `Lit` CV is 0.09–0.13.
+  - **Reading:** DLSS-RR's output on the dark side of a contrast edge carries some of the bright side's noise. A 10 % relative-CV threshold flags those dark pixels easily. The café's flicker percentage is mostly this edge term (tables 12.8 of 15.3 % lit), not the flat-area boiling of the user's report (2.5 % of lit pixels off edges).
+- **Decision:**
+  - 3a stays built and off. NVIDIA feeds the guide, it costs one R16F write per pixel, and nothing measured here gains from it. It is re-measured once a motion metric can see reflections (C-I14-7).
+  - Phase 3's remaining guides (reflection motion vectors, diffuse hit distance, disocclusion mask) are motion guides. They wait for that metric.
+- **Proposed next (open):**
+  - Judge stillness on what the eye sees: flat-area flicker and blotches (Phase 0's deferred `corrFrames` / `blotchPx`) next to the edge term.
+  - Report both in the lab (an `edgeFlicker` / `flatFlicker` split of `flicker`).
+  - Re-set the targets per term. Against the café's flat-area 2.5 / 3.8 %, the proposed ≤ 5 % is already met.

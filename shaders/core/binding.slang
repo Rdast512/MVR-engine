@@ -12,6 +12,7 @@ public static const int kImageFormatRgba16f = 2;
 public static const int kImageFormatRg16f = 4;
 public static const int kImageFormatR11g11b10f = 5;
 public static const int kImageFormatR32f = 6;
+public static const int kImageFormatR16f = 7;
 public static const int kImageFormatRgba8 = 10;
 public static const int kImageFormatRgba32ui = 30;
 public static const int kImageFormatR32ui = 37;

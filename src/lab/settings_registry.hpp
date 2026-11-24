@@ -25,6 +25,7 @@ struct LabConfig
     bool isDiReference = false;
     IndirectMode indirectMode = kDefaultIndirectMode;
     Dlss::Settings dlss{};
+    Dlss::Guides dlssGuides{};
     NrcCache::Settings nrc{};
     bool isJitterEnabled = true;
     GlassSettings glass{};

@@ -301,6 +301,11 @@ float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCamer
         return indirectSample(root, pixel);
     case kDebugViewIndirectRadiance:
         return tex2D(targets.indirectRadianceSampled).Load(int3(pixel, 0)).rgb;
+    case kDebugViewSpecularHitDistance:
+    {
+        const float distance = storageTex2D<float, kImageFormatR16f>(targets.specularHitDistanceStorage)[pixel];
+        return distance >= 65504.0 ? float3(0.0, 0.0, 1.0) : (distance / (distance + 1.0)).xxx;
+    }
     case kDebugViewNrcCache:
         // the query pass queried at the primary this frame (kNrcFlagCacheView)
         return nrcQueryResult(loadNrcConstants(root), pixel);

@@ -539,6 +539,8 @@ namespace
             LAYOUT_FIELD(GpuTargets, giDuplicationStorage),
             LAYOUT_FIELD(GpuTargets, glassDiffuseAlbedoStorage),
             LAYOUT_FIELD(GpuTargets, glassSpecAlbedoStorage),
+            LAYOUT_FIELD(GpuTargets, specularHitDistanceStorage),
+            LAYOUT_FIELD(GpuTargets, pad1),
         }},
         {"GpuExposureReadback", sizeof(GpuExposureReadback), {
             LAYOUT_FIELD(GpuExposureReadback, exposure),
@@ -682,6 +684,7 @@ namespace
         ImageFormatConstant{"kImageFormatRg16f", SLANG_IMAGE_FORMAT_rg16f},
         ImageFormatConstant{"kImageFormatR11g11b10f", SLANG_IMAGE_FORMAT_r11f_g11f_b10f},
         ImageFormatConstant{"kImageFormatR32f", SLANG_IMAGE_FORMAT_r32f},
+        ImageFormatConstant{"kImageFormatR16f", SLANG_IMAGE_FORMAT_r16f},
         ImageFormatConstant{"kImageFormatRgba8", SLANG_IMAGE_FORMAT_rgba8},
         ImageFormatConstant{"kImageFormatRgba32ui", SLANG_IMAGE_FORMAT_rgba32ui},
         ImageFormatConstant{"kImageFormatR32ui", SLANG_IMAGE_FORMAT_r32ui},

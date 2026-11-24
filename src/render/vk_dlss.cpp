@@ -273,6 +273,7 @@ void Dlss::evaluate(const vk::raii::CommandBuffer& cmd, const Frame& frame) cons
     NVSDK_NGX_Resource_VK diffuseAlbedo = ngxResource(frame.diffuseAlbedo, renderExtent, false);
     NVSDK_NGX_Resource_VK specularAlbedo = ngxResource(frame.specularAlbedo, renderExtent, false);
     NVSDK_NGX_Resource_VK normalRoughness = ngxResource(frame.normalRoughness, renderExtent, false);
+    NVSDK_NGX_Resource_VK specularHitDistance = ngxResource(frame.specularHitDistance, renderExtent, false);
     NVSDK_NGX_Resource_VK output = ngxResource(frame.output, displayExtent, true);
     // DLSS takes row-major, left-multiply matrices (v * M^T); glm's column-major M has the same 16-float layout
     // (reference/vk_denoise_dlssrr/dlss_rr/src/dlssrr_wrapper.cpp:379-385). Copies: NGX takes non-const pointers
@@ -292,6 +293,8 @@ void Dlss::evaluate(const vk::raii::CommandBuffer& cmd, const Frame& frame) cons
     // packed: roughness in normals.w
     eval.pInNormals = &normalRoughness;
     eval.pInRoughness = &normalRoughness;
+    // optional: NGX takes nullptr for an absent guide (reference/vk_gltf_renderer/src/dlss_wrapper.cpp)
+    eval.pInSpecularHitDistance = guides.isSpecularHitDistanceUsed ? &specularHitDistance : nullptr;
     // keep the post exposure feedback outside ray reconstruction
     eval.pInExposureTexture = nullptr;
     eval.InPreExposure = debug.preExposure;

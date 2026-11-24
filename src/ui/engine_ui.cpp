@@ -1127,6 +1127,9 @@ void EngineUi::drawRayTracingPanel()
         dlss.settings.preset = static_cast<Dlss::Preset>(preset);
     }
     ImGui::SetItemTooltip("model hint; an NVIDIA app override takes precedence (NGX logs it as a DRS override)");
+    ImGui::Checkbox("Specular hit distance guide", &dlss.guides.isSpecularHitDistanceUsed);
+    ImGui::SetItemTooltip("feeds the primary bounce's specular-lobe hit distance to ray reconstruction "
+                          "(pInSpecularHitDistance)");
     if (ImGui::Button("Reset history")) {
         context.renderer.resetDlssHistory();
     }

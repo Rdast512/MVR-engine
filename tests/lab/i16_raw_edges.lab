@@ -1,0 +1,7 @@
+# I16 phase 3: is the raw input noisier on edges (reuse starved across discontinuities)? cv maps of the raw views
+base    di=shipped gi=shipped frame=shipped
+seeds   2
+cases   cafe.tables cafe.dining
+views   "Direct lighting" Lit
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped

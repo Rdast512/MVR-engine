@@ -128,6 +128,7 @@ Re-measured after M4 (GI) and M6 (OMM) in M8 I6 (2026-11-21, [i6_restir_di_tunin
 |---|---|---|
 | Mode | Render resolution: DLAA (native), Quality (0.67×), Balanced, Performance, Ultra Performance | A change recreates the feature and the render targets, and resets history. The RTXDI sample runs native: use DLAA to compare |
 | Preset | Model hint: `Default` (the driver picks), D, E (transformer), F | An NVIDIA app override wins over it (NGX logs a DRS override) |
+| Specular hit distance guide | Off. Feeds `pInSpecularHitDistance`: the primary bounce's hit distance when it took the specular lobe, as reference/vk_gltf_renderer does (debug view "Specular hit distance") | No measured effect on a still camera or on screen-edge settle (M8 I16 §7.7); kept for a motion metric that sees reflections |
 | Reset history | The next Lit frame starts without accumulated history | Use it to see how fast the image converges |
 
 - RR is evaluated only in the `Lit` view, and only when the scene has lights. Debug views bypass RR and are not jittered.

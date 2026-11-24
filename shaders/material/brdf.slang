@@ -138,6 +138,7 @@ public struct BrdfSample
     public float3 l;      // world, unit
     public float3 weight; // f * NdotL / pdf
     public float pdf;     // solid angle; 0 means no valid direction
+    public bool isSpecularLobe; // the GGX lobe drew l: DLSS-RR's specular hit distance (m8 I16 phase 3)
 };
 
 // u.x picks the lobe, u.yz the direction
@@ -149,7 +150,8 @@ public BrdfSample sampleBrdf(float3 n, float3 cDiff, float3 f0, float roughness,
     buildOrthonormalBasis(n, t, b);
 
     float3 l;
-    if (u.x < specularProbability(cDiff, f0, dot(n, v)))
+    const bool isSpecularLobe = u.x < specularProbability(cDiff, f0, dot(n, v));
+    if (isSpecularLobe)
     {
         const float3 viewLocal = float3(dot(t, v), dot(b, v), dot(n, v));
         const float3 h = sampleVndf(viewLocal, ggxAlpha(roughness), u.yz);
@@ -163,6 +165,7 @@ public BrdfSample sampleBrdf(float3 n, float3 cDiff, float3 f0, float roughness,
 
     BrdfSample result;
     result.l = l;
+    result.isSpecularLobe = isSpecularLobe;
     result.weight = float3(0.0, 0.0, 0.0);
     result.pdf = pdfBrdf(n, cDiff, f0, roughness, v, l);
     // vndf reflections can go below the horizon; written negated so nan is rejected too

@@ -42,6 +42,15 @@ public:
         bool operator==(const Settings&) const = default;
     };
 
+    // optional evaluate inputs, read per frame: no feature recreation (m8 I16 phase 3)
+    struct Guides
+    {
+        // pInSpecularHitDistance from Frame::specularHitDistance
+        bool isSpecularHitDistanceUsed = false;
+
+        bool operator==(const Guides&) const = default;
+    };
+
     // ENGINE_DLSS_CHECK perturbation and A/B controls (m8 I14 F25); defaults match shipped behavior
     struct DebugControls
     {
@@ -68,6 +77,8 @@ public:
         Image diffuseAlbedo;
         Image specularAlbedo;
         Image normalRoughness;
+        // R16F, the primary's specular-lobe hit distance (read with Guides::isSpecularHitDistanceUsed)
+        Image specularHitDistance;
         // display resolution, written
         Image output;
         // render pixels, the offset the raster added to every vertex (y down)
@@ -105,6 +116,7 @@ public:
 
     // edited by the UI; applied by the next recreate
     Settings settings;
+    Guides guides;
     DebugControls debug;
 
 private:

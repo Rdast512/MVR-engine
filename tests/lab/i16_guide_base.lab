@@ -1,0 +1,7 @@
+# I16 phase 3a on 5 seeds: the shipped base on this binary (2c's exact sun at path vertices included). Static noise and motion settle; ENGINE_LAB_PNG=1 for the edge analysis
+base    di=shipped gi=shipped frame=shipped
+seeds   5
+cases   cafe.tables cafe.dining sponza.gallery sponza.courtyard bistro.street
+views   Lit
+kinds   stability screenEdge
+sets    di=shipped gi=shipped frame=shipped

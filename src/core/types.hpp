@@ -1090,8 +1090,11 @@ struct GpuTargets
     // GlassFlag::BlendGuides (m8 I13 §4 variant b)
     uint32_t glassDiffuseAlbedoStorage = 0;
     uint32_t glassSpecAlbedoStorage = 0;
+    // R16F DLSS-RR specular hit distance, written by passes/indirect.slang (m8 I16 phase 3)
+    uint32_t specularHitDistanceStorage = 0;
+    uint32_t pad1 = 0;
 };
-static_assert(sizeof(GpuTargets) == 208);
+static_assert(sizeof(GpuTargets) == 216);
 static_assert(offsetof(GpuTargets, glassDiffuseAlbedoStorage) == 200);
 static_assert(offsetof(GpuTargets, giStagnancyStorage) == 184);
 static_assert(offsetof(GpuTargets, binIdsStorage) == 176);

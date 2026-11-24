@@ -59,6 +59,8 @@ enum class DebugView : uint32_t
     MaterialBin,
     // the glass pass's throughput through the glass in front of each pixel, or its reflection term (m8 I13)
     Glass,
+    // DLSS-RR's specular hit distance guide (m8 I16 phase 3a)
+    SpecularHitDistance,
     Count,
 };
 
@@ -152,6 +154,7 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"Indirect radiance", DebugViewCategory::Lighting, true},
     {"Material bin", DebugViewCategory::Geometry, true},
     {"Glass", DebugViewCategory::RayTracing, true},
+    {"Specular hit distance", DebugViewCategory::Upscaling, true},
 }};
 
 [[nodiscard]] constexpr const DebugViewInfo& debugViewInfo(DebugView view)

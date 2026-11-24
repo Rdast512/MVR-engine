@@ -36,6 +36,7 @@ struct PrimaryBounce
     float pdf;
     bool isSampled;
     bool isActive;
+    bool isSpecularLobe;
 };
 
 PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
@@ -50,6 +51,7 @@ PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
     const RAB_Surface primary = RAB_GetGBufferSurface(int2(pixel), false);
     bounce.isSampled = RAB_IsSurfaceValid(primary) && primary.isLit;
     bounce.isActive = false;
+    bounce.isSpecularLobe = false;
     if (bounce.isSampled)
     {
         const uint frameIndex = bdaPtr<GpuRtxdiConstants>(root.rtxdiConstants)[0].runtime.frameIndex;
@@ -61,6 +63,7 @@ PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
         bounce.pdf = brdf.pdf;
         // normal maps can tilt n so a sample lies below the triangle's geometric plane (RTXDI BrdfRayTracing.hlsl)
         bounce.isActive = brdf.pdf > 0.0 && dot(primary.geoNormal, brdf.l) > 0.0;
+        bounce.isSpecularLobe = brdf.isSpecularLobe;
         bounce.ray.Origin = rasterRayOrigin(primary);
         bounce.ray.Direction = brdf.l;
     }
@@ -195,4 +198,9 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
                            RTXDI_PixelPosToReservoirPos(pixel, constants.runtime.activeCheckerboardField),
                            kGiInitialReservoirArray);
     NrcWriteFinalPathInfo(nrc, nrcPath, nrcThroughput, nrcRadiance);
+    // DLSS-RR's specular hit distance (m8 I16 phase 3), as reference/vk_gltf_renderer's first glossy reflection: the
+    // bounce's hit distance when it took the specular lobe, fp16 max for a miss, 0 without a reflection
+    const float specularHitDistance = !(isActive && bounce.isSpecularLobe) ? 0.0 : isHit ? hit.t : 65504.0;
+    storageTex2D<float, kImageFormatR16f>(bdaPtr<GpuTargets>(root.targets)[0].specularHitDistanceStorage)[pixel] =
+        specularHitDistance;
 }

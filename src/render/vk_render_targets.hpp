@@ -37,6 +37,8 @@ public:
     // ReSTIR GI duplication map inputs and counts (passes/rtxdi_gi_duplication.slang)
     static constexpr vk::Format kGiSampleIdsFormat = vk::Format::eR32Uint;
     static constexpr vk::Format kGiDuplicationFormat = vk::Format::eR32Sfloat;
+    // DLSS-RR pInSpecularHitDistance, as reference/vk_gltf_renderer's eDlssSpecularHitDist
+    static constexpr vk::Format kSpecularHitDistanceFormat = vk::Format::eR16Sfloat;
 
     // an image with the view NGX needs; the descriptor heap does not keep views
     struct ImageRef
@@ -67,6 +69,10 @@ public:
     // guide of the set frameNumber's parity selects
     [[nodiscard]] ImageRef guide(uint32_t frameNumber, GuideImage image) const;
     [[nodiscard]] ImageRef noisyColor() const { return imageRef(noisyColorTarget, kNoisyColorFormat); }
+    [[nodiscard]] ImageRef specularHitDistance() const
+    {
+        return imageRef(specularHitDistanceTarget, kSpecularHitDistanceFormat);
+    }
     // DLSS-RR's albedo guide blended with the glass layers (m8 I13 §4 variant b): DiffuseAlbedo or SpecAlbedo, written
     // by passes/glass.slang; the shared guides stay the surface's, since RTXDI reads them again next frame
     [[nodiscard]] ImageRef glassAlbedo(GuideImage image) const;
@@ -171,6 +177,7 @@ private:
     // one copy: each is read before the frame's next write to it
     Target giSampleIds;
     Target giDuplication;
+    Target specularHitDistanceTarget;
     // sampled depth for the resolve and debug views
     uint32_t depthIndex = kNoneIndex;
     // sampler heap index; samplers are never freed

@@ -91,6 +91,7 @@ RenderTargets::~RenderTargets()
     }
     destroy(giSampleIds);
     destroy(giDuplication);
+    destroy(specularHitDistanceTarget);
     destroyVmaBuffer(vma, materialBins, materialBinsMemory);
     for (HostBuffer& buffer : frameTargets) {
         destroyHostBuffer(vma, buffer, nullptr);
@@ -178,6 +179,7 @@ void RenderTargets::checkFormatSupport() const
     check(kPostFormat, kStorageFeatures | vk::FormatFeatureFlagBits2::eSampledImageFilterLinear);
     check(kExposureFormat, kStorageFeatures);
     check(kBinIdsFormat, kStorageFeatures);
+    check(kSpecularHitDistanceFormat, kStorageFeatures);
     check(kVisBufferFormat, vk::FormatFeatureFlagBits2::eColorAttachment | vk::FormatFeatureFlagBits2::eSampledImage);
 }
 
@@ -233,6 +235,7 @@ void RenderTargets::destroyTargets()
     }
     destroy(giSampleIds);
     destroy(giDuplication);
+    destroy(specularHitDistanceTarget);
     destroyVmaBuffer(vma, materialBins, materialBinsMemory);
     materialBinsDeviceAddress = 0;
     if (depthIndex != kNoneIndex) {
@@ -276,6 +279,8 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
                  vk::ImageLayout::eGeneral, "Exposure", vk::Extent2D{1, 1});
     createTarget(binIds, kBinIdsFormat, kStorageUsage, vk::ImageLayout::eGeneral, "MaterialBinIds", extent);
     createTarget(giSampleIds, kGiSampleIdsFormat, kStorageUsage, vk::ImageLayout::eGeneral, "GiSampleIds", extent);
+    createTarget(specularHitDistanceTarget, kSpecularHitDistanceFormat, kStorageUsage, vk::ImageLayout::eGeneral,
+                 "SpecularHitDistance", extent);
     createTarget(giDuplication, kGiDuplicationFormat, kStorageUsage, vk::ImageLayout::eGeneral, "GiDuplication",
                  extent);
     createMaterialBins();
@@ -342,6 +347,7 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
     }
     initialize(*giSampleIds.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*giDuplication.image, vk::ImageLayout::eGeneral, kStorageAccess);
+    initialize(*specularHitDistanceTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
     submitAndWait(cmd, device.graphicsQueue);
 }
 
@@ -431,5 +437,6 @@ void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool 
         .giDuplicationStorage = giDuplication.storageIndex,
         .glassDiffuseAlbedoStorage = glassDiffuseAlbedo.storageIndex,
         .glassSpecAlbedoStorage = glassSpecAlbedo.storageIndex,
+        .specularHitDistanceStorage = specularHitDistanceTarget.storageIndex,
     };
 }

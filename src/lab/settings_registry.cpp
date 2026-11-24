@@ -18,6 +18,7 @@ static_assert(sizeof(RtxdiContext::Settings) == 84, "a new RtxdiContext::Setting
 static_assert(sizeof(RtxdiContext::GiSettings) == 92, "a new RtxdiContext::GiSettings field needs a lab switch");
 static_assert(sizeof(NrcCache::Settings) == 16, "a new NrcCache::Settings field needs a lab switch");
 static_assert(sizeof(Dlss::Settings) == 2, "a new Dlss::Settings field needs a lab switch");
+static_assert(sizeof(Dlss::Guides) == 1, "a new Dlss::Guides field needs a lab switch");
 
 namespace
 {
@@ -240,6 +241,10 @@ namespace
              [](const LabConfig& config) { return toDouble(config.dlss.preset); },
              [](LabConfig& config, double value) { config.dlss.preset = fromDouble<Dlss::Preset>(value); },
              "DLSS-RR integration guide"},
+            {"frame.dlssSpecularHitDistance", LabSwitchType::Bool, {},
+             [](const LabConfig& config) { return toDouble(config.dlssGuides.isSpecularHitDistanceUsed); },
+             [](LabConfig& config, double value) { config.dlssGuides.isSpecularHitDistanceUsed = value != 0.0; },
+             "vk_gltf_renderer / vk_denoise_dlssrr feed it; RTXDI FullSample does not"},
             {"nrc.training", LabSwitchType::Bool, {}, [](const LabConfig& config) { return toDouble(config.nrc.isTrainingEnabled); },
              [](LabConfig& config, double value) { config.nrc.isTrainingEnabled = value != 0.0; }, "NrcGuide.md"},
             {"nrc.idleTrainingFrames", LabSwitchType::Uint, {},
@@ -361,6 +366,7 @@ namespace
             const LabConfig shipped;
             config.indirectMode = shipped.indirectMode;
             config.dlss = shipped.dlss;
+            config.dlssGuides = shipped.dlssGuides;
             config.nrc = shipped.nrc;
             config.isJitterEnabled = shipped.isJitterEnabled;
             return true;
@@ -552,6 +558,7 @@ void applyLabConfig(const LabConfig& config, Renderer& renderer, Camera& camera)
     rtxdi.giReferenceBounces = 0;
     renderer.indirectMode = config.indirectMode;
     renderer.getDlss().settings = config.dlss;
+    renderer.getDlss().guides = config.dlssGuides;
     renderer.getNrc().settings = config.nrc;
     camera.isJitterEnabled = config.isJitterEnabled;
     renderer.glass = config.glass;
@@ -566,6 +573,7 @@ LabConfig captureLabConfig(Renderer& renderer, const Camera& camera)
     config.isDiReference = rtxdi.isReference;
     config.indirectMode = renderer.indirectMode;
     config.dlss = renderer.getDlss().settings;
+    config.dlssGuides = renderer.getDlss().guides;
     config.nrc = renderer.getNrc().settings;
     config.isJitterEnabled = camera.isJitterEnabled;
     config.glass = renderer.glass;
