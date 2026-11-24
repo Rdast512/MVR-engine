@@ -1,0 +1,7 @@
+# I15 in the target mode (NRC + ReSTIR GI, 2026-11-24): DI A (two spatial samples, shipped); 5 seeds on the base, Lit noise first
+base    di=shipped gi=shipped frame.indirectMode=nrcRestirGi di.spatialSamples=2
+seeds   5
+cases   cafe.tables cafe.dining sponza.gallery sponza.courtyard bistro.street
+views   Lit
+kinds   stability
+sets    di=shipped gi=shipped frame.indirectMode=nrcRestirGi di.spatialSamples=0

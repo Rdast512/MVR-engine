@@ -1,0 +1,23 @@
+# Boiling under DLSS-RR (user report 2026-11-24: the lit scene "lives", lights seem to change every frame). Which input
+# DLSS-RR keeps as slow blotches: DI or GI, correlated (lag1 high, RTXDI NoiseAndBias.md) or merely noisy. Target mode
+base    di=shipped gi=shipped frame=shipped
+seeds   5
+cases   cafe.tables sponza.gallery sponza.courtyard
+views   Lit "Direct lighting" "Indirect radiance"
+kinds   stability
+# DI: no reuse (independent per frame), permutation, shorter history, more candidates
+sets    di=reference
+sets    di.permutation=on
+sets    di.history=4
+sets    di.history=8
+sets    di.localSamples=32
+# GI: always decorrelate stagnant samples, shorter history
+sets    gi.decorrelationFactor=1
+sets    gi.history=4
+sets    gi.history=8
+# both decorrelated
+sets    di=reference gi.decorrelationFactor=1
+# the denoiser's model, and the one-bounce mode for comparison
+sets    frame.dlssPreset=d
+sets    frame.dlssPreset=e
+sets    frame.indirectMode=restirGi

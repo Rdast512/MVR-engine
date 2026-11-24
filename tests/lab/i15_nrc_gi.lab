@@ -1,0 +1,13 @@
+# I15 phase 2 in the target mode (NRC + ReSTIR GI): the shipped GI (age 30) against the levers, Lit noise first, bias
+# against the 8-bounce truth; 5 seeds on the base only
+base    di=shipped gi=shipped frame.indirectMode=nrcRestirGi di.spatialSamples=2 gi.age=30
+seeds   5
+cases   cafe.tables cafe.dining sponza.gallery sponza.courtyard
+views   Lit "Indirect radiance"
+kinds   stability giBias
+sets    di=shipped gi=shipped frame.indirectMode=nrcRestirGi di.spatialSamples=2 gi.age=1024
+sets    di=shipped gi=shipped frame.indirectMode=nrcRestirGi di.spatialSamples=2 gi.age=30 gi.fireflyStrength=0.9
+sets    di=shipped gi=shipped frame.indirectMode=nrcRestirGi di.spatialSamples=2 gi.age=30 gi.fireflyBound=on gi.fireflyMultiplyBound=30
+sets    di=shipped gi=shipped frame.indirectMode=nrcRestirGi di.spatialSamples=2 gi.age=30 gi.decorrelation=none
+sets    di=shipped gi=shipped frame.indirectMode=nrcRestirGi di.spatialSamples=2 gi.age=30 gi.boilingFilter=on
+sets    di=shipped gi=shipped frame.indirectMode=nrcRestirGi di.spatialSamples=2 gi=nvidia

@@ -1,0 +1,7 @@
+# I15 phase 1: B (A + di.permutation=on) against RTXDI's reference on the convergence check's scenes, 5 seeds (the check itself gates
+# the Converged set, not the shipped one)
+base    di=shipped gi=shipped di.spatialSamples=2 di.permutation=on
+seeds   5
+cases   guide.lamp guide.terminator guide.emissive
+kinds   diBias
+sets    di=shipped gi=shipped di.spatialSamples=2

@@ -23,7 +23,7 @@ struct LabConfig
     RtxdiContext::GiSettings gi = RtxdiContext::defaultGiSettings();
     // RTXDI without reuse over di (RtxdiContext::isReference)
     bool isDiReference = false;
-    IndirectMode indirectMode = IndirectMode::RestirGi;
+    IndirectMode indirectMode = kDefaultIndirectMode;
     Dlss::Settings dlss{};
     NrcCache::Settings nrc{};
     bool isJitterEnabled = true;

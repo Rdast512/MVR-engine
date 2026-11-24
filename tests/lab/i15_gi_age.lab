@@ -1,0 +1,7 @@
+# I15 phase 2: the winning lever (G6, gi.age=30 over phase 1's DI) on 5 seeds; `seeds` seeds only the base
+base    di=shipped gi=shipped di.spatialSamples=2 gi.age=30
+seeds   5
+cases   cafe.tables cafe.dining sponza.gallery sponza.courtyard
+views   Lit "Indirect radiance"
+kinds   stability giBias
+sets    di=shipped gi=shipped di.spatialSamples=2 gi.fireflyBound=on gi.fireflyMultiplyBound=30

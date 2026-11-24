@@ -39,6 +39,7 @@ Finding ids refer to [m8_optimization_and_fixes.md](./m8_optimization_and_fixes.
 | I13 · Thin-walled glass | [`i13_glass_transmission.md`](./i13_glass_transmission.md) (built 2026-11-23) | F21 | I1, I2, I6 |
 | I14 · Bistro sampling, reuse, DLSS-RR and rays | [`i14_bistro_sampling_and_rays.md`](./i14_bistro_sampling_and_rays.md) (built 2026-11-23) | F24, F25, F26, F27 (feeds F22, F23) | I1, I2, I6 |
 | I15 · Café DI and GI settings | [`i15_cafe_di_gi_settings.md`](./i15_cafe_di_gi_settings.md) (planned) | F22, F23 (settings fixes from the lab) | I1, I5, I6, settings lab; Phase 2 after I14 Phase 3 |
+| I16 · Noise that DLSS-RR can denoise | [`i16_denoiser_friendly_noise.md`](./i16_denoiser_friendly_noise.md) (planned 2026-11-24) | F28 | I14, I15, settings lab |
 
 Not scheduled: O5 (removed from the candidates on 2026-11-20), ND2–ND4 (design choices), ND8 (waits on an environment light, C-F3-5), and the post-1.0 RTXMG features (mg findings §4).
 
@@ -214,6 +215,17 @@ Spec: [i15_cafe_di_gi_settings.md](./i15_cafe_di_gi_settings.md). The settings f
 
 **Done when:** both phases are shipped by their rules with café, Sponza and Bistro numbers, or F23 stays open with them, and every runner passes.
 
+### I16 · Noise that DLSS-RR can denoise
+
+Spec: [i16_denoiser_friendly_noise.md](./i16_denoiser_friendly_noise.md). F28: the still image lives under DLSS-RR, because ReSTIR's temporally correlated noise reaches the denoiser as slow blotches. In NRC + ReSTIR GI, the target mode since 2026-11-24:
+
+- **Phase 0:** measure the boiling (`boiling.lab`, new `corrFrames` / `blotchPx` metrics) and set the targets;
+- **Phase 1 (decorrelate):** permutation sampling without its bias, DI stagnancy decorrelation (ReSTIR PT's pattern), histories and filters;
+- **Phase 2 (deterministic dominant lights):** the sun outside ReSTIR DI, then dominant emitters in emissive-only interiors if needed;
+- **Phase 3 (guides):** specular / diffuse hit distance and reflection motion vectors for DLSS-RR.
+
+**Done when:** the café and Sponza poses meet the confirmed `Lit` targets within the DI and GI bias gates, or F28 stays open with the gap per approach.
+
 ## Order
 
 ```
@@ -224,6 +236,7 @@ I4 → I11                         (needs the 2060 Super)
 I1 + I2 + I6 → I14 → I12         (I5 + I6 + I14 → I12; audit fixes before final Bistro tuning)
 I5 + I6 + lab → I15 → I12        (I15 Phase 1 now; Phase 2 lands after I14 Phase 3)
 I1 + I2 + I6 → I13
+I14 + I15 → I16 → I12             (NRC + ReSTIR GI is the target mode; I16's noise decisions before final Bistro tuning)
 ```
 
 - **I1 first:** I2's fixes and every tuning step are judged by runners that do not exist yet.

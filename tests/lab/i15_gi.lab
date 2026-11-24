@@ -1,0 +1,15 @@
+# I15 phase 2: the F23 GI excess over the F22 DI fix; 5 seeds (dining's dim tiles spread +10..+31 at 3)
+base    di=shipped gi=shipped
+seeds   5
+cases   cafe.tables cafe.dining sponza.gallery sponza.courtyard
+views   Lit "Indirect radiance"
+kinds   stability giBias
+fix     di.spatialSamples=2
+lever   G1 bound: gi.fireflyBound=on
+sweep   gi.fireflyMultiplyBound 15 30 60 120 240 over fix gi.fireflyBound=on lever G1
+sweep   gi.fireflyStrength 0.5 0.7 0.9 over fix lever G2
+sweep   gi.decorrelationFactor 0.1 0.2 0.3 0.4 over fix lever G3
+lever   G4 no decorrelation: gi.decorrelation=none
+lever   G5 no replacement: gi.fireflyReplacement=off
+lever   G6 age 30: gi.age=30
+stack   "Indirect radiance:1b.dimBias"

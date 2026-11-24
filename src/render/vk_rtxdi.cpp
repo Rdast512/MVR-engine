@@ -412,12 +412,14 @@ RtxdiContext::Settings RtxdiContext::defaultSettings()
     //   candidates
     // - Fresh final visibility (isFinalVisibilityReused = false, O10) eliminates shadow-edge light leak and keeps
     //   reservoir age at 0 so the temporal visibility shortcut fires every frame
-    // - Steady-state spatial resampling off (spatialSamples = 0) with ray-traced disocclusion boost (8 samples while
-    //   M < 4, F3) and no temporal permutation (F5/F6) cuts shading cost and passes all three DI convergence checks
+    // - Ray-traced disocclusion boost (8 samples while M < 4, F3) and no temporal permutation (F5/F6): permutation
+    //   darkens the lamp convergence shot by 1.3% and the café's dim tiles by 8-10% (m8 I15)
+    // - Two spatial samples (m8 I15, F22): without spatial reuse DLSS-RR keeps per-pixel sticky DI noise as confetti in
+    //   emissive-lit interiors (café Lit flicker 79% / 70% -> 33% / 37%), +0.25 ms on the sunlit courtyard
     Settings settings = nvidiaSettings();
     settings.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Power_RIS;
     settings.isPermutationSamplingEnabled = false;
-    settings.spatialSamples = 0;
+    settings.spatialSamples = 2;
     settings.disocclusionHistoryLength = 4;
     settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
     settings.isFinalVisibilityReused = false;
@@ -484,12 +486,15 @@ RtxdiContext::GiSettings RtxdiContext::defaultGiSettings()
     settings.spatialBiasCorrection = RTXDI_GIBiasCorrectionMode::Raytraced;
     // the frame always goes through DLSS-RR: ReSTIR PT's DLSS-RR profile, which the RTXDI sample applies whenever
     // DLSS-RR runs (O11). Stagnancy decorrelation and firefly replacement take the boiling filter's place, with 20
-    // frames of history and no age-based rejection; without the replacement those three let fireflies through (O1)
+    // frames of history; without the replacement those three let fireflies through (O1)
     const RTXDI_PTTemporalResamplingParameters temporal = rtxdi::GetDefaultReSTIRPTTemporalResamplingParams(true);
     settings.maxHistoryLength = temporal.maxHistoryLength;
     settings.isDuplicationHistoryReductionEnabled = temporal.duplicationBasedHistoryReduction != 0;
     settings.historyReductionStrength = temporal.historyReductionStrength;
-    settings.maxReservoirAge = temporal.enableAgeBasedRejection != 0 ? temporal.maxReservoirAge : kGiUnlimitedSampleAge;
+    // the profile turns age-based rejection off; m8 I15 (F23) keeps it at the profile's 30 frames: unlimited age let
+    // stagnant samples brighten the café's dim tiles by +31% against one bounce (+11% at 30), and it halves Sponza
+    // gallery Lit flicker (39% -> 21%); courtyard reads -1.8% (I5 saw -2.4% with two spatial samples)
+    settings.maxReservoirAge = temporal.maxReservoirAge;
     settings.isBoilingFilterEnabled = rtxdi::GetDefaultReSTIRPTBoilingFilterParams(true).enableBoilingFilter != 0;
     setDecorrelation(settings, rtxdi::GetDefaultReSTIRPTDecorrelationParams(true));
     // two PT parts darken GI against the one-bounce ground truth (gallery / courtyard, O11 / I5): duplication history

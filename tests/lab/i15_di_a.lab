@@ -1,0 +1,8 @@
+# I15 phase 1: A (di.spatialSamples=2) on 5 seeds in the café. `seeds` seeds only the base, so each candidate is the
+# base of its own plan; i15_di runs the shipped base and the other cases
+base    di=shipped gi=shipped di.spatialSamples=2
+seeds   5
+cases   cafe.tables cafe.dining
+views   Lit "Direct lighting"
+kinds   stability diBias
+sets    di=shipped gi=shipped di.spatialSamples=2 di.permutation=on

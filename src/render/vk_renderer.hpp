@@ -64,9 +64,8 @@ public:
     DebugViewSettings debugView;
     // thin-walled glass (m8 I13); read once per recorded frame
     GlassSettings glass;
-    // read once per recorded frame; a change resets ReSTIR GI and DLSS-RR history for one frame. ReSTIR GI by
-    // default since 2026-11-20: NRC reads ~10% bright (considerations C-G5-3)
-    IndirectMode indirectMode = IndirectMode::RestirGi;
+    // read once per recorded frame; a change resets ReSTIR GI and DLSS-RR history for one frame
+    IndirectMode indirectMode = kDefaultIndirectMode;
     // set by the check runners: exposure adaptation and DLSS-RR advance by this instead of the wall clock, so a run
     // repeats frame for frame (spec/fixesM1-6/i1_check_runners.md)
     std::optional<float> fixedFrameDeltaMs;
@@ -216,7 +215,7 @@ private:
     // what decides the meaning of the indirect samples; a change between frames resets their history
     struct IndirectState
     {
-        IndirectMode mode = IndirectMode::RestirGi;
+        IndirectMode mode = kDefaultIndirectMode;
         bool isGiReference = false;
         bool isGroundTruthPaths = false;
         RtxdiContext::GiSettings giSettings = RtxdiContext::defaultGiSettings();

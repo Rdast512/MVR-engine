@@ -1,0 +1,7 @@
+# I15 phase 1: B (di.spatialSamples=2 di.permutation=on) on 5 seeds in the café; see i15_di_a
+base    di=shipped gi=shipped di.spatialSamples=2 di.permutation=on
+seeds   5
+cases   cafe.tables cafe.dining
+views   Lit "Direct lighting"
+kinds   stability diBias
+sets    di=shipped gi=shipped di.spatialSamples=2

@@ -1,0 +1,13 @@
+# I15 phase 1: the F22 fix, A against B, 5 seeds, on the café and the scenes I6 tuned on
+base    di=shipped gi=shipped
+seeds   5
+cases   cafe.tables cafe.dining sponza.gallery sponza.courtyard bistro.street
+views   Lit "Direct lighting"
+kinds   stability diBias
+sets    di.spatialSamples=2
+sets    di.spatialSamples=2 di.permutation=on
+# the convergence check's scenes under each candidate: the check itself gates the Converged set, not the shipped one
+cases   guide.lamp guide.terminator guide.emissive
+kinds   diBias
+sets    di.spatialSamples=2
+sets    di.spatialSamples=2 di.permutation=on

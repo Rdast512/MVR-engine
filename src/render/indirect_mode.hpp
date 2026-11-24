@@ -17,6 +17,9 @@ enum class IndirectMode : uint8_t
     Count,
 };
 
+// the shipped mode and the tuning target (m8 I15, 2026-11-24): multi-bounce GI, ReSTIR GI mode stays selectable
+inline constexpr IndirectMode kDefaultIndirectMode = IndirectMode::NrcRestirGi;
+
 struct IndirectModeInfo
 {
     // UI and log label

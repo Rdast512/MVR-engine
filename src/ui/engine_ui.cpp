@@ -1142,7 +1142,7 @@ void EngineUi::drawRayTracingPanel()
         rtxdi.giReferenceBounces = 0;
         dlss.settings = {};
         context.renderer.getNrc().settings = {};
-        context.renderer.indirectMode = IndirectMode::RestirGi;
+        context.renderer.indirectMode = kDefaultIndirectMode;
         glass = {};
     }
     // the settings lab's config string (spec/features/planned/full_testing.md §2.1): an A/B found here becomes a plan line
