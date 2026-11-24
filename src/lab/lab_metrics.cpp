@@ -6,7 +6,49 @@
 
 namespace labMetrics
 {
-    void StabilityAccumulator::add(std::span<const float> luminance)
+    namespace
+    {
+        struct BlockEvents
+        {
+            uint32_t rises = 0;
+            uint32_t dips = 0;
+            uint32_t riseFrames = 0;
+            double riseSize = 0.0;
+        };
+
+        [[nodiscard]] double medianOf(std::vector<float>& values)
+        {
+            const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
+            std::nth_element(values.begin(), middle, values.end());
+            return *middle;
+        }
+
+        // runs of frames beyond the threshold on either side of the median; a run still open at the end counts
+        [[nodiscard]] BlockEvents findBlockEvents(std::span<const float> series, double median, double threshold)
+        {
+            BlockEvents events;
+            double peak = 0.0;
+            bool isRising = false;
+            bool isDipping = false;
+            for (const float value : series) {
+                const double change = value - median;
+                if (change > threshold) {
+                    events.rises += isRising ? 0 : 1;
+                    peak = isRising ? std::max(peak, change) : change;
+                    ++events.riseFrames;
+                } else if (isRising) {
+                    events.riseSize += peak / median;
+                }
+                isRising = change > threshold;
+                events.dips += !isDipping && -change > threshold ? 1 : 0;
+                isDipping = -change > threshold;
+            }
+            events.riseSize += isRising ? peak / median : 0.0;
+            return events;
+        }
+    } // namespace
+
+    void StabilityAccumulator::add(std::span<const float> luminance, vk::Extent2D frameExtent)
     {
         const size_t texels = luminance.size();
         if (frames == 0) {
@@ -14,6 +56,9 @@ namespace labMetrics
             squaredSum.assign(texels, 0.0);
             productSum.assign(texels, 0.0);
             first.assign(luminance.begin(), luminance.end());
+            extent = frameExtent;
+            blockExtent = vk::Extent2D{(extent.width + kPopBlockPixels - 1) / kPopBlockPixels,
+                                       (extent.height + kPopBlockPixels - 1) / kPopBlockPixels};
         }
         double frameSum = 0.0;
         for (size_t texel = 0; texel < texels; ++texel) {
@@ -27,6 +72,21 @@ namespace labMetrics
             frameSum += value;
         }
         frameMeans.push_back(texels > 0 ? frameSum / static_cast<double>(texels) : 0.0);
+        if (texels == size_t{extent.width} * extent.height) {
+            const size_t blocks = size_t{blockExtent.width} * blockExtent.height;
+            std::vector<double> blockSums(blocks, 0.0);
+            std::vector<uint32_t> blockTexels(blocks, 0);
+            for (uint32_t y = 0; y < extent.height; ++y) {
+                const size_t row = size_t{y / kPopBlockPixels} * blockExtent.width;
+                for (uint32_t x = 0; x < extent.width; ++x) {
+                    blockSums[row + x / kPopBlockPixels] += luminance[size_t{y} * extent.width + x];
+                    ++blockTexels[row + x / kPopBlockPixels];
+                }
+            }
+            for (size_t block = 0; block < blocks; ++block) {
+                blockMeans.push_back(static_cast<float>(blockSums[block] / blockTexels[block]));
+            }
+        }
         previous.assign(luminance.begin(), luminance.end());
         ++frames;
     }
@@ -87,6 +147,54 @@ namespace labMetrics
             largestSwing = std::max(largestSwing, std::abs(total / kBlockFrames - result.mean));
         }
         result.largestSwing = result.mean > 0.0 ? 100.0 * largestSwing / result.mean : 0.0;
+
+        const size_t blocks = size_t{blockExtent.width} * blockExtent.height;
+        if (blocks == 0 || blockMeans.size() != blocks * frames) {
+            return result;
+        }
+        std::vector<float> series(frames);
+        std::vector<float> scratch(frames);
+        std::vector<uint32_t> blockRises(blocks, 0);
+        BlockEvents total;
+        size_t litBlocks = 0;
+        size_t risingBlocks = 0;
+        for (size_t block = 0; block < blocks; ++block) {
+            for (size_t frame = 0; frame < frames; ++frame) {
+                series[frame] = blockMeans[frame * blocks + block];
+            }
+            scratch = series;
+            const double median = medianOf(scratch);
+            if (median <= litCutoff) {
+                continue;
+            }
+            ++litBlocks;
+            for (size_t frame = 0; frame < frames; ++frame) {
+                scratch[frame] = static_cast<float>(std::abs(series[frame] - median));
+            }
+            // 1.4826 MAD: a normal distribution's std, robust to the events being counted
+            const double threshold = std::max(kPopSigmas * 1.4826 * medianOf(scratch), kPopMinChange * median);
+            const BlockEvents events = findBlockEvents(series, median, threshold);
+            blockRises[block] = events.rises;
+            risingBlocks += events.rises > 0 ? 1 : 0;
+            total.rises += events.rises;
+            total.dips += events.dips;
+            total.riseFrames += events.riseFrames;
+            total.riseSize += events.riseSize;
+        }
+        result.rises = total.rises / count;
+        result.dips = total.dips / count;
+        result.riseSize = total.rises > 0 ? 100.0 * total.riseSize / total.rises : 0.0;
+        result.riseFrames = total.rises > 0 ? static_cast<double>(total.riseFrames) / total.rises : 0.0;
+        result.riseSpread =
+            litBlocks > 0 ? 100.0 * static_cast<double>(risingBlocks) / static_cast<double>(litBlocks) : 0.0;
+        const double largestRises = std::max(*std::ranges::max_element(blockRises), 1u);
+        result.riseMap.resize(sum.size());
+        for (uint32_t y = 0; y < extent.height; ++y) {
+            for (uint32_t x = 0; x < extent.width; ++x) {
+                const size_t block = size_t{y / kPopBlockPixels} * blockExtent.width + x / kPopBlockPixels;
+                result.riseMap[size_t{y} * extent.width + x] = blockRises[block] / largestRises;
+            }
+        }
         return result;
     }
 

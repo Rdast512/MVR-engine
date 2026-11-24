@@ -426,6 +426,10 @@ RtxdiContext::Settings RtxdiContext::defaultSettings()
     // - The sun outside RIS (m8 I16 F28): spatial reuse turned the exact delta sun into 21% raw noise in the courtyard
     settings.areInfiniteLightsShadedExactly = true;
     settings.disocclusionHistoryLength = 4;
+    // - Four frames of history (m8 I16 pops): with permutation a lucky sample walks between neighbors for up to 20
+    //   frames, which DLSS-RR shows as local light pops; at 4 the café's pops are 38% fewer and 40% dimmer, Lit std
+    //   -13% / -21%, Bistro street flicker 27% -> 6%, DI bias unchanged
+    settings.maxHistoryLength = 4;
     settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
     settings.isFinalVisibilityReused = false;
     return settings;
@@ -443,6 +447,8 @@ RtxdiContext::Settings RtxdiContext::convergedSettings()
     converged.isPermutationSamplingEnabled = false;
     converged.spatialSamples = 0;
     converged.disocclusionHistoryLength = 0;
+    // the reference converges through history, not through the denoiser
+    converged.maxHistoryLength = nvidiaSettings().maxHistoryLength;
     converged.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
     converged.isBoilingFilterEnabled = false;
     converged.isFinalVisibilityReused = false;

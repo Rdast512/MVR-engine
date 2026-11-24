@@ -90,7 +90,7 @@ int main()
         test::check(caseNames.insert(labCase.name).second && labCase.kinds != 0,
                     std::format("case {} is unique and has kinds", labCase.name).c_str());
     }
-    for (const char* name : {"sets", "di-ofat", "gi-ofat", "cafe", "leak", "stability-levers", "i15_di", "i15_di_a", "i15_di_b", "i15_guide_a", "i15_guide_b", "i15_gi", "i15_gi_age", "i15_nrc_di0", "i15_nrc_dia", "i15_nrc_dib", "i15_nrc_gi", "boiling", "i16_permutation", "i16_perm_noboil", "i16_noboil", "i16_sun", "i16_variance", "i16_gi_variance", "i16_gi_o2", "i16_gi_o2_32", "i16_gi_exact", "i16_nrc_training", "i16_cv_maps", "i16_cv_nojitter", "i16_guide_base", "i16_guide_spec", "i16_raw_edges"}) {
+    for (const char* name : {"sets", "di-ofat", "gi-ofat", "cafe", "leak", "stability-levers", "i15_di", "i15_di_a", "i15_di_b", "i15_guide_a", "i15_guide_b", "i15_gi", "i15_gi_age", "i15_nrc_di0", "i15_nrc_dia", "i15_nrc_dib", "i15_nrc_gi", "boiling", "i16_permutation", "i16_perm_noboil", "i16_noboil", "i16_sun", "i16_variance", "i16_gi_variance", "i16_gi_o2", "i16_gi_o2_32", "i16_gi_exact", "i16_nrc_training", "i16_cv_maps", "i16_cv_nojitter", "i16_guide_base", "i16_guide_spec", "i16_raw_edges", "i16_pops", "i16_pop_levers", "i16_pop_history", "i16_pop_base", "i16_pop_dih4", "i16_pop_dih8"}) {
         const LabPlanParse parse = loadLabPlan(name);
         test::check(parse.plan.has_value() && !parse.plan->entries.empty(),
                     std::format("plan {} parses{}{}", name, parse.error.empty() ? "" : ": ", parse.error)
@@ -102,7 +102,7 @@ int main()
         }
     }
     // the runner's expansion without a device: every run, floor, comparison and cost request of each plan
-    for (const char* name : {"sets", "di-ofat", "gi-ofat", "cafe", "leak", "stability-levers", "i15_di", "i15_di_a", "i15_di_b", "i15_guide_a", "i15_guide_b", "i15_gi", "i15_gi_age", "i15_nrc_di0", "i15_nrc_dia", "i15_nrc_dib", "i15_nrc_gi", "boiling", "i16_permutation", "i16_perm_noboil", "i16_noboil", "i16_sun", "i16_variance", "i16_gi_variance", "i16_gi_o2", "i16_gi_o2_32", "i16_gi_exact", "i16_nrc_training", "i16_cv_maps", "i16_cv_nojitter", "i16_guide_base", "i16_guide_spec", "i16_raw_edges"}) {
+    for (const char* name : {"sets", "di-ofat", "gi-ofat", "cafe", "leak", "stability-levers", "i15_di", "i15_di_a", "i15_di_b", "i15_guide_a", "i15_guide_b", "i15_gi", "i15_gi_age", "i15_nrc_di0", "i15_nrc_dia", "i15_nrc_dib", "i15_nrc_gi", "boiling", "i16_permutation", "i16_perm_noboil", "i16_noboil", "i16_sun", "i16_variance", "i16_gi_variance", "i16_gi_o2", "i16_gi_o2_32", "i16_gi_exact", "i16_nrc_training", "i16_cv_maps", "i16_cv_nojitter", "i16_guide_base", "i16_guide_spec", "i16_raw_edges", "i16_pops", "i16_pop_levers", "i16_pop_history", "i16_pop_base", "i16_pop_dih4", "i16_pop_dih8"}) {
         bool isExpanded = true;
         try {
             const EngineLab lab(name);

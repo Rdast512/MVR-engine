@@ -171,7 +171,7 @@ Read a symptom off the metrics first; the candidates are the switches whose "If 
 |---|---|---|---|
 | `diBias` | `di=reference`, 1024 frames | bias, tile p50 / p90, dark leak, **dim bias**, **hot bias**, noise floor | the café's references need longer runs or bigger tiles: dining's DI reference reads 486% temporal std (§8) |
 | `giBias` | GI check truths (one bounce, 8 bounces) | as `diBias`, plus RGB bias | runs only GI-check configs (jitter off, as today) |
-| `stability` | none | mean, temporal std, flicker share, lit px, f2f, 8-frame swing, **lag-1 correlation** | `Lit` through DLSS-RR, and the raw views (`Direct lighting`, `Indirect radiance`) |
+| `stability` | none | mean, temporal std, flicker share, lit px, f2f, 8-frame swing, **lag-1 correlation**, block events (`rises`, `dips`, `riseSize`, `riseFrames`, `riseSpread`: 16 px blocks against their temporal median, m8 I16 §7.8) | `Lit` through DLSS-RR, and the raw views (`Direct lighting`, `Indirect radiance`) |
 | `lightChange`, `screenEdge` | as I1's | settle frames per region | I1's definitions, in the lab's own copy (§0) |
 | `cost` | none | per-pass GPU ms (I4's scopes) | bench mode, separate process, no captures |
 

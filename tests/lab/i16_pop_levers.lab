@@ -1,0 +1,15 @@
+# I16 pops: which stage starts the bright block events (i16_pops). One lever off at a time on the café, Lit
+base    di=shipped gi=shipped frame=shipped
+seeds   3
+cases   cafe.tables cafe.dining
+views   Lit "DLSS input"
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped di.spatialSamples=0
+sets    di=shipped gi=shipped frame=shipped gi.spatialSamples=0
+sets    di=shipped gi=shipped frame=shipped di.spatialSamples=0 gi.spatialSamples=0
+sets    di=shipped gi=shipped frame=shipped frame.indirectMode=restirGi
+sets    di=shipped gi=shipped frame=shipped frame.indirectMode=nrc
+sets    di=shipped gi=shipped frame=shipped di.reference=on
+sets    di=shipped gi=shipped frame=shipped di.boilingFilter=on
+sets    di=shipped gi=shipped frame=shipped gi.boilingFilter=off
+sets    di=shipped gi=shipped frame=shipped gi.fireflyClamp=off

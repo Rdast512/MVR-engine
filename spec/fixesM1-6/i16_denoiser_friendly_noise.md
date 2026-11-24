@@ -1,6 +1,6 @@
 # M8 · I16: Noise that DLSS-RR can denoise (F28)
 
-**Status:** Phase 0 measured 2026-11-24 (§7.1); 1a, 2a shipped; 2b, 2c measured (§7.5, §7.6); Phase 3 next · **Milestone:** M8 ([README](./README.md))
+**Status:** Phase 0 measured 2026-11-24 (§7.1); 1a, 2a, 2c, DI history 4 (1c, §7.8) shipped; 2b measured (§7.5); 3a built, off (§7.7) · **Milestone:** M8 ([README](./README.md))
 **Implements:** F28 ([m8_optimization_and_fixes.md](./m8_optimization_and_fixes.md) §4): with a still camera the lit image "lives". Light seems to move every frame, and blotches fade in and out over seconds. Games that ship ReSTIR don't show it. Target mode: `NRC + ReSTIR GI`, the default and tuning target since 2026-11-24 ([engine_spec.md](../../docs/engine_spec.md) §11.7). The goal is a still camera that looks still.
 **Depends on:** I14 (correct rays, reuse and light PDF), I15 (DI with two spatial samples, GI sample age 30, NRC + ReSTIR GI default), the settings lab ([full_testing.md](../features/planned/full_testing.md))
 **Feeds:** I12 (final Bistro tuning re-checks this step's decisions), I11 (cost on the 2060 Super)
@@ -118,6 +118,8 @@ Sweep, over 1a / 1b's result:
 
 Shorter histories add noise per frame (NoiseAndBias.md), which DLSS-RR handles better than blotches.
 
+- **Done for DI (2026-11-24, §7.8):** `maxHistoryLength = 4` shipped; GI history and age stay (no effect on the café's pops).
+
 - **Rule:** the lowest café `Lit` flicker, then the lowest `corrFrames`, among the configs that pass the bias gates. Sponza and Bistro street stay within 2 floors of their best. Cost goes in the decision line.
 
 ## 2. Phase 2 · Deterministic dominant lights (approach 2)
@@ -218,6 +220,7 @@ Each input is a frame flag first, measured, then shipped.
 - **C-I16-1 · Deviation:** DI stagnancy decorrelation (1b) is the engine's port of ReSTIR PT's; RTXDI's DI has none. **Exit:** an RTXDI release with DI decorrelation.
 - **C-I16-2 · Deviation:** directional lights outside ReSTIR DI (2a), if shipped, depart from the RTXDI sample. **Exit:** none planned; recheck if an environment light arrives (it stays in RTXDI).
 - **C-I16-3 · Limitation:** the NRC + ReSTIR GI stability steps don't repeat byte for byte (NRC training, C-T-5); they are read against 5-seed floors.
+- **C-I16-6 · Limitation · the café still pops after DI history 4 (§7.8, 2026-11-24).** Dining reads 0.9 block events per frame, +44 % for 12 frames. The raw input's bright one-frame tail (`DLSS input` 13–25 events per frame at +280 %) is its source, and no reuse or NRC lever moves it. **Exit:** a clamp of the tail before DLSS-RR (`frame.preDenoiserClamp`, full_testing T11) measured with the block-event metric.
 - **C-I16-5 · Workaround · the NRC network can diverge, and stays diverged (2c, 2026-11-24).**
   - **Seen:** in the first `i16_gi_variance` run, the DLAA lever grew the render extent from 853×480 to 1280×720 and `NrcCache::recreate` reconfigured the SDK.
   - **From then on, every NRC-mode run was wrong:**
@@ -293,7 +296,7 @@ Consequence for Phase 1: the goal is DI that is decorrelated and low-variance. E
 ## Done when
 
 - [x] Phase 0: the boiling table (§7.1); `corrFrames` and `blotchPx` deferred (raw-view lag-1 sufficed); target numbers proposed, to be confirmed with Phase 1
-- [ ] Phase 1: permutation shipped or its bias root-caused; DI decorrelation built and decided; histories decided, all by the rule with 5-seed numbers and cost
+- [ ] Phase 1: permutation shipped or its bias root-caused; DI decorrelation built and decided; histories decided (DI: 4, §7.8; GI: no effect), all by the rule with 5-seed numbers and cost
 - [x] Phase 2: the sun shaded exactly outside ReSTIR DI (§7.4); 2b run (§7.5): cheap levers ≤ 1 floor, DI no longer limits the café; 2c (§7.6): the café's flicker is edge, metal and glass noise that more samples don't reach, the sun exact at path vertices too
 - [ ] Phase 3: specular / diffuse hit distance and reflection motion vectors wired and decided; DLSS check gains its guide-sensitive case
 - [ ] Targets met on the café and Sponza poses, or the gap recorded per approach with F28 left open
@@ -523,3 +526,52 @@ Reading guide:
   - Judge stillness on what the eye sees: flat-area flicker and blotches (Phase 0's deferred `corrFrames` / `blotchPx`) next to the edge term.
   - Report both in the lab (an `edgeFlicker` / `flatFlicker` split of `flicker`).
   - Re-set the targets per term. Against the café's flat-area 2.5 / 3.8 %, the proposed ≤ 5 % is already met.
+
+### 7.8 Local light pops: DI history (2026-11-24, `i16_pops`, `i16_pop_levers`, `i16_pop_history`, `i16_pop_base` / `_dih4` / `_dih8`)
+
+The user's report, restated: with a still camera, light "pops" every frame, in a different corner each time. The per-pixel metrics (std, CV flicker) average 480 frames into one number per pixel. They cannot say whether the variation is constant noise or rare local events, nor where and for how long each lasts.
+
+- **New lab metric: block events** (`labMetrics::StabilityAccumulator`, every stability run):
+  - the view is cut into 16×16 display-pixel blocks;
+  - an event is a run of frames where a lit block's mean leaves its own temporal median by more than 4 robust stds (1.4826 MAD) and more than 5 % of the median;
+  - rises and dips are counted apart;
+  - `rises` / `dips` are events per frame over the whole view. `riseSize` is the mean peak (% of the block's median), `riseFrames` the mean length, `riseSpread` the % of lit blocks with a rise;
+  - `ENGINE_LAB_PNG=1` writes a `*_rises.png` count map.
+- **What the pops are** (`i16_pops`, shipped, 2 seeds):
+
+| Case | `Lit` rises / frame · size · length | `DLSS input` rises · size · length | raw `Direct lighting` | raw `Indirect radiance` |
+|---|---|---|---|---|
+| `cafe.tables` | 0.41–1.85 · 31–45 % · 21–26 fr | 12.7 · 280 % · 1.1 fr | 5.2 · 260 % · 1.4 fr | 51 · 630 % · 1.1 fr |
+| `cafe.dining` | 1.43–1.52 · 63–75 % · 15–17 fr | 25.4 · 290 % · 1.1 fr | 11.0 · 196 % · 1.5 fr | 66 · 660 % · 1.1 fr |
+| `sponza.courtyard` | 0.15–0.24 · 14–17 % · 10–21 fr | 2.4 · 75 % · 1.0 fr | exact (0) | 21 · 224 % · 1.2 fr |
+| `bistro.street` | 0–0.24 · 0–29 % | 5.4 · 134 % · 1.1 fr | exact (0) | 22 · 242 % · 1.1 fr |
+
+  - The pops are real events, not symmetric noise: in the café, `Lit` has 21–26× more rises than dips in the dining room and 2–23× at the tables.
+  - A pop brightens a block by 30–75 % and lasts 15–26 frames (0.25–0.4 s): the reported effect.
+  - The rise maps scatter them over the dark, indirectly lit areas: the bar front, the right cabinet, the ceiling, the dining room's chairs and floor. Lit walls and lamps barely pop.
+  - The raw inputs' events last one frame and have no dips: a heavy bright tail, fresh every frame.
+- **Which stage** (`i16_pop_levers`, café, base on 3 seeds, levers on seed 0): DI or GI spatial reuse off, ReSTIR GI only, NRC only and the DI boiling filter all stay inside the base's spread (0.6–1.8 rises / frame, 15–20 frames). The GI boiling filter and the firefly clamp are off in the shipped set already. DI's reference mode (no reuse) is the one change: pops last **5 frames** instead of ~19.
+- **History** (`i16_pop_history`, seed 0): `di.history=4` / `8` shorten and shrink the pops (dining 0.98 / 0.94 rises, 11.5 / 14.3 frames, 48 / 50 %); `gi.history=4` / `8` and `gi.age=8` stay inside the base's spread.
+- **Mechanism:** the temporal pass caps a DI reservoir's M at `maxHistoryLength` × the new sample's M (`TemporalResampling.hlsli:42`), so a bright sample keeps its share of the reservoir for about `maxHistoryLength` frames. With permutation (1a) the sample moves between neighboring pixels every frame, so the raw input stays uncorrelated per pixel (lag-1 0.04, §7.3) while a patch of pixels carries the same lucky light for up to 20 frames. DLSS-RR reads that patch as signal, and it shows as a pop. Phase 0 found shorter histories worse (finding 1); that was before 1a and 2a, when the correlation was per pixel.
+- **Candidates on 5 seeds** (each its own base, NRC + ReSTIR GI, `Lit`; mean ± seed spread):
+
+| Case | metric | history 20 (was shipped) | `di.history=8` | **`di.history=4`** |
+|---|---|---|---|---|
+| `cafe.dining` | std % · flicker % | 4.79 ± 0.24 · 23.4 ± 1.0 | 3.89 · 18.6 | **3.77 ± 0.05 · 17.6 ± 0.1** |
+| | rises · size · length | 1.47 ± 0.15 · 73 % · 17.5 fr | 0.98 · 55 % · 13.3 fr | **0.90 ± 0.06 · 44 % · 11.8 fr** |
+| `cafe.tables` | std % · flicker % | 3.85 ± 0.19 · 18.8 ± 5.1 | 3.41 · 16.5 | **3.35 ± 0.14 · 15.6 ± 5.3** |
+| | rises · size · length | 0.94 ± 0.92 · 40 % · 22 fr | 0.67 · 31 % · 19 fr | **0.85 ± 0.97 · 24 % · 17 fr** |
+| `bistro.street` | std % · flicker % | 0.42 · 27.3 ± 6.9 | 0.39 · 4.3 | **0.40 · 6.1 ± 4.5** |
+| `sponza.gallery` | std % · flicker % | 3.99 ± 0.13 · 6.0 ± 0.6 | 4.00 · 6.0 | 4.10 ± 0.18 · 6.4 ± 0.6 |
+| `sponza.courtyard` | std % · flicker % | 0.741 · 6.42 | 0.742 · 6.38 | 0.740 · 6.45 |
+| `cafe.dining` DI | bias · dim · p90 % | −0.08 · −0.11 · 6.34 | −0.17 · +0.04 · 5.16 | −0.06 · +0.20 · **4.67** |
+| `cafe.tables` DI | bias · dim · p90 % | −0.18 · −1.54 · 8.88 | −0.17 · −1.43 · 7.86 | −0.18 · −1.51 · **7.33** |
+
+  - Sponza's and Bistro street's DI are exact (the sun outside RIS, 2a), so their DI bias reads 0 on every set.
+  - Sponza gallery at 4 is within one seed spread of 20.
+  - A shorter history changes no pass and no ray count: no cost to measure.
+- **Decision (1c's rule):** `di.history=4` has the café's lowest flicker, passes the bias gates and leaves Sponza and Bistro street within 2 floors of their best. **Shipped** in `RtxdiContext::defaultSettings` (`maxHistoryLength = 4`). `Converged` keeps NVIDIA's 20: it converges through history, not through the denoiser, and the convergence checks read it. NVIDIA's set is unchanged.
+- **Verified after shipping:**
+  - The shipped café rerun on 5 seeds matches the candidate within spread. Dining: std 3.92 ± 0.32, flicker 18.1, 0.89 rises at 56 ± 20 % (one seed high) for 13 frames, DI p90 4.58. Tables: std 3.39, flicker 15.7, DI p90 7.15.
+  - Guide capture passes 2/2, 3/3 and 2/2; the GI check passes 14/14 (seed 0); CTest passes 8/8.
+- **Left open (C-I16-6):** the café still pops at 0.9 events per frame, 44 % for 12 frames (dining). The raw inputs' bright tail is the source (`DLSS input` rises 13–25 per frame, +280 %). The next lever is a clamp of that tail before DLSS-RR (`frame.preDenoiserClamp`, full_testing T11).

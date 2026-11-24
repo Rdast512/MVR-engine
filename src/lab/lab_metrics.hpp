@@ -22,6 +22,12 @@ namespace labMetrics
     inline constexpr double kFlickerCv = 0.1;
     inline constexpr double kLitDisplayCutoff = 1e-3;
     inline constexpr double kLitShare = 0.05;
+    // pops: a block's mean leaving its own temporal median by more than kPopSigmas robust stds and kPopMinChange of the
+    // median; a run of such frames is one event. Rises and dips are counted apart: a rise excess over dips is bright
+    // outliers, not symmetric noise
+    inline constexpr uint32_t kPopBlockPixels = 16;
+    inline constexpr double kPopSigmas = 4.0;
+    inline constexpr double kPopMinChange = 0.05;
     // screen edge: a revealed region's pixel error at most this times its own in the static reference
     inline constexpr double kSettledPixelRatio = 1.25;
     inline constexpr double kMinRegionShare = 0.01;
@@ -32,7 +38,7 @@ namespace labMetrics
     class StabilityAccumulator
     {
     public:
-        void add(std::span<const float> luminance);
+        void add(std::span<const float> luminance, vk::Extent2D extent);
         [[nodiscard]] uint32_t getFrames() const noexcept { return frames; }
 
         struct Result
@@ -49,6 +55,15 @@ namespace labMetrics
             std::vector<double> means;
             // lit pixels' coefficient of variation, 0 elsewhere
             std::vector<double> variation;
+            // block events per frame over the whole view, mean peak change (% of the block's median), mean length in
+            // frames, % of lit blocks with a rise
+            double rises = 0.0;
+            double dips = 0.0;
+            double riseSize = 0.0;
+            double riseFrames = 0.0;
+            double riseSpread = 0.0;
+            // per texel: its block's rise count over the largest block's
+            std::vector<double> riseMap;
         };
         [[nodiscard]] Result finish(bool isDisplayView) const;
 
@@ -62,6 +77,10 @@ namespace labMetrics
         std::vector<float> previous;
         double frameChangeSum = 0.0;
         std::vector<double> frameMeans;
+        vk::Extent2D extent{};
+        vk::Extent2D blockExtent{};
+        // frame-major block means
+        std::vector<float> blockMeans;
     };
 
     struct BiasResult

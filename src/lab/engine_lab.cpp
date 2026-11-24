@@ -897,7 +897,7 @@ void EngineLab::accumulate(const Camera& camera, const Renderer::DisplayCapture&
     nonFinitePixels += decoded.nonFinitePixels;
     switch (phase.type) {
     case PhaseType::Stability:
-        stability.add(decoded.luminance);
+        stability.add(decoded.luminance, capture.extent);
         break;
     case PhaseType::DiReference:
     case PhaseType::DiCompare:
@@ -1071,11 +1071,17 @@ void EngineLab::finishStability()
     addMetric("f2f", result.frameChange);
     addMetric("swing", result.largestSwing);
     addMetric("lag1", result.lagCorrelation);
+    addMetric("rises", result.rises);
+    addMetric("dips", result.dips);
+    addMetric("riseSize", result.riseSize);
+    addMetric("riseFrames", result.riseFrames);
+    addMetric("riseSpread", result.riseSpread);
     if (isPngRequested) {
         const std::string label = runLabel(runs[*currentRun]);
         writeCheckLuminancePng(std::format("{} mean", label), extent, result.means, checkPngScale(result.means),
                                kLabFolder);
         writeCheckUnitPng(std::format("{} cv", label), extent, result.variation, kLabFolder);
+        writeCheckUnitPng(std::format("{} rises", label), extent, result.riseMap, kLabFolder);
     }
 }
 
