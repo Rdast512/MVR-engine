@@ -1,0 +1,14 @@
+# I16 pops: DI's share of the café noise with only direct light into DLSS-RR (i16_attrib: DI is 70-80% of the
+# variance). Power_RIS draws by global power over 76K Bistro triangle lights; ReGIR draws per world-space cell
+base    di=shipped gi=shipped frame=shipped frame.inputTerms=direct
+seeds   3
+cases   cafe.tables cafe.dining
+views   Lit
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=direct di.sampling=regir
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=direct di.sampling=regir di.localSamples=16
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=direct di.localSamples=32
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=direct di.spatialSamples=4
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=direct di.history=2
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=direct di.reference=on
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=direct di.brdfSamples=0

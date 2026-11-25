@@ -1,0 +1,12 @@
+# I16 pops: which input term carries the café's Lit noise, and does DLSS-RR denoise better at another input level
+# (frame.inputTerms / frame.inputScale, attribution only)
+base    di=shipped gi=shipped frame=shipped
+seeds   3
+cases   cafe.tables cafe.dining
+views   Lit
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=direct
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=indirect
+sets    di=shipped gi=shipped frame=shipped frame.inputScale=0.0625
+sets    di=shipped gi=shipped frame=shipped frame.inputScale=16
+sets    di=shipped gi=shipped frame=shipped frame.inputScale=256

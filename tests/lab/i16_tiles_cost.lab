@@ -1,0 +1,8 @@
+# I16 pops: cost of per-pixel light tiles with 16 and 32 local samples, ABBA against the shipped set (§7.9)
+base    di=shipped gi=shipped frame=shipped
+seeds   1
+cases   bistro.street
+views   Lit
+kinds   cost
+sets    di=shipped gi=shipped frame=shipped di.perPixelLightTiles=on di.localSamples=16
+sets    di=shipped gi=shipped frame=shipped di.perPixelLightTiles=on di.localSamples=32

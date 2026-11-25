@@ -62,6 +62,12 @@ namespace labMetrics
             double riseSize = 0.0;
             double riseFrames = 0.0;
             double riseSpread = 0.0;
+            // lit blocks' temporal std over their mean, averaged (%): independent pixels give about temporalStd /
+            // kPopBlockPixels, patches shared by neighbors more
+            double blockStd = 0.0;
+            // lit blocks' temporal variance over the variance independent pixels would give (Σ pixel variances / N²),
+            // a mean ratio: 1 independent pixels, above 1 errors shared by neighbors
+            double blockCorrelation = 0.0;
             // per texel: its block's rise count over the largest block's
             std::vector<double> riseMap;
         };

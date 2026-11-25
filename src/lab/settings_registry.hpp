@@ -17,18 +17,38 @@ class Renderer;
 
 // the settings lab's switch registry (spec/features/planned/full_testing.md §2, §3): every lighting field the lab can set,
 // by name. The engine checks never read it: they keep their own settings sets and measure what ships
+enum class DlssInputTerms : uint8_t
+{
+    All,
+    Direct,
+    Indirect,
+    Count,
+};
+
 struct LabConfig
 {
     RtxdiContext::Settings di = RtxdiContext::defaultSettings();
     RtxdiContext::GiSettings gi = RtxdiContext::defaultGiSettings();
     // RTXDI without reuse over di (RtxdiContext::isReference)
     bool isDiReference = false;
+    // RTXDI ResamplingMode::Spatial over di (RtxdiContext::isSpatialOnly)
+    bool isDiSpatialOnly = false;
     IndirectMode indirectMode = kDefaultIndirectMode;
     Dlss::Settings dlss{};
     Dlss::Guides dlssGuides{};
     NrcCache::Settings nrc{};
     bool isJitterEnabled = true;
     GlassSettings glass{};
+    // attribution only (m8 I16): the DLSS-RR color input's scale and lighting terms
+    float dlssInputScale = 1.0f;
+    DlssInputTerms dlssInputTerms = DlssInputTerms::All;
+    // the input accumulates over a phase's warmup and is held still while it is measured (EngineLab::beginFrame)
+    bool isDlssInputFrozen = false;
+    // full_testing T11: 0 is off; the reference is DLSS-RR's last output, or the 3x3 neighbors
+    float preDenoiserClamp = 0.0f;
+    bool isPreDenoiserClampSpatial = false;
+    // still camera only: the DLSS-RR input's exponential average weight, 0 is off
+    float inputHistoryWeight = 0.0f;
 };
 
 enum class LabSwitchType : uint8_t

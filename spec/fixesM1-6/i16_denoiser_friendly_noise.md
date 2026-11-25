@@ -220,7 +220,7 @@ Each input is a frame flag first, measured, then shipped.
 - **C-I16-1 · Deviation:** DI stagnancy decorrelation (1b) is the engine's port of ReSTIR PT's; RTXDI's DI has none. **Exit:** an RTXDI release with DI decorrelation.
 - **C-I16-2 · Deviation:** directional lights outside ReSTIR DI (2a), if shipped, depart from the RTXDI sample. **Exit:** none planned; recheck if an environment light arrives (it stays in RTXDI).
 - **C-I16-3 · Limitation:** the NRC + ReSTIR GI stability steps don't repeat byte for byte (NRC training, C-T-5); they are read against 5-seed floors.
-- **C-I16-6 · Limitation · the café still pops after DI history 4 (§7.8, 2026-11-24).** Dining reads 0.9 block events per frame, +44 % for 12 frames. The raw input's bright one-frame tail (`DLSS input` 13–25 events per frame at +280 %) is its source, and no reuse or NRC lever moves it. **Exit:** a clamp of the tail before DLSS-RR (`frame.preDenoiserClamp`, full_testing T11) measured with the block-event metric.
+- **C-I16-6 · Limitation · the café still pops after DI history 4 (§7.8, 2026-11-24).** Dining reads 0.9 block events per frame, +44 % for 12 frames. The raw input's bright one-frame tail (`DLSS input` 13–25 events per frame at +280 %) is its source, and no reuse or NRC lever moves it. **Update (§7.9, 2026-11-25):** the clamp is built and rejected: with DLSS-RR's history as reference it feeds the dark output back, with the neighbors it clips real highlights. The levers that work are per-pixel light tiles with 16–32 local samples (dining `Lit` 3.93 → 2.95 %, pops 56 → 27 %, DI bias clean, +0.19–0.54 ms on Bistro street), shipped with 32 samples (2026-11-25). **Exit:** café `Lit` ≤ 2 %: more independent samples per pixel (two DI reservoirs or GI paths) or ReGIR's bias root-caused.
 - **C-I16-5 · Workaround · the NRC network can diverge, and stays diverged (2c, 2026-11-24).**
   - **Seen:** in the first `i16_gi_variance` run, the DLAA lever grew the render extent from 853×480 to 1280×720 and `NrcCache::recreate` reconfigured the SDK.
   - **From then on, every NRC-mode run was wrong:**
@@ -575,3 +575,79 @@ The user's report, restated: with a still camera, light "pops" every frame, in a
   - The shipped café rerun on 5 seeds matches the candidate within spread. Dining: std 3.92 ± 0.32, flicker 18.1, 0.89 rises at 56 ± 20 % (one seed high) for 13 frames, DI p90 4.58. Tables: std 3.39, flicker 15.7, DI p90 7.15.
   - Guide capture passes 2/2, 3/3 and 2/2; the GI check passes 14/14 (seed 0); CTest passes 8/8.
 - **Left open (C-I16-6):** the café still pops at 0.9 events per frame, 44 % for 12 frames (dining). The raw inputs' bright tail is the source (`DLSS input` rises 13–25 per frame, +280 %). The next lever is a clamp of that tail before DLSS-RR (`frame.preDenoiserClamp`, full_testing T11).
+
+### 7.9 Local light pops: what DLSS-RR does with the input (2026-11-24, `i16_attrib` … `i16_dlaa`, `i16_val_*`)
+
+The user's report after DI history 4 (§7.8): the pops are rarer but still visible. Target: café `Lit` std ≤ 2 % (§5's café row). The driver and Slang were updated first (Slang 2026.22.1, NVIDIA 621.01; NRC fails on 597.33, see memory), so the runtime is current. All runs are NRC + ReSTIR GI on the café, 1–3 seeds per set unless the table says 5.
+
+- **New lab tools** (all engine-only switches, off by default, frames byte-identical when off):
+  - `frame.inputTerms` = `direct` / `indirect`: the DLSS-RR color input keeps one lighting term plus emission (`FrameFlag::DlssInputDirectOnly` / `IndirectOnly`);
+  - `frame.inputScale`: scales the DLSS-RR color input (`GpuFrameRoot::exposure`, still 1 shipped, C-H2-1);
+  - `frame.inputFrozen`: the input accumulates over the phase's warmup (RGBA32F `dlssInputAccumulation`), then is held still: what DLSS-RR does with a converged input;
+  - `frame.preDenoiserClamp` (+ `frame.clampNeighbors`): full_testing T11, built. Clamps the lighting's luminance to a multiple of DLSS-RR's last output around the reprojected pixel (3×3 max), or of the input's 3×3 neighbors;
+  - `frame.inputHistory`: an EMA of the input per pixel before DLSS-RR, still camera only;
+  - `frame.perPixelLightTiles` (now `di.perPixelLightTiles`, shipped on): `coherentRng` seeded per pixel instead of per 16×16 tile (`initCoherentRandomSampler` in `rtxdi_bridge.slang`, used by the primary, secondary and glass DI);
+  - `di.spatialOnly`: RTXDI's `ResamplingMode::Spatial` (`RtxdiContext::isSpatialOnly`);
+  - metrics `blockStd` (mean temporal std of the 16×16 block means, %) and `blockCorr` (a block's variance over the variance its pixels would give if independent: 1 = independent pixels, 256 = a block moves as one).
+- **The G-buffer question:** the visibility buffer's resolve writes the same guides a G-buffer would (normal, roughness, albedo, motion, depth), and the current and previous guide sets are both kept. DLSS-RR reads the same data either way; nothing found points at the vis buffer.
+- **Attribution** (`i16_attrib`): `Lit` std with DI only into DLSS-RR 4.37 / 5.35 % (tables / dining), GI only 3.38 / 3.24, both 3.34 / 3.90. DI is 70–80 % of the variance. Input scale 1/16, 16, 256: inside the spread (tables 1/16 read 2.22 once but flicker rose to 17 %, dining 3.55).
+- **The floor** (`i16_floor`): a frozen converged input reads `Lit` 1.23 / 1.05 % std, 1.8 / 2.1 % flicker (jitter off: 1.2 %, 2.8–3.2 %). That is DLSS-RR's own noise on a perfect input, so the target is reachable. With `Lit²` ≈ floor² + input², the shipped 3.4 % is about 3.2 % from the input, and 2 % needs the input part at ≤ 1.6 %: a ≈ 4× cut of the input's variance.
+- **How DLSS-RR treats the input structure** (`i16_input_structure`, `i16_regir_tiles`):
+  - the input is near independent per pixel: `DLSS input` lag-1 0.016, `blockCorr` 1.05–1.1; raw `Direct lighting` lag-1 0.03, `blockCorr` 1.3–1.7;
+  - DLSS-RR reduces raw DI about 3× (12 % → 4.35 %), raw GI about 120× (400 % → 3.4 %), DI without reuse 7.5×;
+  - correlated input is worse, not better: `di.permutation=off` lowers raw DI's std (12 → 6 %) but raises its lag-1 to 0.55, and `Lit` gets worse (3.38 / 3.64 with ReGIR). DI spatial reuse off, a shorter DI or GI radius: worse or within spread.
+- **Rejected levers:**
+
+| Lever | plan | `Lit` std tables / dining (base 3.4 / 3.9) | why rejected |
+|---|---|---|---|
+| history clamp ×2 / ×4 / ×8 / ×16 | `i16_clamp` | 2.83 / 3.00 at ×2; 3.0–3.1 / 3.6–3.7 above | ×2: tables flicker 15 → 28 %, rises 0.4 → 2.3: the clamp feeds DLSS-RR's dark output back and darkens; above ×2 within spread |
+| neighbor clamp ×4 / ×8 | `i16_clamp` | 5.20 / 5.18, 4.88 / 4.71 | the 3×3 neighbors of an i.i.d. input are noise themselves: real highlights clipped |
+| input EMA 1/4 … 1/32 | `i16_input_history` | 3.28–3.42 / 3.68–3.85 | within spread; at 1/16 the input's lag-1 reaches 0.87 and DLSS-RR's own `Lit` doubles (5.79): correlated input confuses it |
+| GI history 4 / 8, age 8, GI spatial off, NRC / ReSTIR GI only, NRC idle training 0 | `i16_gi_levers` | inside the base's spread | GI is not the limit |
+| DI spatial only, 2 / 4 / 8 spatial samples, + 16 local | `i16_di_spatial_only` | 2.85–3.01 / 3.00–3.23 (ReGIR base 2.81 / 3.03) | temporal reuse is not what DLSS-RR fails on |
+| DLSS-RR preset D / E / F | `i16_preset_samples` | 3.26–3.38 / 3.69–3.82 (base 3.37 / 3.88) | D / E −3–5 % in dining on 1 seed, inside one seed spread |
+| DLAA (2.25× pixels) | `i16_dlaa` | 3.30 / 3.76; on ReGIR 2.94 / 3.39 | no change or worse: the noise does not fall with pixel count |
+| Power_RIS 32 local samples (DI only into DLSS-RR) | `i16_di_sampling` | 4.24 / 4.96 (base 4.35 / 5.33) | within spread |
+
+- **What works: ReGIR + per-pixel light tiles + more local samples** (`i16_light_tiles`, `i16_regir_tiles`, `i16_preset_samples`, `i16_dlaa`; 1 seed each):
+
+| Set | `Lit` std tables / dining | flicker | rises · size (tables / dining) |
+|---|---|---|---|
+| shipped (Power_RIS, 8 local) | 3.37 / 3.88 | 14.6 / 17.5 | 0.71 · 21 % / 0.86 · 46 % |
+| per-pixel tiles | 3.20–3.32 / 3.61–3.66 | 12.9–14.2 / 16.3–17.0 | — |
+| ReGIR | 3.35 / 3.43 | 12.3 / 14.5 | — |
+| ReGIR + per-pixel tiles | 2.81–2.89 / 3.00–3.10 | 10.4–11.1 / 12.3–12.8 | 0.25 · 17 % / 0.54 · 38 % |
+| + 16 local samples | 2.70 / 2.86 | 9.4 / 11.3 | — |
+| **+ 32 local samples** | **2.50 / 2.73** | **8.7 / 10.3** | **0.29 · 15 % / 0.45 · 28 %** |
+| + 64 local samples | 2.51 / 2.68 | 8.9 / 10.6 | 0.17 · 14 % / 0.49 · 35 % |
+
+  - **Why the tiles matter:** RTXDI draws a 16×16 screen tile's candidates from one RIS tile (Power_RIS: 128 tiles × 1024 lights drawn from the global power PDF over the scene's 30,587 triangle lights left after I14's zero-flux cull) or one ReGIR cell jitter, chosen by the tile's `coherentRng`. A tile that draws a lucky set brightens all its 256 pixels for that frame, and permutation and temporal reuse spread it over ~4 frames: a block-shaped pop. Per-pixel seeds give each pixel its own RIS tile. That costs coherence (the reason NVIDIA uses tiles), so it needs a cost run.
+  - **Why ReGIR:** its cells hold lights near the surface instead of lights drawn by global power. Most of the scene's lights are small emitters outside the café, so Power_RIS candidates are often far lights of no use to a café pixel. ReGIR also lowers the GI input (raw `Indirect radiance` 406 → 344 %): the secondary DI at X₂ shares the sampling.
+  - **Local samples saturate at 32:** 64 is no better, so the candidate count is no longer the limit. The same count also feeds the secondary DI at X₂ (`sampleLightsAt`).
+  - The user confirms the visible pops are much rarer with ReGIR + per-pixel tiles, but still visible.
+- **Candidates on 5 seeds** (`i16_val_base` / `_tiles` / `_tiles32` / `_regir` / `_regir32`, each its own base; mean ± seed spread; café DI bias from the `diBias` kind):
+
+| Case | metric | shipped | per-pixel tiles | **tiles + 32 local** | ReGIR + tiles | ReGIR + tiles + 32 |
+|---|---|---|---|---|---|---|
+| `cafe.tables` | `Lit` std · flicker % | 3.36 ± 0.13 · 15.2 | 3.21 ± 0.10 · 13.7 | **2.76 ± 0.12 · 11.9** | 2.85 · 12.2 | 2.56 · 9.6 |
+| | rises · size | 0.78 · 24 % | 0.61 · 25 % | 0.86 ± 1.05 · 22 % | 0.78 · 19 % | 0.73 · 17 % |
+| `cafe.dining` | `Lit` std · flicker % | 3.93 ± 0.30 · 18.1 | 3.69 ± 0.06 · 17.0 | **2.95 ± 0.04 · 12.2** | 3.07 · 12.4 | 2.77 · 10.6 |
+| | rises · size | 0.90 · 56 % | 1.01 · 43 % | **0.64 · 27 %** | 0.58 · 34 % | 0.45 · 26 % |
+| `cafe.tables` DI | bias · dim · p90 % | −0.16 · −1.25 · 7.16 | −0.16 · −1.40 · 7.36 | **−0.14 · −0.70 · 6.04** | +0.30 · **+5.27** · 13.9 | +0.32 · **+3.70** · 10.6 |
+| `cafe.dining` DI | bias · dim · p90 % | −0.15 · +0.10 · 4.66 | −0.12 · +0.15 · 4.83 | **+0.02 · +0.19 · 4.15** | +1.24 · **+5.55** · 13.3 | +0.89 · **+3.35** · 9.9 |
+| `sponza.gallery` | `Lit` std % | 4.02 ± 0.14 | 4.04 | 4.04 | 4.07 | 4.02 |
+| `sponza.courtyard` | `Lit` std % | 0.74 | 0.74 | 0.74 | 0.75 | 0.74 |
+| `bistro.street` | `Lit` std · flicker % | 0.38 · 14.1 ± 11.9 | 0.40 · 21.7 ± 9.2 | 0.40 · 3.9 ± 2.5 | 0.41 · 13.0 | 0.41 · 11.0 |
+| `bistro.street` GPU Δ | ABBA, layers off | — | +0.034 ms (+1.2 %) | +0.54 ms (+19 %) | +0.48 ms (presample 0.03 → 0.47) | +1.03 ms (+36 %) |
+
+  - **ReGIR fails the DI bias gate.** `i16_bias_tiles` / `i16_bias_regir` (3 seeds each) split it: per-pixel tiles alone read dim −1.36 / +0.17 %, p90 7.25 / 4.92 (as shipped); ReGIR alone +4.70 / +4.97 %, p90 13 %. The error map puts it on the walls around the sconces, too bright. This is I6's ReGIR leak (+3.2 % then), still open; ReGIR stays out until it is root-caused.
+  - **Per-pixel tiles and more local samples work together.** Power_RIS with 32 local samples did not help with 16×16 tiles (`i16_di_sampling`): the 32 candidates of a tile's 256 pixels come from one 1024-entry RIS tile. Per-pixel seeds give each pixel its own RIS tile, so the 32 candidates are independent across pixels. The pair also lowers the DI error (p90 7.16 → 6.04, 4.66 → 4.15).
+  - Sponza is lit by the exact sun (2a), so DI sampling changes neither its noise nor its cost. Bistro street's `Lit` flicker swings ± 10 points between seeds on every set: its few lit pixels make it a weak gate.
+- **Two bugs found and fixed during the research** (both shipped; the shipped 5-seed rerun matches the pre-fix one within its spread on every case, DI bias unchanged):
+  - **Local light 0 took the environment's MIS weight.** `RtxdiContext` passed `environmentLightParams = {lightPresent 0, lightIndex 0}`. RTXDI tells a BRDF hit on the environment by index alone (`InitialSampling.hlsli:571`), so a BRDF ray hitting light row 0 (a point, spot or triangle light) was weighted with `environmentMapMisWeight` (0 without environment samples) and skipped the BRDF-cutoff test. That overweights the candidate by about 1 + light PDF / BRDF PDF, which is a firefly on a small triangle. Now `RTXDI_INVALID_LIGHT_INDEX`; NVIDIA's sample uses an index past the infinite lights (`PrepareLightsPass.cpp:455`). Light 0 is not in the café's view, so the café's numbers do not move.
+  - **A non-finite NRC answer could enter the GI reservoirs.** `nrc_resolve.slang` added the cache answer after counting it for the health check without testing it: +inf survives `max(·, 0)`, and NaN in one channel passes `any(cached > 0)`. The add now requires `isNrcAnswerFinite`.
+  - Checks after both fixes: guide capture 2/2, 3/3, 2/2; GI check 14/14; CTest 8/8. The RT check run alongside it failed one guide model (C-T-6), a regression from before these fixes.
+- **Reviewed, not changed:** DI history caps M, not age (RTXDI has no DI age limit; §7.8's mechanism); the compact-light mismatch between RIS and final shading (~0.1 %, NVIDIA's own design); GI firefly replacement keeping the sample in history and the GI temporal fallback skipping depth and normal tests (both ReSTIR PT / GI defaults; the fallback runs only on disocclusion); toggling "Exact directional lights" live without a history reset (a few frames of double sun, UI only). Open lead: a light sample within the 0.5 mm visibility margin counts as visible without a ray, and X₂'s light sampling has no BRDF candidates, so near-touching emitters can spike GI.
+- **The middle point** (`i16_val_tiles16`, 5 seeds; `i16_tiles_cost`, ABBA on Bistro street): per-pixel tiles + 16 local samples read `Lit` 2.89 ± 0.09 / 3.20 ± 0.05 % (tables / dining), flicker 12.1 / 14.0 %, dining rises 0.65 at 37 %, DI bias −0.14 / −0.08, dim −1.04 / +0.17, p90 6.74 / 4.27, Sponza and Bistro street within spread. Cost **+0.185 ms (+6.5 %)**; with 32 samples +0.542 ms (+19 %).
+- **Where this leaves the 2 % target:** the best bias-clean set (tiles + 32) is at 2.76 / 2.95 %, about 1.3 × the target. Its input part, √(2.95² − 1.1²) ≈ 2.7 %, still has to fall to 1.6 %, about a 2.9× cut of the input's variance. Candidate count is saturated (64 = 32 on ReGIR), DLAA, presets and every reuse, clamp and history lever are ruled out, so the remainder needs more independent samples per pixel per frame (two DI reservoirs or two GI paths, each doubling that pass's cost) or a fix of ReGIR's bias (its + 32 set is at 2.56 / 2.77).
+- **Decision (the user's, 2026-11-25): ship per-pixel tiles with 32 local samples.** `RtxdiContext::Settings::areLightTilesPerPixel` (`DiFlag::PerPixelLightTiles`, read by `initCoherentRandomSampler` in the primary, secondary and glass DI; the lab switch is now `di.perPixelLightTiles`) and `localLightSamples` 32 in `defaultSettings`; `Converged` inherits both, NVIDIA's set keeps 16×16 tiles and 8. The frame flag the lab used is gone.

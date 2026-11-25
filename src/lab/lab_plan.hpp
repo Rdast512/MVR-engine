@@ -26,7 +26,7 @@ struct LabMetricInfo
 inline constexpr double kPercentFloor = 0.01;
 inline constexpr double kSettleFloor = 8.0;
 
-inline constexpr std::array<LabMetricInfo, 42> kLabMetrics = {{
+inline constexpr std::array<LabMetricInfo, 44> kLabMetrics = {{
     {"mean", LabKind::Stability, false, false, 1e-9},
     {"std", LabKind::Stability, true, false, kPercentFloor},
     {"flicker", LabKind::Stability, true, false, kPercentFloor},
@@ -40,6 +40,8 @@ inline constexpr std::array<LabMetricInfo, 42> kLabMetrics = {{
     {"riseSize", LabKind::Stability, false, false, kPercentFloor},
     {"riseFrames", LabKind::Stability, false, false, 0.1},
     {"riseSpread", LabKind::Stability, false, false, kPercentFloor},
+    {"blockStd", LabKind::Stability, true, false, kPercentFloor},
+    {"blockCorr", LabKind::Stability, false, false, 0.01},
     {"bias", LabKind::DiBias, true, true, kPercentFloor},
     {"p50", LabKind::DiBias, false, false, kPercentFloor},
     {"p90", LabKind::DiBias, true, false, kPercentFloor},

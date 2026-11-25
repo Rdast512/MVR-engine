@@ -1,0 +1,9 @@
+# I16 pops: RTXDI's 16x16 screen tiles share one RIS tile per frame (i16_input_structure: 16 px blocks of the DLSS
+# input vary as much as single pixels, with or without reuse). Per-pixel tiles against the shipped base
+base    di=shipped gi=shipped frame=shipped
+seeds   2
+cases   cafe.tables cafe.dining sponza.courtyard bistro.street
+views   Lit "DLSS input"
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped di.perPixelLightTiles=on
+sets    di=shipped gi=shipped frame=shipped di.perPixelLightTiles=on di.sampling=regir

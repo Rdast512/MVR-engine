@@ -1,0 +1,15 @@
+# I16 pops: a still camera's exponential average of DLSS-RR's input (i16_floor: a converged input reaches 1.1% std;
+# i16_clamp: cutting spikes does not). Weight 1/4 .. 1/32 against the shipped base; lightChange reads the lag
+base    di=shipped gi=shipped frame=shipped
+seeds   2
+cases   cafe.tables cafe.dining sponza.courtyard
+views   Lit
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped frame.inputHistory=0.25
+sets    di=shipped gi=shipped frame=shipped frame.inputHistory=0.125
+sets    di=shipped gi=shipped frame=shipped frame.inputHistory=0.0625
+sets    di=shipped gi=shipped frame=shipped frame.inputHistory=0.03125
+cases   sponza.courtyard cafe.toggle
+kinds   lightChange
+sets    di=shipped gi=shipped frame=shipped frame.inputHistory=0.125
+sets    di=shipped gi=shipped frame=shipped frame.inputHistory=0.03125

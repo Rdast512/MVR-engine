@@ -117,9 +117,8 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
         const PathHit secondary = shadeRayHit(root, hit, ray, length(ray.Origin - gRtxdiBridge.cameraPos));
         RTXDI_RandomSamplerState rng =
             RTXDI_InitRandomSampler(pixel, constants.runtime.frameIndex, RTXDI_SECONDARY_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
-        RTXDI_RandomSamplerState coherentRng = RTXDI_InitRandomSampler(
-            pixel / RTXDI_TILE_SIZE_IN_PIXELS, constants.runtime.frameIndex,
-            RTXDI_SECONDARY_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
+        RTXDI_RandomSamplerState coherentRng = initCoherentRandomSampler(
+            constants, pixel, constants.runtime.frameIndex, RTXDI_SECONDARY_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
         HitOrigin origin;
         origin.hit = hit;
         origin.geoNormal = secondary.surface.geoNormal;

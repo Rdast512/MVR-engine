@@ -375,6 +375,9 @@ void Renderer::drawFrame()
                             .glassFlags = frameGlassFlags,
                             .glassMaxLayers = frameGlassMaxLayers,
                             .glassCounters = glassCounters[currentFrame].address,
+                            .dlssInputScale = dlssInputScale,
+                            .preDenoiserClamp = preDenoiserClamp,
+                            .inputHistoryWeight = inputHistoryWeight,
                         });
         cpuFrameDataWriteMs = toMs(uboStart, std::chrono::steady_clock::now());
     }

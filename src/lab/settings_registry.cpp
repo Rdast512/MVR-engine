@@ -92,6 +92,8 @@ namespace
     constexpr std::array<const char* const, 3> kDecorrelationNames{"none", "uniform", "stagnancy"};
     constexpr std::array<const char* const, std::to_underlying(IndirectMode::Count)> kIndirectModeNames{
         "nrcRestirGi", "nrc", "restirGi"};
+    constexpr std::array<const char* const, std::to_underlying(DlssInputTerms::Count)> kDlssInputTermNames{
+        "all", "direct", "indirect"};
     constexpr std::array<const char* const, 5> kDlssQualityNames{"dlaa", "quality", "balanced", "performance",
                                                                  "ultraPerformance"};
     constexpr std::array<const char* const, 4> kDlssPresetNames{"default", "d", "e", "f"};
@@ -163,6 +165,10 @@ namespace
              setDi<&DiSettings::isFinalVisibilityReused>, kDiDefaults},
             {"di.exactInfinite", LabSwitchType::Bool, {}, getDi<&DiSettings::areInfiniteLightsShadedExactly>,
              setDi<&DiSettings::areInfiniteLightsShadedExactly>, "m8 I16 phase 2a"},
+            {"di.perPixelLightTiles", LabSwitchType::Bool, {}, getDi<&DiSettings::areLightTilesPerPixel>,
+             setDi<&DiSettings::areLightTilesPerPixel>, "RTXDI_TILE_SIZE_IN_PIXELS 16"},
+            {"di.spatialOnly", LabSwitchType::Bool, {}, [](const LabConfig& config) { return toDouble(config.isDiSpatialOnly); },
+             [](LabConfig& config, double value) { config.isDiSpatialOnly = value != 0.0; }, "RTXDI ResamplingMode::Spatial"},
             {"di.reference", LabSwitchType::Bool, {}, [](const LabConfig& config) { return toDouble(config.isDiReference); },
              [](LabConfig& config, double value) { config.isDiReference = value != 0.0; }, "RTXDI ResamplingMode::None"},
 
@@ -241,6 +247,16 @@ namespace
              [](const LabConfig& config) { return toDouble(config.dlss.preset); },
              [](LabConfig& config, double value) { config.dlss.preset = fromDouble<Dlss::Preset>(value); },
              "DLSS-RR integration guide"},
+            {"frame.inputScale", LabSwitchType::Float, {},
+             [](const LabConfig& config) { return static_cast<double>(config.dlssInputScale); },
+             [](LabConfig& config, double value) { config.dlssInputScale = static_cast<float>(value); }, kEngineOnly},
+            {"frame.inputTerms", LabSwitchType::Enum, kDlssInputTermNames,
+             [](const LabConfig& config) { return toDouble(config.dlssInputTerms); },
+             [](LabConfig& config, double value) { config.dlssInputTerms = fromDouble<DlssInputTerms>(value); },
+             kEngineOnly},
+            {"frame.inputFrozen", LabSwitchType::Bool, {},
+             [](const LabConfig& config) { return toDouble(config.isDlssInputFrozen); },
+             [](LabConfig& config, double value) { config.isDlssInputFrozen = value != 0.0; }, kEngineOnly},
             {"frame.dlssSpecularHitDistance", LabSwitchType::Bool, {},
              [](const LabConfig& config) { return toDouble(config.dlssGuides.isSpecularHitDistanceUsed); },
              [](LabConfig& config, double value) { config.dlssGuides.isSpecularHitDistanceUsed = value != 0.0; },
@@ -285,7 +301,17 @@ namespace
             {"frame.specularGuides", LabSwitchType::Bool, {}, planned, plannedSet, "DLSS-RR integration guide", "T10"},
             {"gi.targetCompression", LabSwitchType::Float, {}, planned, plannedSet, "RTXDI NoiseAndBias.md §Target PDF",
              "T11"},
-            {"frame.preDenoiserClamp", LabSwitchType::Float, {}, planned, plannedSet, kEngineOnly, "T11"},
+            {"frame.preDenoiserClamp", LabSwitchType::Float, {},
+             [](const LabConfig& config) { return static_cast<double>(config.preDenoiserClamp); },
+             [](LabConfig& config, double value) { config.preDenoiserClamp = static_cast<float>(value); },
+             "RTXPT firefly filter"},
+            {"frame.inputHistory", LabSwitchType::Float, {},
+             [](const LabConfig& config) { return static_cast<double>(config.inputHistoryWeight); },
+             [](LabConfig& config, double value) { config.inputHistoryWeight = static_cast<float>(value); }, kEngineOnly},
+            {"frame.clampNeighbors", LabSwitchType::Bool, {},
+             [](const LabConfig& config) { return toDouble(config.isPreDenoiserClampSpatial); },
+             [](LabConfig& config, double value) { config.isPreDenoiserClampSpatial = value != 0.0; },
+             "RTXPT firefly filter"},
             {"scene.emissiveScale", LabSwitchType::Float, {}, planned, plannedSet, kEngineOnly, "T8 (cafe.toggle)"},
         };
         return switches;
@@ -342,12 +368,14 @@ namespace
             if (equalsIgnoreCase(name, "reference")) {
                 config.di = RtxdiContext::defaultSettings();
                 config.isDiReference = true;
+                config.isDiSpatialOnly = false;
                 return true;
             }
             for (const NamedSet& set : diSets()) {
                 if (equalsIgnoreCase(name, set.name)) {
                     config.di = *set.di;
                     config.isDiReference = false;
+                    config.isDiSpatialOnly = false;
                     return true;
                 }
             }
@@ -369,6 +397,12 @@ namespace
             config.dlssGuides = shipped.dlssGuides;
             config.nrc = shipped.nrc;
             config.isJitterEnabled = shipped.isJitterEnabled;
+            config.dlssInputScale = shipped.dlssInputScale;
+            config.dlssInputTerms = shipped.dlssInputTerms;
+            config.isDlssInputFrozen = shipped.isDlssInputFrozen;
+            config.preDenoiserClamp = shipped.preDenoiserClamp;
+            config.isPreDenoiserClampSpatial = shipped.isPreDenoiserClampSpatial;
+            config.inputHistoryWeight = shipped.inputHistoryWeight;
             return true;
         }
         return false;
@@ -553,6 +587,7 @@ void applyLabConfig(const LabConfig& config, Renderer& renderer, Camera& camera)
     rtxdi.settings = config.di;
     rtxdi.giSettings = config.gi;
     rtxdi.isReference = config.isDiReference;
+    rtxdi.isSpatialOnly = config.isDiSpatialOnly;
     // the GI references belong to the engine checks, never to a lab config
     rtxdi.isGiReference = false;
     rtxdi.giReferenceBounces = 0;
@@ -562,6 +597,13 @@ void applyLabConfig(const LabConfig& config, Renderer& renderer, Camera& camera)
     renderer.getNrc().settings = config.nrc;
     camera.isJitterEnabled = config.isJitterEnabled;
     renderer.glass = config.glass;
+    renderer.dlssInputScale = config.dlssInputScale;
+    constexpr std::array<uint32_t, std::to_underlying(DlssInputTerms::Count)> kTermFlags{
+        0u, FrameFlag::DlssInputDirectOnly, FrameFlag::DlssInputIndirectOnly};
+    renderer.extraFrameFlags = kTermFlags[std::to_underlying(config.dlssInputTerms)] |
+        (config.isPreDenoiserClampSpatial ? FrameFlag::PreDenoiserClampNeighbors : 0u);
+    renderer.preDenoiserClamp = config.preDenoiserClamp;
+    renderer.inputHistoryWeight = config.inputHistoryWeight;
 }
 
 LabConfig captureLabConfig(Renderer& renderer, const Camera& camera)
@@ -571,12 +613,22 @@ LabConfig captureLabConfig(Renderer& renderer, const Camera& camera)
     config.di = rtxdi.settings;
     config.gi = rtxdi.giSettings;
     config.isDiReference = rtxdi.isReference;
+    config.isDiSpatialOnly = rtxdi.isSpatialOnly;
     config.indirectMode = renderer.indirectMode;
     config.dlss = renderer.getDlss().settings;
     config.dlssGuides = renderer.getDlss().guides;
     config.nrc = renderer.getNrc().settings;
     config.isJitterEnabled = camera.isJitterEnabled;
     config.glass = renderer.glass;
+    config.dlssInputScale = renderer.dlssInputScale;
+    config.dlssInputTerms = (renderer.extraFrameFlags & FrameFlag::DlssInputDirectOnly) != 0 ? DlssInputTerms::Direct
+        : (renderer.extraFrameFlags & FrameFlag::DlssInputIndirectOnly) != 0                ? DlssInputTerms::Indirect
+                                                                                             : DlssInputTerms::All;
+    config.isDlssInputFrozen =
+        (renderer.extraFrameFlags & (FrameFlag::DlssInputAccumulate | FrameFlag::DlssInputFrozen)) != 0;
+    config.preDenoiserClamp = renderer.preDenoiserClamp;
+    config.isPreDenoiserClampSpatial = (renderer.extraFrameFlags & FrameFlag::PreDenoiserClampNeighbors) != 0;
+    config.inputHistoryWeight = renderer.inputHistoryWeight;
     return config;
 }
 

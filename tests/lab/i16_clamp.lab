@@ -1,0 +1,13 @@
+# I16 pops: full_testing T11's clamp of DLSS-RR's input (i16_floor: a converged input reaches 1.1% std, so the
+# heavy tail of the live input is what DLSS-RR keeps). History reference: DLSS-RR's last output; neighbors: 3x3
+base    di=shipped gi=shipped frame=shipped
+seeds   2
+cases   cafe.tables cafe.dining sponza.courtyard bistro.street
+views   Lit "DLSS input"
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped frame.preDenoiserClamp=2
+sets    di=shipped gi=shipped frame=shipped frame.preDenoiserClamp=4
+sets    di=shipped gi=shipped frame=shipped frame.preDenoiserClamp=8
+sets    di=shipped gi=shipped frame=shipped frame.preDenoiserClamp=16
+sets    di=shipped gi=shipped frame=shipped frame.preDenoiserClamp=4 frame.clampNeighbors=on
+sets    di=shipped gi=shipped frame=shipped frame.preDenoiserClamp=8 frame.clampNeighbors=on

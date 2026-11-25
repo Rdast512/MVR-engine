@@ -787,7 +787,7 @@ public struct GpuTargets
     public uint glassDiffuseAlbedoStorage; // RGBA8 DLSS-RR guides blended with glass (m8 I13 §4 variant b)
     public uint glassSpecAlbedoStorage;
     public uint specularHitDistanceStorage; // R16F DLSS-RR specular hit distance, indirect (m8 I16 phase 3)
-    public uint pad1;
+    public uint dlssInputAccumulationStorage; // RGBA32F DLSS-RR input sum and count, combine (settings lab, m8 I16)
 };
 
 // exposure histogram: bin 0 includes black, bin 255 is the ceiling
@@ -845,6 +845,11 @@ public static const uint kFrameFlagTriangleLightsUnsampled = 1u << 2;
 public static const uint kFrameFlagCleanDlssInput = 1u << 3;
 public static const uint kFrameFlagInvertDlssNormal = 1u << 4;
 public static const uint kFrameFlagSquareDlssRoughness = 1u << 5;
+public static const uint kFrameFlagDlssInputDirectOnly = 1u << 6;
+public static const uint kFrameFlagDlssInputIndirectOnly = 1u << 7;
+public static const uint kFrameFlagDlssInputAccumulate = 1u << 8;
+public static const uint kFrameFlagDlssInputFrozen = 1u << 9;
+public static const uint kFrameFlagPreDenoiserClampNeighbors = 1u << 10;
 
 // per-frame root, matches GpuFrameRoot in src/core/types.hpp
 public struct GpuFrameRoot
@@ -887,6 +892,8 @@ public struct GpuFrameRoot
     public uint glassFlags;            // kGlassFlag* (m8 I13); 0 without glass instances
     public uint glassMaxLayers;        // layers a glass walk crosses at most
     public uint64_t glassCounters;     // GpuGlassCounters of this frame slot
+    public float preDenoiserClamp;     // > 0: combine clamps the DLSS-RR input to this multiple of a reference (T11)
+    public float inputHistoryWeight;   // > 0: combine blends the DLSS-RR input into its running average (lab, m8 I16)
 };
 
 // GpuFrameRoot.glassFlags, matches GlassFlag in src/core/types.hpp

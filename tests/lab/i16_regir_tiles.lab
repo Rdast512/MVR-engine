@@ -1,0 +1,10 @@
+# I16 pops: ReGIR and per-pixel light tiles, apart and together (i16_light_tiles: together Lit std -20% in the café).
+# blockCorr: the DLSS input's block variance over the independent-pixel expectation
+base    di=shipped gi=shipped frame=shipped
+seeds   2
+cases   cafe.tables cafe.dining
+views   Lit "DLSS input" "Direct lighting" "Indirect radiance"
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir
+sets    di=shipped gi=shipped frame=shipped di.perPixelLightTiles=on
+sets    di=shipped gi=shipped frame=shipped di.perPixelLightTiles=on di.sampling=regir

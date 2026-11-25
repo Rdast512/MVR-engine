@@ -1,0 +1,7 @@
+# I16 pops: ReGIR with per-pixel light tiles as its own base on 5 seeds, with its DI bias and cost (§7.9)
+base    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on
+seeds   5
+cases   cafe.tables cafe.dining sponza.gallery sponza.courtyard bistro.street
+views   Lit
+kinds   stability diBias cost
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on

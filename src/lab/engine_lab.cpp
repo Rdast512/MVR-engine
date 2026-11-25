@@ -831,6 +831,10 @@ EngineLab::Request EngineLab::beginFrame(Camera& camera, Renderer& renderer, std
     }
     rtxdi.frameIndexOverride = phase.seed + phaseFrame;
     camera.jitterPhaseOverride = phaseFrame;
+    if (phase.config.isDlssInputFrozen) {
+        renderer.extraFrameFlags = (renderer.extraFrameFlags & ~(FrameFlag::DlssInputAccumulate | FrameFlag::DlssInputFrozen)) |
+            (phaseFrame < phase.warmup ? FrameFlag::DlssInputAccumulate : FrameFlag::DlssInputFrozen);
+    }
     isCaptureRequested = phaseFrame >= phase.warmup;
     request.shouldCapture = isCaptureRequested;
     return request;
@@ -1076,6 +1080,8 @@ void EngineLab::finishStability()
     addMetric("riseSize", result.riseSize);
     addMetric("riseFrames", result.riseFrames);
     addMetric("riseSpread", result.riseSpread);
+    addMetric("blockStd", result.blockStd);
+    addMetric("blockCorr", result.blockCorrelation);
     if (isPngRequested) {
         const std::string label = runLabel(runs[*currentRun]);
         writeCheckLuminancePng(std::format("{} mean", label), extent, result.means, checkPngScale(result.means),

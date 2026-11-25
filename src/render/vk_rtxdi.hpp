@@ -115,6 +115,8 @@ namespace DiFlag
 {
     // Settings::areInfiniteLightsShadedExactly
     inline constexpr uint32_t ExactInfiniteLights = 1u << 0;
+    // Settings::areLightTilesPerPixel
+    inline constexpr uint32_t PerPixelLightTiles = 1u << 1;
 } // namespace DiFlag
 static_assert(sizeof(ReGIR_Parameters) == 1296);
 static_assert(sizeof(RTXDI_PTDecorrelationParameters) == 32);
@@ -167,6 +169,9 @@ public:
         // directional (delta) lights leave the RIS candidates and are shaded exactly in the shade pass, one shadow ray
         // each: reuse made the sun stochastic (m8 I16 F28). Path vertices follow GiSettings::areInfiniteLightsShadedExactly
         bool areInfiniteLightsShadedExactly = false;
+        // every pixel picks its own RIS tile / ReGIR cell jitter instead of sharing its 16x16 screen tile's
+        // (RTXDI_TILE_SIZE_IN_PIXELS); also at path vertices and behind glass
+        bool areLightTilesPerPixel = false;
 
         uint32_t maxHistoryLength = 0;
         ReSTIRDI_TemporalBiasCorrectionMode temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Basic;
@@ -339,6 +344,8 @@ public:
     // plan F3 ground truth: resampling None with kReference* initial candidates instead of temporal and spatial
     // reuse with the library's counts; read by the next prepareFrame
     bool isReference = false;
+    // settings lab (m8 I16): spatial reuse without temporal reuse; read by the next prepareFrame
+    bool isSpatialOnly = false;
     Settings settings = defaultSettings();
     // ReSTIR GI without reuse: the pixel's initial sample is shaded alone, the unbiased 1-sample estimate
     bool isGiReference = false;
@@ -381,6 +388,7 @@ private:
     const WorldLights& worldLights;
     std::unique_ptr<rtxdi::ImportanceSamplingContext> importanceSampling;
     bool isReferenceApplied = false;
+    bool isSpatialOnlyApplied = false;
     Settings appliedSettings;
     bool isGiReuseApplied = true;
     bool isGiDuplicationMapApplied = false;

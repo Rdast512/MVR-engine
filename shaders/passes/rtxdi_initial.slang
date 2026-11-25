@@ -29,9 +29,9 @@ void rtxdiInitialMain(uint3 id : SV_DispatchThreadID)
     const uint frameIndex = constants.runtime.frameIndex;
     RTXDI_RandomSamplerState rng =
         RTXDI_InitRandomSampler(id.xy, frameIndex, RTXDI_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
-    // shared by a tile: its RIS tile (Power_RIS) and its ReGIR cell jitter
-    RTXDI_RandomSamplerState coherentRng = RTXDI_InitRandomSampler(id.xy / RTXDI_TILE_SIZE_IN_PIXELS, frameIndex,
-                                                                   RTXDI_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
+    // its RIS tile (Power_RIS) and its ReGIR cell jitter, shared by a 16x16 tile unless kDiFlagPerPixelLightTiles
+    RTXDI_RandomSamplerState coherentRng =
+        initCoherentRandomSampler(constants, id.xy, frameIndex, RTXDI_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
 
     const RAB_Surface surface = RAB_GetGBufferSurface(int2(id.xy), false);
     RTXDI_DIReservoir reservoir = RTXDI_EmptyDIReservoir();

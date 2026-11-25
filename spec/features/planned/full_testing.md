@@ -87,7 +87,8 @@ Values: shipped = `RtxdiContext::defaultSettings()` / `defaultGiSettings()`; NVI
 | Switch | Shipped | NVIDIA | What it does | If wrong | Measured by |
 |---|---|---|---|---|---|
 | `di.sampling` | `Power_RIS` | `ReGIR_RIS` (Medium) | initial candidates by light power, or by ReGIR world cells | ReGIR: power-PDF MIS with BRDF candidates mismatches its cell selection (C-F1-4); boiling across rooms without it (`NoiseAndBias.md`) | DI bias, dim bias, cost (`presample`) |
-| `di.localSamples` | 8 | 8 | initial candidates per pixel | too few: sparse signal that reuse turns into boiling | DI raw std, `Lit` flicker |
+| `di.localSamples` | 32 (I16 §7.9) | 8 | initial candidates per pixel | too few: sparse signal that reuse turns into boiling | DI raw std, `Lit` flicker |
+| `di.perPixelLightTiles` | on (I16 §7.9) | off | every pixel picks its own RIS tile / ReGIR cell jitter instead of its 16×16 screen tile's | off: a tile's lucky draw lights the whole tile (pops) | `Lit` rises, cost |
 | `di.brdfSamples` | 1 | 1 | BRDF-direction candidate (skipped without emissives / env, O8) | MIS mismatch with the presampled PDF | DI bias on `EmissiveStrengthTest` |
 | `di.initialVisibility` | on | on | shadow ray on the initial winner | off: occluded candidates survive into reuse | cost; shadow-edge noise |
 | `di.history` | 20 | 20 | temporal `M` cap | long: lag after light changes; short: noise | light change settle, `Lit` std |
@@ -137,7 +138,7 @@ Values: shipped = `RtxdiContext::defaultSettings()` / `defaultGiSettings()`; NVI
 | `frame.dlssQuality` | `Quality` | — | render resolution against display | fewer input pixels per output pixel: more noise to reconstruct | `Lit` std, cost |
 | `frame.specularGuides` | none (T10) | DLSS-RR guide: `SpecularHitDistance` or specular motion vectors (NGX `DLSSD` parameters; `vk_denoise_dlssrr` README) | specular hit distance from the primary surface to its reflected hit | missing: DLSS-RR moves reflections with the surface's motion, so glossy and metal surfaces swim | `Lit` std on `glossy.*`, screen-edge settle |
 | `gi.targetCompression` | off (T11) | — (RIS stays unbiased for any target PDF that is nonzero where the integrand is, `NoiseAndBias.md` §Target PDF) | resamples by a compressed target (`p̂ / (1 + p̂ / k)`) instead of `p̂`, so one bright candidate wins less often | too strong: more noise in bright regions | hot bias, `Lit` flicker, GI bias (must stay within the floor) |
-| `frame.preDenoiserClamp` | off (T11) | — (RTXPT's firefly filter is the model; RTXPT is not in `reference/`) | clamps each pixel of DLSS-RR's noisy input to a multiple of its 3×3 neighborhood's luminance | biased: real small highlights lose energy | hot bias, frame bias, `Lit` swing |
+| `frame.preDenoiserClamp`, `frame.clampNeighbors` | off (T11, built 2026-11-24; rejected for the café, I16 §7.9) | — (RTXPT's firefly filter is the model; RTXPT is not in `reference/`) | clamps the lighting's luminance in DLSS-RR's noisy input to a multiple of DLSS-RR's last output around the reprojected pixel (3×3 max), or with `clampNeighbors` of the input's 3×3 neighbors | biased: real small highlights lose energy; the history reference feeds DLSS-RR's dark output back | hot bias, frame bias, `Lit` swing |
 | `frame.exposure` | auto, fixed clock in runners | — | auto exposure (F10) | feedback into DLSS-RR, dark boiling | `Lit` swing |
 | `scene.sun` | default / moved / off | — | runner sun state | — | light change |
 | `scene.emissiveScale.<material>` | 1 | — | scales one material's emission (the `cafe.toggle` case) | — | light change |

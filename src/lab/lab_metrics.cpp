@@ -155,9 +155,24 @@ namespace labMetrics
         std::vector<float> series(frames);
         std::vector<float> scratch(frames);
         std::vector<uint32_t> blockRises(blocks, 0);
+        // Σ pixel variances and pixel counts per block, for the independent-pixel expectation
+        std::vector<double> blockPixelVariance(blocks, 0.0);
+        std::vector<uint32_t> blockPixels(blocks, 0);
+        for (uint32_t y = 0; y < extent.height; ++y) {
+            for (uint32_t x = 0; x < extent.width; ++x) {
+                const size_t texel = size_t{y} * extent.width + x;
+                const size_t block = size_t{y / kPopBlockPixels} * blockExtent.width + x / kPopBlockPixels;
+                const double mean = sum[texel] / count;
+                blockPixelVariance[block] += std::max(squaredSum[texel] / count - mean * mean, 0.0);
+                ++blockPixels[block];
+            }
+        }
+        double blockCorrelationSum = 0.0;
+        size_t correlatedBlocks = 0;
         BlockEvents total;
         size_t litBlocks = 0;
         size_t risingBlocks = 0;
+        double blockStdSum = 0.0;
         for (size_t block = 0; block < blocks; ++block) {
             for (size_t frame = 0; frame < frames; ++frame) {
                 series[frame] = blockMeans[frame * blocks + block];
@@ -168,8 +183,21 @@ namespace labMetrics
                 continue;
             }
             ++litBlocks;
+            double blockSum = 0.0;
+            double blockSquared = 0.0;
             for (size_t frame = 0; frame < frames; ++frame) {
                 scratch[frame] = static_cast<float>(std::abs(series[frame] - median));
+                blockSum += series[frame];
+                blockSquared += double{series[frame]} * series[frame];
+            }
+            const double blockMean = blockSum / count;
+            const double blockVariance = std::max(blockSquared / count - blockMean * blockMean, 0.0);
+            blockStdSum += blockMean > 0.0 ? std::sqrt(blockVariance) / blockMean : 0.0;
+            const double pixels = blockPixels[block];
+            const double independentVariance = blockPixelVariance[block] / (pixels * pixels);
+            if (independentVariance > 0.0) {
+                blockCorrelationSum += blockVariance / independentVariance;
+                ++correlatedBlocks;
             }
             // 1.4826 MAD: a normal distribution's std, robust to the events being counted
             const double threshold = std::max(kPopSigmas * 1.4826 * medianOf(scratch), kPopMinChange * median);
@@ -187,6 +215,9 @@ namespace labMetrics
         result.riseFrames = total.rises > 0 ? static_cast<double>(total.riseFrames) / total.rises : 0.0;
         result.riseSpread =
             litBlocks > 0 ? 100.0 * static_cast<double>(risingBlocks) / static_cast<double>(litBlocks) : 0.0;
+        result.blockStd = litBlocks > 0 ? 100.0 * blockStdSum / static_cast<double>(litBlocks) : 0.0;
+        result.blockCorrelation =
+            correlatedBlocks > 0 ? blockCorrelationSum / static_cast<double>(correlatedBlocks) : 0.0;
         const double largestRises = std::max(*std::ranges::max_element(blockRises), 1u);
         result.riseMap.resize(sum.size());
         for (uint32_t y = 0; y < extent.height; ++y) {

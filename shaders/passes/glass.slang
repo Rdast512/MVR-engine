@@ -128,8 +128,7 @@ void glassMain(uint3 id : SV_DispatchThreadID)
             if (layers == 0)
             {
                 rng = RTXDI_InitRandomSampler(pixel, constants.runtime.frameIndex, kGlassLightSeed);
-                coherentRng = RTXDI_InitRandomSampler(pixel / RTXDI_TILE_SIZE_IN_PIXELS, constants.runtime.frameIndex,
-                                                      kGlassLightSeed);
+                coherentRng = initCoherentRandomSampler(constants, pixel, constants.runtime.frameIndex, kGlassLightSeed);
             }
             ++layers;
             const float hitDistance = originDistance + travelled + hit.t;

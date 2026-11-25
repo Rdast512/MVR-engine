@@ -54,6 +54,10 @@ struct FrameRootInputs {
     uint32_t glassFlags;
     uint32_t glassMaxLayers;
     vk::DeviceAddress glassCounters;
+    // GpuFrameRoot::exposure
+    float dlssInputScale = 1.0f;
+    float preDenoiserClamp = 0.0f;
+    float inputHistoryWeight = 0.0f;
 };
 
 // Per-frame-slot host-visible data rewritten by the CPU every frame: the GpuFrameRoot, the GpuObjectUB rows and the

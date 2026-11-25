@@ -1,0 +1,14 @@
+# I16 pops: is the DLSS-RR input's noise spatially shared (blockStd far above std / 16)? Reuse levers that change it,
+# read on the input and on Lit (i16_input_history: partly time-correlated input is worse; the floor is 1.1%)
+base    di=shipped gi=shipped frame=shipped
+seeds   2
+cases   cafe.tables cafe.dining
+views   "DLSS input" Lit
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped di.spatialSamples=0
+sets    di=shipped gi=shipped frame=shipped gi.spatialSamples=0
+sets    di=shipped gi=shipped frame=shipped di.spatialSamples=0 gi.spatialSamples=0
+sets    di=shipped gi=shipped frame=shipped di.radius=8
+sets    di=shipped gi=shipped frame=shipped gi.radius=8
+sets    di=shipped gi=shipped frame=shipped di.permutation=off
+sets    di=shipped gi=shipped frame=shipped di.reference=on

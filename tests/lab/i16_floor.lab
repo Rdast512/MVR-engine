@@ -1,0 +1,9 @@
+# I16 pops: DLSS-RR's own floor. frame.inputFrozen feeds the running mean of the warmup's 300 frames and holds it
+# still while the 480 frames are measured, so what remains is DLSS-RR with jitter on a converged, unchanging input
+base    di=shipped gi=shipped frame=shipped
+seeds   2
+cases   cafe.tables cafe.dining sponza.courtyard
+views   Lit
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped frame.inputFrozen=on
+sets    di=shipped gi=shipped frame=shipped frame.inputFrozen=on frame.jitter=off

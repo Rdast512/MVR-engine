@@ -1092,7 +1092,8 @@ struct GpuTargets
     uint32_t glassSpecAlbedoStorage = 0;
     // R16F DLSS-RR specular hit distance, written by passes/indirect.slang (m8 I16 phase 3)
     uint32_t specularHitDistanceStorage = 0;
-    uint32_t pad1 = 0;
+    // RGBA32F sum and count of the DLSS-RR color input, written by passes/combine.slang (settings lab, m8 I16)
+    uint32_t dlssInputAccumulationStorage = 0;
 };
 static_assert(sizeof(GpuTargets) == 216);
 static_assert(offsetof(GpuTargets, glassDiffuseAlbedoStorage) == 200);
@@ -1148,6 +1149,15 @@ namespace FrameFlag
     inline constexpr uint32_t CleanDlssInput = 1u << 3;
     inline constexpr uint32_t InvertDlssNormal = 1u << 4;
     inline constexpr uint32_t SquareDlssRoughness = 1u << 5;
+    // settings lab attribution (m8 I16): the DLSS-RR color input keeps one lighting term (plus emission)
+    inline constexpr uint32_t DlssInputDirectOnly = 1u << 6;
+    inline constexpr uint32_t DlssInputIndirectOnly = 1u << 7;
+    // the DLSS-RR color input is the running mean of this phase's frames (restarted by HistoryReset), or that mean
+    // held still: what DLSS-RR does with a converged, unchanging input
+    inline constexpr uint32_t DlssInputAccumulate = 1u << 8;
+    inline constexpr uint32_t DlssInputFrozen = 1u << 9;
+    // GpuFrameRoot::preDenoiserClamp's reference: the 3x3 neighbors of the noisy input instead of DLSS-RR's last output
+    inline constexpr uint32_t PreDenoiserClampNeighbors = 1u << 10;
 } // namespace FrameFlag
 
 // [InstanceIndex()] of a TLAS instance; written by the CPU per scene layout (RayTracingScene)
@@ -1251,7 +1261,7 @@ struct GpuFrameRoot
     // GpuNrcConstants of this frame slot (M4 G3)
     vk::DeviceAddress cacheConstants = 0;
     uint32_t frameIndex = 0;
-    // 1: scene-linear color uses unity pre-exposure (considerations C-H2-1)
+    // scale of the DLSS-RR color input; 1 ships (considerations C-H2-1), the settings lab tries others (m8 I16)
     float exposure = 1.0f;
     // GpuLight[lightCount] in world space, written this frame on the async compute queue (WorldLights)
     vk::DeviceAddress worldLights = 0;
@@ -1273,8 +1283,14 @@ struct GpuFrameRoot
     uint32_t glassMaxLayers = 0;
     // GpuGlassCounters of this frame slot
     vk::DeviceAddress glassCounters = 0;
+    // > 0: passes/combine.slang clamps the DLSS-RR input's luminance to this multiple of a reference (full_testing T11)
+    float preDenoiserClamp = 0.0f;
+    // > 0: passes/combine.slang blends the DLSS-RR input into its running average by this weight (settings lab, m8 I16;
+    // still camera only: any motion restarts it)
+    float inputHistoryWeight = 0.0f;
 };
-static_assert(sizeof(GpuFrameRoot) == 240);
+static_assert(sizeof(GpuFrameRoot) == 248);
+static_assert(offsetof(GpuFrameRoot, preDenoiserClamp) == 240);
 static_assert(offsetof(GpuFrameRoot, glassFlags) == 224);
 static_assert(offsetof(GpuFrameRoot, glassCounters) == 232);
 static_assert(offsetof(GpuFrameRoot, rayInstanceLights) == 208);

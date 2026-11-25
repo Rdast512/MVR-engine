@@ -1,0 +1,7 @@
+# I16 pops: per-pixel light tiles on Power_RIS with 32 local samples as its own base on 5 seeds, with its DI bias (§7.9; ReGIR fails the DI bias gate)
+base    di=shipped gi=shipped frame=shipped di.perPixelLightTiles=on di.localSamples=32
+seeds   5
+cases   cafe.tables cafe.dining sponza.gallery sponza.courtyard bistro.street
+views   Lit
+kinds   stability diBias
+sets    di=shipped gi=shipped frame=shipped di.perPixelLightTiles=on di.localSamples=32

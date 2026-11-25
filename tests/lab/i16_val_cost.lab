@@ -1,0 +1,10 @@
+# I16 pops: cost of the candidate DI sets, ABBA against the shipped set (§7.9)
+base    di=shipped gi=shipped frame=shipped
+seeds   1
+cases   cafe.dining sponza.gallery bistro.street
+views   Lit
+kinds   cost
+sets    di=shipped gi=shipped frame=shipped di.perPixelLightTiles=on
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on di.localSamples=32
+sets    di=shipped gi=shipped frame=shipped di.localSamples=32

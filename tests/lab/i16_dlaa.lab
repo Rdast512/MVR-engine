@@ -1,0 +1,11 @@
+# I16 pops: does sample count reach the 2 % target? DLAA renders 2.25x the pixels of Quality (shipped)
+base    di=shipped gi=shipped frame=shipped
+seeds   2
+cases   cafe.tables cafe.dining
+views   Lit
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped frame.dlssQuality=dlaa
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on frame.dlssQuality=dlaa
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on di.localSamples=64
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on di.localSamples=32 frame.dlssQuality=dlaa

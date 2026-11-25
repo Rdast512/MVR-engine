@@ -135,6 +135,15 @@ struct RtxdiBridgeState
 
 static RtxdiBridgeState gRtxdiBridge;
 
+// coherentRng's seed: RTXDI shares one RIS tile and ReGIR jitter per 16x16 screen tile, so the tile's luck lights or
+// darkens the whole tile at once; kDiFlagPerPixelLightTiles gives each pixel its own (m8 I16 §7.9)
+RTXDI_RandomSamplerState initCoherentRandomSampler(GpuRtxdiConstants constants, uint2 pixel, uint frameIndex,
+                                                   uint seed)
+{
+    const bool isPerPixel = (constants.diFlags & kDiFlagPerPixelLightTiles) != 0;
+    return RTXDI_InitRandomSampler(isPerPixel ? pixel : pixel / RTXDI_TILE_SIZE_IN_PIXELS, frameIndex, seed);
+}
+
 void rtxdiBridgeInit(GpuFrameRoot root)
 {
     const GpuTargets targets = loadTargets(root);

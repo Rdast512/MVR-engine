@@ -1,0 +1,8 @@
+# I16: is frame.inputHistory active? The DLSS input view's noise must drop with it
+base    di=shipped gi=shipped frame=shipped
+seeds   1
+cases   cafe.tables
+views   "DLSS input" Lit
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped frame.inputHistory=0.0625
+sets    di=shipped gi=shipped frame=shipped frame.inputFrozen=on

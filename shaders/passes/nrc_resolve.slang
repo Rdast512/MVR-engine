@@ -69,7 +69,8 @@ void nrcResolveMain(uint3 id : SV_DispatchThreadID)
         return;
     }
     bool shouldStore = false;
-    if (any(cached > 0.0))
+    // a non-finite answer would poison the reservoir and every pixel that reuses it
+    if (any(cached > 0.0) && isNrcAnswerFinite(answer))
     {
         const float ao = tex2D(gRtxdiBridge.current.sampled[kGuideDiffuseAlbedo]).Load(int3(int2(id.xy), 0)).a;
         const float3 added = cached * ao;

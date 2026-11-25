@@ -1,0 +1,17 @@
+# I16 pops: DLSS-RR presets on the shipped DI and on ReGIR with per-pixel tiles, and more independent DI samples
+# on the latter (the Lit noise left is ~2.6x the input variance the 2% target allows, i16_di_spatial_only)
+base    di=shipped gi=shipped frame=shipped
+seeds   2
+cases   cafe.tables cafe.dining
+views   Lit
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped frame.dlssPreset=d
+sets    di=shipped gi=shipped frame=shipped frame.dlssPreset=e
+sets    di=shipped gi=shipped frame=shipped frame.dlssPreset=f
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on frame.dlssPreset=d
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on frame.dlssPreset=e
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on frame.dlssPreset=f
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on di.localSamples=16
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on di.localSamples=32
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on di.brdfSamples=2

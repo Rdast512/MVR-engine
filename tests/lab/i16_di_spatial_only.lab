@@ -1,0 +1,12 @@
+# I16 pops: does DI temporal reuse make DI hard for DLSS-RR (raw DI 12% -> Lit 4.35%, 3x; without reuse 7.5x)?
+# Spatial-only DI with more spatial samples, on ReGIR with per-pixel tiles (i16_regir_tiles' best)
+base    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on
+seeds   2
+cases   cafe.tables cafe.dining
+views   Lit "Direct lighting"
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on di.spatialOnly=on
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on di.spatialOnly=on di.spatialSamples=4
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on di.spatialOnly=on di.spatialSamples=8
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on di.spatialOnly=on di.localSamples=16 di.spatialSamples=4
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir di.perPixelLightTiles=on di.permutation=off

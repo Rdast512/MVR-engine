@@ -39,6 +39,8 @@ public:
     static constexpr vk::Format kGiDuplicationFormat = vk::Format::eR32Sfloat;
     // DLSS-RR pInSpecularHitDistance, as reference/vk_gltf_renderer's eDlssSpecularHitDist
     static constexpr vk::Format kSpecularHitDistanceFormat = vk::Format::eR16Sfloat;
+    // the settings lab's converged DLSS-RR input: sum and count (m8 I16)
+    static constexpr vk::Format kDlssInputAccumulationFormat = vk::Format::eR32G32B32A32Sfloat;
 
     // an image with the view NGX needs; the descriptor heap does not keep views
     struct ImageRef
@@ -178,6 +180,7 @@ private:
     Target giSampleIds;
     Target giDuplication;
     Target specularHitDistanceTarget;
+    Target dlssInputAccumulation;
     // sampled depth for the resolve and debug views
     uint32_t depthIndex = kNoneIndex;
     // sampler heap index; samplers are never freed

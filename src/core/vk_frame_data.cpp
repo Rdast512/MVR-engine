@@ -100,7 +100,7 @@ void FrameData::writeFrameRoot(uint32_t frameSlot, const FrameRootInputs& inputs
         .rtxdiConstants = inputs.rtxdiConstants,
         .cacheConstants = inputs.cacheConstants,
         .frameIndex = inputs.frameIndex,
-        .exposure = 1.0f,
+        .exposure = inputs.dlssInputScale,
         .worldLights = inputs.worldLights,
         .prevWorldLights = inputs.prevWorldLights,
         .rayDebug = inputs.rayDebug,
@@ -111,6 +111,8 @@ void FrameData::writeFrameRoot(uint32_t frameSlot, const FrameRootInputs& inputs
         .glassFlags = inputs.glassFlags,
         .glassMaxLayers = inputs.glassMaxLayers,
         .glassCounters = inputs.glassCounters,
+        .preDenoiserClamp = inputs.preDenoiserClamp,
+        .inputHistoryWeight = inputs.inputHistoryWeight,
     };
 }
 

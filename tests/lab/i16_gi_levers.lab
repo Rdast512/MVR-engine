@@ -1,0 +1,14 @@
+# I16 pops: GI's share of the café noise with only indirect light into DLSS-RR (i16_attrib: GI pops last 19-24
+# frames, as GI's 20-frame history)
+base    di=shipped gi=shipped frame=shipped frame.inputTerms=indirect
+seeds   3
+cases   cafe.tables cafe.dining
+views   Lit
+kinds   stability
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=indirect gi.history=4
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=indirect gi.history=8
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=indirect gi.age=8
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=indirect gi.spatialSamples=0
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=indirect frame.indirectMode=nrc
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=indirect frame.indirectMode=restirGi
+sets    di=shipped gi=shipped frame=shipped frame.inputTerms=indirect nrc.idleTrainingFrames=0

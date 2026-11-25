@@ -1,0 +1,7 @@
+# I16 pops: DI bias of ReGIR alone, 3 seeds (§7.9)
+base    di=shipped gi=shipped frame=shipped di.sampling=regir
+seeds   3
+cases   cafe.tables cafe.dining
+views   Lit
+kinds   diBias
+sets    di=shipped gi=shipped frame=shipped di.sampling=regir

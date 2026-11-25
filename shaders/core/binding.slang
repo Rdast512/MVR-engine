@@ -8,6 +8,7 @@ public Texture2D tex2D(uint heapIndex)
 
 // Slang ImageFormat values (SlangImageFormat in slang.h; tests/layout_test.cpp checks them). A storage image
 // declares the format of its view, so writes need no StorageImageWriteWithoutFormat
+public static const int kImageFormatRgba32f = 1;
 public static const int kImageFormatRgba16f = 2;
 public static const int kImageFormatRg16f = 4;
 public static const int kImageFormatR11g11b10f = 5;

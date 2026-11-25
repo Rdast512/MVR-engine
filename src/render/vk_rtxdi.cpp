@@ -430,6 +430,11 @@ RtxdiContext::Settings RtxdiContext::defaultSettings()
     //   frames, which DLSS-RR shows as local light pops; at 4 the café's pops are 38% fewer and 40% dimmer, Lit std
     //   -13% / -21%, Bistro street flicker 27% -> 6%, DI bias unchanged
     settings.maxHistoryLength = 4;
+    // - Per-pixel light tiles with 32 local candidates (m8 I16 §7.9): a 16x16 tile's shared RIS tile made its lucky
+    //   draws light the tile at once (pops); per pixel, the 32 candidates are independent across pixels. Café Lit std
+    //   3.36 / 3.93% -> 2.76 / 2.95%, dining pops 56% -> 27%, DI bias unchanged, +0.54 ms on Bistro street
+    settings.areLightTilesPerPixel = true;
+    settings.localLightSamples.fill(32);
     settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
     settings.isFinalVisibilityReused = false;
     return settings;
@@ -548,8 +553,9 @@ bool RtxdiContext::isReferenceRequested()
 void RtxdiContext::configure()
 {
     rtxdi::ReSTIRDIContext& context = restirDi();
-    context.SetResamplingMode(isReference ? rtxdi::ReSTIRDI_ResamplingMode::None
-                                          : rtxdi::ReSTIRDI_ResamplingMode::TemporalAndSpatial);
+    context.SetResamplingMode(isReference    ? rtxdi::ReSTIRDI_ResamplingMode::None
+                              : isSpatialOnly ? rtxdi::ReSTIRDI_ResamplingMode::Spatial
+                                              : rtxdi::ReSTIRDI_ResamplingMode::TemporalAndSpatial);
     RTXDI_DIInitialSamplingParameters initialSampling = rtxdi::GetDefaultReSTIRDIInitialSamplingParams();
     // Power_RIS: unbiased, and its 32 candidates converge the lamp's 5,985 bulb triangles in 1,024 frames, which
     // uniform selection does not (+0.3% residual at 8,192 frames)
@@ -599,6 +605,7 @@ void RtxdiContext::configure()
     shading.reuseFinalVisibility = settings.isFinalVisibilityReused ? 1u : 0u;
     context.SetShadingParameters(shading);
     isReferenceApplied = isReference;
+    isSpatialOnlyApplied = isSpatialOnly;
     appliedSettings = settings;
 }
 
@@ -651,7 +658,7 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
     const uint32_t rtxdiFrame = frameIndexOverride.value_or(frameIndex);
     context.SetFrameIndex(rtxdiFrame);
     giContext.SetFrameIndex(rtxdiFrame);
-    if (isReference != isReferenceApplied) {
+    if (isReference != isReferenceApplied || isSpatialOnly != isSpatialOnlyApplied) {
         configure();
         logInfo(std::format("ReSTIR DI: {}", isReference ? "reference (no reuse)" : "temporal and spatial"), "Rtxdi");
     } else if (settings != appliedSettings) {
@@ -710,7 +717,9 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
                                       .numLights = worldLights.infiniteLightCount(),
                                       .pad1 = 0,
                                       .pad2 = 0},
-        .environmentLightParams = {.lightPresent = 0, .lightIndex = 0, .pad1 = 0, .pad2 = 0},
+        // RTXDI tells a BRDF hit on the environment by index alone (InitialSampling.hlsli), so 0 would give local
+        // light 0 the environment's MIS weight
+        .environmentLightParams = {.lightPresent = 0, .lightIndex = RTXDI_INVALID_LIGHT_INDEX, .pad1 = 0, .pad2 = 0},
     };
     importanceSampling->SetLightBufferParams(lightBuffer);
 
@@ -761,7 +770,8 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
         .lightPdfSize = {.width = lightPdfSide, .height = lightPdfSide},
         .giDecorrelation = decorrelationParameters(giSettings),
         .giHistoryReductionStrength = giSettings.historyReductionStrength,
-        .diFlags = settings.areInfiniteLightsShadedExactly ? DiFlag::ExactInfiniteLights : 0u,
+        .diFlags = (settings.areInfiniteLightsShadedExactly ? DiFlag::ExactInfiniteLights : 0u) |
+            (settings.areLightTilesPerPixel ? DiFlag::PerPixelLightTiles : 0u),
         .diNeighborOffsets = diNeighborOffsets.address,
     };
     std::memcpy(constants[frameSlot].mapped, &data, sizeof(data));

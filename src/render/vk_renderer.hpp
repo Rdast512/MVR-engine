@@ -86,6 +86,12 @@ public:
     void resetDlssHistory() noexcept { isDlssHistoryValid = false; }
     // extra GpuFrameRoot::frameFlags bits for self-test runners (ENGINE_DLSS_CHECK, m8 I14 F25)
     uint32_t extraFrameFlags = 0;
+    // GpuFrameRoot::exposure: the settings lab's DLSS-RR input scale (m8 I16)
+    float dlssInputScale = 1.0f;
+    // GpuFrameRoot::preDenoiserClamp; 0 is off (full_testing T11)
+    float preDenoiserClamp = 0.0f;
+    // GpuFrameRoot::inputHistoryWeight; 0 is off (settings lab, m8 I16)
+    float inputHistoryWeight = 0.0f;
     // Lit with at least one light: present shows DLSS-RR. Lit without lights would be black, so it shows the unlit
     // albedo of the debug view pass, as before H1
     [[nodiscard]] bool isDlssPresented() const
