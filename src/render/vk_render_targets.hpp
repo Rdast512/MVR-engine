@@ -9,6 +9,7 @@
 #include "util/vk_utils.hpp"
 
 #include <array>
+#include <utility>
 #include <vulkan/vulkan_raii.hpp>
 
 // render-resolution targets of the visibility-buffer path (spec/features/done/visibility_buffer.md §3.6): the depth
@@ -41,6 +42,8 @@ public:
     static constexpr vk::Format kSpecularHitDistanceFormat = vk::Format::eR16Sfloat;
     // the settings lab's converged DLSS-RR input: sum and count (m8 I16)
     static constexpr vk::Format kDlssInputAccumulationFormat = vk::Format::eR32G32B32A32Sfloat;
+    // the Accumulation AA mode's running mean: 32-bit floats keep the low bits of a 1,024-frame mean
+    static constexpr vk::Format kAccumulatedFormat = vk::Format::eR32G32B32A32Sfloat;
 
     // an image with the view NGX needs; the descriptor heap does not keep views
     struct ImageRef
@@ -61,10 +64,15 @@ public:
 
     // device idle; depth first, every target at renderExtent except the DLSS-RR output at displayExtent
     void recreate(vk::Extent2D renderExtent, vk::Extent2D displayExtent);
+    // allocates the RGBA32F input accumulation target on first lab use and schedules a zero clear for the next frame
+    void ensureDlssInputAccumulation();
+    void requestDlssInputAccumulationClear() noexcept { isDlssInputAccumulationClearPending = true; }
+    // records any pending lazy-target transition and zero clear before the frame's compute passes
+    void recordPendingInit(vk::raii::CommandBuffer& cmd);
     // writes the slot's GpuTargets with the guide set of frameNumber's parity; isUpscaledPresented: present reads the
-    // DLSS-RR output instead of the display image; isSpecularHitDistanceWritten: kNoneIndex otherwise so passes skip it
+    // DLSS-RR output instead of the display image; optional lab/guide storage views stay kNoneIndex when unused
     void prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool isUpscaledPresented,
-                      bool isSpecularHitDistanceWritten = false);
+                      bool isSpecularHitDistanceWritten = false, bool isDlssInputAccumulated = false);
 
     // depth, vis buffer, guides and every culling size: the DLSS render resolution
     [[nodiscard]] vk::Extent2D getExtent() const noexcept { return extent; }
@@ -86,6 +94,21 @@ public:
     }
     // display resolution, eGeneral
     [[nodiscard]] ImageRef upscaled() const { return imageRef(upscaledTarget, kUpscaledFormat); }
+    // resource heap, sampled: the post inputs
+    [[nodiscard]] uint32_t upscaledSampledIndex() const noexcept { return upscaledTarget.sampledIndex; }
+    [[nodiscard]] uint32_t noisyColorSampledIndex() const noexcept { return noisyColorTarget.sampledIndex; }
+
+    // Accumulation AA (spec/features/planned/nvidia_settings_layout.md §4.4): display resolution, eGeneral, created
+    // only while the mode runs. Creation is safe between frames: it writes free heap slots only
+    void ensureAccumulated();
+    // no frame in flight may still read it
+    void releaseAccumulated();
+    [[nodiscard]] bool hasAccumulated() const noexcept { return accumulatedTarget.image != nullptr; }
+    // true once after ensureAccumulated created it: the next pass transitions it from eUndefined
+    [[nodiscard]] bool takeAccumulatedLayoutPending() noexcept { return std::exchange(isAccumulatedLayoutPending, false); }
+    [[nodiscard]] vk::Image getAccumulatedImage() const noexcept { return *accumulatedTarget.image; }
+    [[nodiscard]] uint32_t accumulatedStorageIndex() const noexcept { return accumulatedTarget.storageIndex; }
+    [[nodiscard]] uint32_t accumulatedSampledIndex() const noexcept { return accumulatedTarget.sampledIndex; }
     // display resolution, eGeneral: tonemapped, what Lit presents
     [[nodiscard]] ImageRef post() const { return imageRef(postTarget, kPostFormat); }
     // the slot's GpuTargets, for the frame root
@@ -182,6 +205,10 @@ private:
     Target giDuplication;
     Target specularHitDistanceTarget;
     Target dlssInputAccumulation;
+    Target accumulatedTarget;
+    bool isAccumulatedLayoutPending = false;
+    bool isDlssInputAccumulationInitialized = false;
+    bool isDlssInputAccumulationClearPending = false;
     // sampled depth for the resolve and debug views
     uint32_t depthIndex = kNoneIndex;
     // sampler heap index; samplers are never freed

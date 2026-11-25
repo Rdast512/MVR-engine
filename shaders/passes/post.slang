@@ -2,7 +2,7 @@ import types;
 import core.binding;
 import core.frame;
 
-// DLSS-RR output × exposure -> one tonemap curve (ACES, Stephen Hill's fit of the RRT + sRGB ODT) -> the post target,
+// post input (DLSS-RR's output, noisyColor or the accumulated mean) × exposure -> one tonemap curve (ACES, Stephen Hill's fit of the RRT + sRGB ODT) -> the post target,
 // linear [0, 1]; present writes it into the sRGB swapchain. The only tonemap in the frame (PBR plan H2)
 
 static const uint kPostTile = 8;
@@ -29,18 +29,24 @@ float3 acesFitted(float3 color)
     return saturate(mul(kAcesOutput, rrtAndOdtFit(mul(kAcesInput, color))));
 }
 
-[[vk::push_constant]] ConstantBuffer<FramePushData> push;
+[[vk::push_constant]] ConstantBuffer<PostPushData> push;
 
 [shader("compute")]
 [numthreads(kPostTile, kPostTile, 1)]
 void postMain(uint3 id : SV_DispatchThreadID)
 {
-    const GpuTargets targets = loadTargets(bdaPtr<GpuFrameRoot>(push.frameRoot)[0]);
+    const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
+    const GpuTargets targets = loadTargets(root);
     if (any(id.xy >= targets.displaySize))
     {
         return;
     }
     const float exposure = storageTex2D<float, kImageFormatR32f>(targets.exposureStorage)[uint2(0, 0)];
-    const float3 color = tex2D(targets.upscaledSampled).Load(int3(id.xy, 0)).rgb * exposure;
+    float3 postInput = tex2D(push.input).Load(int3(id.xy, 0)).rgb;
+    if (root.exposure != 1.0)
+    {
+        postInput /= max(root.exposure, 1e-6);
+    }
+    const float3 color = postInput * exposure;
     storageTex2D<float4, kImageFormatRgba16f>(targets.postStorage)[id.xy] = float4(acesFitted(max(color, 0.0)), 1.0);
 }

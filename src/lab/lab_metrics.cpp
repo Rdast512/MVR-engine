@@ -59,6 +59,9 @@ namespace labMetrics
             extent = frameExtent;
             blockExtent = vk::Extent2D{(extent.width + kPopBlockPixels - 1) / kPopBlockPixels,
                                        (extent.height + kPopBlockPixels - 1) / kPopBlockPixels};
+            const size_t blocks = size_t{blockExtent.width} * blockExtent.height;
+            blockSum.assign(blocks, 0.0);
+            blockSquaredSum.assign(blocks, 0.0);
         }
         double frameSum = 0.0;
         for (size_t texel = 0; texel < texels; ++texel) {
@@ -84,7 +87,10 @@ namespace labMetrics
                 }
             }
             for (size_t block = 0; block < blocks; ++block) {
-                blockMeans.push_back(static_cast<float>(blockSums[block] / blockTexels[block]));
+                const double mean = blockSums[block] / blockTexels[block];
+                blockSum[block] += mean;
+                blockSquaredSum[block] += mean * mean;
+                blockMeans.push_back(static_cast<float>(mean));
             }
         }
         previous.assign(luminance.begin(), luminance.end());
@@ -183,19 +189,15 @@ namespace labMetrics
                 continue;
             }
             ++litBlocks;
-            double blockSum = 0.0;
-            double blockSquared = 0.0;
             for (size_t frame = 0; frame < frames; ++frame) {
                 scratch[frame] = static_cast<float>(std::abs(series[frame] - median));
-                blockSum += series[frame];
-                blockSquared += double{series[frame]} * series[frame];
             }
-            const double blockMean = blockSum / count;
-            const double blockVariance = std::max(blockSquared / count - blockMean * blockMean, 0.0);
+            const double blockMean = blockSum[block] / count;
+            const double blockVariance = std::max(blockSquaredSum[block] / count - blockMean * blockMean, 0.0);
             blockStdSum += blockMean > 0.0 ? std::sqrt(blockVariance) / blockMean : 0.0;
             const double pixels = blockPixels[block];
             const double independentVariance = blockPixelVariance[block] / (pixels * pixels);
-            if (independentVariance > 0.0) {
+            if (independentVariance > 1e-12 * blockMean * blockMean) {
                 blockCorrelationSum += blockVariance / independentVariance;
                 ++correlatedBlocks;
             }

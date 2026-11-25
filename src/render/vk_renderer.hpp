@@ -16,6 +16,7 @@
 #include "vk_indirect.hpp"
 #include "vk_nrc.hpp"
 #include "debug_view.hpp"
+#include "denoiser_mode.hpp"
 #include "glass_settings.hpp"
 #include "indirect_mode.hpp"
 #include "vk_meshlet_culling.hpp"
@@ -66,6 +67,13 @@ public:
     GlassSettings glass;
     // read once per recorded frame; a change resets ReSTIR GI and DLSS-RR history for one frame
     IndirectMode indirectMode = kDefaultIndirectMode;
+    // read at a frame boundary (spec/features/planned/nvidia_settings_layout.md §4.1): a change rebuilds the targets
+    // like a DLSS mode change, since Off renders at the display extent
+    DenoiserMode denoiser = DenoiserMode::DlssRr;
+    // read while the denoiser is off
+    AaMode aaMode = AaMode::None;
+    // Accumulation: frames averaged at most, then an exponential mean of that length; 0 = no limit
+    uint32_t accumulationFrameLimit = 0;
     // set by the check runners: exposure adaptation and DLSS-RR advance by this instead of the wall clock, so a run
     // repeats frame for frame (spec/fixesM1-6/i1_check_runners.md)
     std::optional<float> fixedFrameDeltaMs;
@@ -92,12 +100,23 @@ public:
     float preDenoiserClamp = 0.0f;
     // GpuFrameRoot::inputHistoryWeight; 0 is off (settings lab, m8 I16)
     float inputHistoryWeight = 0.0f;
-    // Lit with at least one light: present shows DLSS-RR. Lit without lights would be black, so it shows the unlit
-    // albedo of the debug view pass, as before H1
-    [[nodiscard]] bool isDlssPresented() const
+    // Lit with at least one light: present shows the post target. Lit without lights would be black, so it shows the
+    // unlit albedo of the debug view pass, as before H1
+    [[nodiscard]] bool isLitPresented() const { return debugView.view == DebugView::Lit && worldLights.hasLights(); }
+    // DLSS-RR reconstructs the post input: the Lit view with the denoiser on
+    [[nodiscard]] bool isDlssEvaluated() const
     {
-        return debugView.view == DebugView::Lit && worldLights.hasLights();
+        return isLitPresented() && appliedDenoiser == DenoiserMode::DlssRr;
     }
+    // the Accumulation AA mode runs: post reads the running mean of noisyColor
+    [[nodiscard]] bool isAccumulationActive() const
+    {
+        return isLitPresented() && appliedDenoiser == DenoiserMode::Off && aaMode == AaMode::Accumulation;
+    }
+    // frames in the running mean as of the last recorded frame; 0 outside the Accumulation mode
+    [[nodiscard]] uint32_t getAccumulatedFrames() const noexcept { return accumulatedFrames; }
+    // the next frame starts a new mean, as the RTXDI sample's resetAccumulation (any lighting setting edit)
+    void resetAccumulation() noexcept { isAccumulationResetRequested = true; }
     // rolling 120-frame averages of CPU frame work (F8, against 2 ms budget)
     struct CpuStats
     {
@@ -177,6 +196,10 @@ private:
     [[nodiscard]] const vk::raii::CommandBuffer& recordReconstruction(const vk::raii::CommandBuffer& cmd);
     // thin-walled glass layers over noisyColor, between combine and DLSS-RR (m8 I13)
     void recordGlass(const vk::raii::CommandBuffer& cmd);
+    // after the fence: the running mean's frame count (§4.4), and the accumulated target's creation and retirement
+    void prepareAccumulation();
+    // noisyColor into the running mean; returns the post input
+    [[nodiscard]] uint32_t recordAccumulation(const vk::raii::CommandBuffer& cmd);
     void recordDebugView(const vk::raii::CommandBuffer& cmd);
     void recordMotionCheck(const vk::raii::CommandBuffer& cmd);
     void recordRayCheck(const vk::raii::CommandBuffer& cmd);
@@ -255,10 +278,38 @@ private:
     };
     std::optional<PendingPresent> pendingPresent;
     Dlss dlss;
+    // the denoiser the targets were built for; see denoiser
+    DenoiserMode appliedDenoiser = DenoiserMode::DlssRr;
+    // frames in the running mean, 0 while the Accumulation mode is not active
+    uint32_t accumulatedFrames = 0;
+    bool isAccumulationResetRequested = false;
+    // the last frame that recorded the accumulate pass; its target is released once that frame retired
+    uint32_t lastAccumulationFrame = 0;
+    // still camera test: the unjittered view of the last frame (the RTXDI sample compares GetViewMatrix())
+    glm::mat4 lastAccumulationView{0.0f};
+    WorldLights::Sun lastAccumulationSun{};
     PostProcess post;
     // false after a resize or a frame without the Lit view: the next evaluation resets DLSS history
     bool isDlssHistoryValid = false;
     Dlss::Guides appliedDlssGuides{};
+    enum class DlssInputAccumulationMode : uint8_t
+    {
+        None,
+        Ema,
+        Accumulate,
+        Frozen,
+    };
+    struct DlssInputState
+    {
+        float scale = 1.0f;
+        float clamp = 0.0f;
+        float historyWeight = 0.0f;
+        uint32_t flags = 0;
+
+        bool operator==(const DlssInputState&) const = default;
+    };
+    DlssInputAccumulationMode appliedAccumulationMode = DlssInputAccumulationMode::None;
+    DlssInputState appliedDlssInput{};
     // world light rows of the last frame; a change (load, unload, sun toggle) resets history, since reservoirs hold
     // light indices
     uint32_t lastLightCount = 0;

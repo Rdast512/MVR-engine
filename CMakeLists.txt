@@ -308,6 +308,7 @@ engine_add_slang_pass(passes/combine.slang ENTRIES combineMain)
 engine_add_slang_pass(passes/glass.slang ENTRIES glassMain FLAGS ${RTXDI_SLANG_FLAGS})
 engine_add_slang_pass(passes/exposure.slang ENTRIES exposureHistogramMain exposureAdaptMain)
 engine_add_slang_pass(passes/post.slang ENTRIES postMain)
+engine_add_slang_pass(passes/accumulate.slang ENTRIES accumulateMain)
 
 add_custom_target(Shaders ALL DEPENDS ${COMPILED_SHADERS})
 

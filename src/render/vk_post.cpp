@@ -50,7 +50,7 @@ PostProcess::~PostProcess()
 }
 
 void PostProcess::record(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot, vk::DeviceAddress frameRoot,
-                         vk::Extent2D displayExtent, float deltaSeconds)
+                         uint32_t input, vk::Extent2D displayExtent, float deltaSeconds)
 {
     uint32_t flags = settings.isAutoExposure ? ExposureFlag::Auto : 0u;
     if (isSnapPending) {
@@ -69,11 +69,13 @@ void PostProcess::record(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot,
         .adaptationSpeedUp = settings.adaptationSpeedUp,
         .adaptationSpeedDown = settings.adaptationSpeedDown,
         .flags = flags,
+        .input = input,
+        .pad0 = 0,
     };
     const vk::PushDataInfoEXT exposurePushInfo{.offset = 0,
                                                .data = {.address = &exposurePush, .size = sizeof(exposurePush)}};
 
-    // DLSS-RR's output and the last exposure pass's histogram clear -> the histogram
+    // the input's writes and the last exposure pass's histogram clear -> the histogram
     postComputeBarrier(cmd);
     ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.exposureHistogram);
     cmd.pushDataEXT(exposurePushInfo);
@@ -85,7 +87,7 @@ void PostProcess::record(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot,
     cmd.dispatch(1, 1, 1);
     postComputeBarrier(cmd);
 
-    const FramePushData postPush{.frameRoot = frameRoot};
+    const PostPushData postPush{.frameRoot = frameRoot, .input = input, .pad0 = 0};
     ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.post);
     cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &postPush, .size = sizeof(postPush)}});
     cmd.dispatch(postGroupCount(displayExtent.width, kPostTonemapTile), postGroupCount(displayExtent.height, kPostTonemapTile), 1);

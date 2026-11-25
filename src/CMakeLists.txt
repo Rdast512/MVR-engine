@@ -80,7 +80,7 @@ add_library(engine_runtime SHARED core/vk_engine.cpp core/vk_engine.hpp core/eng
     core/convergence_metrics.cpp core/convergence_metrics.hpp
     lab/engine_lab.cpp lab/engine_lab.hpp lab/lab_cases.hpp lab/lab_metrics.cpp lab/lab_metrics.hpp
     lab/lab_plan.cpp lab/lab_plan.hpp lab/settings_registry.cpp lab/settings_registry.hpp
-    ui/engine_ui.cpp ui/engine_ui.hpp)
+    ui/engine_ui.cpp ui/engine_ui.hpp ui/settings_rows.hpp ui/settings_window.cpp ui/settings_window.hpp ui/ui_color.hpp)
 target_compile_definitions(engine_runtime PRIVATE ENGINE_LOG_DLL=\"runtime\")
 target_link_libraries(engine_runtime
     PUBLIC

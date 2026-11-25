@@ -132,6 +132,9 @@ public:
         return constants[frameSlot].address;
     }
     [[nodiscard]] vk::Extent2D getTrainingExtent() const noexcept { return usedTrainingExtent; }
+    // the SDK settings the engine fixes, for the settings window's disabled RTXGI rows
+    [[nodiscard]] const nrc::ContextSettings& getContextSettings() const noexcept { return contextSettings; }
+    [[nodiscard]] nrc::FrameSettings frameSettings() const;
 
     Settings settings;
 
@@ -151,7 +154,6 @@ private:
     void destroySdkBuffers();
     void ensureDebugResolveTarget();
     void destroyDebugResolveTarget();
-    [[nodiscard]] nrc::FrameSettings frameSettings() const;
 
     const Device& device;
     const VkAllocator& allocator;

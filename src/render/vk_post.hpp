@@ -11,7 +11,7 @@
 
 class ShaderObjects;
 
-// PBR plan H2, engine spec §12.3: auto exposure from a luminance histogram of the DLSS-RR output, then one tonemap
+// PBR plan H2, engine spec §12.3: auto exposure from a luminance histogram of the post input, then one tonemap
 // curve into the display-resolution post target that present shows. The exposure lives in a 1x1 R32F image
 // (RenderTargets), shared by adaptation and tonemapping
 class PostProcess
@@ -42,8 +42,9 @@ public:
     PostProcess(PostProcess&&) = delete;
     PostProcess& operator=(PostProcess&&) = delete;
 
-    // after DLSS-RR wrote its output: histogram -> exposure -> tonemap into the post target
-    void record(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot, vk::DeviceAddress frameRoot,
+    // after input was written: histogram -> exposure -> tonemap into the post target. input: resource heap, sampled,
+    // at displayExtent (DLSS-RR's output, or noisyColor / the accumulated mean while the denoiser is off)
+    void record(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot, vk::DeviceAddress frameRoot, uint32_t input,
                 vk::Extent2D displayExtent, float deltaSeconds);
     // after the slot's fence: keeps what the slot's last record measured
     void readBack(uint32_t frameSlot);

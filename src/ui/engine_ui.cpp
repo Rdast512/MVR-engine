@@ -7,10 +7,11 @@
     #include "core/vk_device.hpp"
     #include "core/vk_asset_buffers.hpp"
     #include "core/vk_swapchain.hpp"
-    #include "lab/settings_registry.hpp"
     #include "render/vk_renderer.hpp"
     #include "scene/vk_camera.hpp"
     #include "scene/vk_scene.hpp"
+    #include "settings_window.hpp"
+    #include "ui_color.hpp"
 
     #include "imgui.h"
     #include "imgui_impl_sdl3.h"
@@ -118,15 +119,6 @@ namespace
     }
 
     [[nodiscard]] double toMiB(vk::DeviceSize bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); }
-
-    // the swapchain is *_SRGB, so ImGui's sRGB-authored colors must be stored linear
-    [[nodiscard]] ImVec4 srgbToLinear(const ImVec4& color)
-    {
-        const auto channel = [](float c) {
-            return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
-        };
-        return {channel(color.x), channel(color.y), channel(color.z), color.w};
-    }
 
     [[nodiscard]] std::string formatSize(vk::DeviceSize bytes)
     {
@@ -260,16 +252,6 @@ namespace
         }
     }
 
-    // enum values need not be contiguous (RTXDI's temporal bias modes skip Pairwise)
-    template <typename Enum, size_t Count>
-    void comboEnum(const char* label, Enum& value, const std::array<const char*, Count>& names,
-                   const std::array<Enum, Count>& values)
-    {
-        int index = static_cast<int>(std::ranges::find(values, value) - values.begin());
-        if (ImGui::Combo(label, &index, names.data(), static_cast<int>(Count))) {
-            value = values[static_cast<size_t>(index)];
-        }
-    }
 } // namespace
 
 EngineUi::EngineUi(const UiContext& context) : context(context)
@@ -419,9 +401,14 @@ void EngineUi::buildFrame(const FrameStats& stats)
         if (!hasScannedAssets) {
             scanFolder();
         }
-        constexpr ImVec2 kWindowPos{16.0f, 16.0f};
+        // top right, below the stats overlay: the Settings window takes the top left
+        constexpr float kWindowMargin = 16.0f;
+        constexpr float kStatsHeight = 64.0f;
         constexpr ImVec2 kWindowSize{480.0f, 0.0f};
-        ImGui::SetNextWindowPos(kWindowPos, ImGuiCond_FirstUseEver);
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos({viewport->WorkPos.x + viewport->WorkSize.x - kWindowMargin,
+                                 viewport->WorkPos.y + kStatsHeight},
+                                ImGuiCond_Once, {1.0f, 0.0f});
         ImGui::SetNextWindowSize(kWindowSize, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Engine")) {
             drawLoadPanel();
@@ -430,12 +417,10 @@ void EngineUi::buildFrame(const FrameStats& stats)
             drawCameraPanel();
             drawDebugViewPanel();
             drawCullingPanel();
-            drawSunPanel();
-            drawRayTracingPanel();
-            drawPostPanel();
             drawInstanceFieldPanel();
         }
         ImGui::End();
+        settingsWindow.draw();
     }
     ImGui::Render();
 }
@@ -457,8 +442,10 @@ void EngineUi::drawStatsOverlay(const FrameStats& stats) const
         // labels screenshots and captures taken in a debug view
         if (const DebugView view = context.renderer.debugView.view; view != DebugView::Lit) {
             ImGui::Text("View: %s", debugViewInfo(view).name);
-        } else if (!context.renderer.isDlssPresented()) {
+        } else if (!context.renderer.isLitPresented()) {
             ImGui::Text("No lights: unlit albedo");
+        } else if (context.renderer.isAccumulationActive()) {
+            ImGui::Text("Accumulating %u", context.renderer.getAccumulatedFrames());
         }
     }
     ImGui::End();
@@ -737,9 +724,6 @@ void EngineUi::drawCameraPanel()
     if (ImGui::Button("Teleport")) {
         context.camera.teleportTo(glm::make_vec3(teleportPosition.data()));
     }
-    ImGui::Checkbox("Jitter", &context.camera.isJitterEnabled);
-    ImGui::SetItemTooltip("Halton(2,3) subpixel jitter, %u phases. Only on frames DLSS-RR resolves",
-                          context.camera.getJitterPhaseCount());
 }
 
 void EngineUi::drawCullingPanel()
@@ -950,458 +934,6 @@ void EngineUi::drawCullingPanel()
         ImGui::PlotLines(std::format("##gpuTimer{}", i).c_str(), samples.data(), static_cast<int>(samples.size()),
                          timer.historyOffset(), overlay.c_str(), 0.0f, FLT_MAX, {-FLT_MIN, kPlotHeight});
     }
-}
-
-// runtime controls of what is built: RTX Mega Geometry (PTLAS), RTXDI and DLSS-RR. RTXGI (NRC, ReSTIR GI) has no pass
-// yet
-void EngineUi::drawRayTracingPanel()
-{
-    if (!ImGui::CollapsingHeader("Ray tracing")) {
-        return;
-    }
-    const auto sliderU32 = [](const char* label, uint32_t& value, uint32_t minimum, uint32_t maximum) {
-        ImGui::SliderScalar(label, ImGuiDataType_U32, &value, &minimum, &maximum, "%u", ImGuiSliderFlags_AlwaysClamp);
-    };
-
-    ImGui::SeparatorText("RTX Mega Geometry");
-    RayTracingScene::Settings& ptlas = context.renderer.getRayTracingScene().settings;
-    const RayTracingScene::Stats rt = context.renderer.getRayTracingStats();
-    ImGui::Text("PTLAS: %u instances in %u partitions, %u written, update %.3f ms", rt.instances, rt.partitions,
-                rt.writtenInstances, rt.tlasBuildMs);
-    ImGui::SetItemTooltip("one CLAS per meshlet and one cluster BLAS per primitive, built at load; the PTLAS is "
-                          "updated in place on async compute");
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
-    sliderU32("Instances per partition", ptlas.instancesPerPartition, 1, 1024);
-    ImGui::SetItemTooltip("grid density of the PTLAS partitions; a change rebuilds the PTLAS");
-    ImGui::Checkbox("Force full PTLAS build", &ptlas.isFullBuildForced);
-    ImGui::SetItemTooltip("rewrite every instance into an empty PTLAS each frame, to compare against the "
-                          "changed-only update");
-
-    ImGui::SeparatorText("RTXDI (ReSTIR DI)");
-    const WorldLights& lights = context.renderer.getWorldLights();
-    ImGui::Text("Lights: %u punctual, %u triangle, %u infinite", lights.punctualLocalLightCount(),
-                lights.triangleLightCount(), lights.infiniteLightCount());
-    ImGui::SetItemTooltip("world light rows: point and spot, one per triangle of every emissive primitive instance "
-                          "(RTXDI's local region), then directional and the sun");
-    ImGui::Checkbox("Sample triangle lights", &context.renderer.getWorldLights().areTriangleLightsSampled);
-    ImGui::SetItemTooltip("off: RTXDI samples point, spot and directional lights only, and rays that hit an emissive "
-                          "triangle add its emission instead; resets lighting history");
-    RtxdiContext& rtxdi = context.renderer.getRtxdi();
-    RtxdiContext::Settings& di = rtxdi.settings;
-    ImGui::Checkbox("Reference (no reuse)", &rtxdi.isReference);
-    ImGui::SetItemTooltip("no reuse, 32 local + 8 infinite candidates: the unbiased ground truth of the reuse passes");
-    ImGui::BeginDisabled(rtxdi.isReference);
-    comboEnum("Local light sampling", di.localLightSamplingMode, std::array{"Uniform", "Power RIS", "ReGIR RIS"},
-              std::array{ReSTIRDI_LocalLightSamplingMode::Uniform, ReSTIRDI_LocalLightSamplingMode::Power_RIS,
-                         ReSTIRDI_LocalLightSamplingMode::ReGIR_RIS});
-    ImGui::SetItemTooltip("how point, spot and triangle light candidates are picked, at the primary surface and at "
-                          "every path vertex: uniformly, from tiles presampled by power, or from the tiles of the "
-                          "world-space cell around the surface (ReGIR)");
-    sliderU32("Local light candidates", di.activeLocalLightSamples(), 0, 64);
-    ImGui::SetItemTooltip("initial RIS candidates per pixel from point, spot and triangle lights; each sampling mode "
-                          "keeps its own count");
-    ImGui::Checkbox("Exact directional lights", &di.areInfiniteLightsShadedExactly);
-    ImGui::SetItemTooltip("shade directional lights in the shade pass with one shadow ray each instead of as RIS "
-                          "candidates: no reuse noise on the sun");
-    ImGui::BeginDisabled(di.areInfiniteLightsShadedExactly);
-    sliderU32("Infinite light candidates", di.infiniteLightSamples, 0, 16);
-    ImGui::SetItemTooltip("initial RIS candidates per pixel from directional lights");
-    ImGui::EndDisabled();
-    sliderU32("BRDF candidates", di.brdfSamples, 0, 4);
-    ImGui::SetItemTooltip("one ray each along a BRDF sample; a hit on an emissive triangle names its light");
-    ImGui::EndDisabled();
-    ImGui::Checkbox("Initial visibility", &di.isInitialVisibilityEnabled);
-    ImGui::SetItemTooltip("one shadow ray per pixel in the initial pass; occluded samples are dropped before reuse");
-
-    ImGui::BeginDisabled(rtxdi.isReference);
-    sliderU32("Max history length", di.maxHistoryLength, 1, 64);
-    ImGui::SetItemTooltip("frames of temporal reuse: longer is smoother, slower to react to changes");
-    comboEnum("Temporal bias correction", di.temporalBiasCorrection, std::array{"Off", "Basic", "Ray traced"},
-              std::array{ReSTIRDI_TemporalBiasCorrectionMode::Off, ReSTIRDI_TemporalBiasCorrectionMode::Basic,
-                         ReSTIRDI_TemporalBiasCorrectionMode::Raytraced});
-    ImGui::SetItemTooltip("Ray traced adds a shadow ray per pixel reusing last frame's sample");
-    ImGui::Checkbox("Visibility shortcut", &di.isVisibilityShortcutEnabled);
-    ImGui::SetItemTooltip("skip the temporal bias-correction ray for samples tested at their pixel last frame");
-    ImGui::SameLine();
-    ImGui::Checkbox("Fallback sampling", &di.isFallbackSamplingEnabled);
-    ImGui::SetItemTooltip("when no history pixel matches, reuse last frame's reservoir at the same pixel (RTXDI 3.2, "
-                          "aimed at screen-edge disocclusions; considerations C-M4-1)");
-    ImGui::Checkbox("Permutation sampling", &di.isPermutationSamplingEnabled);
-    ImGui::SetItemTooltip("take history from a permuted neighbor pixel: decorrelates frames for the denoiser, raises "
-                          "frame-to-frame change (considerations C-F3-3)");
-
-    // the stratified neighbor walk covers quadrants in pairs
-    sliderU32("Spatial samples", di.spatialSamples, 0, 16);
-    di.spatialSamples &= ~1u;
-    ImGui::SetItemTooltip("neighbor reservoirs merged per pixel by the spatial pass (even)");
-    sliderU32("Disocclusion boost samples", di.disocclusionBoostSamples, 0, 32);
-    di.disocclusionBoostSamples &= ~1u;
-    ImGui::SetItemTooltip("spatial samples while a pixel's history is shorter than the boost history length (even)");
-    sliderU32("Boost history length", di.disocclusionHistoryLength, 0, 64);
-    ImGui::SetItemTooltip("history length below which the disocclusion boost applies; 0 never boosts (RTXDI default)");
-    ImGui::SliderFloat("Sampling radius", &di.samplingRadius, 1.0f, 64.0f, "%.0f px", ImGuiSliderFlags_AlwaysClamp);
-    comboEnum("Spatial bias correction", di.spatialBiasCorrection, std::array{"Off", "Basic", "Pairwise", "Ray traced"},
-              std::array{ReSTIRDI_SpatialBiasCorrectionMode::Off, ReSTIRDI_SpatialBiasCorrectionMode::Basic,
-                         ReSTIRDI_SpatialBiasCorrectionMode::Pairwise, ReSTIRDI_SpatialBiasCorrectionMode::Raytraced});
-    ImGui::SetItemTooltip("Ray traced adds a shadow ray per merged neighbor");
-    ImGui::Checkbox("Material similarity", &di.isMaterialSimilarityTestEnabled);
-    ImGui::SetItemTooltip("reject neighbors whose roughness or reflectance differs too much");
-
-    ImGui::SliderFloat("Depth threshold", &di.depthThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("relative depth difference above which a neighbor or history pixel is rejected");
-    ImGui::SliderFloat("Normal threshold", &di.normalThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("minimum dot product of normals for a neighbor or history pixel to be reused");
-    ImGui::Checkbox("Boiling filter", &di.isBoilingFilterEnabled);
-    ImGui::SetItemTooltip("suppress reservoirs far brighter than their 8x8 tile, which spread as bright blotches");
-    ImGui::BeginDisabled(!di.isBoilingFilterEnabled);
-    ImGui::SliderFloat("Boiling strength", &di.boilingFilterStrength, 0.0f, 1.0f, "%.2f",
-                       ImGuiSliderFlags_AlwaysClamp);
-    ImGui::EndDisabled();
-    ImGui::Checkbox("Reuse final visibility", &di.isFinalVisibilityReused);
-    ImGui::SetItemTooltip("skip the shading ray for a sample tested at most 4 frames ago within 16 px; stale on "
-                          "moving geometry");
-    if (ImGui::Button("Defaults##di")) {
-        di = RtxdiContext::defaultSettings();
-    }
-    ImGui::SetItemTooltip("shipped: Power_RIS, fresh final visibility, no permutation, ray-traced disocclusion boost "
-                          "(8 samples while M < 4)");
-    ImGui::SameLine();
-    if (ImGui::Button("NVIDIA defaults")) {
-        di = RtxdiContext::nvidiaSettings();
-    }
-    ImGui::SetItemTooltip("the RTXDI sample's Medium preset");
-    ImGui::SameLine();
-    if (ImGui::Button("Converged")) {
-        di = RtxdiContext::convergedSettings();
-    }
-    ImGui::SetItemTooltip("the convergence check's configuration: ray-traced bias correction, temporal only, no "
-                          "fallback, permutation or boiling filter");
-    ImGui::EndDisabled();
-
-    ImGui::SeparatorText("Glass");
-    GlassSettings& glass = context.renderer.glass;
-    const uint32_t glassInstances = context.renderer.getRayTracingScene().glassRowCount();
-    const GpuGlassCounters& glassStats = context.renderer.getGlassCounters();
-    ImGui::Text("%u glass instances; %u pixels behind glass, %u early stops, %u at the cap", glassInstances,
-                glassStats.pixels, glassStats.earlyStops, glassStats.capped);
-    ImGui::SetItemTooltip("smooth thin-walled KHR_materials_transmission (roughness <= %.1f, no roughness texture): not "
-                          "rasterized, on its own ray mask; other transmissive materials render opaque (m8 I13)",
-                          kGlassMaxRoughness);
-    ImGui::BeginDisabled(glassInstances == 0);
-    ImGui::Checkbox("Glass pass", &glass.isPassEnabled);
-    ImGui::SetItemTooltip("composite the glass layers in front of each pixel before DLSS-RR; off: glass is invisible");
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.0f);
-    sliderU32("Max glass layers", glass.maxLayers, 1, kGlassMaxLayersLimit);
-    ImGui::SetItemTooltip("crossings a camera or shadow ray composites at most; back faces of single-sided glass do not "
-                          "count");
-    ImGui::Checkbox("Glass reflection", &glass.isReflectionEnabled);
-    ImGui::SetItemTooltip("Fresnel-weighted mirror ray per layer, shaded with emission and one light, no indirect");
-    ImGui::Checkbox("Glass diffuse share", &glass.isDiffuseShareEnabled);
-    ImGui::SetItemTooltip("the untransmitted dielectric share, Lambert with one sampled light");
-    ImGui::Checkbox("Glass emission", &glass.isEmissionEnabled);
-    ImGui::Checkbox("Shadow transmittance", &glass.isShadowTransmittanceEnabled);
-    ImGui::SetItemTooltip("final DI, X2's direct light and final ReSTIR GI shading multiply the transmittance of the "
-                          "glass on their segment; sampling and reuse stay glass-free");
-    ImGui::Checkbox("Blend DLSS guides with glass", &glass.isGuideBlendEnabled);
-    ImGui::SetItemTooltip("off: DLSS-RR's albedo guides are the surface behind the glass; on: blended with the glass "
-                          "layers' reflectance and diffuse share");
-    ImGui::EndDisabled();
-
-    ImGui::SeparatorText("DLSS Ray Reconstruction");
-    Dlss& dlss = context.renderer.getDlss();
-    const vk::Extent2D render = dlss.getRenderExtent();
-    const vk::Extent2D display = dlss.getDisplayExtent();
-    ImGui::Text("Render %ux%u -> display %ux%u (%.2fx), %u jitter phases", render.width, render.height, display.width,
-                display.height, static_cast<float>(display.width) / static_cast<float>(render.width),
-                context.camera.getJitterPhaseCount());
-    constexpr std::array kQualityModes{"DLAA", "Quality", "Balanced", "Performance", "Ultra Performance"};
-    int quality = static_cast<int>(dlss.settings.quality);
-    if (ImGui::Combo("Mode", &quality, kQualityModes.data(), static_cast<int>(kQualityModes.size()))) {
-        dlss.settings.quality = static_cast<Dlss::Quality>(quality);
-    }
-    ImGui::SetItemTooltip("render resolution: DLAA renders at display size. A change recreates the feature and the "
-                          "render targets, and resets history");
-    constexpr std::array kPresets{"Default", "D (transformer)", "E (latest transformer)", "F (RR2)"};
-    int preset = static_cast<int>(dlss.settings.preset);
-    if (ImGui::Combo("Preset", &preset, kPresets.data(), static_cast<int>(kPresets.size()))) {
-        dlss.settings.preset = static_cast<Dlss::Preset>(preset);
-    }
-    ImGui::SetItemTooltip("model hint; an NVIDIA app override takes precedence (NGX logs it as a DRS override)");
-    ImGui::Checkbox("Specular hit distance guide", &dlss.guides.isSpecularHitDistanceUsed);
-    ImGui::SetItemTooltip("feeds the primary bounce's specular-lobe hit distance to ray reconstruction "
-                          "(pInSpecularHitDistance)");
-    if (ImGui::Button("Reset history")) {
-        context.renderer.resetDlssHistory();
-    }
-    ImGui::SetItemTooltip("the next Lit frame starts without accumulated history");
-    if (!context.renderer.isDlssPresented()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled(context.renderer.debugView.view == DebugView::Lit
-                                ? "not evaluated: no lights, Lit shows unlit albedo"
-                                : "evaluated only in the Lit view");
-    }
-
-    if (ImGui::Button("Defaults")) {
-        ptlas = {};
-        rtxdi.isReference = false;
-        di = RtxdiContext::defaultSettings();
-        rtxdi.isGiReference = false;
-        rtxdi.giSettings = RtxdiContext::defaultGiSettings();
-        rtxdi.giReferenceBounces = 0;
-        dlss.settings = {};
-        dlss.guides = {};
-        context.renderer.getNrc().settings = {};
-        context.renderer.indirectMode = kDefaultIndirectMode;
-        glass = {};
-    }
-    // the settings lab's config string (spec/features/planned/full_testing.md §2.1): an A/B found here becomes a plan line
-    // or an ENGINE_CONFIG value
-    const std::string config = formatLabConfig(captureLabConfig(context.renderer, context.camera));
-    if (ImGui::Button("Copy config")) {
-        ImGui::SetClipboardText(config.c_str());
-    }
-    ImGui::SetItemTooltip("copies the lighting settings as an ENGINE_CONFIG / lab plan string");
-    ImGui::SameLine();
-    ImGui::TextWrapped("%s", config.c_str());
-
-    ImGui::SeparatorText("Indirect (M4)");
-    // spec/m4/g7_indirect_modes.md
-    IndirectMode& indirectMode = context.renderer.indirectMode;
-    if (ImGui::BeginCombo("Indirect mode", indirectModeInfo(indirectMode).label)) {
-        for (size_t i = 0; i < kIndirectModes.size(); ++i) {
-            const auto mode = static_cast<IndirectMode>(i);
-            if (ImGui::Selectable(kIndirectModes[i].label, mode == indirectMode)) {
-                indirectMode = mode;
-            }
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SetItemTooltip("%s ships on both tiers and is the tuning target, the others are for A/B measurement. "
-                          "ReSTIR GI: one bounce, NRC paused. NRC: the cache samples without reuse. A switch resets "
-                          "ReSTIR GI and DLSS-RR history",
-                          indirectModeInfo(kDefaultIndirectMode).label);
-    // spec/m4/g3_nrc.md
-    NrcCache& nrcCache = context.renderer.getNrc();
-    NrcCache::Settings& nrc = nrcCache.settings;
-    ImGui::Checkbox("Train NRC", &nrc.isTrainingEnabled);
-    ImGui::SetItemTooltip("off freezes the cache and skips the training paths");
-    int idleFrames = static_cast<int>(nrc.idleTrainingFrames);
-    if (ImGui::SliderInt("NRC idle train frames", &idleFrames, 0, 1024)) {
-        nrc.idleTrainingFrames = static_cast<uint32_t>(idleFrames);
-    }
-    ImGui::SetItemTooltip("train for this many frames after a camera, light or scene change, then freeze until the "
-                          "next change (0 = train every frame)");
-    int iterations = static_cast<int>(nrc.trainingIterations);
-    if (ImGui::SliderInt("NRC training iterations", &iterations, 1, 4)) {
-        nrc.trainingIterations = static_cast<uint32_t>(iterations);
-    }
-    ImGui::SetItemTooltip("16K training records each; the training paths grow with it");
-    int resolveMode = static_cast<int>(nrc.resolveMode);
-    if (ImGui::Combo("NRC resolve mode", &resolveMode, nrcCache.resolveModeComboString())) {
-        nrc.resolveMode = static_cast<NrcResolveMode>(resolveMode);
-    }
-    ImGui::SetItemTooltip("AddQueryResultToOutput runs the custom GI reservoir resolve; any other mode runs NRC's SDK "
-                          "debug resolve into Indirect radiance (view under Debug -> Indirect radiance)");
-    const vk::Extent2D training = nrcCache.getTrainingExtent();
-    if (!nrcCache.isActive()) {
-        ImGui::TextDisabled("no scene, training paths %ux%u", training.width, training.height);
-    } else if (context.renderer.isNrcPaused()) {
-        ImGui::TextDisabled("paused, training paths %ux%u", training.width, training.height);
-    } else if (!nrcCache.isTrainingActive()) {
-        ImGui::TextDisabled("active (idle, inference only)");
-    } else if (nrc.idleTrainingFrames > 0) {
-        ImGui::TextDisabled("active (training, %u left), paths %ux%u", nrcCache.getTrainingFramesRemaining(),
-                            training.width, training.height);
-    } else {
-        ImGui::TextDisabled("active, training paths %ux%u", training.width, training.height);
-    }
-
-    // spec/m4/g5_restir_gi.md
-    ImGui::SeparatorText("ReSTIR GI");
-    RtxdiContext::GiSettings& gi = rtxdi.giSettings;
-    bool isGroundTruth = rtxdi.giReferenceBounces > 0;
-    if (ImGui::Checkbox("Ground-truth paths", &isGroundTruth)) {
-        rtxdi.giReferenceBounces = isGroundTruth ? RtxdiContext::kGiGroundTruthBounces : 0u;
-    }
-    ImGui::SetItemTooltip("trace the bounces after X2 instead of querying NRC, which pauses: with Reference, the "
-                          "ground truth of engine spec section 14 when accumulated");
-    ImGui::BeginDisabled(!isGroundTruth);
-    sliderU32("Bounces after X2", rtxdi.giReferenceBounces, 1, 16);
-    ImGui::EndDisabled();
-    ImGui::Checkbox("Reference (no reuse)##gi", &rtxdi.isGiReference);
-    ImGui::SetItemTooltip("shade each pixel's initial sample alone: the unbiased estimate the reuse converges to");
-    ImGui::BeginDisabled(rtxdi.isGiReference);
-    sliderU32("Max history length##gi", gi.maxHistoryLength, 1, 64);
-    sliderU32("Max sample age", gi.maxReservoirAge, 1, RtxdiContext::kGiUnlimitedSampleAge);
-    ImGui::SetItemTooltip("frames a sample is reused at most; each pixel draws its own limit in [0.5, 1) of this. "
-                          "Shipped %u (m8 I15): reacts to lighting changes and keeps stagnant samples from "
-                          "brightening dim areas; %u never discards",
-                          RtxdiContext::defaultGiSettings().maxReservoirAge, RtxdiContext::kGiUnlimitedSampleAge);
-    constexpr std::array kGiBiasNames{"Off", "Basic", "Ray traced"};
-    constexpr std::array kGiBiasModes{RTXDI_GIBiasCorrectionMode::Off, RTXDI_GIBiasCorrectionMode::Basic,
-                                      RTXDI_GIBiasCorrectionMode::Raytraced};
-    comboEnum("Temporal bias correction##gi", gi.temporalBiasCorrection, kGiBiasNames, kGiBiasModes);
-    ImGui::SetItemTooltip("Ray traced adds a reconnection ray from last frame's surface");
-    ImGui::Checkbox("Fallback sampling##gi", &gi.isFallbackSamplingEnabled);
-    ImGui::SetItemTooltip("when no history pixel matches, reuse last frame's sample at the same pixel");
-    ImGui::SameLine();
-    ImGui::Checkbox("Permutation sampling##gi", &gi.isPermutationSamplingEnabled);
-    sliderU32("Spatial samples##gi", gi.spatialSamples, 0, 8);
-    ImGui::SliderFloat("Sampling radius##gi", &gi.samplingRadius, 1.0f, 64.0f, "%.0f px", ImGuiSliderFlags_AlwaysClamp);
-    comboEnum("Spatial bias correction##gi", gi.spatialBiasCorrection, kGiBiasNames, kGiBiasModes);
-    ImGui::SetItemTooltip("Ray traced adds a reconnection ray per merged neighbor");
-    ImGui::SliderFloat("Depth threshold##gi", &gi.depthThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SliderFloat("Normal threshold##gi", &gi.normalThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::Checkbox("Boiling filter##gi", &gi.isBoilingFilterEnabled);
-    ImGui::SetItemTooltip("after temporal reuse, drops reservoirs far brighter than their 8x8 group. The DLSS-RR "
-                          "profile turns it off for the firefly replacement below");
-    ImGui::BeginDisabled(!gi.isBoilingFilterEnabled);
-    ImGui::SliderFloat("Boiling strength##gi", &gi.boilingFilterStrength, 0.0f, 1.0f, "%.2f",
-                       ImGuiSliderFlags_AlwaysClamp);
-    ImGui::EndDisabled();
-    constexpr std::array kDecorrelationNames{"None", "Uniform", "Stagnancy"};
-    constexpr std::array kDecorrelationModes{RTXDI_PTDecorrelationMode::None, RTXDI_PTDecorrelationMode::Uniform,
-                                             RTXDI_PTDecorrelationMode::Stagnancy};
-    comboEnum("Decorrelation", gi.decorrelationMode, kDecorrelationNames, kDecorrelationModes);
-    ImGui::SetItemTooltip("DLSS-RR prefers temporally independent samples: final shading shades the pixel's own "
-                          "initial sample instead of the reused one, the stored reservoir keeps its history. "
-                          "Stagnancy: more often where samples stay reused longer");
-    ImGui::BeginDisabled(gi.decorrelationMode == RTXDI_PTDecorrelationMode::None);
-    ImGui::SliderFloat("Decorrelation factor", &gi.decorrelationFactor, 0.0f, 1.0f, "%.2f",
-                       ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("Uniform: the swap probability. Stagnancy: 4 x factor x stagnancy^exponent");
-    ImGui::BeginDisabled(gi.decorrelationMode != RTXDI_PTDecorrelationMode::Stagnancy);
-    ImGui::SliderFloat("Stagnancy exponent", &gi.decorrelationStagnancyExponent, 0.0f, 4.0f, "%.2f",
-                       ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SliderFloat("Stagnancy EMA", &gi.decorrelationEmaFactor, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("share of this frame's stagnancy (sample age / 40) against last frame's 5x5 average");
-    ImGui::EndDisabled();
-    ImGui::Checkbox("Firefly replacement", &gi.isFireflyReplacementEnabled);
-    ImGui::SetItemTooltip("the boiling filter's test on the final reservoir; a detected one is always swapped for "
-                          "the initial sample instead of dropped");
-    ImGui::BeginDisabled(!gi.isFireflyReplacementEnabled);
-    ImGui::SliderFloat("Firefly strength", &gi.fireflyReplacementStrength, 0.0f, 1.0f, "%.2f",
-                       ImGuiSliderFlags_AlwaysClamp);
-    ImGui::Checkbox("Full-tile firefly test", &gi.isFullTileBoilingFilterEnabled);
-    ImGui::SetItemTooltip("average the 8x8 tile firefly weight over all in-bounds lanes instead of nonzero lanes only");
-    ImGui::Checkbox("Bound fresh swaps", &gi.isFireflyReplacementBounded);
-    ImGui::SetItemTooltip("where the final sample is fresh, a swap keeps at most this multiple of its weight");
-    ImGui::BeginDisabled(!gi.isFireflyReplacementBounded);
-    ImGui::SliderFloat("Swap bound", &gi.fireflyReplacementMultiplyBound, 1.0f, 64.0f, "%.0fx",
-                       ImGuiSliderFlags_AlwaysClamp);
-    ImGui::EndDisabled();
-    ImGui::EndDisabled();
-    ImGui::EndDisabled();
-    ImGui::Checkbox("Duplication history reduction", &gi.isDuplicationHistoryReductionEnabled);
-    ImGui::SetItemTooltip("where many of the 17x17 neighbors shared last frame's sample, temporal reuse keeps fewer "
-                          "frames of history; one more pass after the shade pass");
-    ImGui::BeginDisabled(!gi.isDuplicationHistoryReductionEnabled);
-    ImGui::SliderFloat("History reduction strength", &gi.historyReductionStrength, 0.0f, 1.0f, "%.2f",
-                       ImGuiSliderFlags_AlwaysClamp);
-    ImGui::EndDisabled();
-    ImGui::Checkbox("Final visibility", &gi.isFinalVisibilityEnabled);
-    ImGui::SetItemTooltip("a reconnection ray from the pixel to its final sample, which may be a neighbor's");
-    ImGui::SameLine();
-    ImGui::Checkbox("Final MIS", &gi.isFinalMisEnabled);
-    ImGui::SetItemTooltip("blend in the pixel's own initial sample where its BRDF lobe is glossy");
-    ImGui::Checkbox("Secondary DI resampling", &gi.isSecondaryResamplingEnabled);
-    ImGui::SetItemTooltip("X2's light reuses this frame's ReSTIR DI reservoirs where X2 is on screen");
-    ImGui::SameLine();
-    ImGui::Checkbox("Firefly clamp", &gi.isFireflyClampEnabled);
-    ImGui::SetItemTooltip("clamps X2's radiance in display units; biased");
-    ImGui::Checkbox("Secondary roughness floor", &gi.isSecondaryRoughnessFloorEnabled);
-    ImGui::SetItemTooltip("shades X2 with roughness at least 0.5: no glossy caustics in the reused samples; biased on "
-                          "glossy X2");
-    // secondary resampling takes the DI setting
-    ImGui::BeginDisabled(gi.isSecondaryResamplingEnabled);
-    ImGui::Checkbox("Exact directional lights##gi", &gi.areInfiniteLightsShadedExactly);
-    ImGui::SetItemTooltip("path vertices shade directional lights with one shadow ray each instead of as RIS "
-                          "candidates; with secondary DI resampling the DI setting applies");
-    ImGui::EndDisabled();
-    if (ImGui::Button("Defaults##gi")) {
-        gi = RtxdiContext::defaultGiSettings();
-    }
-    ImGui::SetItemTooltip("shipped: NVIDIA's with ray-traced spatial bias correction and ReSTIR PT's DLSS-RR profile "
-                          "(stagnancy decorrelation, firefly replacement, 20 frames of history, no age limit); its "
-                          "history reduction and swap bound stay off: both darken GI");
-    ImGui::SameLine();
-    if (ImGui::Button("NVIDIA defaults##gi")) {
-        gi = RtxdiContext::nvidiaGiSettings();
-    }
-    ImGui::SetItemTooltip("the RTXDI sample's ReSTIR GI settings (the library defaults)");
-    ImGui::SameLine();
-    if (ImGui::Button("Converged##gi")) {
-        gi = RtxdiContext::convergedGiSettings();
-    }
-    ImGui::SetItemTooltip("the GI check's configuration: ray-traced bias correction, no fallback, permutation or "
-                          "boiling filter");
-    ImGui::EndDisabled();
-}
-
-// the engine's directional light after the asset lights (PBR plan E3)
-void EngineUi::drawSunPanel()
-{
-    if (!ImGui::CollapsingHeader("Sun")) {
-        return;
-    }
-    WorldLights::Sun& sun = context.renderer.getWorldLights().sun;
-    ImGui::Checkbox("Enabled##sun", &sun.isEnabled);
-    ImGui::SetItemTooltip("one directional light after the scene's own; toggling it resets lighting history");
-    ImGui::SliderFloat("Azimuth", &sun.azimuthDegrees, -180.0f, 180.0f, "%.0f deg", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("from +X toward +Z; Sponza's courtyard runs along X");
-    ImGui::SliderFloat("Elevation", &sun.elevationDegrees, 0.0f, 90.0f, "%.0f deg", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SliderFloat("Illuminance", &sun.illuminance, 0.01f, 10000.0f, "%.3g lux",
-                       ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-    ImGui::SetItemTooltip("noisyColor is RGBA16F and not pre-exposed: very high values can overflow it");
-    ImGui::ColorEdit3("Color##sun", &sun.color.x, ImGuiColorEditFlags_Float);
-    if (ImGui::Button("Defaults##sun")) {
-        sun = WorldLights::defaultSun();
-    }
-}
-
-// exposure and tonemap after DLSS-RR (PBR plan H2)
-void EngineUi::drawPostPanel()
-{
-    if (!ImGui::CollapsingHeader("Post")) {
-        return;
-    }
-    PostProcess& post = context.renderer.getPost();
-    PostProcess::Settings& settings = post.settings;
-    if (!context.renderer.isDlssPresented()) {
-        ImGui::TextDisabled(context.renderer.debugView.view == DebugView::Lit
-                                ? "inactive: no lights, Lit shows unlit albedo"
-                                : "inactive: runs only in the Lit view");
-    }
-    const GpuExposureReadback& exposure = post.getLastExposure();
-    ImGui::Text("Exposure %.3g (%+.2f EV), target %.3g", exposure.exposure,
-                exposure.exposure > 0.0f ? std::log2(exposure.exposure) : 0.0f, exposure.targetExposure);
-    ImGui::Text("Average luminance %.3g from %u metered pixels", exposure.averageLuminance, exposure.pixels);
-    ImGui::Checkbox("Auto exposure", &settings.isAutoExposure);
-    ImGui::SetItemTooltip("targets middle grey using the 40th to 95th luminance percentiles, including black pixels");
-    if (settings.isAutoExposure) {
-        ImGui::SliderFloat("Compensation", &settings.compensationEv, -8.0f, 8.0f, "%+.1f EV",
-                           ImGuiSliderFlags_AlwaysClamp);
-        ImGui::SliderFloat("Light adaptation", &settings.adaptationSpeedUp, 0.1f, 10.0f, "%.1f /s",
-                           ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-        ImGui::SetItemTooltip("halves the EV gap in 1 / speed seconds as the scene gets brighter");
-        ImGui::SliderFloat("Dark adaptation", &settings.adaptationSpeedDown, 0.1f, 10.0f, "%.1f /s",
-                           ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-        ImGui::SetItemTooltip("halves the EV gap in 1 / speed seconds as the scene gets darker");
-    } else {
-        ImGui::SliderFloat("Exposure", &settings.manualEv, settings.minEv, settings.maxEv, "%+.1f EV",
-                           ImGuiSliderFlags_AlwaysClamp);
-        ImGui::SetItemTooltip("log2 of the scale applied before the tonemap");
-    }
-    ImGui::DragFloatRange2("Exposure range", &settings.minEv, &settings.maxEv, 0.1f, -32.0f, 32.0f, "%+.1f EV",
-                           nullptr, ImGuiSliderFlags_AlwaysClamp);
-    if (ImGui::Button("Snap to target")) {
-        post.requestSnap();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Defaults##post")) {
-        settings = {};
-    }
-    ImGui::TextDisabled("Tonemap: ACES (Hill's fit), applied once");
 }
 
 void EngineUi::drawInstanceFieldPanel()

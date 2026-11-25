@@ -93,6 +93,7 @@ RenderTargets::~RenderTargets()
     destroy(giDuplication);
     destroy(specularHitDistanceTarget);
     destroy(dlssInputAccumulation);
+    destroy(accumulatedTarget);
     destroyVmaBuffer(vma, materialBins, materialBinsMemory);
     for (HostBuffer& buffer : frameTargets) {
         destroyHostBuffer(vma, buffer, nullptr);
@@ -178,7 +179,9 @@ void RenderTargets::checkFormatSupport() const
     check(kExposureFormat, kStorageFeatures);
     check(kBinIdsFormat, kStorageFeatures);
     check(kSpecularHitDistanceFormat, kStorageFeatures);
-    check(kDlssInputAccumulationFormat, kStorageFeatures);
+    check(kAccumulatedFormat, kStorageFeatures);
+    check(kDlssInputAccumulationFormat,
+          vk::FormatFeatureFlagBits2::eStorageImage | vk::FormatFeatureFlagBits2::eTransferDst);
     check(kVisBufferFormat, vk::FormatFeatureFlagBits2::eColorAttachment | vk::FormatFeatureFlagBits2::eSampledImage);
 }
 
@@ -238,6 +241,10 @@ void RenderTargets::destroyTargets()
     destroy(giDuplication);
     destroy(specularHitDistanceTarget);
     destroy(dlssInputAccumulation);
+    destroy(accumulatedTarget);
+    isDlssInputAccumulationInitialized = false;
+    isDlssInputAccumulationClearPending = false;
+    isAccumulatedLayoutPending = false;
     destroyVmaBuffer(vma, materialBins, materialBinsMemory);
     materialBinsDeviceAddress = 0;
     if (depthIndex != kNoneIndex) {
@@ -284,8 +291,6 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
     // eSampled stays on the image for NGX; engine passes read and write through storageTex2D
     createTarget(specularHitDistanceTarget, kSpecularHitDistanceFormat, kStorageUsage, vk::ImageLayout::eGeneral,
                  "SpecularHitDistance", extent, false);
-    createTarget(dlssInputAccumulation, kDlssInputAccumulationFormat, kStorageUsage, vk::ImageLayout::eGeneral,
-                 "DlssInputAccumulation", extent);
     createTarget(giDuplication, kGiDuplicationFormat, kStorageUsage, vk::ImageLayout::eGeneral, "GiDuplication",
                  extent);
     createMaterialBins();
@@ -353,8 +358,70 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
     initialize(*giSampleIds.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*giDuplication.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*specularHitDistanceTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
-    initialize(*dlssInputAccumulation.image, vk::ImageLayout::eGeneral, kStorageAccess);
     submitAndWait(cmd, device.graphicsQueue);
+}
+
+void RenderTargets::ensureDlssInputAccumulation()
+{
+    if (dlssInputAccumulation.image != nullptr) {
+        return;
+    }
+    createTarget(dlssInputAccumulation, kDlssInputAccumulationFormat,
+                 vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst, vk::ImageLayout::eGeneral,
+                 "DlssInputAccumulation", extent, false);
+    isDlssInputAccumulationInitialized = false;
+    isDlssInputAccumulationClearPending = true;
+}
+
+void RenderTargets::ensureAccumulated()
+{
+    if (hasAccumulated()) {
+        return;
+    }
+    // the denoiser is off: the render extent is the display extent
+    createTarget(accumulatedTarget, kAccumulatedFormat, kStorageUsage, vk::ImageLayout::eGeneral, "Accumulated",
+                 displayExtent);
+    isAccumulatedLayoutPending = true;
+}
+
+void RenderTargets::releaseAccumulated()
+{
+    for (uint32_t* index : {&accumulatedTarget.storageIndex, &accumulatedTarget.sampledIndex}) {
+        if (*index != kNoneIndex) {
+            descriptorManager.freeImageDescriptor(*index);
+            *index = kNoneIndex;
+        }
+    }
+    accumulatedTarget.view = nullptr;
+    destroyVmaImage(allocator.allocator, accumulatedTarget.image, accumulatedTarget.memory);
+    isAccumulatedLayoutPending = false;
+}
+
+void RenderTargets::recordPendingInit(vk::raii::CommandBuffer& cmd)
+{
+    if (!isDlssInputAccumulationClearPending || dlssInputAccumulation.image == nullptr) {
+        return;
+    }
+    constexpr vk::ImageSubresourceRange kColorRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    const vk::PipelineStageFlags2 srcStage = isDlssInputAccumulationInitialized
+        ? vk::PipelineStageFlagBits2::eComputeShader
+        : vk::PipelineStageFlagBits2::eNone;
+    const vk::AccessFlags2 srcAccess = isDlssInputAccumulationInitialized
+        ? (vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite)
+        : vk::AccessFlagBits2::eNone;
+    transitionImageLayout(&cmd, *dlssInputAccumulation.image, vk::ImageLayout::eUndefined,
+                          vk::ImageLayout::eTransferDstOptimal, kColorRange, VK_QUEUE_FAMILY_IGNORED,
+                          VK_QUEUE_FAMILY_IGNORED, srcStage, vk::PipelineStageFlagBits2::eClear, srcAccess,
+                          vk::AccessFlagBits2::eTransferWrite);
+    cmd.clearColorImage(*dlssInputAccumulation.image, vk::ImageLayout::eTransferDstOptimal,
+                        vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 0.0f}}, kColorRange);
+    transitionImageLayout(&cmd, *dlssInputAccumulation.image, vk::ImageLayout::eTransferDstOptimal,
+                          vk::ImageLayout::eGeneral, kColorRange, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                          vk::PipelineStageFlagBits2::eClear, vk::PipelineStageFlagBits2::eComputeShader,
+                          vk::AccessFlagBits2::eTransferWrite,
+                          vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite);
+    isDlssInputAccumulationInitialized = true;
+    isDlssInputAccumulationClearPending = false;
 }
 
 vk::DeviceAddress RenderTargets::materialTileListAddress(MaterialBin bin) const noexcept
@@ -403,7 +470,7 @@ RenderTargets::ImageRef RenderTargets::glassAlbedo(GuideImage image) const
 }
 
 void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool isPostPresented,
-                                 bool isSpecularHitDistanceWritten)
+                                 bool isSpecularHitDistanceWritten, bool isDlssInputAccumulated)
 {
     const auto guideSet = [this](uint32_t set)
     {
@@ -447,6 +514,6 @@ void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool 
         .glassSpecAlbedoStorage = glassSpecAlbedo.storageIndex,
         .specularHitDistanceStorage =
             isSpecularHitDistanceWritten ? specularHitDistanceTarget.storageIndex : kNoneIndex,
-        .dlssInputAccumulationStorage = dlssInputAccumulation.storageIndex,
+        .dlssInputAccumulationStorage = isDlssInputAccumulated ? dlssInputAccumulation.storageIndex : kNoneIndex,
     };
 }

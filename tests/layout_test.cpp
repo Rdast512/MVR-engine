@@ -445,6 +445,20 @@ namespace
             LAYOUT_FIELD(ExposurePushData, adaptationSpeedUp),
             LAYOUT_FIELD(ExposurePushData, adaptationSpeedDown),
             LAYOUT_FIELD(ExposurePushData, flags),
+            LAYOUT_FIELD(ExposurePushData, input),
+            LAYOUT_FIELD(ExposurePushData, pad0),
+        }},
+        {"PostPushData", sizeof(PostPushData), {
+            LAYOUT_FIELD(PostPushData, frameRoot),
+            LAYOUT_FIELD(PostPushData, input),
+            LAYOUT_FIELD(PostPushData, pad0),
+        }},
+        {"AccumulatePushData", sizeof(AccumulatePushData), {
+            LAYOUT_FIELD(AccumulatePushData, input),
+            LAYOUT_FIELD(AccumulatePushData, accumulated),
+            LAYOUT_FIELD(AccumulatePushData, size),
+            LAYOUT_FIELD(AccumulatePushData, weight),
+            LAYOUT_FIELD(AccumulatePushData, pad0),
         }},
         {"MotionCheckPushData", sizeof(MotionCheckPushData), {
             LAYOUT_FIELD(MotionCheckPushData, frameRoot),

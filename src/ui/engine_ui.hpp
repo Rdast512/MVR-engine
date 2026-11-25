@@ -3,6 +3,7 @@
 
 #if ENGINE_ENABLE_IMGUI
     #include "core/object_storage.hpp"
+    #include "settings_window.hpp"
 
     #include <SDL3/SDL.h>
     #include <glm/glm.hpp>
@@ -104,13 +105,11 @@ private:
     void drawEntityTransformControls();
     void drawCameraPanel();
     void drawCullingPanel();
-    void drawSunPanel();
-    void drawRayTracingPanel();
-    void drawPostPanel();
     void drawInstanceFieldPanel();
 
     UiContext context;
     UiRequests requests;
+    SettingsWindow settingsWindow{context.renderer, context.camera};
     bool isOpen = false;
 
     vk::raii::DescriptorPool descriptorPool = nullptr;

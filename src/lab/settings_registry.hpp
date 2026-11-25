@@ -1,5 +1,6 @@
 #pragma once
 
+#include "render/denoiser_mode.hpp"
 #include "render/glass_settings.hpp"
 #include "render/indirect_mode.hpp"
 #include "render/vk_dlss.hpp"
@@ -33,7 +34,13 @@ struct LabConfig
     bool isDiReference = false;
     // RTXDI ResamplingMode::Spatial over di (RtxdiContext::isSpatialOnly)
     bool isDiSpatialOnly = false;
+    // RTXDI ResamplingMode::Temporal over di (RtxdiContext::isTemporalOnly)
+    bool isDiTemporalOnly = false;
     IndirectMode indirectMode = kDefaultIndirectMode;
+    // spec/features/planned/nvidia_settings_layout.md §4.2: Renderer::denoiser, aaMode, accumulationFrameLimit
+    DenoiserMode denoiser = DenoiserMode::DlssRr;
+    AaMode aaMode = AaMode::None;
+    uint32_t accumulationFrameLimit = 0;
     Dlss::Settings dlss{};
     Dlss::Guides dlssGuides{};
     NrcCache::Settings nrc{};
@@ -91,8 +98,8 @@ struct LabConfigParse
 };
 
 // spec §2.1: `domain=set` items first applied in order, then `domain.switch=value` overrides, left to right, over
-// `base` (the shipped config by default). Sets: di=shipped|nvidia|converged|reference, gi=shipped|nvidia|converged,
-// frame=shipped
+// `base` (the shipped config by default). Sets: di=shipped|nvidia|converged|reference and NVIDIA's presets
+// di=fast|medium|unbiased|ultra (medium is nvidia), gi=shipped|nvidia|converged, frame=shipped
 [[nodiscard]] LabConfigParse parseLabConfig(std::string_view text, const LabConfig& base = LabConfig{});
 // the shortest description: the DI and GI sets with the fewest overrides, then every switch that differs from them
 [[nodiscard]] std::string formatLabConfig(const LabConfig& config);

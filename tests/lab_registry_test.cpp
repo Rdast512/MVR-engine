@@ -6,6 +6,7 @@
 #include "lab/lab_cases.hpp"
 #include "lab/lab_plan.hpp"
 #include "lab/settings_registry.hpp"
+#include "ui/settings_rows.hpp"
 
 #include <array>
 #include <cstdio>
@@ -14,6 +15,8 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -112,8 +115,10 @@ namespace
 
 int main()
 {
-    for (const char* text : {"di=shipped gi=shipped frame=shipped", "di=nvidia gi=nvidia", "di=converged gi=converged",
-                             "di=reference", "gi=nvidia frame.indirectMode=nrc"}) {
+    for (const char* text :
+         {"di=shipped gi=shipped frame=shipped", "di=nvidia gi=nvidia", "di=converged gi=converged", "di=reference",
+          "gi=nvidia frame.indirectMode=nrc", "di=fast", "di=medium", "di=unbiased", "di=ultra",
+          "frame.denoiser=off frame.aa=accumulation frame.accumulationFrames=64", "di.temporalOnly=1"}) {
         const LabConfigParse parse = parseLabConfig(text);
         test::check(parse.config.has_value() && roundTrips(*parse.config),
                     std::format("'{}' round-trips", text).c_str());
@@ -150,6 +155,58 @@ int main()
                     std::format("'{}' is refused: {}", text, parse.error).c_str());
     }
 
+    // NVIDIA's presets (UserInterface.cpp UIData::ApplyPreset); spatial counts normalized to the stratified walk
+    using Preset = RtxdiContext::QualityPreset;
+    test::check(RtxdiContext::nvidiaSettings() == RtxdiContext::nvidiaPreset(Preset::Medium),
+                "the NVIDIA defaults are the Medium preset");
+    {
+        const RtxdiContext::Settings fast = RtxdiContext::nvidiaPreset(Preset::Fast);
+        test::check(fast.localLightSamplingMode == ReSTIRDI_LocalLightSamplingMode::Power_RIS &&
+                        fast.localLightSamples[std::to_underlying(ReSTIRDI_LocalLightSamplingMode::Power_RIS)] == 4 &&
+                        fast.brdfSamples == 0 &&
+                        fast.temporalBiasCorrection == ReSTIRDI_TemporalBiasCorrectionMode::Off &&
+                        fast.spatialBiasCorrection == ReSTIRDI_SpatialBiasCorrectionMode::Off &&
+                        fast.spatialSamples == 2 && fast.disocclusionBoostSamples == 2 && fast.isBoilingFilterEnabled,
+                    "Fast preset");
+        const RtxdiContext::Settings unbiased = RtxdiContext::nvidiaPreset(Preset::Unbiased);
+        test::check(unbiased.localLightSamplingMode == ReSTIRDI_LocalLightSamplingMode::Uniform &&
+                        unbiased.spatialBiasCorrection == ReSTIRDI_SpatialBiasCorrectionMode::Raytraced &&
+                        !unbiased.isBoilingFilterEnabled && !unbiased.isVisibilityShortcutEnabled &&
+                        !unbiased.isFinalVisibilityReused && unbiased.disocclusionBoostSamples == 8,
+                    "Unbiased preset");
+        const LabConfigParse parse = parseLabConfig("di=ultra");
+        test::check(parse.config && parse.config->di == RtxdiContext::nvidiaPreset(Preset::Ultra),
+                    "di=ultra is the Ultra preset");
+    }
+
+    // the settings window: every row edits a registered switch, and every switch an NVIDIA preset or the converged
+    // set changes has a row to highlight (nvidia_settings_layout.md §5)
+    for (const SettingsRows rows : settingsRows::kAll) {
+        for (const SettingsRow& row : rows) {
+            test::check(findLabSwitch(row.switchName) != nullptr,
+                        std::format("settings row {} is a lab switch", row.switchName).c_str());
+        }
+    }
+    std::vector<LabConfig> comparisons;
+    for (const Preset preset : {Preset::Fast, Preset::Medium, Preset::Unbiased, Preset::Ultra, Preset::Reference}) {
+        LabConfig config;
+        config.di = RtxdiContext::nvidiaPreset(preset);
+        config.isDiReference = preset == Preset::Reference;
+        config.gi = RtxdiContext::nvidiaGiSettings();
+        config.indirectMode = IndirectMode::RestirGi;
+        config.dlss.quality = Dlss::Quality::Dlaa;
+        comparisons.push_back(config);
+    }
+    comparisons.emplace_back();
+    comparisons.back().di = RtxdiContext::convergedSettings();
+    comparisons.back().gi = RtxdiContext::convergedGiSettings();
+    for (const LabConfig& comparison : comparisons) {
+        for (const LabSwitchValue& difference : differingSwitches(comparison, LabConfig{})) {
+            test::check(settingsRows::hasRow(difference.entry->name),
+                        std::format("{} has a settings row", difference.entry->name).c_str());
+        }
+    }
+
     std::set<std::string_view> caseNames;
     for (const LabCase& labCase : kLabCases) {
         test::check(caseNames.insert(labCase.name).second && labCase.kinds != 0,
@@ -158,8 +215,7 @@ int main()
     for (const char* name : kPlanNames) {
         const LabPlanParse parse = loadLabPlan(name);
         test::check(parse.plan.has_value() && !parse.plan->entries.empty(),
-                    std::format("plan {} parses{}{}", name, parse.error.empty() ? "" : ": ", parse.error)
-                        .c_str());
+                    std::format("plan {} parses{}{}", name, parse.error.empty() ? "" : ": ", parse.error).c_str());
         if (parse.plan) {
             for (const std::string& skipped : parse.plan->skipped) {
                 std::printf("       %s skips %s\n", name, skipped.c_str());

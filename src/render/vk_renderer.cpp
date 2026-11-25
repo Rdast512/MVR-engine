@@ -9,6 +9,7 @@
     #include "imgui_impl_vulkan.h"
 #endif
 
+#include <algorithm>
 #include <format>
 #include <numeric>
 #include <stdexcept>
@@ -159,9 +160,12 @@ void Renderer::setTracyContext(VkTracyContext* tracyContextIn) { tracyContext = 
 void Renderer::rebuildSwapchainResources()
 {
     frameSync.recreate(static_cast<uint32_t>(swapChain.swapChainImages.size()));
-    // DLSS-RR's quality mode picks the render resolution for the swapchain's (engine spec §2.1)
+    // DLSS-RR's quality mode picks the render resolution for the swapchain's (engine spec §2.1). The feature is kept
+    // while the denoiser is off, which renders at the display extent as the NVIDIA samples do
     const vk::Extent2D displayExtent = swapChain.swapChainExtent;
-    const vk::Extent2D renderExtent = dlss.recreate(displayExtent);
+    const vk::Extent2D dlssRenderExtent = dlss.recreate(displayExtent);
+    appliedDenoiser = denoiser;
+    const vk::Extent2D renderExtent = appliedDenoiser == DenoiserMode::Off ? displayExtent : dlssRenderExtent;
     targets.recreate(renderExtent, displayExtent);
     hiz.recreate(targets);
     rtxdi.recreate(renderExtent);
@@ -201,8 +205,9 @@ void Renderer::drawFrame()
     auto& frameCmd = frameSync.commandBuffers[currentFrame];
     auto& presentCmd = frameSync.presentCommandBuffers[currentFrame];
 
-    if (dlss.isRecreateNeeded()) {
-        // a new DLSS mode or preset may change the render resolution: every frame in flight reads the old targets
+    if (dlss.isRecreateNeeded() || denoiser != appliedDenoiser) {
+        // a new DLSS mode, preset or denoiser may change the render resolution: every frame in flight reads the old
+        // targets
         finishPreviousFrame();
         deviceRef.waitIdle();
         rebuildSwapchainResources();
@@ -237,14 +242,47 @@ void Renderer::drawFrame()
         worldLights.dumpLightPdfStats(currentFrame, frameSync, scene, camera.cameraData.viewProj);
         hasDumpedLightPdfStats = true;
     }
-    // after the fence: prepare RT scene before reading isDlssPresented() so frame 0 of emissive-only scenes sees its
+    // after the fence: prepare RT scene before reading isDlssEvaluated() so frame 0 of emissive-only scenes sees its
     // triangle lights and aligns camera jitter with DLSS-RR (m8 I14 F25)
     rtScene.prepareFrame(currentFrame, frameNumber - 1);
-    const bool isLitDlss = isDlssPresented();
+    const bool isLitDlss = isDlssEvaluated();
     const bool isSpecularHitDistanceWritten =
         (isLitDlss && dlss.guides.isSpecularHitDistanceUsed) || debugView.view == DebugView::SpecularHitDistance;
-    camera.updateCameraData(currentFrame, frameNumber, isLitDlss);
-    targets.prepareFrame(currentFrame, frameNumber, isLitDlss, isSpecularHitDistanceWritten);
+    const bool isCleanDlssInput = (extraFrameFlags & FrameFlag::CleanDlssInput) != 0;
+    const DlssInputAccumulationMode accumulationMode = isCleanDlssInput ? DlssInputAccumulationMode::None
+        : (extraFrameFlags & FrameFlag::DlssInputAccumulate) != 0       ? DlssInputAccumulationMode::Accumulate
+        : (extraFrameFlags & FrameFlag::DlssInputFrozen) != 0           ? DlssInputAccumulationMode::Frozen
+        : inputHistoryWeight > 0.0f                                     ? DlssInputAccumulationMode::Ema
+                                                                        : DlssInputAccumulationMode::None;
+    // EngineLab warms up with DlssInputAccumulate and freezes with DlssInputFrozen; keep that accumulated sum and
+    // DLSS-RR history across the freeze boundary, clear on every other entry into accumulation
+    const bool isFreezeTransition = appliedAccumulationMode == DlssInputAccumulationMode::Accumulate &&
+        accumulationMode == DlssInputAccumulationMode::Frozen;
+    const bool isAccumulationModeReset = accumulationMode != appliedAccumulationMode && !isFreezeTransition;
+    if (accumulationMode != DlssInputAccumulationMode::None) {
+        targets.ensureDlssInputAccumulation();
+        if (isAccumulationModeReset) {
+            targets.requestDlssInputAccumulationClear();
+        }
+    }
+    appliedAccumulationMode = accumulationMode;
+    constexpr uint32_t kDlssInputFlagsMask = FrameFlag::CleanDlssInput | FrameFlag::InvertDlssNormal |
+        FrameFlag::SquareDlssRoughness | FrameFlag::DlssInputDirectOnly | FrameFlag::DlssInputIndirectOnly |
+        FrameFlag::PreDenoiserClampNeighbors;
+    const DlssInputState dlssInput{
+        .scale = std::max(dlssInputScale, 1e-6f),
+        .clamp = std::max(preDenoiserClamp, 0.0f),
+        .historyWeight = accumulationMode == DlssInputAccumulationMode::Ema ? inputHistoryWeight : 0.0f,
+        .flags = extraFrameFlags & kDlssInputFlagsMask,
+    };
+    if (dlssInput != appliedDlssInput || isAccumulationModeReset) {
+        isDlssHistoryValid = false;
+        appliedDlssInput = dlssInput;
+    }
+    // the accumulated mean resolves the jitter as DLSS-RR does; No AA without a denoiser has nothing to resolve it
+    camera.updateCameraData(currentFrame, frameNumber, isLitDlss || isAccumulationActive());
+    targets.prepareFrame(currentFrame, frameNumber, isLitPresented(), isSpecularHitDistanceWritten,
+                         accumulationMode != DlssInputAccumulationMode::None);
     {
         const IndirectState indirect{.mode = indirectMode,
                                      .isGiReference = rtxdi.isGiReference,
@@ -265,8 +303,8 @@ void Renderer::drawFrame()
     }
     // after the RT scene followed a new layout: world lights and NRC both read its layout and dynamic-motion state
     worldLights.prepareFrame(currentFrame, frameNumber - 1);
-    isLightSetChanged = worldLights.lightCount() != lastLightCount ||
-        worldLights.areTriangleLightsSampled != wereTriangleLightsSampled;
+    isLightSetChanged =
+        worldLights.lightCount() != lastLightCount || worldLights.areTriangleLightsSampled != wereTriangleLightsSampled;
     lastLightCount = worldLights.lightCount();
     wereTriangleLightsSampled = worldLights.areTriangleLightsSampled;
     // NP2: camera, sun, light set, scene layout or dynamic transforms invalidate the cache; switching between
@@ -294,14 +332,20 @@ void Renderer::drawFrame()
     }
     nrc.prepareFrame(currentFrame, rtScene.getSceneBounds(), isNrcPaused(), isNrcSceneChanged);
     const bool areDiInfiniteExact = rtxdi.areDiInfiniteLightsExact();
-    isDiHistoryReset = areDiInfiniteExact != wereDiInfiniteLightsExact;
+    const bool willDiReuseTemporally = !rtxdi.isReference && !rtxdi.isSpatialOnly;
+    const bool isDiModeChanged = rtxdi.isReference != rtxdi.isReferenceEnabled() ||
+        rtxdi.isSpatialOnly != rtxdi.isSpatialOnlyEnabled() || rtxdi.isTemporalOnly != rtxdi.isTemporalOnlyEnabled();
+    // re-entering temporal DI reuse after None or Spatial must not read stale reservoirs from an unupdated buffer
+    isDiHistoryReset =
+        areDiInfiniteExact != wereDiInfiniteLightsExact || (!rtxdi.isTemporalReuseEnabled() && willDiReuseTemporally);
     wereDiInfiniteLightsExact = areDiInfiniteExact;
-    if (isDiHistoryReset || rtxdi.isReference != rtxdi.isReferenceEnabled()) {
+    if (isDiHistoryReset || isDiModeChanged) {
         // direct-light noise profile or reservoir light set changes abruptly
         isDlssHistoryValid = false;
     }
     rtxdi.prepareFrame(currentFrame, frameNumber, indirectMode != IndirectMode::Nrc, camera.cameraData.cameraPos,
                        frameNumber - 1);
+    prepareAccumulation();
     gpuTimer.collect(currentFrame);
     post.readBack(currentFrame);
     if (void* stats = motionCheckStats[currentFrame].mapped) {
@@ -342,6 +386,8 @@ void Renderer::drawFrame()
         counters = {};
     }
 
+    // recordReconstruction updates isDlssHistoryValid for the next frame before UpdateUBO writes this frame's root
+    const bool hadDlssOutput = isDlssHistoryValid;
     // the fence covers both submits of this slot; every path below ends in a submit that signals it
     deviceRef.resetFences(fence);
     frameCmd.reset();
@@ -388,6 +434,7 @@ void Renderer::drawFrame()
                             .frameFlags = (isHistoryReset ? FrameFlag::HistoryReset : 0u) |
                                 (isIndirectHistoryReset ? FrameFlag::IndirectHistoryReset : 0u) |
                                 (worldLights.areTriangleLightsSampled ? 0u : FrameFlag::TriangleLightsUnsampled) |
+                                ((hadDlssOutput && !isHistoryReset) ? FrameFlag::DlssHistoryValid : 0u) |
                                 extraFrameFlags,
                             .frameIndex = frameNumber,
                             .lightCount = worldLights.lightCount(),
@@ -623,6 +670,7 @@ void Renderer::recordFrameCommands(vk::raii::CommandBuffer& cmd)
                               VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eComputeShader,
                               vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eNone,
                               vk::AccessFlagBits2::eColorAttachmentWrite);
+        targets.recordPendingInit(cmd);
     }
 
     // also sizes the DGC buffers for this slot
@@ -1073,7 +1121,7 @@ void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
         cmd.pipelineBarrier2(dependency);
     }
     gpuTimer.end(cmd, GpuTimerScope::RtxdiInitial);
-    if (hasRisCandidates) {
+    if (hasRisCandidates && rtxdi.isTemporalReuseEnabled()) {
         dispatchFullscreen(cmd, shaderObjects.frameShaders.rtxdiTemporal);
         // temporal reservoirs -> the spatial pass's neighbor loads
         cmd.pipelineBarrier2(dependency);
@@ -1189,12 +1237,16 @@ void Renderer::bindHeaps(const vk::raii::CommandBuffer& cmd) const
 
 const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::CommandBuffer& cmd)
 {
-    // directRadiance, indirectRadiance and guide writes -> the combine's reads
+    const vk::AccessFlags2 accumulationAccess = appliedAccumulationMode != DlssInputAccumulationMode::None
+        ? (vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite)
+        : vk::AccessFlags2{};
+    // directRadiance, indirectRadiance and guide writes -> the combine's reads; previous combine's accumulation
+    // writes -> combine's accumulation read-modify-write
     const vk::MemoryBarrier2 combineBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
         .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | accumulationAccess,
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &combineBarrier});
     dispatchFullscreen(cmd, shaderObjects.frameShaders.combine);
@@ -1208,15 +1260,26 @@ const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::Co
         : std::chrono::duration<float, std::milli>(now - lastFrameTime).count();
     const float frameDeltaMs = fixedFrameDeltaMs.value_or(wallDeltaMs);
     lastFrameTime = now;
-    if (!isDlssPresented()) {
+    if (!isDlssEvaluated()) {
         // the output is not shown; its history would be stale when it is
         isDlssHistoryValid = false;
         gpuTimer.end(cmd, GpuTimerScope::Dlss);
+        if (!isLitPresented()) {
+            gpuTimer.end(cmd, GpuTimerScope::Accumulation);
+            gpuTimer.end(cmd, GpuTimerScope::Post);
+            return cmd;
+        }
+        // denoiser off: post reads noisyColor or its running mean, at the display extent
+        const uint32_t postInput = accumulatedFrames > 0 ? recordAccumulation(cmd) : targets.noisyColorSampledIndex();
+        gpuTimer.end(cmd, GpuTimerScope::Accumulation);
+        post.record(cmd, currentFrame, frameData.frameRootAddress(currentFrame), postInput, targets.getDisplayExtent(),
+                    frameDeltaMs * 1e-3f);
         gpuTimer.end(cmd, GpuTimerScope::Post);
         return cmd;
     }
     // noisyColor and guide writes -> NGX's reads. NGX opens each evaluation with clears and fills of its own resources
-    // without a barrier against the previous evaluation's writes (SYNC-HAZARD-WRITE-AFTER-WRITE), so this orders those too
+    // without a barrier against the previous evaluation's writes (SYNC-HAZARD-WRITE-AFTER-WRITE), so this orders those
+    // too
     const vk::MemoryBarrier2 inputBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eAllTransfer,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eTransferWrite,
@@ -1225,18 +1288,16 @@ const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::Co
             vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eTransferWrite,
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &inputBarrier});
-    const auto toDlss = [](const RenderTargets::ImageRef& image,
-                           vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor)
-    {
-        return Dlss::Image{.image = image.image, .view = image.view, .format = image.format, .aspect = aspect};
-    };
+    const auto toDlss =
+        [](const RenderTargets::ImageRef& image, vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor)
+    { return Dlss::Image{.image = image.image, .view = image.view, .format = image.format, .aspect = aspect}; };
     const GpuCameraData& cameraData = camera.cameraData;
     const vk::Extent2D renderExtent = targets.getExtent();
-    const bool isGlassGuideBlended = (frameGlassFlags & (GlassFlag::Pass | GlassFlag::BlendGuides)) ==
-        (GlassFlag::Pass | GlassFlag::BlendGuides);
+    const bool isGlassGuideBlended =
+        (frameGlassFlags & (GlassFlag::Pass | GlassFlag::BlendGuides)) == (GlassFlag::Pass | GlassFlag::BlendGuides);
     // history resets with the frame's (camera cut, resize, layout change) and after frames without the Lit view
-    const bool isHistoryReset =
-        !isDlssHistoryValid || camera.isCut() || culling.isSceneLayoutChanged() || isLightSetChanged;
+    const bool isHistoryReset = !isDlssHistoryValid || camera.isCut() || culling.isSceneLayoutChanged() ||
+        isLightSetChanged || isDiHistoryReset;
     const Dlss::Frame frame{
         .color = toDlss(targets.noisyColor()),
         .depth = toDlss(targets.depth(), vk::ImageAspectFlagBits::eDepth),
@@ -1269,10 +1330,83 @@ const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::Co
     });
     isDlssHistoryValid = true;
     gpuTimer.end(postCmd, GpuTimerScope::Dlss);
-    post.record(postCmd, currentFrame, frameData.frameRootAddress(currentFrame), targets.getDisplayExtent(),
-                frameDeltaMs * 1e-3f);
+    gpuTimer.end(postCmd, GpuTimerScope::Accumulation);
+    post.record(postCmd, currentFrame, frameData.frameRootAddress(currentFrame), targets.upscaledSampledIndex(),
+                targets.getDisplayExtent(), frameDeltaMs * 1e-3f);
     gpuTimer.end(postCmd, GpuTimerScope::Post);
     return postCmd;
+}
+
+void Renderer::prepareAccumulation()
+{
+    // the unjittered view: Accumulation keeps advancing the jitter, so the mean is antialiased
+    const bool isStill = camera.cameraData.view == lastAccumulationView;
+    lastAccumulationView = camera.cameraData.view;
+    const bool isSunChanged = worldLights.sun != lastAccumulationSun;
+    lastAccumulationSun = worldLights.sun;
+    if (!isAccumulationActive()) {
+        accumulatedFrames = 0;
+        isAccumulationResetRequested = false;
+        // retired: every frame up to frameNumber - MAX_FRAMES_IN_FLIGHT completed before this slot's fence
+        if (targets.hasAccumulated() && frameNumber - lastAccumulationFrame >= MAX_FRAMES_IN_FLIGHT) {
+            targets.releaseAccumulated();
+        }
+        return;
+    }
+    targets.ensureAccumulated();
+    // every history reset of the frame, a moved camera, sun or instance, and any lighting setting edit (the engine
+    // loop's resetAccumulation, from the lab switches)
+    const bool isReset = accumulatedFrames == 0 || !isStill || isAccumulationResetRequested || camera.isCut() ||
+        culling.isSceneLayoutChanged() || isLightSetChanged || isIndirectHistoryReset || isDiHistoryReset ||
+        rtxdi.isReference != rtxdi.isReferenceEnabled() || rtScene.hasSceneChanged() || isSunChanged;
+    isAccumulationResetRequested = false;
+    accumulatedFrames = isReset ? 1u : accumulatedFrames + 1u;
+    if (accumulationFrameLimit > 0) {
+        accumulatedFrames = std::min(accumulatedFrames, accumulationFrameLimit);
+    }
+}
+
+uint32_t Renderer::recordAccumulation(const vk::raii::CommandBuffer& cmd)
+{
+    // combine's and glass's noisyColor writes, and last frame's accumulated writes -> the read-modify-write
+    const vk::MemoryBarrier2 inputBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageRead |
+            vk::AccessFlagBits2::eShaderStorageWrite,
+    };
+    // a new target's content is undefined; its first frame has weight 1 and overwrites every texel
+    const bool isLayoutPending = targets.takeAccumulatedLayoutPending();
+    const vk::ImageMemoryBarrier2 layoutBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eNone,
+        .srcAccessMask = vk::AccessFlagBits2::eNone,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
+        .oldLayout = vk::ImageLayout::eUndefined,
+        .newLayout = vk::ImageLayout::eGeneral,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = targets.getAccumulatedImage(),
+        .subresourceRange = kColorRange,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1,
+                                            .pMemoryBarriers = &inputBarrier,
+                                            .imageMemoryBarrierCount = isLayoutPending ? 1u : 0u,
+                                            .pImageMemoryBarriers = isLayoutPending ? &layoutBarrier : nullptr});
+    const vk::Extent2D extent = targets.getDisplayExtent();
+    const AccumulatePushData push{
+        .input = targets.noisyColorSampledIndex(),
+        .accumulated = targets.accumulatedStorageIndex(),
+        .size = extent,
+        .weight = 1.0f / static_cast<float>(accumulatedFrames),
+        .pad0 = 0,
+    };
+    ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.accumulate);
+    cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
+    cmd.dispatch(divideRoundUp(extent.width, kFullscreenTile), divideRoundUp(extent.height, kFullscreenTile), 1);
+    lastAccumulationFrame = frameNumber;
+    return targets.accumulatedSampledIndex();
 }
 
 void Renderer::recordGlass(const vk::raii::CommandBuffer& cmd)
@@ -1311,8 +1445,8 @@ void Renderer::recordDebugView(const vk::raii::CommandBuffer& cmd)
         .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageRead,
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &guideBarrier});
-    // DLSS-RR's output replaces it; the motion and ray checks still find the barrier above
-    if (!isDlssPresented()) {
+    // the post target replaces it; the motion and ray checks still find the barrier above
+    if (!isLitPresented()) {
         dispatchFullscreen(cmd, shaderObjects.frameShaders.debugView);
     }
     gpuTimer.end(cmd, GpuTimerScope::DebugView);
@@ -1360,7 +1494,7 @@ void Renderer::recordDisplayCapture(const vk::raii::CommandBuffer& cmd)
 {
     constexpr vk::DeviceSize kTexelBytes = 8;
     // the image present reads: both are RGBA16F
-    const bool isUpscaled = isDlssPresented();
+    const bool isUpscaled = isLitPresented();
     const vk::Extent2D extent = isUpscaled ? targets.getDisplayExtent() : targets.getExtent();
     const vk::Image source = isUpscaled ? targets.post().image : targets.getDisplayImage();
     const vk::DeviceSize size = vk::DeviceSize{extent.width} * extent.height * kTexelBytes;

@@ -11,6 +11,7 @@
 #include "engine_temporal_check.hpp"
 #include "texture_manager.hpp"
 #include "lab/engine_lab.hpp"
+#include "lab/settings_registry.hpp"
 #include "../render/nrc_library.hpp"
 #include "../render/vk_renderer.hpp"
 #include "../render/vk_shader_objects.hpp"
@@ -85,6 +86,8 @@ class Engine
     std::optional<EngineLab> lab;
     // ENGINE_INDIRECT_MODE=cycle: the indirect mode follows the frame number
     bool isIndirectModeCycling = false;
+    // the lighting settings of the last frame in the Accumulation AA mode: an edit starts a new mean
+    std::optional<LabConfig> accumulationConfig;
     bool initialized = false;
     std::chrono::high_resolution_clock::time_point lastTime;
     std::chrono::high_resolution_clock::time_point fpsTime;

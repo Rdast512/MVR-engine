@@ -713,6 +713,26 @@ public struct ExposurePushData
     public float adaptationSpeedUp;
     public float adaptationSpeedDown;
     public uint flags; // kExposureFlag*
+    public uint input; // resource heap, sampled: the metered image at the display extent
+    public uint pad0;
+};
+
+// 16 B, matches src/render/push_data.hpp
+public struct PostPushData
+{
+    public uint64_t frameRoot;
+    public uint input; // resource heap, sampled: the tonemapped image at the display extent
+    public uint pad0;
+};
+
+// 24 B, matches src/render/push_data.hpp
+public struct AccumulatePushData
+{
+    public uint input;       // resource heap: noisyColor, sampled
+    public uint accumulated; // resource heap: RGBA32F running mean, storage
+    public uint2 size;
+    public float weight;     // 1 / frames averaged; 1 copies the input
+    public uint pad0;
 };
 
 public struct PresentPushData
@@ -852,6 +872,7 @@ public static const uint kFrameFlagDlssInputIndirectOnly = 1u << 7;
 public static const uint kFrameFlagDlssInputAccumulate = 1u << 8;
 public static const uint kFrameFlagDlssInputFrozen = 1u << 9;
 public static const uint kFrameFlagPreDenoiserClampNeighbors = 1u << 10;
+public static const uint kFrameFlagDlssHistoryValid = 1u << 11;
 
 // per-frame root, matches GpuFrameRoot in src/core/types.hpp
 public struct GpuFrameRoot

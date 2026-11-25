@@ -52,6 +52,8 @@ enum class GpuTimerScope : uint32_t
     Glass,
     // zero while a debug view is shown: the DLSS-RR evaluation is skipped
     Dlss,
+    // running mean of noisyColor; zero unless the denoiser is off in the Accumulation AA mode
+    Accumulation,
     // exposure histogram, adaptation and tonemap; zero with DLSS-RR
     Post,
     DebugView,
@@ -119,6 +121,8 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "Glass";
     case GpuTimerScope::Dlss:
         return "DLSS-RR";
+    case GpuTimerScope::Accumulation:
+        return "Accumulation";
     case GpuTimerScope::Post:
         return "Post";
     case GpuTimerScope::DebugView:

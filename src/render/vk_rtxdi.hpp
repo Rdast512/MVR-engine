@@ -12,6 +12,7 @@
 #include <Rtxdi/GI/ReSTIRGIParameters.h>
 #include <Rtxdi/LightSampling/RISBufferSegmentParameters.h>
 #include <Rtxdi/PT/ReSTIRPTParameters.h>
+#include <Rtxdi/ReGIR/ReGIR.h>
 #include <Rtxdi/ReGIR/ReGIRParameters.h>
 
 #include <array>
@@ -273,6 +274,21 @@ public:
         bool operator==(const GiSettings&) const = default;
     };
 
+    // the RTXDI sample's QualityPreset, without (Custom)
+    enum class QualityPreset : uint8_t
+    {
+        Fast,
+        Medium,
+        Unbiased,
+        Ultra,
+        // pairs with isReference: resampling None
+        Reference,
+        Count,
+    };
+
+    // UIData::ApplyPreset over the sample's start state, the Medium preset (spec/features/planned/
+    // nvidia_settings_layout.md §3); fields the engine lacks are skipped
+    [[nodiscard]] static Settings nvidiaPreset(QualityPreset preset);
     // the RTXDI sample's default Medium preset (spec/features/done/rtxdi_3_2_update.md §3.3)
     [[nodiscard]] static Settings nvidiaSettings();
     // shipped: Power_RIS, fresh final visibility, ray-traced disocclusion boost only (spec/fixesM1-6/i6_restir_di_tuning.md)
@@ -288,6 +304,22 @@ public:
     // the configuration the guide capture's convergence check holds to its bounds (§6.1): reuse that stays unbiased
     // on a static camera, no neighbors past the disocclusion boost
     [[nodiscard]] static Settings convergedSettings();
+    // UIData::ApplyDenoiserCompatDefaults: the GI fields that depend on the denoiser. Off takes ReSTIR PT's non-DLSS-RR
+    // profile, DLSS-RR the shipped values, which are the engine's DLSS-RR profile (I5, I15)
+    static void applyDenoiserCompatDefaults(GiSettings& settings, bool isDlssRr);
+
+    // RTXDI parameter blocks as the last prepareFrame applied them, for the settings window's fixed rows
+    struct AppliedParameters
+    {
+        rtxdi::ReGIRStaticParameters regirStatic;
+        rtxdi::ReGIRDynamicParameters regirDynamic;
+        uint32_t regirLightSlotCount;
+        RTXDI_DIInitialSamplingParameters initialSampling;
+        RTXDI_DITemporalResamplingParameters temporalResampling;
+        RTXDI_DISpatialResamplingParameters spatialResampling;
+        RTXDI_ShadingParameters shading;
+    };
+    [[nodiscard]] AppliedParameters getAppliedParameters() const;
 
     RtxdiContext(const Device& device, const VkAllocator& allocator, const FrameSync& frameSync,
                  DescriptorManager& descriptorManager, const ShaderObjects& shaderObjects,
@@ -330,6 +362,12 @@ public:
     [[nodiscard]] LightPrepStats getLightPrepStats() const noexcept;
     // ReSTIR DI reference mode as applied by the last prepareFrame
     [[nodiscard]] bool isReferenceEnabled() const noexcept { return isReferenceApplied; }
+    // ReSTIR DI spatial-only mode as applied by the last prepareFrame
+    [[nodiscard]] bool isSpatialOnlyEnabled() const noexcept { return isSpatialOnlyApplied; }
+    // ReSTIR DI temporal-only mode as applied by the last prepareFrame
+    [[nodiscard]] bool isTemporalOnlyEnabled() const noexcept { return isTemporalOnlyApplied; }
+    // ReSTIR DI temporal resampling pass runs in Temporal and TemporalAndSpatial modes
+    [[nodiscard]] bool isTemporalReuseEnabled() const noexcept { return !isReferenceApplied && !isSpatialOnlyApplied; }
     // primary DI shades directional lights outside RIS; off in reference mode so kReferenceInfiniteLightSamples runs
     [[nodiscard]] bool areDiInfiniteLightsExact() const noexcept
     {
@@ -357,6 +395,8 @@ public:
     bool isReference = false;
     // settings lab (m8 I16): spatial reuse without temporal reuse; read by the next prepareFrame
     bool isSpatialOnly = false;
+    // temporal reuse without spatial reuse (RTXDI ResamplingMode::Temporal); isReference and isSpatialOnly win
+    bool isTemporalOnly = false;
     Settings settings = defaultSettings();
     // ReSTIR GI without reuse: the pixel's initial sample is shaded alone, the unbiased 1-sample estimate
     bool isGiReference = false;
@@ -400,6 +440,7 @@ private:
     std::unique_ptr<rtxdi::ImportanceSamplingContext> importanceSampling;
     bool isReferenceApplied = false;
     bool isSpatialOnlyApplied = false;
+    bool isTemporalOnlyApplied = false;
     Settings appliedSettings;
     bool isGiReuseApplied = true;
     bool isGiDuplicationMapApplied = false;

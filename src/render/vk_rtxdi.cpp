@@ -363,47 +363,134 @@ void RtxdiContext::recreate(vk::Extent2D renderExtent)
                         "neighbor offsets",
                         renderExtent.width, renderExtent.height, rtxdi::c_NumReSTIRDIReservoirBuffers,
                         reservoirParams.reservoirArrayPitch, static_cast<double>(reservoirBytes) / (1024.0 * 1024.0),
-                        isReference ? "reference (no reuse)" : "temporal and spatial",
+                        isReference          ? "reference (no reuse)"
+                            : isSpatialOnly  ? "spatial"
+                            : isTemporalOnly ? "temporal"
+                                             : "temporal and spatial",
                         localLightSamplingName(restirDi().GetInitialSamplingParameters().localLightSamplingMode),
                         kNeighborOffsetCount),
             "Rtxdi");
 }
 
-RtxdiContext::Settings RtxdiContext::nvidiaSettings()
+RtxdiContext::Settings RtxdiContext::nvidiaPreset(QualityPreset preset)
 {
     const RTXDI_DIInitialSamplingParameters initial = rtxdi::GetDefaultReSTIRDIInitialSamplingParams();
     const RTXDI_DITemporalResamplingParameters temporal = rtxdi::GetDefaultReSTIRDITemporalResamplingParams();
     const RTXDI_DISpatialResamplingParameters spatial = rtxdi::GetDefaultReSTIRDISpatialResamplingParams();
     const RTXDI_BoilingFilterParameters boiling = rtxdi::GetDefaultReSTIRDIBoilingFilterParams();
     const RTXDI_ShadingParameters shading = rtxdi::GetDefaultReSTIRDIShadingParams();
-    // RTXDI-Library Samples/FullSample UserInterface.cpp ApplyPreset(Medium) over the library defaults: ReGIR_RIS, 8
-    // local light candidates in each mode
-    constexpr uint32_t kMediumLocalLightSamples = 8;
-    return Settings{
-        .localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::ReGIR_RIS,
-        .localLightSamples = {kMediumLocalLightSamples, kMediumLocalLightSamples, kMediumLocalLightSamples},
-        .infiniteLightSamples = initial.numInfiniteLightSamples,
-        .brdfSamples = initial.numBrdfSamples,
-        .isInitialVisibilityEnabled = initial.enableInitialVisibility != 0,
-        .maxHistoryLength = temporal.maxHistoryLength,
-        .temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Raytraced,
-        .isVisibilityShortcutEnabled = true,
-        .isFallbackSamplingEnabled = temporal.enableFallbackSampling != 0,
-        .isPermutationSamplingEnabled = temporal.enablePermutationSampling != 0,
-        // the preset's 1, rounded up to even for the stratified walk (NormalizeDISpatialSampleCount)
-        .spatialSamples = 2,
-        .disocclusionBoostSamples = spatial.numDisocclusionBoostSamples,
-        .disocclusionHistoryLength = spatial.targetHistoryLength,
-        .samplingRadius = spatial.samplingRadius,
-        .spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Basic,
-        .isMaterialSimilarityTestEnabled = spatial.enableMaterialSimilarityTest != 0,
-        .depthThreshold = spatial.depthThreshold,
-        .normalThreshold = spatial.normalThreshold,
-        .isBoilingFilterEnabled = boiling.enableBoilingFilter != 0,
-        .boilingFilterStrength = boiling.boilingFilterStrength,
-        .isFinalVisibilityReused = shading.reuseFinalVisibility != 0,
+    Settings settings;
+    settings.localLightSamplingMode = initial.localLightSamplingMode;
+    settings.localLightSamples.fill(initial.numLocalLightSamples);
+    settings.infiniteLightSamples = initial.numInfiniteLightSamples;
+    settings.brdfSamples = initial.numBrdfSamples;
+    settings.isInitialVisibilityEnabled = initial.enableInitialVisibility != 0;
+    settings.maxHistoryLength = temporal.maxHistoryLength;
+    settings.temporalBiasCorrection = temporal.biasCorrectionMode;
+    settings.isVisibilityShortcutEnabled = temporal.enableVisibilityShortcut != 0;
+    settings.isFallbackSamplingEnabled = temporal.enableFallbackSampling != 0;
+    settings.isPermutationSamplingEnabled = temporal.enablePermutationSampling != 0;
+    settings.spatialSamples = spatial.numSamples;
+    settings.disocclusionBoostSamples = spatial.numDisocclusionBoostSamples;
+    settings.disocclusionHistoryLength = spatial.targetHistoryLength;
+    settings.samplingRadius = spatial.samplingRadius;
+    settings.spatialBiasCorrection = spatial.biasCorrectionMode;
+    settings.isMaterialSimilarityTestEnabled = spatial.enableMaterialSimilarityTest != 0;
+    settings.depthThreshold = spatial.depthThreshold;
+    settings.normalThreshold = spatial.normalThreshold;
+    settings.isBoilingFilterEnabled = boiling.enableBoilingFilter != 0;
+    settings.boilingFilterStrength = boiling.boilingFilterStrength;
+    settings.isFinalVisibilityReused = shading.reuseFinalVisibility != 0;
+
+    // RTXDI Samples/FullSample UserInterface.cpp UIData::ApplyPreset. Skipped, no engine field: checkerboard rendering
+    // (Fast), lightingSettings.enableGradients and enablePrevTLAS. brdfptParams.enableSecondaryResampling and its
+    // spatial parameters are GI rows (GiSettings::isSecondaryResamplingEnabled, path_shading.slang)
+    const auto apply = [&settings](QualityPreset applied)
+    {
+        switch (applied) {
+        case QualityPreset::Fast:
+            settings.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Power_RIS;
+            settings.localLightSamples = {4, 4, 4};
+            settings.brdfSamples = 0;
+            settings.infiniteLightSamples = 1;
+            settings.isVisibilityShortcutEnabled = true;
+            settings.isBoilingFilterEnabled = true;
+            settings.boilingFilterStrength = 0.2f;
+            settings.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Off;
+            settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Off;
+            settings.spatialSamples = 1;
+            settings.disocclusionBoostSamples = 2;
+            settings.isFinalVisibilityReused = true;
+            break;
+        case QualityPreset::Medium:
+            settings.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::ReGIR_RIS;
+            settings.localLightSamples = {8, 8, 8};
+            settings.brdfSamples = 1;
+            settings.infiniteLightSamples = 1;
+            settings.isVisibilityShortcutEnabled = true;
+            settings.isBoilingFilterEnabled = true;
+            settings.boilingFilterStrength = 0.2f;
+            settings.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Raytraced;
+            settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Basic;
+            settings.spatialSamples = 1;
+            settings.disocclusionBoostSamples = 8;
+            settings.isFinalVisibilityReused = true;
+            break;
+        case QualityPreset::Unbiased:
+            settings.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Uniform;
+            settings.localLightSamples = {8, 8, 16};
+            settings.brdfSamples = 1;
+            settings.infiniteLightSamples = 1;
+            settings.isVisibilityShortcutEnabled = false;
+            settings.isBoilingFilterEnabled = false;
+            settings.boilingFilterStrength = 0.0f;
+            settings.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Raytraced;
+            settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
+            settings.spatialSamples = 1;
+            settings.disocclusionBoostSamples = 8;
+            settings.isFinalVisibilityReused = false;
+            break;
+        case QualityPreset::Ultra:
+            settings.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::ReGIR_RIS;
+            settings.localLightSamples = {16, 16, 16};
+            settings.brdfSamples = 1;
+            settings.infiniteLightSamples = 1;
+            settings.isVisibilityShortcutEnabled = false;
+            settings.isBoilingFilterEnabled = false;
+            settings.boilingFilterStrength = 0.0f;
+            settings.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Raytraced;
+            settings.spatialBiasCorrection = ReSTIRDI_SpatialBiasCorrectionMode::Raytraced;
+            settings.spatialSamples = 4;
+            settings.disocclusionBoostSamples = 16;
+            settings.isFinalVisibilityReused = false;
+            break;
+        case QualityPreset::Reference:
+            // resampling None is isReference, which also overrides the candidate counts
+            settings.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Uniform;
+            settings.localLightSamples = {16, 16, 0};
+            settings.brdfSamples = 1;
+            settings.infiniteLightSamples = 1;
+            settings.isBoilingFilterEnabled = false;
+            settings.boilingFilterStrength = 0.0f;
+            break;
+        case QualityPreset::Count:
+            break;
+        }
     };
+    // the sample starts in Medium, and a preset leaves the fields it does not set where they were
+    apply(QualityPreset::Medium);
+    if (preset != QualityPreset::Medium) {
+        apply(preset);
+    }
+    // NormalizeDISpatialSampleCount: the stratified walk takes neighbors in pairs, 2 to 32
+    constexpr uint32_t kMaxSpatialSamples = 32;
+    for (uint32_t* count : {&settings.spatialSamples, &settings.disocclusionBoostSamples}) {
+        *count = (std::clamp(*count, 2u, kMaxSpatialSamples) + 1u) & ~1u;
+    }
+    return settings;
 }
+
+RtxdiContext::Settings RtxdiContext::nvidiaSettings() { return nvidiaPreset(QualityPreset::Medium); }
 
 RtxdiContext::Settings RtxdiContext::defaultSettings()
 {
@@ -544,6 +631,43 @@ RtxdiContext::GiSettings RtxdiContext::convergedGiSettings()
     return converged;
 }
 
+void RtxdiContext::applyDenoiserCompatDefaults(GiSettings& settings, bool isDlssRr)
+{
+    if (isDlssRr) {
+        const GiSettings shipped = defaultGiSettings();
+        settings.maxHistoryLength = shipped.maxHistoryLength;
+        settings.maxReservoirAge = shipped.maxReservoirAge;
+        settings.isDuplicationHistoryReductionEnabled = shipped.isDuplicationHistoryReductionEnabled;
+        setDecorrelation(settings, decorrelationParameters(shipped));
+        settings.isBoilingFilterEnabled = shipped.isBoilingFilterEnabled;
+        settings.boilingFilterStrength = shipped.boilingFilterStrength;
+        return;
+    }
+    const RTXDI_PTTemporalResamplingParameters temporal = rtxdi::GetDefaultReSTIRPTTemporalResamplingParams(false);
+    settings.maxHistoryLength = temporal.maxHistoryLength;
+    settings.maxReservoirAge = temporal.enableAgeBasedRejection != 0 ? temporal.maxReservoirAge : kGiUnlimitedSampleAge;
+    settings.isDuplicationHistoryReductionEnabled = temporal.duplicationBasedHistoryReduction != 0;
+    setDecorrelation(settings, rtxdi::GetDefaultReSTIRPTDecorrelationParams(false));
+    const RTXDI_BoilingFilterParameters boiling = rtxdi::GetDefaultReSTIRPTBoilingFilterParams(false);
+    settings.isBoilingFilterEnabled = boiling.enableBoilingFilter != 0;
+    settings.boilingFilterStrength = boiling.boilingFilterStrength;
+}
+
+RtxdiContext::AppliedParameters RtxdiContext::getAppliedParameters() const
+{
+    const rtxdi::ReGIRContext& regir = importanceSampling->GetReGIRContext();
+    const rtxdi::ReSTIRDIContext& context = restirDi();
+    return AppliedParameters{
+        .regirStatic = regir.GetReGIRStaticParameters(),
+        .regirDynamic = regir.GetReGIRDynamicParameters(),
+        .regirLightSlotCount = regir.GetReGIRLightSlotCount(),
+        .initialSampling = context.GetInitialSamplingParameters(),
+        .temporalResampling = context.GetTemporalResamplingParameters(),
+        .spatialResampling = context.GetSpatialResamplingParameters(),
+        .shading = context.GetShadingParameters(),
+    };
+}
+
 bool RtxdiContext::isReferenceRequested()
 {
     const char* text = std::getenv("ENGINE_RTXDI_REFERENCE");
@@ -553,9 +677,10 @@ bool RtxdiContext::isReferenceRequested()
 void RtxdiContext::configure()
 {
     rtxdi::ReSTIRDIContext& context = restirDi();
-    context.SetResamplingMode(isReference    ? rtxdi::ReSTIRDI_ResamplingMode::None
-                              : isSpatialOnly ? rtxdi::ReSTIRDI_ResamplingMode::Spatial
-                                              : rtxdi::ReSTIRDI_ResamplingMode::TemporalAndSpatial);
+    context.SetResamplingMode(isReference      ? rtxdi::ReSTIRDI_ResamplingMode::None
+                              : isSpatialOnly  ? rtxdi::ReSTIRDI_ResamplingMode::Spatial
+                              : isTemporalOnly ? rtxdi::ReSTIRDI_ResamplingMode::Temporal
+                                               : rtxdi::ReSTIRDI_ResamplingMode::TemporalAndSpatial);
     RTXDI_DIInitialSamplingParameters initialSampling = rtxdi::GetDefaultReSTIRDIInitialSamplingParams();
     // Power_RIS: unbiased, and its 32 candidates converge the lamp's 5,985 bulb triangles in 1,024 frames, which
     // uniform selection does not (+0.3% residual at 8,192 frames)
@@ -590,7 +715,8 @@ void RtxdiContext::configure()
     spatial.depthThreshold = settings.depthThreshold;
     spatial.normalThreshold = settings.normalThreshold;
     spatial.enableMaterialSimilarityTest = settings.isMaterialSimilarityTestEnabled ? 1u : 0u;
-    spatial.targetHistoryLength = settings.disocclusionHistoryLength;
+    // without temporal reuse every reservoir has M == 1, which would trigger the disocclusion boost on every pixel
+    spatial.targetHistoryLength = isSpatialOnly ? 0u : settings.disocclusionHistoryLength;
     spatial.neighborOffsetSamplingMode = kNeighborSamplingMode;
     context.SetSpatialResamplingParameters(spatial);
 
@@ -606,6 +732,7 @@ void RtxdiContext::configure()
     context.SetShadingParameters(shading);
     isReferenceApplied = isReference;
     isSpatialOnlyApplied = isSpatialOnly;
+    isTemporalOnlyApplied = isTemporalOnly;
     appliedSettings = settings;
 }
 
@@ -658,9 +785,14 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
     const uint32_t rtxdiFrame = frameIndexOverride.value_or(frameIndex);
     context.SetFrameIndex(rtxdiFrame);
     giContext.SetFrameIndex(rtxdiFrame);
-    if (isReference != isReferenceApplied || isSpatialOnly != isSpatialOnlyApplied) {
+    if (isReference != isReferenceApplied || isSpatialOnly != isSpatialOnlyApplied ||
+        isTemporalOnly != isTemporalOnlyApplied) {
         configure();
-        logInfo(std::format("ReSTIR DI: {}", isReference ? "reference (no reuse)" : "temporal and spatial"), "Rtxdi");
+        logInfo(std::format("ReSTIR DI: {}", isReference ? "reference (no reuse)"
+                                                 : isSpatialOnly  ? "spatial"
+                                                 : isTemporalOnly ? "temporal"
+                                                                  : "temporal and spatial"),
+                "Rtxdi");
     } else if (settings != appliedSettings) {
         configure();
     }
@@ -682,9 +814,11 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
     const RTXDI_DIBufferIndices bufferIndices = context.GetBufferIndices();
     // rtxdi_temporal writes over its own pixel's initial reservoir, and its early-out leaves that as the output
     assert(bufferIndices.temporalResamplingOutputBufferIndex == bufferIndices.initialSamplingOutputBufferIndex);
-    // rtxdi_shade reads neighbors from one buffer and writes the other
+    // rtxdi_shade reads neighbors from one buffer and writes the other; without spatial reuse it reads and writes its
+    // own pixel only
     assert(bufferIndices.spatialResamplingInputBufferIndex != bufferIndices.shadingInputBufferIndex ||
-           context.GetResamplingMode() == rtxdi::ReSTIRDI_ResamplingMode::None);
+           (std::to_underlying(context.GetResamplingMode()) &
+            std::to_underlying(rtxdi::ReSTIRDI_ResamplingMode::Spatial)) == 0);
 
     const uint32_t localLightCount = worldLights.localLightCount();
     if (localLightCount > lightPdfSide * lightPdfSide) {

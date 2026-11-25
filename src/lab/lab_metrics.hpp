@@ -85,6 +85,8 @@ namespace labMetrics
         std::vector<double> frameMeans;
         vk::Extent2D extent{};
         vk::Extent2D blockExtent{};
+        std::vector<double> blockSum;
+        std::vector<double> blockSquaredSum;
         // frame-major block means
         std::vector<float> blockMeans;
     };

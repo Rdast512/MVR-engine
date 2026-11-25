@@ -95,11 +95,11 @@ void nrcUpdateMain(uint3 id : SV_DispatchThreadID)
     const NrcConstants nrcConstants = nrcBridgeInit(root);
     const GpuRtxdiConstants rtxdiConstants = loadRtxdiConstants(root);
     const uint frameIndex = root.frameIndex;
-    // the training launch is the path's identity; the light RNG is coherent per launch tile like ReSTIR DI's
+    // the training launch is the path's identity; the light RNG follows the DI tile-coherence flag like indirect
     RTXDI_RandomSamplerState rng = RTXDI_InitRandomSampler(launch, frameIndex, kNrcUpdatePathSeed);
     RTXDI_RandomSamplerState lightRng = RTXDI_InitRandomSampler(launch, frameIndex, kNrcUpdateLightSeed);
     RTXDI_RandomSamplerState coherentRng =
-        RTXDI_InitRandomSampler(launch / RTXDI_TILE_SIZE_IN_PIXELS, frameIndex, kNrcUpdateLightSeed);
+        initCoherentRandomSampler(rtxdiConstants, launch, frameIndex, kNrcUpdateLightSeed);
     const uint2 pixel = selectTrainingPixel(launch, launchSize, gRtxdiBridge.renderSize, rng);
     const uint maxPathVertices = nrcConstants.maxPathVertices;
 

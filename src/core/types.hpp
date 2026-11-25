@@ -1101,7 +1101,7 @@ struct GpuTargets
     // R16F DLSS-RR specular hit distance (indirect, rtxdi_gi_shade, glass; kNoneIndex when unused, m8 I16 phase 3)
     uint32_t specularHitDistanceStorage = kNoneIndex;
     // RGBA32F sum and count of the DLSS-RR color input, written by passes/combine.slang (settings lab, m8 I16)
-    uint32_t dlssInputAccumulationStorage = 0;
+    uint32_t dlssInputAccumulationStorage = kNoneIndex;
 };
 static_assert(sizeof(GpuTargets) == 216);
 static_assert(offsetof(GpuTargets, specularHitDistanceStorage) == 208);
@@ -1167,6 +1167,8 @@ namespace FrameFlag
     inline constexpr uint32_t DlssInputFrozen = 1u << 9;
     // GpuFrameRoot::preDenoiserClamp's reference: the 3x3 neighbors of the noisy input instead of DLSS-RR's last output
     inline constexpr uint32_t PreDenoiserClampNeighbors = 1u << 10;
+    // last frame evaluated DLSS-RR into upscaledTarget and history was not reset
+    inline constexpr uint32_t DlssHistoryValid = 1u << 11;
 } // namespace FrameFlag
 
 // [InstanceIndex()] of a TLAS instance; written by the CPU per scene layout (RayTracingScene)

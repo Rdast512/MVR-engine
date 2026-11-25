@@ -100,7 +100,7 @@ void FrameData::writeFrameRoot(uint32_t frameSlot, const FrameRootInputs& inputs
         .rtxdiConstants = inputs.rtxdiConstants,
         .cacheConstants = inputs.cacheConstants,
         .frameIndex = inputs.frameIndex,
-        .exposure = inputs.dlssInputScale,
+        .exposure = std::max(inputs.dlssInputScale, 1e-6f),
         .worldLights = inputs.worldLights,
         .prevWorldLights = inputs.prevWorldLights,
         .rayDebug = inputs.rayDebug,

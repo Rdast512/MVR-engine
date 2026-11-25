@@ -1,6 +1,6 @@
 # Feature: NVIDIA settings layout and denoiser off
 
-**Date:** 2026-11-25 · **Status:** planned · **Milestone:** M8 tooling, beside the settings lab ([full_testing.md](./full_testing.md))
+**Date:** 2026-11-25 · **Status:** implemented, GPU checks of S3–S5 pending (considerations C-NS-1) · **Milestone:** M8 tooling, beside the settings lab ([full_testing.md](./full_testing.md))
 **Implements:** a `Settings` window that copies the RTXDI FullSample's ImGui layout (sections, order, labels, ranges, help text), so an engine config and an NVIDIA sample config can be compared row by row; a denoiser mode with `Off`; NVIDIA's `Accumulation` AA mode for converged images without a denoiser; highlighting of the rows that differ from a chosen comparison config
 **Reference:** RTXDI `Samples/FullSample/Source/UserInterface.cpp` (`buildUI` L2198, `SceneSettings` L1876, `GeneralRenderingSettings` L549, `SamplingSettings` L602, `DenoiserSettings` L1658, `PostProcessSettings` L1357, `UIData::ApplyPreset`, `ApplyDenoiserCompatDefaults` L443, header colors L532–533); RTXDI `App/SceneRenderer.cpp` (`ProcessAccumulationModeLogic` L1321, camera-static test L1078, `ResolveAA` L1670), `Shaders/AccumulationPass.hlsl`; RTXGI `Samples/IndirectDiffuse/UI.cpp` (`NRC:` header L294, denoiser radio L237–275)
 **Touches:** `src/ui/engine_ui.{hpp,cpp}`, `src/render/vk_renderer.{hpp,cpp}`, `src/render/vk_post.*`, `src/render/vk_rtxdi.{hpp,cpp}`, `src/lab/settings_registry.{hpp,cpp}`, [docs/settings.md](../../../docs/settings.md)

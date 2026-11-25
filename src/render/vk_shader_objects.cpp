@@ -128,6 +128,7 @@ void ShaderObjects::createFrameShaders()
     frameShaders.exposureHistogram = createComputeShader("exposure.spv", "exposureHistogramMain", "ExposureHistogram");
     frameShaders.exposureAdapt = createComputeShader("exposure.spv", "exposureAdaptMain", "ExposureAdapt");
     frameShaders.post = createComputeShader("post.spv", "postMain", "Post");
+    frameShaders.accumulate = createComputeShader("accumulate.spv", "accumulateMain", "Accumulate");
 }
 
 void ShaderObjects::createResolveShaders()

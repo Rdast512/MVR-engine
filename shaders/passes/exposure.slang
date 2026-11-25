@@ -2,9 +2,10 @@ import types;
 import core.binding;
 import core.frame;
 
-// auto exposure (PBR plan H2, engine spec §12.3): a log2-luminance histogram of the DLSS-RR output, then one group
-// that averages the histogram between two percentiles and adapts the exposure image toward key / average. The
-// exposure image is read by this frame's post pass and reused as adaptation history
+// auto exposure (PBR plan H2, engine spec §12.3): a log2-luminance histogram of the post input (DLSS-RR's output,
+// noisyColor or the accumulated mean), then one group that averages the histogram between two percentiles and adapts
+// the exposure image toward key / average. The exposure image is read by this frame's post pass and reused as
+// adaptation history
 
 static const uint kHistogramTile = 16; // 256 threads: one per bin
 static const float kKeyValue = 0.18; // middle grey after exposure
@@ -24,10 +25,15 @@ void exposureHistogramMain(uint3 id : SV_DispatchThreadID, uint index : SV_Group
 {
     localBins[index] = 0;
     GroupMemoryBarrierWithGroupSync();
-    const GpuTargets targets = loadTargets(bdaPtr<GpuFrameRoot>(push.frameRoot)[0]);
+    const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
+    const GpuTargets targets = loadTargets(root);
     if (all(id.xy < targets.displaySize))
     {
-        const float3 color = tex2D(targets.upscaledSampled).Load(int3(id.xy, 0)).rgb;
+        float3 color = tex2D(push.input).Load(int3(id.xy, 0)).rgb;
+        if (root.exposure != 1.0)
+        {
+            color /= max(root.exposure, 1e-6);
+        }
         const float luminance = dot(color, kLuminanceWeights);
         if (isfinite(luminance))
         {

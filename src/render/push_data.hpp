@@ -207,13 +207,41 @@ struct ExposurePushData {
     float adaptationSpeedUp;
     float adaptationSpeedDown;
     uint32_t flags; // ExposureFlag
+    // resource heap, sampled: the metered image at the display extent (DLSS-RR output, noisyColor or accumulated)
+    uint32_t input;
+    uint32_t pad0;
 };
 
 static_assert(std::is_trivially_copyable_v<ExposurePushData>);
 static_assert(offsetof(ExposurePushData, deltaSeconds) == 24);
 static_assert(offsetof(ExposurePushData, adaptationSpeedUp) == 44);
 static_assert(offsetof(ExposurePushData, flags) == 52);
-static_assert(sizeof(ExposurePushData) == 56);
+static_assert(offsetof(ExposurePushData, input) == 56);
+static_assert(sizeof(ExposurePushData) == 64);
+
+// passes/post.slang; must match shaders/types.slang PostPushData
+struct PostPushData {
+    vk::DeviceAddress frameRoot;
+    // resource heap, sampled: the tonemapped image, as ExposurePushData::input
+    uint32_t input;
+    uint32_t pad0;
+};
+
+static_assert(sizeof(PostPushData) == 16);
+
+// passes/accumulate.slang; must match shaders/types.slang AccumulatePushData
+struct AccumulatePushData {
+    // resource heap: noisyColor, sampled
+    uint32_t input;
+    // resource heap: the RGBA32F running mean, storage
+    uint32_t accumulated;
+    vk::Extent2D size;
+    // 1 / frames averaged: 1 copies the input
+    float weight;
+    uint32_t pad0;
+};
+
+static_assert(sizeof(AccumulatePushData) == 24);
 
 // ExposurePushData::flags; must match shaders/types.slang kExposureFlag*
 namespace ExposureFlag

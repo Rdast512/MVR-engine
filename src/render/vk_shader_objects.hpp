@@ -122,7 +122,9 @@ public:
         vk::raii::ShaderEXT combine = nullptr;
         // passes/glass.slang: thin-walled glass layers over noisyColor (m8 I13)
         vk::raii::ShaderEXT glass = nullptr;
-        // passes/exposure.slang: luminance histogram of the DLSS-RR output, then the adapted exposure
+        // passes/accumulate.slang: running mean of noisyColor while the denoiser is off (Accumulation AA)
+        vk::raii::ShaderEXT accumulate = nullptr;
+        // passes/exposure.slang: luminance histogram of the post input, then the adapted exposure
         vk::raii::ShaderEXT exposureHistogram = nullptr;
         vk::raii::ShaderEXT exposureAdapt = nullptr;
         // passes/post.slang: exposure + tonemap into the post target

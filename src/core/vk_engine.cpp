@@ -16,6 +16,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
@@ -472,6 +473,16 @@ bool Engine::run()
             if (isIndirectModeCycling) {
                 renderer->indirectMode = static_cast<IndirectMode>(renderer->frameNumber / kIndirectModeCycleFrames %
                                                                    std::to_underlying(IndirectMode::Count));
+            }
+            if (renderer->denoiser == DenoiserMode::Off && renderer->aaMode == AaMode::Accumulation) {
+                // any lab switch edit starts a new mean, as the RTXDI sample's resetAccumulation on every UI edit
+                LabConfig config = captureLabConfig(*renderer, *camera);
+                if (accumulationConfig && !isSameConfig(*accumulationConfig, config)) {
+                    renderer->resetAccumulation();
+                }
+                accumulationConfig = std::move(config);
+            } else {
+                accumulationConfig.reset();
             }
             {
                 ZoneScopedN("DrawFrame");
