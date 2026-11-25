@@ -128,8 +128,8 @@ namespace
     {
         const VkImageSubresourceRange range{static_cast<VkImageAspectFlags>(image.aspect), 0, 1, 0, 1};
         return NVSDK_NGX_Create_ImageView_Resource_VK(image.view, image.image, range,
-                                                      static_cast<VkFormat>(image.format), extent.width,
-                                                      extent.height, isWritten);
+                                                      static_cast<VkFormat>(image.format), extent.width, extent.height,
+                                                      isWritten);
     }
 } // namespace
 
@@ -140,18 +140,19 @@ SdkExtensions Dlss::requiredExtensions()
     uint32_t count = 0;
     VkExtensionProperties* properties = nullptr;
     checkNgx(NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements(&info, &count, &properties),
-          "instance extension query");
+             "instance extension query");
     return SdkExtensions{
         .instance = ngxExtensionNames(properties, count),
-        .device = [](vk::Instance instance, vk::PhysicalDevice physicalDevice)
+        .device =
+            [](vk::Instance instance, vk::PhysicalDevice physicalDevice)
         {
             const NVSDK_NGX_FeatureCommonInfo deviceCommon = ngxCommonInfo();
             const NVSDK_NGX_FeatureDiscoveryInfo deviceInfo = ngxDiscoveryInfo(deviceCommon);
             uint32_t deviceCount = 0;
             VkExtensionProperties* deviceProperties = nullptr;
             checkNgx(NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements(instance, physicalDevice, &deviceInfo,
-                                                                         &deviceCount, &deviceProperties),
-                  "device extension query");
+                                                                            &deviceCount, &deviceProperties),
+                     "device extension query");
             return ngxExtensionNames(deviceProperties, deviceCount);
         },
     };
@@ -162,10 +163,10 @@ Dlss::Dlss(const Device& device, FrameSync& frameSync) :
 {
     const NVSDK_NGX_FeatureCommonInfo common = ngxCommonInfo();
     const std::wstring path = ngxApplicationPath();
-    checkNgx(NVSDK_NGX_VULKAN_Init_with_ProjectID(kNgxProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, kNgxEngineVersion, path.c_str(),
-                                               *device.instance, *device.physicalDevice, *device.vkdevice,
-                                               vkGetInstanceProcAddr, vkGetDeviceProcAddr, &common),
-          "init");
+    checkNgx(NVSDK_NGX_VULKAN_Init_with_ProjectID(
+                 kNgxProjectId, NVSDK_NGX_ENGINE_TYPE_CUSTOM, kNgxEngineVersion, path.c_str(), *device.instance,
+                 *device.physicalDevice, *device.vkdevice, vkGetInstanceProcAddr, vkGetDeviceProcAddr, &common),
+             "init");
     try {
         checkNgx(NVSDK_NGX_VULKAN_GetCapabilityParameters(&parameters), "capability parameters");
         int needsDriver = 0;
@@ -211,8 +212,9 @@ vk::Extent2D Dlss::recreate(vk::Extent2D display)
 
     // NGX_DLSSD_GET_OPTIMAL_SETTINGS lives in a D3D-only helper in this SDK; the Vulkan side is the same callback
     void* callback = nullptr;
-    checkNgx(NVSDK_NGX_Parameter_GetVoidPointer(parameters, NVSDK_NGX_Parameter_DLSSDOptimalSettingsCallback, &callback),
-          "optimal settings callback");
+    checkNgx(
+        NVSDK_NGX_Parameter_GetVoidPointer(parameters, NVSDK_NGX_Parameter_DLSSDOptimalSettingsCallback, &callback),
+        "optimal settings callback");
     NVSDK_NGX_Parameter_SetUI(parameters, NVSDK_NGX_Parameter_Width, display.width);
     NVSDK_NGX_Parameter_SetUI(parameters, NVSDK_NGX_Parameter_Height, display.height);
     NVSDK_NGX_Parameter_SetI(parameters, NVSDK_NGX_Parameter_PerfQualityValue, quality);
@@ -223,7 +225,8 @@ vk::Extent2D Dlss::recreate(vk::Extent2D display)
     NVSDK_NGX_Parameter_GetUI(parameters, NVSDK_NGX_Parameter_OutWidth, &width);
     NVSDK_NGX_Parameter_GetUI(parameters, NVSDK_NGX_Parameter_OutHeight, &height);
     if (width == 0 || height == 0) {
-        throw std::runtime_error(std::format("DLSS-RR returned no render size for {}x{}", display.width, display.height));
+        throw std::runtime_error(
+            std::format("DLSS-RR returned no render size for {}x{}", display.width, display.height));
     }
     renderExtent = vk::Extent2D{width, height};
 
@@ -247,20 +250,19 @@ vk::Extent2D Dlss::recreate(vk::Extent2D display)
     create.InPerfQualityValue = quality;
     // motion in render pixels, reverse z, scene-linear color
     create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
-                                  (debug.isDepthInverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0);
+        (debug.isDepthInverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0);
 
     const FrameSync::OneTimeCommands commands = frameSync.computeCommands();
     commands.cmd.begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    const NVSDK_NGX_Result result =
-        NGX_VULKAN_CREATE_DLSSD_EXT1(*device.vkdevice, *commands.cmd, kNgxNodeMask, kNgxNodeMask, &feature, parameters,
-                                     &create);
+    const NVSDK_NGX_Result result = NGX_VULKAN_CREATE_DLSSD_EXT1(*device.vkdevice, *commands.cmd, kNgxNodeMask,
+                                                                 kNgxNodeMask, &feature, parameters, &create);
     submitAndWait(commands.cmd, commands.queue);
     checkNgx(result, "DLSSD feature creation");
     appliedSettings = settings;
     appliedDepthInverted = debug.isDepthInverted;
-    logInfo(std::format("DLSS-RR mode {} preset {}: render {}x{} -> display {}x{}", std::to_underlying(settings.quality),
-                        std::to_underlying(settings.preset), renderExtent.width, renderExtent.height, display.width,
-                        display.height),
+    logInfo(std::format("DLSS-RR mode {} preset {}: render {}x{} -> display {}x{}",
+                        std::to_underlying(settings.quality), std::to_underlying(settings.preset), renderExtent.width,
+                        renderExtent.height, display.width, display.height),
             "Dlss");
     return renderExtent;
 }
@@ -273,7 +275,10 @@ void Dlss::evaluate(const vk::raii::CommandBuffer& cmd, const Frame& frame) cons
     NVSDK_NGX_Resource_VK diffuseAlbedo = ngxResource(frame.diffuseAlbedo, renderExtent, false);
     NVSDK_NGX_Resource_VK specularAlbedo = ngxResource(frame.specularAlbedo, renderExtent, false);
     NVSDK_NGX_Resource_VK normalRoughness = ngxResource(frame.normalRoughness, renderExtent, false);
-    NVSDK_NGX_Resource_VK specularHitDistance = ngxResource(frame.specularHitDistance, renderExtent, false);
+    NVSDK_NGX_Resource_VK specularHitDistance{};
+    if (guides.isSpecularHitDistanceUsed) {
+        specularHitDistance = ngxResource(frame.specularHitDistance, renderExtent, false);
+    }
     NVSDK_NGX_Resource_VK output = ngxResource(frame.output, displayExtent, true);
     // DLSS takes row-major, left-multiply matrices (v * M^T); glm's column-major M has the same 16-float layout
     // (reference/vk_denoise_dlssrr/dlss_rr/src/dlssrr_wrapper.cpp:379-385). Copies: NGX takes non-const pointers

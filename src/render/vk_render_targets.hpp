@@ -2,8 +2,8 @@
 
 #include "../Constants.h"
 #include "core/types.hpp"
-#include "core/vk_descriptors.hpp"
 #include "core/vk_allocator.hpp"
+#include "core/vk_descriptors.hpp"
 #include "core/vk_device.hpp"
 #include "core/vk_frame_sync.hpp"
 #include "util/vk_utils.hpp"
@@ -62,8 +62,9 @@ public:
     // device idle; depth first, every target at renderExtent except the DLSS-RR output at displayExtent
     void recreate(vk::Extent2D renderExtent, vk::Extent2D displayExtent);
     // writes the slot's GpuTargets with the guide set of frameNumber's parity; isUpscaledPresented: present reads the
-    // DLSS-RR output instead of the display image
-    void prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool isUpscaledPresented);
+    // DLSS-RR output instead of the display image; isSpecularHitDistanceWritten: kNoneIndex otherwise so passes skip it
+    void prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool isUpscaledPresented,
+                      bool isSpecularHitDistanceWritten = false);
 
     // depth, vis buffer, guides and every culling size: the DLSS render resolution
     [[nodiscard]] vk::Extent2D getExtent() const noexcept { return extent; }
@@ -140,7 +141,7 @@ private:
     void createAttachment(AttachmentImage& target, const AttachmentDesc& desc);
     void destroyAttachment(AttachmentImage& target, const char* tracyName);
     void createTarget(Target& target, vk::Format format, vk::ImageUsageFlags usage, vk::ImageLayout layout,
-                      const char* debugName, vk::Extent2D size);
+                      const char* debugName, vk::Extent2D size, bool isSampledInHeap = true);
     [[nodiscard]] static ImageRef imageRef(const Target& target, vk::Format format)
     {
         return ImageRef{.image = *target.image, .view = *target.view, .format = format};

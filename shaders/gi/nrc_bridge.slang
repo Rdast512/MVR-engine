@@ -93,16 +93,22 @@ bool nrcLoadQueryAnswer(GpuNrcConstants constants, uint2 pixel, out NrcQueryAnsw
     return true;
 }
 
-bool isNrcAnswerFinite(NrcQueryAnswer answer)
+bool isFiniteFloat3(float3 value)
 {
-    return !any(isnan(answer.radiance)) && !any(isinf(answer.radiance));
+    return !any(isnan(value)) && !any(isinf(value));
 }
 
-// prefix throughput x predicted radiance, zero without a query. An untrained network predicts negative radiance
-// (measured on load), which the reservoirs must not take
+bool isNrcAnswerFinite(NrcQueryAnswer answer)
+{
+    return isFiniteFloat3(answer.radiance) && isFiniteFloat3(answer.prefixThroughput) &&
+           isFiniteFloat3(answer.radiance * answer.prefixThroughput);
+}
+
+// prefix throughput x predicted radiance, zero without a query or when non-finite. An untrained network predicts
+// negative radiance (measured on load), which the reservoirs must not take
 float3 nrcPathRadiance(NrcQueryAnswer answer)
 {
-    return max(answer.radiance * answer.prefixThroughput, 0.0);
+    return isNrcAnswerFinite(answer) ? max(answer.radiance * answer.prefixThroughput, 0.0) : float3(0.0, 0.0, 0.0);
 }
 
 float3 nrcQueryResult(GpuNrcConstants constants, uint2 pixel)

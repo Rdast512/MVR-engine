@@ -662,6 +662,12 @@ namespace
         LAYOUT_FIELD(GpuNrcConstants, trainingLaunch),
         LAYOUT_FIELD(GpuNrcConstants, health),
     }};
+    const StructLayout kNrcHealth = {"GpuNrcHealth", sizeof(GpuNrcHealth), {
+        LAYOUT_FIELD(GpuNrcHealth, queried),
+        LAYOUT_FIELD(GpuNrcHealth, diverged),
+        LAYOUT_FIELD(GpuNrcHealth, maxRatioBits),
+        LAYOUT_FIELD(GpuNrcHealth, pad0),
+    }};
     // clang-format on
 
 #undef LAYOUT_FIELD_AS
@@ -866,9 +872,11 @@ int main(int argc, char** argv)
     }
     if (slang::IModule* nrcModule = slang.loadText("nrc_constants_layout", "gi/nrc_constants.slang")) {
         const std::vector<Reflected> nrcTypes = reflectTypes(*nrcModule);
-        const auto constants = std::ranges::find(nrcTypes, kNrcConstants.name, &Reflected::name);
-        if (check(constants != nrcTypes.end(), "nrc_constants.slang declares GpuNrcConstants")) {
-            verify(*constants, kNrcConstants);
+        for (const StructLayout* mirror : {&kNrcConstants, &kNrcHealth}) {
+            const auto type = std::ranges::find(nrcTypes, mirror->name, &Reflected::name);
+            if (check(type != nrcTypes.end(), std::format("nrc_constants.slang declares {}", mirror->name).c_str())) {
+                verify(*type, *mirror);
+            }
         }
     }
     if (slang::IModule* bindingModule = slang.load("core/binding")) {

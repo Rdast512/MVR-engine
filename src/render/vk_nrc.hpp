@@ -53,8 +53,10 @@ struct GpuNrcHealth
     uint32_t diverged = 0;
     // the largest wave ratio of cache answers to traced light, float bits
     uint32_t maxRatioBits = 0;
+    uint32_t pad0 = 0;
 };
-// kNrcHealthQueried / kNrcHealthDiverged / kNrcHealthMaxRatio in shaders/gi/nrc_constants.slang
+// mirrored in shaders/gi/nrc_constants.slang; tests/layout_test.cpp checks it
+static_assert(sizeof(GpuNrcHealth) == 16);
 static_assert(offsetof(GpuNrcHealth, queried) == 0 && offsetof(GpuNrcHealth, diverged) == 4 &&
               offsetof(GpuNrcHealth, maxRatioBits) == 8);
 
@@ -96,6 +98,12 @@ public:
     // isSceneChanged: true when camera, sun, light set, dynamic entities or layout changed (restarts NP2 countdown); an
     // indirect-mode switch does not, since NRC's training target is the same in both NRC modes
     void prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, bool isPaused, bool isSceneChanged);
+    [[nodiscard]] bool hasNewBounds(const BoundingBox& sceneBounds) const noexcept;
+    // the slot is not in flight: counts the frames whose resolve saw a diverged cache, then clears the slot's counts
+    [[nodiscard]] bool isNetworkDiverged(uint32_t frameSlot);
+    // device idle: a new SDK context and Configure. Only a new context is sure to start a fresh network: requestReset
+    // keeps the weights (C-G3-5)
+    void recreateNetwork();
     // false until a scene with ray instances is configured: the NRC passes are skipped
     [[nodiscard]] bool isActive() const noexcept { return isConfigured; }
     // true if this frame runs training paths and weight updates (false when frozen or NP2 idle)
@@ -137,11 +145,7 @@ private:
     };
 
     void configure();
-    // device idle: a new SDK context and Configure. Only a new context is sure to start a fresh network: requestReset
-    // keeps the weights (C-G3-5)
-    void recreateNetwork();
-    // the slot is not in flight: counts the frames whose resolve saw a diverged cache, then clears the slot's counts
-    [[nodiscard]] bool isNetworkDiverged(uint32_t frameSlot);
+    void resetHealth() noexcept;
     // device idle: (re)allocates the SDK buffers whose size changed and fills sdkBufferInfo
     void allocateSdkBuffers();
     void destroySdkBuffers();

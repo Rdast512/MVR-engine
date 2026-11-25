@@ -5,7 +5,8 @@
 #include <utility>
 #include <vector>
 
-struct TextureAsset {
+struct TextureAsset
+{
     vk::raii::Image textureImage = nullptr;
     vk::raii::ImageView textureImageView = nullptr;
     VmaAllocation textureImageMemory = nullptr;
@@ -36,7 +37,7 @@ struct alignas(16) GpuMeshletDesc
 {
     uint32_t vertexOffset = 0; // into meshletVertices
     uint32_t triangleOffset = 0; // into meshletTriangles (first corner index)
-    uint8_t vertexCount = 0;   // <= 64
+    uint8_t vertexCount = 0; // <= 64
     uint8_t triangleCount = 0; // <= 126
     uint8_t pad0 = 0;
     uint8_t pad1 = 0;
@@ -212,7 +213,8 @@ struct alignas(16) GpuMaterial
     // read only under GpuMaterialFlag::SpecularGlossiness
     glm::vec3 specularFactor{1.0f};
 
-    // base color, metal-rough, normal, occlusion, emissive; valid only where the GpuMaterialFlag::UvTransform* bit is set
+    // base color, metal-rough, normal, occlusion, emissive; valid only where the GpuMaterialFlag::UvTransform* bit is
+    // set
     std::array<GpuUvMatrix, kMaterialUvSlotCount> uvMatrices{};
     // read only under GpuMaterialFlag::SpecularGlossiness
     float glossinessFactor = 1.0f;
@@ -309,7 +311,7 @@ struct GpuNodeInstance
     uint32_t entityIndex = 0;
     uint32_t modelIndex = 0;
     uint32_t nodeIndex = 0; // model-relative
-    uint32_t flags = 0;     // NodeFlag
+    uint32_t flags = 0; // NodeFlag
 };
 static_assert(sizeof(GpuNodeInstance) == 144);
 static_assert(offsetof(GpuNodeInstance, entityIndex) == 128);
@@ -368,9 +370,9 @@ struct GpuDrawRecord
 {
     uint32_t nodeInstanceIndex = 0;
     uint32_t primitiveIndex = 0; // absolute row of GpuFrameRoot.primitives
-    uint32_t meshletOffset = 0;  // the group's first meshlet, relative to the primitive (read by the mesh shaders)
-    uint32_t flags = 0;          // DrawRecordFlag
-    uint32_t groupOffset = 0;    // the group, relative to GpuPrimitive::firstGroup
+    uint32_t meshletOffset = 0; // the group's first meshlet, relative to the primitive (read by the mesh shaders)
+    uint32_t flags = 0; // DrawRecordFlag
+    uint32_t groupOffset = 0; // the group, relative to GpuPrimitive::firstGroup
 };
 static_assert(sizeof(GpuDrawRecord) == 20);
 
@@ -419,9 +421,9 @@ struct GpuCullView
     uint32_t flags = 0; // CullFlag
     // GpuVisibleMeshlet[], one region per RasterBin
     vk::DeviceAddress visibleMeshlets = 0;
-    vk::DeviceAddress counters = 0;  // GpuCullCounters
+    vk::DeviceAddress counters = 0; // GpuCullCounters
     vk::DeviceAddress sequences = 0; // MeshDgcSequence[], one region per RasterBin
-    vk::DeviceAddress instanceItems = 0;       // GpuInstanceCullItem[instanceCount]
+    vk::DeviceAddress instanceItems = 0; // GpuInstanceCullItem[instanceCount]
     vk::DeviceAddress drawRecordTemplates = 0; // GpuDrawRecord[], copied to GpuFrameRoot::drawRecords
     uint32_t instanceCount = 0;
     uint32_t maxMeshletsPerSequence = 0;
@@ -429,9 +431,9 @@ struct GpuCullView
     std::array<uint32_t, kRasterBinCount> binSequenceOffset{};
     // early: previous frame's viewProj against the pyramid it built; late: current viewProj and fresh pyramid
     glm::mat4 occlusionViewProj{1.0f};
-    uint32_t hizPyramid = 0;    // resource heap, full mip chain
+    uint32_t hizPyramid = 0; // resource heap, full mip chain
     uint32_t hizFarSampler = 0; // sampler heap: far-depth reduction
-    vk::Extent2D hizSize{};     // mip 0
+    vk::Extent2D hizSize{}; // mip 0
     // uint[]: GpuInstanceCullItem rows occluded in the early phase, re-tested by the late one
     vk::DeviceAddress instanceCandidates = 0;
     // GpuCullCounters whose instanceDispatch counts the candidates (the late phase's); early view only
@@ -503,7 +505,8 @@ struct GpuCullCounters
 };
 // rt_ser_check pass, ENGINE_RT_CHECK only (spec/m4/g1_ser_rt_pipeline.md §4): the SER trace against traceClosest on
 // the same primary ray, one per reorder mode; zeroed by the CPU per frame
-struct GpuSerCheckStats {
+struct GpuSerCheckStats
+{
     uint32_t rays = 0;
     // traceClosest hits
     uint32_t hits = 0;
@@ -522,7 +525,8 @@ static_assert(sizeof(GpuSerCheckStats) == 28);
 static_assert(offsetof(GpuSerCheckStats, maxDistanceErrorBits) == 24);
 
 // motion_check pass, ENGINE_MOTION_TEST only (spec/features/done/motion_vectors.md §5); zeroed by the CPU per frame
-struct GpuMotionCheckStats {
+struct GpuMotionCheckStats
+{
     uint32_t pixels = 0;
     uint32_t emptyPixels = 0;
     // motion != 0
@@ -543,7 +547,8 @@ static_assert(sizeof(GpuMotionCheckStats) == 40);
 static_assert(offsetof(GpuMotionCheckStats, maxMotionBits) == 32);
 
 // rt_check pass, ENGINE_RT_CHECK only (plan C3): primary rays against the vis buffer; zeroed by the CPU per frame
-struct GpuRayCheckStats {
+struct GpuRayCheckStats
+{
     uint32_t coveredPixels = 0;
     // covered, and the 4 neighbours hold the same payload: no triangle edge through the pixel
     uint32_t interiorPixels = 0;
@@ -585,7 +590,8 @@ static_assert(offsetof(GpuRayCheckStats, maxNormalErrorBits) == 40);
 static_assert(offsetof(GpuRayCheckStats, alphaEdges) == 68);
 
 // Debug builds (kDebugRays): what the trace helpers report; zeroed by the CPU per frame
-struct GpuRayDebugCounters {
+struct GpuRayDebugCounters
+{
     // queries still running after their one Proceed(): candidates only an any-hit or a candidate loop resolves
     uint32_t candidates = 0;
 };
@@ -884,7 +890,8 @@ struct AuxBlob
 };
 
 
-struct alignas(16) GpuCameraData {
+struct alignas(16) GpuCameraData
+{
     // Primary Matrices
     glm::mat4 view;
     glm::mat4 proj;
@@ -899,15 +906,15 @@ struct alignas(16) GpuCameraData {
     glm::mat4 prevViewProj;
 
     // Position & View Parameters
-    glm::vec3 cameraPos;       // World-space camera position (for specular/lighting calculations)
-    float nearZ;               // Near clipping plane
+    glm::vec3 cameraPos; // World-space camera position (for specular/lighting calculations)
+    float nearZ; // Near clipping plane
 
-    glm::vec2 renderTargetSize;// Width, Height in pixels
+    glm::vec2 renderTargetSize; // Width, Height in pixels
     glm::vec2 invRenderTargetSize; // 1.0 / Width, 1.0 / Height
 
-    glm::vec2 jitterOffset;    // TAA subpixel jitter offset
-    float farZ;                // Far clipping plane
-    float frameDeltaTime;      // Delta time in seconds
+    glm::vec2 jitterOffset; // TAA subpixel jitter offset
+    float farZ; // Far clipping plane
+    float frameDeltaTime; // Delta time in seconds
     // cameraPos of the previous frame; equal to cameraPos on a cut, like prevViewProj
     glm::vec3 prevCameraPos;
     // texture LOD bias log2(render / display) under DLSS (engine spec §12.2); applied by scaling the gradients
@@ -934,7 +941,8 @@ static_assert(offsetof(GpuCameraData, rayOrigin) == 512);
 static_assert(offsetof(GpuCameraData, prevRayOrigin) == 548);
 
 // one row per entity in the per-frame instance buffer
-struct alignas(16) GpuObjectUB {
+struct alignas(16) GpuObjectUB
+{
     glm::mat4 modelMatrix;
     // previous frame, for motion vectors
     glm::mat4 prevModelMatrix;
@@ -1090,12 +1098,13 @@ struct GpuTargets
     // GlassFlag::BlendGuides (m8 I13 §4 variant b)
     uint32_t glassDiffuseAlbedoStorage = 0;
     uint32_t glassSpecAlbedoStorage = 0;
-    // R16F DLSS-RR specular hit distance, written by passes/indirect.slang (m8 I16 phase 3)
-    uint32_t specularHitDistanceStorage = 0;
+    // R16F DLSS-RR specular hit distance (indirect, rtxdi_gi_shade, glass; kNoneIndex when unused, m8 I16 phase 3)
+    uint32_t specularHitDistanceStorage = kNoneIndex;
     // RGBA32F sum and count of the DLSS-RR color input, written by passes/combine.slang (settings lab, m8 I16)
     uint32_t dlssInputAccumulationStorage = 0;
 };
 static_assert(sizeof(GpuTargets) == 216);
+static_assert(offsetof(GpuTargets, specularHitDistanceStorage) == 208);
 static_assert(offsetof(GpuTargets, glassDiffuseAlbedoStorage) == 200);
 static_assert(offsetof(GpuTargets, giStagnancyStorage) == 184);
 static_assert(offsetof(GpuTargets, binIdsStorage) == 176);

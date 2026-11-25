@@ -330,6 +330,17 @@ public:
     [[nodiscard]] LightPrepStats getLightPrepStats() const noexcept;
     // ReSTIR DI reference mode as applied by the last prepareFrame
     [[nodiscard]] bool isReferenceEnabled() const noexcept { return isReferenceApplied; }
+    // primary DI shades directional lights outside RIS; off in reference mode so kReferenceInfiniteLightSamples runs
+    [[nodiscard]] bool areDiInfiniteLightsExact() const noexcept
+    {
+        return !isReference && settings.areInfiniteLightsShadedExactly;
+    }
+    // path vertices shade directional lights outside RIS; secondary resampling follows primary DI (C-I16-4)
+    [[nodiscard]] bool arePathInfiniteLightsExact() const noexcept
+    {
+        return giSettings.isSecondaryResamplingEnabled ? areDiInfiniteLightsExact()
+                                                       : giSettings.areInfiniteLightsShadedExactly;
+    }
     // ReSTIR GI temporal and spatial reuse as applied by the last prepareFrame
     [[nodiscard]] bool isGiReuseEnabled() const noexcept { return isGiReuseApplied; }
     // rtxdi_gi_duplication runs after the GI shade pass, as written by the last prepareFrame

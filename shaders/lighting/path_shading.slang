@@ -39,6 +39,11 @@ uint exactInfiniteLightCount(GpuRtxdiConstants constants)
                                                            : 0u;
 }
 
+bool hasPathLightCandidates(GpuRtxdiConstants constants)
+{
+    return hasRisLightCandidates(constants, areInfiniteLightsExactAtPathVertices(constants));
+}
+
 RAB_LightSample exactInfiniteLightSample(GpuRtxdiConstants constants, uint index, RAB_Surface surface)
 {
     const RAB_LightInfo light =
@@ -52,6 +57,11 @@ RAB_LightSample exactInfiniteLightSample(GpuRtxdiConstants constants, uint index
 RTXDI_DIReservoir sampleLightsAt(RAB_Surface surface, GpuRtxdiConstants constants, inout RTXDI_RandomSamplerState rng,
                                  inout RTXDI_RandomSamplerState coherentRng, out RAB_LightSample lightSample)
 {
+    if (!hasPathLightCandidates(constants))
+    {
+        lightSample = RAB_EmptyLightSample();
+        return RTXDI_EmptyDIReservoir();
+    }
     RTXDI_DIInitialSamplingParameters sampling = constants.initialSampling;
     sampling.numBrdfSamples = 0;
     // m8 I2 F18: shadeLightReservoir traces visibility from origin.spawn (safeSpawnPoint for ray hits); leaving
@@ -154,7 +164,9 @@ float3 secondaryDirectLight(GpuFrameRoot root, RAB_Surface surface, HitOrigin or
     }
     RAB_LightSample lightSample;
     RTXDI_DIReservoir reservoir = sampleLightsAt(surface, constants, rng, coherentRng, lightSample);
-    if ((constants.giFlags & kGiFlagSecondaryResampling) != 0)
+    // without candidates the DI reservoirs it would resample are empty too (secondary resampling follows DI's
+    // exact-infinite choice, RtxdiContext::arePathInfiniteLightsExact)
+    if ((constants.giFlags & kGiFlagSecondaryResampling) != 0 && hasPathLightCandidates(constants))
     {
         const GpuCameraData camera = loadCamera(root);
         const float4 clip = mul(camera.viewProj, float4(surface.position, 1.0));

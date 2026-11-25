@@ -127,6 +127,8 @@ struct RtxdiBridgeState
     // resource heap; kNoneIndex while there is no local light
     uint lightPdf;
     uint lightPdfSide;
+    // R16F DLSS-RR specular hit distance; kNoneIndex when neither DLSS-RR nor its debug view reads it
+    uint specularHitDistanceStorage;
     // GpuRtxdiConstants, for regirParameters
     uint64_t rtxdiConstants;
     // offset origin stashed by RAB_SurfaceImportanceSampleBrdf for RAB_TraceRayForLocalLight (m8 I14 F24, C-I14-1)
@@ -179,6 +181,7 @@ void rtxdiBridgeInit(GpuFrameRoot root)
     gRtxdiBridge.risLightData.count = constants[0].risEntryCount * 2;
     gRtxdiBridge.lightPdf = constants[0].lightPdf;
     gRtxdiBridge.lightPdfSide = constants[0].lightPdfSize.x;
+    gRtxdiBridge.specularHitDistanceStorage = targets.specularHitDistanceStorage;
     gRtxdiBridge.rtxdiConstants = root.rtxdiConstants;
     gRtxdiBridge.brdfRayOrigin = float3(0.0, 0.0, 0.0);
 }

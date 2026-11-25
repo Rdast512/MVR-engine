@@ -1,10 +1,10 @@
 #include "vk_render_targets.hpp"
 
 #include "../static_headers/logger.hpp"
+#include "push_data.hpp"
 #include "util/debug.hpp"
 #include "util/vk_tracy.hpp"
 #include "util/vk_utils.hpp"
-#include "push_data.hpp"
 
 #include <format>
 #include <stdexcept>
@@ -130,12 +130,9 @@ void RenderTargets::createAttachment(AttachmentImage& target, const AttachmentDe
 
     vk::raii::CommandBuffer& cmd = frameSync.commandBuffers[0];
     cmd.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    transitionImageLayout(&cmd, target.image, vk::ImageLayout::eUndefined, desc.layout,
-                          {.aspectMask = desc.aspect,
-                           .baseMipLevel = 0,
-                           .levelCount = 1,
-                           .baseArrayLayer = 0,
-                           .layerCount = 1});
+    transitionImageLayout(
+        &cmd, target.image, vk::ImageLayout::eUndefined, desc.layout,
+        {.aspectMask = desc.aspect, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1});
     submitAndWait(cmd, device.graphicsQueue);
     target.view = createImageView(device.vkdevice, *target.image, desc.format, desc.aspect, 1);
 }
@@ -186,7 +183,7 @@ void RenderTargets::checkFormatSupport() const
 }
 
 void RenderTargets::createTarget(Target& target, vk::Format format, vk::ImageUsageFlags usage, vk::ImageLayout layout,
-                                 const char* debugName, vk::Extent2D size)
+                                 const char* debugName, vk::Extent2D size, bool isSampledInHeap)
 {
     allocator.createImage2D(size.width, size.height, 1, vk::SampleCountFlagBits::e1, format, usage, target.image,
                             target.memory, std::format("{}Memory", debugName));
@@ -198,7 +195,9 @@ void RenderTargets::createTarget(Target& target, vk::Format format, vk::ImageUsa
     if (usage & vk::ImageUsageFlagBits::eStorage) {
         target.storageIndex = descriptorManager.writeImageDescriptor(view, vk::DescriptorType::eStorageImage, layout);
     }
-    target.sampledIndex = descriptorManager.writeImageDescriptor(view, vk::DescriptorType::eSampledImage, layout);
+    if (isSampledInHeap && (usage & vk::ImageUsageFlagBits::eSampled)) {
+        target.sampledIndex = descriptorManager.writeImageDescriptor(view, vk::DescriptorType::eSampledImage, layout);
+    }
 }
 
 void RenderTargets::destroyTargets()
@@ -282,8 +281,9 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
                  vk::ImageLayout::eGeneral, "Exposure", vk::Extent2D{1, 1});
     createTarget(binIds, kBinIdsFormat, kStorageUsage, vk::ImageLayout::eGeneral, "MaterialBinIds", extent);
     createTarget(giSampleIds, kGiSampleIdsFormat, kStorageUsage, vk::ImageLayout::eGeneral, "GiSampleIds", extent);
+    // eSampled stays on the image for NGX; engine passes read and write through storageTex2D
     createTarget(specularHitDistanceTarget, kSpecularHitDistanceFormat, kStorageUsage, vk::ImageLayout::eGeneral,
-                 "SpecularHitDistance", extent);
+                 "SpecularHitDistance", extent, false);
     createTarget(dlssInputAccumulation, kDlssInputAccumulationFormat, kStorageUsage, vk::ImageLayout::eGeneral,
                  "DlssInputAccumulation", extent);
     createTarget(giDuplication, kGiDuplicationFormat, kStorageUsage, vk::ImageLayout::eGeneral, "GiDuplication",
@@ -328,9 +328,9 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
     initialize(*postTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*binIds.image, vk::ImageLayout::eGeneral, kStorageAccess);
     // initialize the adaptation history to unity
-    transitionImageLayout(&cmd, *exposureTarget.image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
-                          {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}, VK_QUEUE_FAMILY_IGNORED,
-                          VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eNone,
+    transitionImageLayout(&cmd, *exposureTarget.image, vk::ImageLayout::eUndefined,
+                          vk::ImageLayout::eTransferDstOptimal, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+                          VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eNone,
                           vk::PipelineStageFlagBits2::eClear, vk::AccessFlagBits2::eNone,
                           vk::AccessFlagBits2::eTransferWrite);
     cmd.clearColorImage(*exposureTarget.image, vk::ImageLayout::eTransferDstOptimal,
@@ -362,7 +362,7 @@ vk::DeviceAddress RenderTargets::materialTileListAddress(MaterialBin bin) const 
     const vk::DeviceSize tilesX = (extent.width + kMaterialTileSize - 1) / kMaterialTileSize;
     const vk::DeviceSize tilesY = (extent.height + kMaterialTileSize - 1) / kMaterialTileSize;
     return materialBinsDeviceAddress + sizeof(GpuMaterialBins) +
-           static_cast<vk::DeviceSize>(std::to_underlying(bin)) * tilesX * tilesY * sizeof(uint32_t);
+        static_cast<vk::DeviceSize>(std::to_underlying(bin)) * tilesX * tilesY * sizeof(uint32_t);
 }
 
 // one list per bin with room for every render tile: a tile is appended at most once per bin, so nothing overflows
@@ -374,9 +374,10 @@ void RenderTargets::createMaterialBins()
     // a bin launches one group per tile in x; tile coordinates are packed into 16 bits each
     const uint32_t maxGroups = device.capabilities.properties2.properties.limits.maxComputeWorkGroupCount[0];
     if (tileCount > maxGroups || tilesX > 0xffffu || tilesY > 0xffffu) {
-        throw std::runtime_error(std::format("render targets: {}x{} resolve tiles exceed maxComputeWorkGroupCount[0] {} "
-                                             "or 16-bit tile coordinates",
-                                             tilesX, tilesY, maxGroups));
+        throw std::runtime_error(
+            std::format("render targets: {}x{} resolve tiles exceed maxComputeWorkGroupCount[0] {} "
+                        "or 16-bit tile coordinates",
+                        tilesX, tilesY, maxGroups));
     }
     const vk::DeviceSize size =
         sizeof(GpuMaterialBins) + static_cast<vk::DeviceSize>(kMaterialBinCount) * tileCount * sizeof(uint32_t);
@@ -401,7 +402,8 @@ RenderTargets::ImageRef RenderTargets::glassAlbedo(GuideImage image) const
     return imageRef(image == GuideImage::SpecAlbedo ? glassSpecAlbedo : glassDiffuseAlbedo, kGuideFormats[index]);
 }
 
-void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool isPostPresented)
+void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool isPostPresented,
+                                 bool isSpecularHitDistanceWritten)
 {
     const auto guideSet = [this](uint32_t set)
     {
@@ -443,7 +445,8 @@ void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool 
         .giDuplicationStorage = giDuplication.storageIndex,
         .glassDiffuseAlbedoStorage = glassDiffuseAlbedo.storageIndex,
         .glassSpecAlbedoStorage = glassSpecAlbedo.storageIndex,
-        .specularHitDistanceStorage = specularHitDistanceTarget.storageIndex,
+        .specularHitDistanceStorage =
+            isSpecularHitDistanceWritten ? specularHitDistanceTarget.storageIndex : kNoneIndex,
         .dlssInputAccumulationStorage = dlssInputAccumulation.storageIndex,
     };
 }

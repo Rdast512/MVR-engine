@@ -29,8 +29,9 @@ static const uint kGlassLightSeed = 45;
 // environment light (C-I13-2). coneDistance: camera to the glass hit
 float3 reflectedRadiance(GpuFrameRoot root, GpuRtxdiConstants constants, RayHit hit, GlassLayer layer,
                          float3 direction, float coneDistance, inout RTXDI_RandomSamplerState rng,
-                         inout RTXDI_RandomSamplerState coherentRng)
+                         inout RTXDI_RandomSamplerState coherentRng, out float reflectedDistance)
 {
+    reflectedDistance = 0.0;
     RayDesc mirror;
     mirror.Direction = reflect(direction, layer.normal);
     // normal mapping can tilt the mirror direction below the glass plane
@@ -41,11 +42,13 @@ float3 reflectedRadiance(GpuFrameRoot root, GpuRtxdiConstants constants, RayHit 
     mirror.Origin = safeSpawnPoint(hit, layer.geoNormal);
     mirror.TMin = 0.0;
     mirror.TMax = kMissDistance;
-    RayHit reflected;
+    RayHit reflected = {};
     if (!traceClosest(root, mirror, reflected))
     {
+        reflectedDistance = kMaxSpecularHitDistance;
         return float3(0.0, 0.0, 0.0);
     }
+    reflectedDistance = min(reflected.t, kMaxSpecularHitDistance);
     const PathHit x2 = shadeRayHit(root, reflected, mirror, coneDistance, true);
     HitOrigin origin;
     origin.hit = reflected;
@@ -108,6 +111,8 @@ void glassMain(uint3 id : SV_DispatchThreadID)
     // I13 §4 variant b: the layers' albedo seen by DLSS-RR, each behind the throughput of the layers before it
     float3 glassDiffuseAlbedo = float3(0.0, 0.0, 0.0);
     float3 glassSpecAlbedo = float3(0.0, 0.0, 0.0);
+    float glassReflectionDistance = 0.0;
+    bool hasGlassReflection = false;
     float travelled = 0.0;
     uint layers = 0;
     bool isEarlyStop = false;
@@ -140,9 +145,15 @@ void glassMain(uint3 id : SV_DispatchThreadID)
             }
             if ((flags & kGlassFlagReflection) != 0 && any(layer.reflectance > 0.0))
             {
+                float reflectedDistance = 0.0;
                 const float3 reflected = layer.reflectance * reflectedRadiance(root, constants, hit, layer,
                                                                                ray.Direction, hitDistance, rng,
-                                                                               coherentRng);
+                                                                               coherentRng, reflectedDistance);
+                if (!hasGlassReflection && reflectedDistance > 0.0)
+                {
+                    glassReflectionDistance = reflectedDistance;
+                    hasGlassReflection = true;
+                }
                 reflection += throughput * reflected;
                 terms += reflected;
             }
@@ -184,6 +195,16 @@ void glassMain(uint3 id : SV_DispatchThreadID)
             float4(saturate(throughput * diffuseBehind.rgb + glassDiffuseAlbedo), diffuseBehind.a);
         storageTex2D<float4, kImageFormatRgba8>(targets.glassSpecAlbedoStorage)[pixel] =
             float4(saturate(throughput * specBehind + glassSpecAlbedo), 1.0);
+        if (targets.specularHitDistanceStorage != kNoneIndex && hasGlassReflection)
+        {
+            const float behindDistance =
+                storageTex2D<float, kImageFormatR16f>(targets.specularHitDistanceStorage)[pixel];
+            if (behindDistance <= 0.0 || luminance(glassSpecAlbedo) >= luminance(throughput * specBehind))
+            {
+                storageTex2D<float, kImageFormatR16f>(targets.specularHitDistanceStorage)[pixel] =
+                    glassReflectionDistance;
+            }
+        }
     }
 
     // RenderTargets::kNoisyColorFormat

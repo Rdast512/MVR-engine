@@ -756,10 +756,7 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
                    (giSettings.maxReservoirAge >= kGiUnlimitedSampleAge ? GiFlag::SpatialAgeReset : 0u) |
                    (isGiDuplicationMapApplied ? GiFlag::DuplicationHistoryReduction : 0u) |
                    (giSettings.isFullTileBoilingFilterEnabled ? GiFlag::FullTileBoilingFilter : 0u) |
-                   ((giSettings.isSecondaryResamplingEnabled ? settings.areInfiniteLightsShadedExactly
-                                                             : giSettings.areInfiniteLightsShadedExactly)
-                        ? GiFlag::ExactInfiniteLights
-                        : 0u),
+                   (arePathInfiniteLightsExact() ? GiFlag::ExactInfiniteLights : 0u),
         .localLightRisBuffer = importanceSampling->GetLocalLightRISBufferSegmentParams(),
         .environmentLightRisBuffer = importanceSampling->GetEnvironmentLightRISBufferSegmentParams(),
         .regir = regirConstants,
@@ -770,7 +767,7 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
         .lightPdfSize = {.width = lightPdfSide, .height = lightPdfSide},
         .giDecorrelation = decorrelationParameters(giSettings),
         .giHistoryReductionStrength = giSettings.historyReductionStrength,
-        .diFlags = (settings.areInfiniteLightsShadedExactly ? DiFlag::ExactInfiniteLights : 0u) |
+        .diFlags = (areDiInfiniteLightsExact() ? DiFlag::ExactInfiniteLights : 0u) |
             (settings.areLightTilesPerPixel ? DiFlag::PerPixelLightTiles : 0u),
         .diNeighborOffsets = diNeighborOffsets.address,
     };

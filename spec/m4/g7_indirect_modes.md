@@ -75,7 +75,16 @@ Timings, 1280×720 window (render 853×480), startup gallery with the sun, uncap
 | NRC | 0.021 | 0.66 | 0.41 | 0.03 | — | 0.05 | 1.20 | 2.90 | 3.52 |
 | ReSTIR GI | — | 0.56 | — | — | 0.12 | 0.28 | 1.16 | 2.72 | 2.73 |
 
-Frame time is (wall at 6000 − wall at 1500 frames) / 4500. The NRC modes pay the C-G3-6 host wait (0.57–0.62 ms over GPU total); ReSTIR GI mode records no NRC work and pays nothing. 2060 Super: not measured.
+Frame time is (wall at 6000 − wall at 1500 frames) / 4500. The NRC modes pay the C-G3-6 host wait (0.57–0.62 ms over GPU total); ReSTIR GI mode records no NRC work and pays nothing. 2060 Super: not measured (considerations C-I15-1).
+
+Since M8 I8 the host wait is off, and since M8 I15 NRC → ReSTIR GI is the default. 2026-11-25, MG-P7's pre-acquire ray submit in NRC frames (split at the first SDK segment), same window and pose, driver 621.40, three ABBA rounds of 1500 / 6000 frames, means over the rounds, ms:
+
+| NRC → ReSTIR GI | Ray start wait | ReSTIR DI shade | Indirect | NRC train | DLSS-RR | GPU total | `drawFrame` | Frame time |
+|---|---|---|---|---|---|---|---|---|
+| before (NRC frames submit every ray segment after `AcquireImage`) | 0.0156 | 0.568 | 0.529 | 0.314 | 1.176 | 3.552 | 3.555 | 3.550 |
+| after | 0.0147 | 0.566 | 0.527 | 0.301 | 1.163 | 3.506 | 3.495 | 3.415 (3.502 without round 3's fast run, which was faster in every scope) |
+
+Neutral to slightly faster, inside the ±5% bench noise: the frame is GPU-bound at this extent, so hiding `AcquireImage` behind `DirectLight` leaves little to gain.
 
 ## Done when
 

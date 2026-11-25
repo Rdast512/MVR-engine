@@ -39,7 +39,8 @@ ofat
 )";
 
     constexpr std::string_view kGiOfatPlan = R"(# every GI switch where shipped and NVIDIA differ, alone, both directions; then
-# the smallest switch set behind the dining room's dim-tile GI bias (F23)
+# the smallest switch set behind the dining room's dim-tile GI bias against eight bounces (F23; the shipped mode
+# is NRC + ReSTIR GI since I15)
 base di=shipped gi=shipped
 target di=shipped gi=nvidia
 seeds 3
@@ -48,11 +49,12 @@ views Lit "Indirect radiance"
 kinds stability giBias
 ofat
 cases cafe.dining
-bisect "Indirect radiance:1b.dimBias"
+bisect "Indirect radiance:8b.dimBias"
 )";
 
     // the café steps of the I12 investigation (EngineTemporalCheck's café list), so T12 can move them out of the check
-    constexpr std::string_view kCafePlan = R"(# what the café work ran by hand (F22, F23)
+    constexpr std::string_view kCafePlan = R"(# what the café work ran by hand (F22, F23), mirrored around the shipped base: it
+# carries F22's DI fix (spatial I15, permutation I16), I15's GI age and NRC + ReSTIR GI
 base di=shipped gi=shipped
 seeds 3
 cases cafe.tables cafe.dining
@@ -60,29 +62,29 @@ views "Direct lighting" Lit
 kinds stability diBias
 sets di=nvidia
 sets di=converged
-sets di.spatialSamples=2
-sets di.permutation=on
+sets di.spatialSamples=0
+sets di.permutation=off
 sets di.sampling=regir
-sets di.spatialSamples=2 di.permutation=on
+sets di.spatialSamples=0 di.permutation=off
 views Lit
 kinds stability
 sets di=nvidia gi=nvidia
-sets di.spatialSamples=2 di.permutation=on gi.decorrelation=none
-sets di.spatialSamples=2 di.permutation=on gi=nvidia
-sets di.spatialSamples=2 di.permutation=on frame.indirectMode=nrcRestirGi
-sets di.spatialSamples=2 di.permutation=on frame.indirectMode=nrc
+sets di.spatialSamples=0 di.permutation=off gi.decorrelation=none
+sets di.spatialSamples=0 di.permutation=off gi=nvidia
+sets di.spatialSamples=0 di.permutation=off frame.indirectMode=restirGi
+sets di.spatialSamples=0 di.permutation=off frame.indirectMode=nrc
 views Lit "Indirect radiance"
 sets gi.decorrelation=none
 sets gi.fireflyReplacement=off
-sets gi.age=30
+sets gi.age=1024
 sets gi=nvidia
 sets gi=converged
-sets frame.indirectMode=nrcRestirGi
+sets frame.indirectMode=restirGi
 sets frame.indirectMode=nrc
 kinds giBias
 sets gi=nvidia
 sets gi=converged
-sets frame.indirectMode=nrcRestirGi
+sets frame.indirectMode=restirGi
 sets frame.indirectMode=nrc
 )";
 
@@ -100,22 +102,23 @@ ofat
     constexpr std::string_view kStabilityLeversPlan = R"(# F22 candidates: what makes the café stable enough not to notice
 base di=shipped gi=shipped
 seeds 3
+# the F22 fix: shipped since I15 (spatial) and I16 (permutation), so over fix and on base read the same
 fix di.spatialSamples=2 di.permutation=on
 cases cafe.tables cafe.dining sponza.gallery sponza.courtyard bistro.street guide.lamp guide.terminator guide.emissive glossy.floor glossy.metal
 views Lit "Direct lighting" "Indirect radiance"
 kinds stability diBias giBias cost
 # L1 DI spatial reuse and permutation
-lever L1 spatial: di.spatialSamples=2
-lever L1 permutation: di.permutation=on
-lever L1 both: di.spatialSamples=2 di.permutation=on
+lever L1 no spatial: di.spatialSamples=0
+lever L1 no permutation: di.permutation=off
+lever L1 neither: di.spatialSamples=0 di.permutation=off
 sweep di.spatialSamples 0 2 4 over fix lever L1
 sweep di.radius 4 8 16 32 over fix lever L1
 sweep gi.radius 4 8 16 32 over fix lever L1
 # L2 ReGIR with spatial reuse
 lever L2 regir: di.sampling=regir di.spatialSamples=2
-lever L2 regir permutation: di.sampling=regir di.spatialSamples=2 di.permutation=on
+lever L2 regir no permutation: di.sampling=regir di.spatialSamples=2 di.permutation=off
 # L3 boiling filters and firefly clamps
-sweep di.boilingStrength 0.1 0.2 0.35 0.5 over fix lever L3
+sweep di.boilingStrength 0.1 0.2 0.35 0.5 over fix di.boilingFilter=on lever L3
 lever L3 gi boiling: gi.boilingFilter=on
 sweep gi.boilingStrength 0.1 0.2 0.5 over fix gi.boilingFilter=on lever L3
 sweep gi.fireflyStrength 0.7 0.9 over fix lever L3
@@ -124,8 +127,8 @@ lever L3 firefly clamp: gi.fireflyClamp=on
 # L4 history length, both ways
 sweep di.history 8 12 20 40 60 over fix lever L4
 sweep gi.history 4 8 12 20 40 60 over fix lever L4
-# L5 world cache for the GI tail
-lever L5 nrc restir gi: frame.indirectMode=nrcRestirGi
+# L5 world cache for the GI tail (shipped since I15), against one bounce
+lever L5 restir gi: frame.indirectMode=restirGi
 lever L5 nrc: frame.indirectMode=nrc
 # L6 DLSS-RR model, resolution and guides
 lever L6 preset d: frame.dlssPreset=d

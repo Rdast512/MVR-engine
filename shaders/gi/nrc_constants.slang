@@ -33,9 +33,13 @@ struct GpuNrcConstants
     uint64_t health;     // GpuNrcHealth: queries and diverged answers, counted by passes/nrc_resolve.slang
 };
 
-// GpuNrcHealth in src/render/vk_nrc.hpp
-static const uint kNrcHealthQueried = 0;
-static const uint kNrcHealthDiverged = 1;
-static const uint kNrcHealthMaxRatio = 2; // float bits
+// GpuNrcConstants.health. Matches GpuNrcHealth in src/render/vk_nrc.hpp; tests/layout_test.cpp checks it
+struct GpuNrcHealth
+{
+    uint queried;
+    uint diverged;
+    uint maxRatioBits; // float bits: positive floats order like their bits
+    uint pad0;
+};
 
 #endif

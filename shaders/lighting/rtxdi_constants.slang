@@ -67,6 +67,15 @@ static const uint kGiFlagExactInfiniteLights = 1u << 6;
 static const uint kDiFlagExactInfiniteLights = 1u << 0;
 static const uint kDiFlagPerPixelLightTiles = 1u << 1;
 
+// RIS picks nothing when the only lights are directional ones shaded exactly (m8 I16 F28): Sponza's sun.
+// Mirrors Renderer::recordDirectLight's host gate
+bool hasRisLightCandidates(GpuRtxdiConstants constants, bool areInfiniteLightsExact)
+{
+    return constants.lightBuffer.localLightBufferRegion.numLights > 0 ||
+           constants.lightBuffer.environmentLightParams.lightPresent != 0 ||
+           (!areInfiniteLightsExact && constants.lightBuffer.infiniteLightBufferRegion.numLights > 0);
+}
+
 // RtxdiContext::kGiInitialReservoirArray: the indirect pass's initial samples, after RTXDI's two arrays
 static const uint kGiInitialReservoirArray = 2;
 

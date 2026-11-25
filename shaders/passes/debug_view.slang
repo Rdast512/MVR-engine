@@ -303,8 +303,17 @@ float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCamer
         return tex2D(targets.indirectRadianceSampled).Load(int3(pixel, 0)).rgb;
     case kDebugViewSpecularHitDistance:
     {
+        if (targets.specularHitDistanceStorage == kNoneIndex)
+        {
+            return float3(0.0, 0.0, 0.0);
+        }
         const float distance = storageTex2D<float, kImageFormatR16f>(targets.specularHitDistanceStorage)[pixel];
-        return distance >= 65504.0 ? float3(0.0, 0.0, 1.0) : (distance / (distance + 1.0)).xxx;
+        if (isnan(distance) || isinf(distance))
+        {
+            return float3(1.0, 0.0, 1.0);
+        }
+        const float clamped = max(distance, 0.0);
+        return clamped >= kMaxSpecularHitDistance ? float3(0.0, 0.0, 1.0) : (clamped / (clamped + 1.0)).xxx;
     }
     case kDebugViewNrcCache:
         // the query pass queried at the primary this frame (kNrcFlagCacheView)

@@ -40,7 +40,8 @@ enum class DebugView : uint32_t
     AmbientOcclusion,
     // every world light on the guides with no visibility test: checks the light buffer before the lighting passes
     UnshadowedLights,
-    // every world light through the RTXDI bridge (RAB_*) with a visibility ray each: the reference ReSTIR DI converges to
+    // every world light through the RTXDI bridge (RAB_*) with a visibility ray each: the reference ReSTIR DI converges
+    // to
     ShadowedLights,
     // ReSTIR DI directRadiance + the emissive guide, no indirect: the view the ReSTIR DI checks compare
     DirectLighting,
@@ -80,6 +81,8 @@ static_assert(std::to_underlying(DebugView::IndirectRadiance) == 29);
 static_assert(std::to_underlying(DebugView::MaterialBin) == 30);
 // shaders/types.slang kDebugViewGlass
 static_assert(std::to_underlying(DebugView::Glass) == 31);
+// shaders/types.slang kDebugViewSpecularHitDistance
+static_assert(std::to_underlying(DebugView::SpecularHitDistance) == 32);
 
 enum class DebugViewCategory : uint8_t
 {

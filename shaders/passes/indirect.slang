@@ -63,7 +63,8 @@ PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
         bounce.pdf = brdf.pdf;
         // normal maps can tilt n so a sample lies below the triangle's geometric plane (RTXDI BrdfRayTracing.hlsl)
         bounce.isActive = brdf.pdf > 0.0 && dot(primary.geoNormal, brdf.l) > 0.0;
-        bounce.isSpecularLobe = brdf.isSpecularLobe;
+        // f0 == 0 surfaces write zero SpecAlbedo (envBrdfApprox), so report no specular hit distance
+        bounce.isSpecularLobe = brdf.isSpecularLobe && any(primary.specularF0 > 0.0);
         bounce.ray.Origin = rasterRayOrigin(primary);
         bounce.ray.Direction = brdf.l;
     }
@@ -101,7 +102,7 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
     const float pdf = bounce.pdf;
     const bool isActive = bounce.isActive;
 
-    RayHit hit;
+    RayHit hit = {};
     const bool isHit = isActive && traceClosest(root, ray, hit);
 
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
@@ -197,9 +198,15 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
                            RTXDI_PixelPosToReservoirPos(pixel, constants.runtime.activeCheckerboardField),
                            kGiInitialReservoirArray);
     NrcWriteFinalPathInfo(nrc, nrcPath, nrcThroughput, nrcRadiance);
-    // DLSS-RR's specular hit distance (m8 I16 phase 3), as reference/vk_gltf_renderer's first glossy reflection: the
-    // bounce's hit distance when it took the specular lobe, fp16 max for a miss, 0 without a reflection
-    const float specularHitDistance = !(isActive && bounce.isSpecularLobe) ? 0.0 : isHit ? hit.t : 65504.0;
-    storageTex2D<float, kImageFormatR16f>(bdaPtr<GpuTargets>(root.targets)[0].specularHitDistanceStorage)[pixel] =
-        specularHitDistance;
+    // DLSS-RR's initial specular hit distance (m8 I16 phase 3): clamped to R16F max so hits in (65504, kMissDistance]
+    // never overflow to +Inf; rtxdi_gi_shade and glass refine it when reuse or glass reflections take over
+    if (gRtxdiBridge.specularHitDistanceStorage != kNoneIndex)
+    {
+        float specularHitDistance = 0.0;
+        if (isActive && bounce.isSpecularLobe)
+        {
+            specularHitDistance = isHit ? min(hit.t, kMaxSpecularHitDistance) : kMaxSpecularHitDistance;
+        }
+        storageTex2D<float, kImageFormatR16f>(gRtxdiBridge.specularHitDistanceStorage)[pixel] = specularHitDistance;
+    }
 }

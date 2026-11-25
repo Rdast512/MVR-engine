@@ -176,8 +176,10 @@ bool isGiShadowTransmitted(GpuFrameRoot root)
 }
 
 float3 shadeFinalReservoir(GpuFrameRoot root, RAB_Surface surface, RTXDI_GIReservoir reservoir,
-                           RTXDI_GIReservoir initial, RTXDI_GIFinalShadingParameters params)
+                           RTXDI_GIReservoir initial, RTXDI_GIFinalShadingParameters params,
+                           bool computeSpecularDistance, out float reconnectionSpecularDistance)
 {
+    reconnectionSpecularDistance = 0.0;
     if (!RTXDI_IsValidGIReservoir(reservoir))
     {
         return float3(0.0, 0.0, 0.0);
@@ -193,11 +195,30 @@ float3 shadeFinalReservoir(GpuFrameRoot root, RAB_Surface surface, RTXDI_GIReser
     {
         radiance *= reconnectionTransmittance(root, surface, reservoir.position);
     }
+    if (params.enableFinalMIS != 0)
+    {
+        radiance *= 1.0 - glossyMisWeight(surface, reservoir.position);
+    }
+    // m8 I16 phase 3: when the resampled reconnection contributes specular-dominated radiance, report its true X1->X2
+    // distance (any(radiance > 0) excludes m8 I2 F13's kMissDistance zero-radiance placeholder)
+    if (computeSpecularDistance && any(radiance > 0.0) && any(surface.specularF0 > 0.0))
+    {
+        const float3 toSample = reservoir.position - surface.position;
+        const float distance = length(toSample);
+        const float3 l = toSample / distance;
+        const float3 specBrdf = evalBrdf(surface.normal, float3(0.0, 0.0, 0.0), surface.specularF0, surface.roughness,
+                                         surface.viewDir, l);
+        const float3 totalBrdf = evalBrdf(surface.normal, surface.diffuseAlbedo, surface.specularF0, surface.roughness,
+                                          surface.viewDir, l);
+        if (2.0 * luminance(specBrdf) > luminance(totalBrdf))
+        {
+            reconnectionSpecularDistance = min(distance, kMaxSpecularHitDistance);
+        }
+    }
     if (params.enableFinalMIS == 0)
     {
         return radiance;
     }
-    radiance *= 1.0 - glossyMisWeight(surface, reservoir.position);
     // traced from this surface this frame: visible by construction
     if (RTXDI_IsValidGIReservoir(initial))
     {
@@ -363,7 +384,15 @@ void rtxdiGiShadeMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_GroupTh
         }
         else
         {
-            radiance = shadeFinalReservoir(root, surface, reservoir, initial, constants.giFinalShading);
+            const bool computeSpecularDistance = targets.specularHitDistanceStorage != kNoneIndex;
+            float reconnectionSpecularDistance = 0.0;
+            radiance = shadeFinalReservoir(root, surface, reservoir, initial, constants.giFinalShading,
+                                           computeSpecularDistance, reconnectionSpecularDistance);
+            if (isInBounds && reconnectionSpecularDistance > 0.0)
+            {
+                storageTex2D<float, kImageFormatR16f>(targets.specularHitDistanceStorage)[id.xy] =
+                    reconnectionSpecularDistance;
+            }
         }
     }
     if (!isInBounds)

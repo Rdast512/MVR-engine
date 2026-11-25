@@ -69,8 +69,11 @@ void rtxdiShadeMain(uint3 id : SV_DispatchThreadID)
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
     const RAB_Surface surface = RAB_GetGBufferSurface(int2(id.xy), false);
     const uint2 reservoirPosition = RTXDI_PixelPosToReservoirPos(id.xy, constants.runtime.activeCheckerboardField);
+    const bool isInfiniteExact = (constants.diFlags & kDiFlagExactInfiniteLights) != 0;
     RTXDI_DIReservoir reservoir = RTXDI_EmptyDIReservoir();
-    if (RAB_IsSurfaceValid(surface))
+    // uniform: without candidates the host skips rtxdi_initial and rtxdi_temporal, so the input is stale and the
+    // disocclusion boost would resample empty neighbors
+    if (RAB_IsSurfaceValid(surface) && hasRisLightCandidates(constants, isInfiniteExact))
     {
         reservoir = RTXDI_LoadDIReservoir(constants.reservoirBuffer, reservoirPosition,
                                           constants.bufferIndices.spatialResamplingInputBufferIndex);
@@ -122,10 +125,11 @@ void rtxdiShadeMain(uint3 id : SV_DispatchThreadID)
             }
         }
     }
-    if ((constants.diFlags & kDiFlagExactInfiniteLights) != 0)
+    if (isInfiniteExact && RAB_IsSurfaceValid(surface) && surface.isLit)
     {
         radiance += shadeInfiniteLightsExactly(root, surface, constants.lightBuffer.infiniteLightBufferRegion);
     }
+    // empty without candidates: the next frame with candidates never reads stale reservoirs
     RTXDI_StoreDIReservoir(reservoir, constants.reservoirBuffer, reservoirPosition,
                            constants.bufferIndices.shadingInputBufferIndex);
     storageTex2D<float4, kImageFormatRgba16f>(output)[id.xy] = float4(radiance, 1.0);

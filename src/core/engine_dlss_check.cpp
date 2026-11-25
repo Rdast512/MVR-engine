@@ -81,6 +81,7 @@ void EngineDlssCheck::startStep(Camera& camera, Renderer& renderer)
     post.requestSnap();
 
     Dlss& dlss = renderer.getDlss();
+    dlss.guides = {};
     dlss.debug = {};
     dlss.debug.isDepthInverted = step.variant != Variant::DepthNonInverted;
     uint32_t flags = FrameFlag::CleanDlssInput;
@@ -169,8 +170,7 @@ void EngineDlssCheck::accumulate(const Renderer::DisplayCapture& capture)
 void EngineDlssCheck::finishStep()
 {
     const Step& step = steps[stepIndex];
-    const std::string label =
-        std::format("{}, {}", step.isPanning ? "pan" : "static", variantName(step.variant));
+    const std::string label = std::format("{}, {}", step.isPanning ? "pan" : "static", variantName(step.variant));
     if (isCaptureMissing || capturedFrames < 2 || nonFinitePixels > 0) {
         ++failedCount;
         logError(std::format("FAIL DLSS-RR ({}): captured {} / {}, nonFinite {}", label, capturedFrames, step.frames,
@@ -211,8 +211,8 @@ void EngineDlssCheck::finishStep()
             const std::string line = std::format(
                 "{} DLSS-RR ({}): mean {:.5g}, temporal std {:.3f}% (limit {:.2f}%), flicker {:.3f}% (limit {:.2f}%), "
                 "f2f {:.3f}%, nonFinite 0",
-                isPass ? "PASS" : "FAIL", label, frameMean, relStd * 100.0, kMaxStaticCleanStd * 100.0,
-                flicker * 100.0, kMaxStaticCleanFlicker * 100.0, f2f * 100.0);
+                isPass ? "PASS" : "FAIL", label, frameMean, relStd * 100.0, kMaxStaticCleanStd * 100.0, flicker * 100.0,
+                kMaxStaticCleanFlicker * 100.0, f2f * 100.0);
             if (isPass) {
                 logInfo(line, "DlssCheck");
             } else {

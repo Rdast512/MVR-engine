@@ -1149,6 +1149,7 @@ void EngineUi::drawRayTracingPanel()
         rtxdi.giSettings = RtxdiContext::defaultGiSettings();
         rtxdi.giReferenceBounces = 0;
         dlss.settings = {};
+        dlss.guides = {};
         context.renderer.getNrc().settings = {};
         context.renderer.indirectMode = kDefaultIndirectMode;
         glass = {};
@@ -1175,9 +1176,10 @@ void EngineUi::drawRayTracingPanel()
         }
         ImGui::EndCombo();
     }
-    ImGui::SetItemTooltip("ReSTIR GI (one bounce, NRC paused) ships on both tiers, the others are for A/B "
-                          "measurement. NRC: the cache samples without reuse. A switch resets ReSTIR GI and DLSS-RR "
-                          "history");
+    ImGui::SetItemTooltip("%s ships on both tiers and is the tuning target, the others are for A/B measurement. "
+                          "ReSTIR GI: one bounce, NRC paused. NRC: the cache samples without reuse. A switch resets "
+                          "ReSTIR GI and DLSS-RR history",
+                          indirectModeInfo(kDefaultIndirectMode).label);
     // spec/m4/g3_nrc.md
     NrcCache& nrcCache = context.renderer.getNrc();
     NrcCache::Settings& nrc = nrcCache.settings;
@@ -1232,9 +1234,9 @@ void EngineUi::drawRayTracingPanel()
     sliderU32("Max history length##gi", gi.maxHistoryLength, 1, 64);
     sliderU32("Max sample age", gi.maxReservoirAge, 1, RtxdiContext::kGiUnlimitedSampleAge);
     ImGui::SetItemTooltip("frames a sample is reused at most; each pixel draws its own limit in [0.5, 1) of this. "
-                          "Reacts to lighting changes, biases a static frame bright (considerations C-G5-1); %u "
-                          "never discards",
-                          RtxdiContext::kGiUnlimitedSampleAge);
+                          "Shipped %u (m8 I15): reacts to lighting changes and keeps stagnant samples from "
+                          "brightening dim areas; %u never discards",
+                          RtxdiContext::defaultGiSettings().maxReservoirAge, RtxdiContext::kGiUnlimitedSampleAge);
     constexpr std::array kGiBiasNames{"Off", "Basic", "Ray traced"};
     constexpr std::array kGiBiasModes{RTXDI_GIBiasCorrectionMode::Off, RTXDI_GIBiasCorrectionMode::Basic,
                                       RTXDI_GIBiasCorrectionMode::Raytraced};

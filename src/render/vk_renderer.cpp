@@ -46,6 +46,8 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
             std::format("push data of {} B exceeds the device's maxPushDataSize of {} B", kMaxPushDataBytes, maxPushData));
     }
     dgc.init();
+    wereDiInfiniteLightsExact = rtxdi.areDiInfiniteLightsExact();
+    appliedIndirect.arePathInfiniteLightsExact = rtxdi.arePathInfiniteLightsExact();
     if (const char* waitEnv = std::getenv("ENGINE_NRC_HOST_WAIT"); waitEnv != nullptr && *waitEnv != '\0') {
         isNrcHostWaitEnabled = std::string_view(waitEnv) != "0";
         logInfo(std::format("NRC host wait (C-G3-6): {}", isNrcHostWaitEnabled ? "on" : "off"), "Renderer");
@@ -238,12 +240,16 @@ void Renderer::drawFrame()
     // after the fence: prepare RT scene before reading isDlssPresented() so frame 0 of emissive-only scenes sees its
     // triangle lights and aligns camera jitter with DLSS-RR (m8 I14 F25)
     rtScene.prepareFrame(currentFrame, frameNumber - 1);
-    camera.updateCameraData(currentFrame, frameNumber, isDlssPresented());
-    targets.prepareFrame(currentFrame, frameNumber, isDlssPresented());
+    const bool isLitDlss = isDlssPresented();
+    const bool isSpecularHitDistanceWritten =
+        (isLitDlss && dlss.guides.isSpecularHitDistanceUsed) || debugView.view == DebugView::SpecularHitDistance;
+    camera.updateCameraData(currentFrame, frameNumber, isLitDlss);
+    targets.prepareFrame(currentFrame, frameNumber, isLitDlss, isSpecularHitDistanceWritten);
     {
         const IndirectState indirect{.mode = indirectMode,
                                      .isGiReference = rtxdi.isGiReference,
                                      .isGroundTruthPaths = rtxdi.giReferenceBounces != 0,
+                                     .arePathInfiniteLightsExact = rtxdi.arePathInfiniteLightsExact(),
                                      .giSettings = rtxdi.giSettings};
         // the samples change meaning (spec/m4/g7_indirect_modes.md): ReSTIR GI and DLSS-RR start over, ReSTIR DI keeps
         isIndirectHistoryReset = indirect != appliedIndirect;
@@ -275,9 +281,23 @@ void Renderer::drawFrame()
         lastNrcSun = worldLights.sun;
         hasNrcChangeBaseline = true;
     }
+    if (!isNrcPaused() && !nrc.hasNewBounds(rtScene.getSceneBounds()) && nrc.isNetworkDiverged(currentFrame)) {
+        ZoneScopedN("NrcDivergedReset");
+        TracyMessageL("NRC network diverged");
+        const auto waitStart = std::chrono::steady_clock::now();
+        finishPreviousFrame();
+        deviceRef.waitIdle();
+        cpuWaitsMs += toMs(waitStart, std::chrono::steady_clock::now());
+        nrc.recreateNetwork();
+        isIndirectHistoryReset = true;
+        isDlssHistoryValid = false;
+    }
     nrc.prepareFrame(currentFrame, rtScene.getSceneBounds(), isNrcPaused(), isNrcSceneChanged);
-    if (rtxdi.isReference != rtxdi.isReferenceEnabled()) {
-        // direct-light noise profile changes abruptly across reference/reuse switches
+    const bool areDiInfiniteExact = rtxdi.areDiInfiniteLightsExact();
+    isDiHistoryReset = areDiInfiniteExact != wereDiInfiniteLightsExact;
+    wereDiInfiniteLightsExact = areDiInfiniteExact;
+    if (isDiHistoryReset || rtxdi.isReference != rtxdi.isReferenceEnabled()) {
+        // direct-light noise profile or reservoir light set changes abruptly
         isDlssHistoryValid = false;
     }
     rtxdi.prepareFrame(currentFrame, frameNumber, indirectMode != IndirectMode::Nrc, camera.cameraData.cameraPos,
@@ -303,6 +323,10 @@ void Renderer::drawFrame()
             isDlssHistoryValid = false;
         }
         appliedGlass = glass;
+    }
+    if (dlss.guides != appliedDlssGuides) {
+        isDlssHistoryValid = false;
+        appliedDlssGuides = dlss.guides;
     }
     if (void* mapped = rayDebugCounters[currentFrame].mapped) {
         auto& counters = *static_cast<GpuRayDebugCounters*>(mapped);
@@ -338,7 +362,8 @@ void Renderer::drawFrame()
         ZoneScopedN("UpdateUBO");
         const auto uboStart = std::chrono::steady_clock::now();
         // resize and swapchain recreation arrive as camera cuts
-        const bool isHistoryReset = camera.isCut() || culling.isSceneLayoutChanged() || isLightSetChanged;
+        const bool isHistoryReset =
+            camera.isCut() || culling.isSceneLayoutChanged() || isLightSetChanged || isDiHistoryReset;
         if (isHistoryReset) {
             TracyMessageL("History reset");
         }
@@ -390,11 +415,13 @@ void Renderer::drawFrame()
     const vk::SemaphoreSubmitInfo raySignal{.semaphore = *frameSync.rayTimeline,
                                             .value = frameNumber,
                                             .stageMask = vk::PipelineStageFlagBits2::eAllCommands};
-    // MG-P7 (I4 §3): when NRC is paused and DLSS-RR splits raySegments, submit the pre-DLSS pure-Vulkan ray work
-    // before AcquireImage so acquire/present CPU latency never enters RayStartWait; keep DLSS-RR + post with
-    // presentCmd in one post-acquire submit so no second submit arrives while NGX/CUDA runs (C-G3-6)
-    const bool isPreAcquireRaySubmit = !isNrcRecorded && preDlssRaySegmentCount > 0;
-    const bool isPreDlssRaySignal = isPreAcquireRaySubmit && rayCheckStats[currentFrame].mapped == nullptr;
+    // MG-P7 (I4 §3): submit the pure-Vulkan ray work before the first SDK segment (NRC, else DLSS-RR) ahead of
+    // AcquireImage so acquire/present CPU latency never enters RayStartWait; keep the SDK work and all after it with
+    // presentCmd in one post-acquire submit so no second submit arrives while NRC/NGX CUDA runs (C-G3-6)
+    const bool isPreAcquireRaySubmit = preSdkRaySegmentCount > 0;
+    // NRC frames trace after the split (NRC update, indirect), so their ray signal stays post-acquire
+    const bool isPreSdkRaySignal =
+        isPreAcquireRaySubmit && !isNrcRecorded && rayCheckStats[currentFrame].mapped == nullptr;
     vk::SemaphoreSubmitInfo tlasWait{};
     {
         const auto submitStart = std::chrono::steady_clock::now();
@@ -415,10 +442,10 @@ void Renderer::drawFrame()
                     vk::SubmitInfo2{
                         .waitSemaphoreInfoCount = 1,
                         .pWaitSemaphoreInfos = &tlasWait,
-                        .commandBufferInfoCount = preDlssRaySegmentCount,
+                        .commandBufferInfoCount = preSdkRaySegmentCount,
                         .pCommandBufferInfos = rayCmdInfos.data(),
-                        .signalSemaphoreInfoCount = isPreDlssRaySignal ? 1u : 0u,
-                        .pSignalSemaphoreInfos = isPreDlssRaySignal ? &raySignal : nullptr,
+                        .signalSemaphoreInfoCount = isPreSdkRaySignal ? 1u : 0u,
+                        .pSignalSemaphoreInfos = isPreSdkRaySignal ? &raySignal : nullptr,
                     },
                 };
                 graphicsQueue.submit2(earlySubmits);
@@ -468,10 +495,13 @@ void Renderer::drawFrame()
                                                    .stageMask = vk::PipelineStageFlagBits2::eBottomOfPipe};
         const vk::SubmitInfo2 postRaySubmit = isPreAcquireRaySubmit
             ? vk::SubmitInfo2{
-                  .commandBufferInfoCount = raySegmentCount - preDlssRaySegmentCount,
-                  .pCommandBufferInfos = rayCmdInfos.data() + preDlssRaySegmentCount,
-                  .signalSemaphoreInfoCount = isPreDlssRaySignal ? 0u : 1u,
-                  .pSignalSemaphoreInfos = isPreDlssRaySignal ? nullptr : &raySignal,
+                  // NRC frames trace here too; the early batch's wait does not cover this batch
+                  .waitSemaphoreInfoCount = isNrcRecorded ? 1u : 0u,
+                  .pWaitSemaphoreInfos = isNrcRecorded ? &tlasWait : nullptr,
+                  .commandBufferInfoCount = raySegmentCount - preSdkRaySegmentCount,
+                  .pCommandBufferInfos = rayCmdInfos.data() + preSdkRaySegmentCount,
+                  .signalSemaphoreInfoCount = isPreSdkRaySignal ? 0u : 1u,
+                  .pSignalSemaphoreInfos = isPreSdkRaySignal ? nullptr : &raySignal,
               }
             : vk::SubmitInfo2{
                   .waitSemaphoreInfoCount = 1,
@@ -644,7 +674,7 @@ void Renderer::recordRayCommands()
 
     raySegments = frameSync.raySegments(currentFrame);
     raySegmentCount = 0;
-    preDlssRaySegmentCount = 0;
+    preSdkRaySegmentCount = 0;
     // the frame root written after this recording carries the same glass state
     frameGlassFlags = glass.flags(rtScene.glassRowCount() > 0);
     frameGlassMaxLayers = glass.clampedMaxLayers();
@@ -720,6 +750,10 @@ const vk::raii::CommandBuffer& Renderer::beginRaySegment()
 template <typename RecordSdk>
 const vk::raii::CommandBuffer& Renderer::recordIsolated(const vk::raii::CommandBuffer& cmd, RecordSdk&& recordSdk)
 {
+    // MG-P7: the first SDK segment ends the pre-acquire part
+    if (preSdkRaySegmentCount == 0) {
+        preSdkRaySegmentCount = raySegmentCount;
+    }
     cmd.end();
     const vk::raii::CommandBuffer& sdkCmd = beginRaySegment();
     std::forward<RecordSdk>(recordSdk)(sdkCmd);
@@ -1028,16 +1062,18 @@ void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
     cmd.pipelineBarrier2(dependency);
     // first ray pass: the span since resolve covers the ray submit gap and the computeTimeline wait (F4)
     gpuTimer.end(cmd, GpuTimerScope::RayStartWait);
-    // with no lights rtxdi_shade only writes black. Lights arrive only with a load, which resets history, so the
-    // reservoirs skipped meanwhile are never reused
-    const bool hasLights = worldLights.hasLights();
-    if (hasLights) {
+    // RIS has candidates unless every light is directional and shaded exactly (hasRisLightCandidates in
+    // rtxdi_constants.slang; no environment light). Without them rtxdi_shade only writes black or the exact sun and
+    // stores empty reservoirs, so the reservoirs skipped meanwhile are never reused
+    const bool hasRisCandidates =
+        worldLights.localLightCount() > 0 || (worldLights.hasLights() && !rtxdi.areDiInfiniteLightsExact());
+    if (hasRisCandidates) {
         dispatchFullscreen(cmd, shaderObjects.frameShaders.rtxdiInitial);
         // initial reservoirs -> the temporal pass's loads and in-place stores
         cmd.pipelineBarrier2(dependency);
     }
     gpuTimer.end(cmd, GpuTimerScope::RtxdiInitial);
-    if (hasLights) {
+    if (hasRisCandidates) {
         dispatchFullscreen(cmd, shaderObjects.frameShaders.rtxdiTemporal);
         // temporal reservoirs -> the spatial pass's neighbor loads
         cmd.pipelineBarrier2(dependency);
@@ -1117,12 +1153,15 @@ void Renderer::recordIndirectResampling(const vk::raii::CommandBuffer& cmd)
     TracyVkNamedZone(gpuCtx, gpuZoneRestirGi, *cmd, "GPU_RestirGi", gpuTrace);
 #endif
     // GI reservoir stores (indirect pass, NRC resolve, temporal pass) -> the next pass's loads and stores and the
-    // debug view. Last frame's GI writes are ordered by recordDirectLight's first barrier
+    // debug view; NRC resolve's health atomics -> host readback after the slot's fence
+    const bool hasNrcHealthWrite = isNrcRecorded && debugView.view != DebugView::NrcCache;
     const vk::MemoryBarrier2 reservoirBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader |
+            (hasNrcHealthWrite ? vk::PipelineStageFlagBits2::eHost : vk::PipelineStageFlags2{}),
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite |
+            (hasNrcHealthWrite ? vk::AccessFlagBits2::eHostRead : vk::AccessFlags2{}),
     };
     const vk::DependencyInfo dependency{.memoryBarrierCount = 1, .pMemoryBarriers = &reservoirBarrier};
     cmd.pipelineBarrier2(dependency);
@@ -1221,9 +1260,6 @@ const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::Co
     const bool gpuTrace = tracyContext != nullptr && tracyContext->isActive();
     TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
 #endif
-    if (!isNrcRecorded) {
-        preDlssRaySegmentCount = raySegmentCount;
-    }
     // NGX binds its own pipelines and descriptor sets, which invalidate the heap bindings
     const vk::raii::CommandBuffer& postCmd = recordIsolated(cmd, [&](const vk::raii::CommandBuffer& sdkCmd) {
 #ifdef TRACY_ENABLE

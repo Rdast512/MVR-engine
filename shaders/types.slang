@@ -135,6 +135,8 @@ public static const uint kDebugViewMaterialBin = 30u;
 public static const uint kDebugViewGlass = 31u;
 // DLSS-RR's specular hit distance guide (m8 I16 phase 3a): gray d / (d + 1), blue for a sky miss, black without one
 public static const uint kDebugViewSpecularHitDistance = 32u;
+// R16F finite max: sky-miss sentinel and clamp ceiling for pInSpecularHitDistance (reference/vk_denoise_dlssrr)
+public static const float kMaxSpecularHitDistance = 65504.0;
 public static const uint kDebugViewModeMask = 0xffu;
 public static const uint kDebugViewFlagEdges = 1u << 8;
 public static const uint kDebugViewFlagGlassReflection = 1u << 9;
@@ -786,7 +788,7 @@ public struct GpuTargets
     public uint giDuplicationStorage; // R32F neighbors sharing it, rtxdi_gi_duplication; next frame's temporal reads
     public uint glassDiffuseAlbedoStorage; // RGBA8 DLSS-RR guides blended with glass (m8 I13 §4 variant b)
     public uint glassSpecAlbedoStorage;
-    public uint specularHitDistanceStorage; // R16F DLSS-RR specular hit distance, indirect (m8 I16 phase 3)
+    public uint specularHitDistanceStorage; // R16F DLSS-RR specular hit distance (kNoneIndex when unused, m8 I16)
     public uint dlssInputAccumulationStorage; // RGBA32F DLSS-RR input sum and count, combine (settings lab, m8 I16)
 };
 

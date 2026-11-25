@@ -224,6 +224,7 @@ private:
         IndirectMode mode = kDefaultIndirectMode;
         bool isGiReference = false;
         bool isGroundTruthPaths = false;
+        bool arePathInfiniteLightsExact = RtxdiContext::defaultGiSettings().areInfiniteLightsShadedExactly;
         RtxdiContext::GiSettings giSettings = RtxdiContext::defaultGiSettings();
 
         bool operator==(const IndirectState&) const = default;
@@ -233,9 +234,9 @@ private:
     // this frame's ray command buffers; the first raySegmentCount are recorded, in submission order
     std::span<vk::raii::CommandBuffer> raySegments;
     uint32_t raySegmentCount = 0;
-    // MG-P7 (I4 §3): pre-DLSS pure-Vulkan segment count submitted before AcquireImage when NRC is paused; DLSS-RR +
-    // post stay with presentCmd in one post-acquire submit (C-G3-6)
-    uint32_t preDlssRaySegmentCount = 0;
+    // MG-P7 (I4 §3): pure-Vulkan segments before the frame's first SDK segment (NRC or DLSS-RR), submitted before
+    // AcquireImage; the SDK work and all after it stay with presentCmd in one post-acquire submit (C-G3-6)
+    uint32_t preSdkRaySegmentCount = 0;
     // FrameSync::rayTimeline value of the last ray submit with NRC commands; 0 before the first
     uint64_t lastNrcRaySubmit = 0;
     // C-G3-6 (NP1): isolated SDK command buffers (recordIsolated) avoid the device loss without a host wait;
@@ -257,11 +258,14 @@ private:
     PostProcess post;
     // false after a resize or a frame without the Lit view: the next evaluation resets DLSS history
     bool isDlssHistoryValid = false;
+    Dlss::Guides appliedDlssGuides{};
     // world light rows of the last frame; a change (load, unload, sun toggle) resets history, since reservoirs hold
     // light indices
     uint32_t lastLightCount = 0;
     bool wereTriangleLightsSampled = true;
+    bool wereDiInfiniteLightsExact = RtxdiContext::defaultSettings().areInfiniteLightsShadedExactly;
     bool isLightSetChanged = false;
+    bool isDiHistoryReset = false;
     std::chrono::steady_clock::time_point lastFrameTime{};
     // per frame slot: the timeline value its last async compute submit signals
     std::array<uint64_t, MAX_FRAMES_IN_FLIGHT> computeTimelineValues{};
