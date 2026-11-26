@@ -47,6 +47,7 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
     dgc.init();
     wereDiInfiniteLightsExact = rtxdi.areDiInfiniteLightsExact();
     appliedIndirect.arePathInfiniteLightsExact = rtxdi.arePathInfiniteLightsExact();
+    appliedJitterEnabled = camera.isJitterEnabled;
     if (const char* waitEnv = std::getenv("ENGINE_NRC_HOST_WAIT"); waitEnv != nullptr && *waitEnv != '\0') {
         isNrcHostWaitEnabled = std::string_view(waitEnv) != "0";
         logInfo(std::format("NRC host wait (C-G3-6): {}", isNrcHostWaitEnabled ? "on" : "off"), "Renderer");
@@ -215,7 +216,16 @@ void Renderer::drawFrame()
     };
     if (dlssInput != appliedDlssInput || isAccumulationModeReset) {
         isDlssHistoryValid = false;
+        // M8.2 BUG-E5: clear DLSS input accumulation/EMA whenever input scale/clamp/flags change
+        if (accumulationMode != DlssInputAccumulationMode::None && !isFreezeTransition) {
+            targets.requestDlssInputAccumulationClear();
+        }
         appliedDlssInput = dlssInput;
+    }
+    const bool isJitterChanged = camera.isJitterEnabled != appliedJitterEnabled;
+    if (isJitterChanged) {
+        isDlssHistoryValid = false;
+        appliedJitterEnabled = camera.isJitterEnabled;
     }
     // the accumulated mean resolves the jitter as DLSS-RR does; No AA without a denoiser has nothing to resolve it
     camera.updateCameraData(currentFrame, frameNumber, isLitDlss || isAccumulationActive());
@@ -224,7 +234,7 @@ void Renderer::drawFrame()
     {
         const IndirectState indirect{.mode = indirectMode,
                                      .isGiReference = rtxdi.isGiReference,
-                                     .isGroundTruthPaths = rtxdi.giReferenceBounces != 0,
+                                     .giReferenceBounces = rtxdi.giReferenceBounces,
                                      .arePathInfiniteLightsExact = rtxdi.arePathInfiniteLightsExact(),
                                      .giSettings = rtxdi.giSettings};
         // the samples change meaning (spec/m4/g7_indirect_modes.md): ReSTIR GI and DLSS-RR start over, ReSTIR DI keeps
@@ -233,7 +243,7 @@ void Renderer::drawFrame()
             TracyMessageL("Indirect history reset");
             logInfo(std::format("indirect: {}{}{}", indirectModeInfo(indirect.mode).label,
                                 indirect.isGiReference ? ", no reuse" : "",
-                                indirect.isGroundTruthPaths ? ", ground-truth paths" : ""),
+                                indirect.giReferenceBounces != 0 ? ", ground-truth paths" : ""),
                     "Renderer");
             isDlssHistoryValid = false;
         }
@@ -273,17 +283,21 @@ void Renderer::drawFrame()
     const bool willDiReuseTemporally = !rtxdi.isReference && !rtxdi.isSpatialOnly;
     const bool isDiModeChanged = rtxdi.isReference != rtxdi.isReferenceEnabled() ||
         rtxdi.isSpatialOnly != rtxdi.isSpatialOnlyEnabled() || rtxdi.isTemporalOnly != rtxdi.isTemporalOnlyEnabled();
+    const bool isDiSettingsChanged = rtxdi.isSettingsDirty();
     // re-entering temporal DI reuse after None or Spatial must not read stale reservoirs from an unupdated buffer
     isDiHistoryReset =
         areDiInfiniteExact != wereDiInfiniteLightsExact || (!rtxdi.isTemporalReuseEnabled() && willDiReuseTemporally);
     wereDiInfiniteLightsExact = areDiInfiniteExact;
-    if (isDiHistoryReset || isDiModeChanged) {
-        // direct-light noise profile or reservoir light set changes abruptly
+    if (isDiHistoryReset || isDiModeChanged || isDiSettingsChanged) {
+        // direct-light noise profile, preset or reservoir light set changed
         isDlssHistoryValid = false;
     }
     rtxdi.prepareFrame(currentFrame, frameNumber, indirectMode != IndirectMode::Nrc, camera.cameraData.cameraPos,
                        frameNumber - 1);
-    prepareAccumulation();
+    const bool isGlassChanged = glass != appliedGlass && rtScene.glassRowCount() > 0;
+    const bool isNrcResolveChanged = nrc.settings.resolveMode != appliedNrcResolveMode;
+    prepareAccumulation(isDiModeChanged || isDiSettingsChanged || isJitterChanged || isGlassChanged ||
+                        isNrcResolveChanged);
     gpuTimer.collect(currentFrame);
     post.readBack(currentFrame);
     if (isGlassRecorded[currentFrame]) {
@@ -300,6 +314,10 @@ void Renderer::drawFrame()
     if (dlss.guides != appliedDlssGuides) {
         isDlssHistoryValid = false;
         appliedDlssGuides = dlss.guides;
+    }
+    if (nrc.settings.resolveMode != appliedNrcResolveMode) {
+        isDlssHistoryValid = false;
+        appliedNrcResolveMode = nrc.settings.resolveMode;
     }
     if (void* mapped = rayDebugCounters[currentFrame].mapped) {
         auto& counters = *static_cast<GpuRayDebugCounters*>(mapped);
@@ -469,11 +487,13 @@ void Renderer::drawFrame()
         const vk::CommandBufferSubmitInfo presentCmdInfo{.commandBuffer = *presentCmd};
         const vk::SemaphoreSubmitInfo renderSignal{.semaphore = renderSemaphore,
                                                    .stageMask = vk::PipelineStageFlagBits2::eBottomOfPipe};
+        // M8.1 BUG-B4: frameHook ray checks run in postRaySubmit after DLSS-RR even when NRC is paused
+        const bool needsPostTlasWait = isNrcRecorded || (frameHook != nullptr && frameHook->tracesRays());
         const vk::SubmitInfo2 postRaySubmit = isPreAcquireRaySubmit
             ? vk::SubmitInfo2{
-                  // NRC frames trace here too; the early batch's wait does not cover this batch
-                  .waitSemaphoreInfoCount = isNrcRecorded ? 1u : 0u,
-                  .pWaitSemaphoreInfos = isNrcRecorded ? &tlasWait : nullptr,
+                  // NRC and RT-check frames trace here too; the early batch's wait does not cover this batch
+                  .waitSemaphoreInfoCount = needsPostTlasWait ? 1u : 0u,
+                  .pWaitSemaphoreInfos = needsPostTlasWait ? &tlasWait : nullptr,
                   .commandBufferInfoCount = raySegmentCount - preSdkRaySegmentCount,
                   .pCommandBufferInfos = rayCmdInfos.data() + preSdkRaySegmentCount,
                   .signalSemaphoreInfoCount = isPreSdkRaySignal ? 0u : 1u,
@@ -622,7 +642,7 @@ void Renderer::recordFrameCommands(vk::raii::CommandBuffer& cmd)
 #endif
         recordPhase(cmd, CullPhase::Late);
     }
-    MeshletCulling::recordCounterReadback(cmd);
+    culling.recordCounterReadback(cmd);
 
     {
         ZoneScopedN("Classify");
@@ -969,8 +989,7 @@ void Renderer::recordClassify(const vk::raii::CommandBuffer& cmd)
                                             .imageMemoryBarrierCount = 1,
                                             .pImageMemoryBarriers = &visBarrier});
 
-    const vk::Buffer materialBins = targets.getMaterialBinsBuffer();
-    cmd.fillBuffer(materialBins, 0, kMaterialBinCountBytes, 0);
+    cmd.fillMemoryKHR({.address = targets.materialBinsAddress(), .size = kMaterialBinCountBytes}, kBoundAddress, 0);
     // cleared counts -> classify's appends
     const vk::MemoryBarrier2 fillBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eClear,
@@ -1013,7 +1032,7 @@ void Renderer::recordResolve(const vk::raii::CommandBuffer& cmd)
     if (shaderObjects.isResolvePerBin) {
         // no DGC or GPU-AV (C-E1-3): binArgsPerBinMain's slot per bin, same shaders and push data as the DGC
         // sequence; an empty bin dispatches 0 groups
-        const vk::Buffer materialBinsBuffer = targets.getMaterialBinsBuffer();
+        const vk::DeviceAddress materialBins = targets.materialBinsAddress();
         for (uint32_t bin = 0; bin < kMaterialBinCount; ++bin) {
             const ResolvePushData push{
                 .frameRoot = frameData.frameRootAddress(currentFrame),
@@ -1021,9 +1040,10 @@ void Renderer::recordResolve(const vk::raii::CommandBuffer& cmd)
             };
             ShaderObjects::bindComputeShader(cmd, shaderObjects.resolveShaders[bin]);
             cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
-            cmd.dispatchIndirect(materialBinsBuffer, offsetof(GpuMaterialBins, sequences) +
-                                                         bin * sizeof(ResolveDgcSequence) +
-                                                         offsetof(ResolveDgcSequence, dispatch));
+            dispatchIndirectAt(cmd,
+                               materialBins + offsetof(GpuMaterialBins, sequences) + bin * sizeof(ResolveDgcSequence) +
+                                   offsetof(ResolveDgcSequence, dispatch),
+                               kBoundAddress);
         }
     } else {
         const vk::DeviceAddress materialBins = targets.materialBinsAddress();
@@ -1080,7 +1100,9 @@ const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandB
     const vk::DeviceAddress frameRoot = frameData.frameRootAddress(currentFrame);
     // a paused cache keeps its weights; prepareFrame zeroed the slot's constants, so the query pass makes no queries
     isNrcRecorded = nrc.isActive() && !isNrcPaused();
-    const bool isCacheView = debugView.view == DebugView::NrcCache;
+    // M8.1 BUG-E3: DirectCacheView queries primary vertex 0, matching DebugView::NrcCache
+    const bool isCacheView =
+        debugView.view == DebugView::NrcCache || nrc.settings.resolveMode == NrcResolveMode::DirectCacheView;
     if (isNrcRecorded) {
         ZoneScopedN("NrcUpdate");
         cmd = &recordIsolated(*cmd, [&](const vk::raii::CommandBuffer& sdkCmd) {
@@ -1113,8 +1135,9 @@ const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandB
         });
     }
     gpuTimer.end(*cmd, GpuTimerScope::NrcTrain);
-    // the cache view shows the query at the primary instead; the reservoirs keep G2's radiance
-    if (isNrcRecorded && !isCacheView) {
+    const bool isNrcDebugResolve = isNrcRecorded && nrc.isDebugResolveActive();
+    // the cache view shows the query at the primary instead; debug resolve overwrites indirectRadiance directly
+    if (isNrcRecorded && !isCacheView && !isNrcDebugResolve) {
         ZoneScopedN("NrcResolve");
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneNrcResolve, **cmd, "GPU_NrcResolve", gpuTrace);
@@ -1124,11 +1147,14 @@ const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandB
         nrc.recordHealthReadback(*cmd, currentFrame);
     }
     gpuTimer.end(*cmd, GpuTimerScope::NrcResolve);
-    recordIndirectResampling(*cmd);
-    if (isNrcRecorded && nrc.isDebugResolveActive()) {
+    if (isNrcDebugResolve) {
+        gpuTimer.end(*cmd, GpuTimerScope::GiTemporal);
+        gpuTimer.end(*cmd, GpuTimerScope::GiShade);
         cmd = &recordIsolated(*cmd, [&](const vk::raii::CommandBuffer& sdkCmd) {
             nrc.recordDebugResolve(sdkCmd, targets.getIndirectRadianceImage(), targets.getExtent());
         });
+    } else {
+        recordIndirectResampling(*cmd);
     }
     return *cmd;
 }
@@ -1275,7 +1301,7 @@ const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::Co
     return postCmd;
 }
 
-void Renderer::prepareAccumulation()
+void Renderer::prepareAccumulation(bool isLightingStateChanged)
 {
     // the unjittered view: Accumulation keeps advancing the jitter, so the mean is antialiased
     const bool isStill = camera.cameraData.view == lastAccumulationView;
@@ -1284,6 +1310,7 @@ void Renderer::prepareAccumulation()
     lastAccumulationSun = worldLights.sun;
     if (!isAccumulationActive()) {
         accumulatedFrames = 0;
+        lastAccumulationFrameLimit = accumulationFrameLimit;
         isAccumulationResetRequested = false;
         // retired: every frame up to frameNumber - MAX_FRAMES_IN_FLIGHT completed before this slot's fence
         if (targets.hasAccumulated() && frameNumber - lastAccumulationFrame >= MAX_FRAMES_IN_FLIGHT) {
@@ -1292,11 +1319,13 @@ void Renderer::prepareAccumulation()
         return;
     }
     targets.ensureAccumulated();
-    // every history reset of the frame, a moved camera, sun or instance, and any lighting setting edit (the engine
-    // loop's resetAccumulation, from the lab switches)
+    // M8.2 BUG-UI-10: reset on any lighting/state change (captured before rtxdi.prepareFrame) or lowered frame limit
+    const bool isLimitLowered = accumulationFrameLimit > 0 && accumulationFrameLimit < accumulatedFrames &&
+        accumulationFrameLimit != lastAccumulationFrameLimit;
+    lastAccumulationFrameLimit = accumulationFrameLimit;
     const bool isReset = accumulatedFrames == 0 || !isStill || isAccumulationResetRequested || camera.isCut() ||
         culling.isSceneLayoutChanged() || isLightSetChanged || isIndirectHistoryReset || isDiHistoryReset ||
-        rtxdi.isReference != rtxdi.isReferenceEnabled() || rtScene.hasSceneChanged() || isSunChanged;
+        isLightingStateChanged || isLimitLowered || rtScene.hasSceneChanged() || isSunChanged;
     isAccumulationResetRequested = false;
     accumulatedFrames = isReset ? 1u : accumulatedFrames + 1u;
     if (accumulationFrameLimit > 0) {

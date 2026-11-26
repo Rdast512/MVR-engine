@@ -645,7 +645,7 @@ void EngineUi::drawDebugViewPanel()
     // per-category options; lighting and upscaling views add theirs here
     switch (debugViewInfo(settings.view).category) {
     case DebugViewCategory::Lit:
-        ImGui::TextDisabled("no lighting before M3: the diffuse albedo guide");
+        ImGui::TextDisabled("tone-mapped Lit output (DLSS-RR, or raw/Accumulation with denoiser Off)");
         break;
     case DebugViewCategory::Geometry:
         ImGui::TextDisabled("meshlet colors are per model: instances match");
@@ -683,7 +683,12 @@ void EngineUi::drawDebugViewPanel()
         break;
     case DebugViewCategory::Lighting:
         if (settings.view == DebugView::DirectLighting) {
-            ImGui::Checkbox("ReSTIR DI reference", &context.renderer.getRtxdi().isReference);
+            RtxdiContext& rtxdi = context.renderer.getRtxdi();
+            // M8.2 BUG-UI-6: keep DI resampling flags mutually exclusive with SettingsWindow
+            if (ImGui::Checkbox("ReSTIR DI reference", &rtxdi.isReference) && rtxdi.isReference) {
+                rtxdi.isSpatialOnly = false;
+                rtxdi.isTemporalOnly = false;
+            }
             ImGui::SetItemTooltip("no reuse, more initial candidates: the unbiased ground truth of the reuse passes");
             ImGui::TextDisabled("converges to Shadowed lights");
         } else if (settings.view == DebugView::NrcCache && context.renderer.isNrcPaused()) {

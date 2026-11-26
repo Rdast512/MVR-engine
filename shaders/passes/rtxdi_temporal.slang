@@ -37,7 +37,8 @@ void rtxdiTemporalMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_GroupT
     const RAB_Surface surface = RAB_GetGBufferSurface(int2(id.xy), false);
     const uint2 reservoirPosition = RTXDI_PixelPosToReservoirPos(id.xy, constants.runtime.activeCheckerboardField);
     RTXDI_DIReservoir reservoir = RTXDI_EmptyDIReservoir();
-    if (RAB_IsSurfaceValid(surface))
+    // M8.1 BUG-C3: skip temporal reuse on unlit surfaces
+    if (RAB_IsSurfaceValid(surface) && surface.isLit)
     {
         const RTXDI_DIReservoir initial = RTXDI_LoadDIReservoir(
             constants.reservoirBuffer, reservoirPosition, constants.bufferIndices.initialSamplingOutputBufferIndex);

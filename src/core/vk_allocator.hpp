@@ -30,7 +30,8 @@ public:
         vulkanFunctions.vkGetDeviceProcAddr = &vkGetDeviceProcAddr;
 
         VmaAllocatorCreateInfo allocatorInfo = {};
-        // EXT_memory_priority: VMA calls vkSetDeviceMemoryPriorityEXT (NVIDIA best practice).
+        // EXT_memory_priority: VMA chains VkMemoryPriorityAllocateInfoEXT into each vkAllocateMemory (NVIDIA best
+        // practice); default-pool blocks get 0.5, dedicated allocations their own priority.
         // Prefer suballocation; only force dedicated via per-allocation flags when size warrants it.
         allocatorInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT |
             VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT | VMA_ALLOCATOR_CREATE_KHR_BIND_MEMORY2_BIT |

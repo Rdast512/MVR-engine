@@ -34,10 +34,9 @@ public:
     void init();
 
     // sizes this slot's buffers for maxSequences per group in every phase (the slot must not be in flight); counts
-    // are read from GpuCullCounters::sequenceCount of each phase, the first phase's counters at the start of
-    // countersBuffer (countersAddress)
+    // are read from GpuCullCounters::sequenceCount of each phase, the first phase's counters at countersAddress
     void prepareFrame(uint32_t frameSlot, const std::array<uint32_t, kRasterBinCount>& maxSequences,
-                      vk::Buffer countersBuffer, vk::DeviceAddress countersAddress);
+                      vk::DeviceAddress countersAddress);
 
     // valid after prepareFrame: where the cull pass writes each group's sequences
     [[nodiscard]] vk::DeviceAddress sequenceAddress() const { return sequenceAddresses[frame]; }
@@ -110,7 +109,6 @@ private:
     // sequences of all groups of one phase
     uint32_t phaseSequences = 0;
     vk::DeviceAddress counters = 0;
-    vk::Buffer sequenceCountBuffer;
 
     // device-local, written by buildMeshSequences
     std::array<vk::raii::Buffer, MAX_FRAMES_IN_FLIGHT> sequenceBuffers = {nullptr, nullptr};

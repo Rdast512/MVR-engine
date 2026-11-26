@@ -15,6 +15,8 @@ import core.math;
 // header (high 16 bits of second.w): LightType in bits 0-7, GpuTriangleLight.flags in bits 8-15
 
 static const float kHalfMax = 65504.0;
+// M8.1 BUG-A4: reject tiny non-zero f16 subnormals so packCompactLight falls back to fp32 worldLights
+static const float kHalfMinNormal = 1.0e-4;
 
 // octahedral direction in two unorm16 (ndirToOctUnorm32)
 uint packOctUnorm32(float3 direction)
@@ -53,7 +55,8 @@ public bool packCompactLight(GpuLight light, out uint4 first, out uint4 second)
         const GpuTriangleLight triangle = reinterpret<GpuTriangleLight>(light);
         const float length1 = length(triangle.edge1);
         const float length2 = length(triangle.edge2);
-        if (max(length1, length2) > kHalfMax)
+        if (max(length1, length2) > kHalfMax || (length1 > 0.0 && length1 < kHalfMinNormal) ||
+            (length2 > 0.0 && length2 < kHalfMinNormal))
         {
             return false;
         }
@@ -74,7 +77,7 @@ public bool packCompactLight(GpuLight light, out uint4 first, out uint4 second)
     {
         return false;
     }
-    if (any(color > kHalfMax))
+    if (any(color > kHalfMax) || any(color > 0.0 && color < kHalfMinNormal))
     {
         return false;
     }

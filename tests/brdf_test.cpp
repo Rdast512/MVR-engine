@@ -184,10 +184,11 @@ namespace
         const double ggxL = nDotV * std::sqrt(nDotL * nDotL * (1.0 - a2) + a2);
         const double V = 0.5 / std::max(ggxV + ggxL, 1e-7);
 
+        const double f90 = std::clamp(maxF0 * 50.0, 0.0, 1.0);
         const double pow5 = std::pow(std::clamp(1.0 - vDotH, 0.0, 1.0), 5.0);
-        const double fx = c.f0.x + (1.0 - c.f0.x) * pow5;
-        const double fy = c.f0.y + (1.0 - c.f0.y) * pow5;
-        const double fz = c.f0.z + (1.0 - c.f0.z) * pow5;
+        const double fx = c.f0.x + (f90 - c.f0.x) * pow5;
+        const double fy = c.f0.y + (f90 - c.f0.y) * pow5;
+        const double fz = c.f0.z + (f90 - c.f0.z) * pow5;
 
         const Vec3 fTimesNdotL{
             static_cast<float>(((1.0 - fx) * c.cDiff.x / kPi + fx * D * V) * nDotL),
@@ -197,15 +198,18 @@ namespace
 
         const auto lum = [](double r, double g, double b) { return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
         const double cDiffLum = lum(c.cDiff.x, c.cDiff.y, c.cDiff.z);
-        double specProb = 1.0;
-        if (cDiffLum > 0.0) {
-            const double pow5V = std::pow(std::clamp(1.0 - nDotV, 0.0, 1.0), 5.0);
-            const double fVx = c.f0.x + (1.0 - c.f0.x) * pow5V;
-            const double fVy = c.f0.y + (1.0 - c.f0.y) * pow5V;
-            const double fVz = c.f0.z + (1.0 - c.f0.z) * pow5V;
-            const double specLum = lum(fVx, fVy, fVz);
-            const double diffLum = lum((1.0 - fVx) * c.cDiff.x, (1.0 - fVy) * c.cDiff.y, (1.0 - fVz) * c.cDiff.z);
-            specProb = std::clamp(specLum / (specLum + diffLum), kMinLobe, 1.0 - kMinLobe);
+        double specProb = 0.0;
+        if (f90 > 0.0) {
+            specProb = 1.0;
+            if (cDiffLum > 0.0) {
+                const double pow5V = std::pow(std::clamp(1.0 - nDotV, 0.0, 1.0), 5.0);
+                const double fVx = c.f0.x + (f90 - c.f0.x) * pow5V;
+                const double fVy = c.f0.y + (f90 - c.f0.y) * pow5V;
+                const double fVz = c.f0.z + (f90 - c.f0.z) * pow5V;
+                const double specLum = lum(fVx, fVy, fVz);
+                const double diffLum = lum((1.0 - fVx) * c.cDiff.x, (1.0 - fVy) * c.cDiff.y, (1.0 - fVz) * c.cDiff.z);
+                specProb = std::clamp(specLum / (specLum + diffLum), kMinLobe, 1.0 - kMinLobe);
+            }
         }
         const double specPdf = D / (2.0 * (nDotV + std::sqrt(a2 + (1.0 - a2) * nDotV * nDotV)));
         const double diffPdf = nDotL / kPi;
@@ -277,9 +281,12 @@ namespace
                             gray(0.3f), gray(0.04f), 0.05f),
             offAxisAnalytic("off-axis tilted normal r 0.5", tilted, normalized({-0.2f, 0.1f, 0.9f}),
                             normalized({0.6f, -0.5f, 0.6f}), gray(0.6f), gray(0.04f), 0.5f),
+            offAxisAnalytic("off-axis zero-f0 grazing 80/75 deg r 0.25", kUp, dirAt(80.0f, 0.0f), dirAt(75.0f, 180.0f),
+                            gray(0.5f), kBlack, 0.25f),
 
             // sampler distribution vs independent uniform-hemisphere integral
             integrated("plastic head-on r 0.5", kUp, kUp, gray(0.8f), gray(0.04f), 0.5f),
+            integrated("zero-f0 grazing 80 deg r 0.3", kUp, dirAt(80.0f), gray(0.6f), kBlack, 0.3f),
             integrated("plastic 60 deg r 0.3", kUp, dirAt(60.0f), {0.7f, 0.2f, 0.1f}, gray(0.04f), 0.3f),
             integrated("plastic 85 deg r 0.6", kUp, dirAt(85.0f), gray(0.5f), gray(0.04f), 0.6f),
             integrated("gold 45 deg r 0.4", kUp, dirAt(45.0f), kBlack, kGold, 0.4f),

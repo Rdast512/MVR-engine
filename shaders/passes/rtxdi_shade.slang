@@ -72,8 +72,8 @@ void rtxdiShadeMain(uint3 id : SV_DispatchThreadID)
     const bool isInfiniteExact = (constants.diFlags & kDiFlagExactInfiniteLights) != 0;
     RTXDI_DIReservoir reservoir = RTXDI_EmptyDIReservoir();
     // uniform: without candidates the host skips rtxdi_initial and rtxdi_temporal, so the input is stale and the
-    // disocclusion boost would resample empty neighbors
-    if (RAB_IsSurfaceValid(surface) && hasRisLightCandidates(constants, isInfiniteExact))
+    // disocclusion boost would resample empty neighbors (M8.1 BUG-C3: also skip unlit surfaces)
+    if (RAB_IsSurfaceValid(surface) && surface.isLit && hasRisLightCandidates(constants, isInfiniteExact))
     {
         reservoir = RTXDI_LoadDIReservoir(constants.reservoirBuffer, reservoirPosition,
                                           constants.bufferIndices.spatialResamplingInputBufferIndex);

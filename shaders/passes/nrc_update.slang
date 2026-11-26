@@ -134,7 +134,8 @@ void nrcUpdateMain(uint3 id : SV_DispatchThreadID)
             origin.surface = primary;
             const float3 emissive =
                 tex2D(gRtxdiBridge.current.sampled[kGuideEmissive]).Load(int3(int2(pixel), 0)).rgb;
-            radiance += throughput * (emissive + directLightAt(primary, origin, rtxdiConstants, lightRng, coherentRng));
+            radiance +=
+                throughput * (emissive + directLightAt(root, primary, origin, rtxdiConstants, lightRng, coherentRng));
             if (progress == NrcProgressState::Continue)
             {
                 isActive = scatter(primary, origin, nrc, 1, rng, throughput, radiance, path, ray);
@@ -163,15 +164,16 @@ void nrcUpdateMain(uint3 id : SV_DispatchThreadID)
         origin.hit = hit;
         origin.geoNormal = vertex.surface.geoNormal;
         radiance += throughput *
-                    (vertex.emissive + directLightAt(vertex.surface, origin, rtxdiConstants, lightRng, coherentRng));
-        // without cached direct light, NRC ends a path after the direct light of its last vertex
-        if (progress == NrcProgressState::TerminateAfterDirectLighting)
-        {
-            break;
-        }
+                    (vertex.emissive + directLightAt(root, vertex.surface, origin, rtxdiConstants, lightRng, coherentRng));
+        // M8.1 BUG-E7: tag MaxPathVertices before TerminateAfterDirectLighting so the debug reason is reachable
         if (bounce == maxPathVertices - 1)
         {
             NrcSetDebugPathTerminationReason(path, NrcDebugPathTerminationReason::MaxPathVertices);
+            break;
+        }
+        // without cached direct light, NRC ends a path after the direct light of its last vertex
+        if (progress == NrcProgressState::TerminateAfterDirectLighting)
+        {
             break;
         }
         isActive = scatter(vertex.surface, origin, nrc, bounce + 1, rng, throughput, radiance, path, ray);

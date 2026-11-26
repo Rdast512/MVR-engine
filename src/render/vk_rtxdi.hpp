@@ -371,6 +371,8 @@ public:
     [[nodiscard]] bool isSpatialOnlyEnabled() const noexcept { return isSpatialOnlyApplied; }
     // ReSTIR DI temporal-only mode as applied by the last prepareFrame
     [[nodiscard]] bool isTemporalOnlyEnabled() const noexcept { return isTemporalOnlyApplied; }
+    // true while settings has edits not yet applied by prepareFrame (M8.2 BUG-UI-6)
+    [[nodiscard]] bool isSettingsDirty() const noexcept { return settings != appliedSettings; }
     // ReSTIR DI temporal resampling pass runs in Temporal and TemporalAndSpatial modes
     [[nodiscard]] bool isTemporalReuseEnabled() const noexcept { return !isReferenceApplied && !isSpatialOnlyApplied; }
     // primary DI shades directional lights outside RIS; off in reference mode so kReferenceInfiniteLightSamples runs

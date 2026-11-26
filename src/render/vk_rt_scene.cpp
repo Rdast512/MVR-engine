@@ -599,10 +599,12 @@ void RayTracingScene::createPtlas(uint64_t lastSubmittedFrame)
     };
     const vk::AccelerationStructureBuildSizesInfoKHR sizes =
         device.vkdevice.getPartitionedAccelerationStructuresBuildSizesNV(buildInput(sized));
+    // M8.1 BUG-B6: scratch serves both full builds and in-place updates
+    const vk::DeviceSize scratchBytes = std::max(sizes.buildScratchSize, sizes.updateScratchSize);
     ptlas.storage = createAlignedBuffer(sizes.accelerationStructureSize, kPtlasAlignment,
                                         vk::BufferUsageFlagBits2::eAccelerationStructureStorageKHR, "PtlasStorage");
-    ptlas.scratch = createAlignedBuffer(sizes.buildScratchSize, kPtlasAlignment,
-                                        vk::BufferUsageFlagBits2::eStorageBuffer, "PtlasScratch");
+    ptlas.scratch =
+        createAlignedBuffer(scratchBytes, kPtlasAlignment, vk::BufferUsageFlagBits2::eStorageBuffer, "PtlasScratch");
     ptlas.state = createAlignedBuffer(kPtlasStateRowBytes * sized.instances, alignof(glm::vec4),
                                       vk::BufferUsageFlagBits2::eStorageBuffer, "PtlasState");
     ptlas.sizedFor = sized;
@@ -611,7 +613,7 @@ void RayTracingScene::createPtlas(uint64_t lastSubmittedFrame)
     logInfo(std::format("PTLAS for {} instances, {} partitions, {} per partition: {} KiB, scratch {} KiB",
                         sized.instances, sized.partitions, sized.maxPerPartition,
                         divideRoundUp(sizes.accelerationStructureSize, vk::DeviceSize{1024}),
-                        divideRoundUp(sizes.buildScratchSize, vk::DeviceSize{1024})),
+                        divideRoundUp(scratchBytes, vk::DeviceSize{1024})),
             "RayTracingScene");
 }
 
@@ -644,7 +646,8 @@ void RayTracingScene::createFrameBuffers(uint32_t frameSlot, uint32_t capacity)
                                          vk::BufferUsageFlagBits2::eAccelerationStructureBuildInputReadOnlyKHR |
                                              vk::BufferUsageFlagBits2::eTransferSrc);
     // MG-B2: host-cached readback buffer avoids uncached WC VRAM reads in collectResults
-    createBuffer(sizeof(uint32_t), vk::BufferUsageFlagBits2::eTransferDst,
+    createBuffer(sizeof(uint32_t),
+                 vk::BufferUsageFlagBits2::eTransferDst | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                  vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent |
                      vk::MemoryPropertyFlagBits::eHostCached,
                  buffers.argCountReadback.buffer, buffers.argCountReadback.memory, vma, device.vkdevice,
@@ -654,6 +657,8 @@ void RayTracingScene::createFrameBuffers(uint32_t frameSlot, uint32_t capacity)
         VmaAllocationInfo readbackInfo{};
         vmaGetAllocationInfo(vma, buffers.argCountReadback.memory, &readbackInfo);
         buffers.argCountReadback.mapped = readbackInfo.pMappedData;
+        buffers.argCountReadback.address =
+            device.vkdevice.getBufferAddress({.buffer = *buffers.argCountReadback.buffer});
         *static_cast<uint32_t*>(buffers.argCountReadback.mapped) = 0;
         tracyResourceAlloc(static_cast<VkBuffer>(*buffers.argCountReadback.buffer), sizeof(uint32_t),
                            kPtlasArgCountReadbackTracyName);
@@ -751,12 +756,14 @@ void RayTracingScene::recordBuild(const vk::raii::CommandBuffer& cmd, uint32_t f
         cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
         cmd.dispatch(divideRoundUp(buffers.count, kRtInstancesGroupSize), 1, 1);
         // the write infos and the op's argument count are build input (and argCount is copied for host telemetry)
+        // M8.1 BUG-B1: include eAccelerationStructureReadKHR for PTLAS build input reads (C-GA-1 / C-T-6)
         const vk::MemoryBarrier2 instanceBarrier{
             .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
             .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
             .dstStageMask =
                 vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR | vk::PipelineStageFlagBits2::eCopy,
-            .dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead,
+            .dstAccessMask = vk::AccessFlagBits2::eAccelerationStructureReadKHR | vk::AccessFlagBits2::eShaderRead |
+                vk::AccessFlagBits2::eTransferRead,
         };
         cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &instanceBarrier});
     }
@@ -781,17 +788,13 @@ void RayTracingScene::recordBuild(const vk::raii::CommandBuffer& cmd, uint32_t f
     }
     if (buffers.count > 0) {
         // MG-B2: copy the 4-byte argCount into host-cached memory for collectResults
-        const vk::BufferCopy2 copyRegion{
-            .srcOffset = kArgCountOffset,
-            .dstOffset = 0,
-            .size = sizeof(uint32_t),
+        const vk::DeviceMemoryCopyKHR copyRegion{
+            .srcRange = {.address = buffers.operation.address + kArgCountOffset, .size = sizeof(uint32_t)},
+            .srcFlags = kBoundStorageAddress,
+            .dstRange = {.address = buffers.argCountReadback.address, .size = sizeof(uint32_t)},
+            .dstFlags = kBoundAddress,
         };
-        cmd.copyBuffer2(vk::CopyBufferInfo2{
-            .srcBuffer = *buffers.operation.buffer,
-            .dstBuffer = *buffers.argCountReadback.buffer,
-            .regionCount = 1,
-            .pRegions = &copyRegion,
-        });
+        cmd.copyMemoryKHR(vk::CopyDeviceMemoryInfoKHR{.regionCount = 1, .pRegions = &copyRegion});
         const vk::MemoryBarrier2 hostBarrier{
             .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
             .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,

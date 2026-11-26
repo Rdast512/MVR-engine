@@ -280,11 +280,10 @@ vk::DeviceSize DeviceGeneratedCommands::queryPreprocessSize(uint32_t capacity) c
 
 void DeviceGeneratedCommands::prepareFrame(uint32_t frameSlot,
                                            const std::array<uint32_t, kRasterBinCount>& maxSequences,
-                                           vk::Buffer countersBuffer, vk::DeviceAddress countersAddress)
+                                           vk::DeviceAddress countersAddress)
 {
     frame = frameSlot;
     binMaxSequences = maxSequences;
-    sequenceCountBuffer = countersBuffer;
     counters = countersAddress;
     std::exclusive_scan(maxSequences.begin(), maxSequences.end(), groupOffsets.begin(), 0u);
     phaseSequences = groupOffsets.back() + maxSequences.back();
@@ -452,12 +451,20 @@ void DeviceGeneratedCommands::recordIndirectDraw(const vk::raii::CommandBuffer& 
     }
     shaderObjects.bindMeshState(cmd, group);
     cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
-    const vk::DeviceSize drawOffset = vk::DeviceSize{binSequenceOffset(phase, group)} * sizeof(MeshDgcSequence) +
-        offsetof(MeshDgcSequence, draw);
-    const vk::DeviceSize countOffset = std::to_underlying(phase) * sizeof(GpuCullCounters) +
+    const vk::DeviceAddress drawAddress = sequenceAddresses[frame] +
+        vk::DeviceSize{binSequenceOffset(phase, group)} * sizeof(MeshDgcSequence) + offsetof(MeshDgcSequence, draw);
+    const vk::DeviceAddress countAddress = counters + std::to_underlying(phase) * sizeof(GpuCullCounters) +
         offsetof(GpuCullCounters, sequenceCount) + index * sizeof(uint32_t);
-    cmd.drawMeshTasksIndirectCountEXT(*sequenceBuffers[frame], drawOffset, sequenceCountBuffer, countOffset,
-                                      binMaxSequences[index], sizeof(MeshDgcSequence));
+    // the range ends at the last command, not its sequence's end: it must stay inside the buffer
+    const vk::DeviceSize drawBytes = vk::DeviceSize{binMaxSequences[index] - 1} * sizeof(MeshDgcSequence) +
+        sizeof(vk::DrawMeshTasksIndirectCommandEXT);
+    cmd.drawMeshTasksIndirectCount2EXT(vk::DrawIndirectCount2InfoKHR{
+        .addressRange = {.address = drawAddress, .size = drawBytes, .stride = sizeof(MeshDgcSequence)},
+        .addressFlags = kBoundAddress,
+        .countAddressRange = {.address = countAddress, .size = sizeof(uint32_t)},
+        .countAddressFlags = kBoundStorageAddress,
+        .maxDrawCount = binMaxSequences[index],
+    });
 }
 
 vk::GeneratedCommandsInfoEXT DeviceGeneratedCommands::resolveCommandsInfo(vk::DeviceAddress materialBins) const

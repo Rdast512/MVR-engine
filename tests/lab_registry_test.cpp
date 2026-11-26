@@ -214,6 +214,55 @@ int main()
                         std::format("{} has a settings row", difference.entry->name).c_str());
         }
     }
+    // M8.2 S5 (C-NS-1): Compare with Shipped highlights nothing; Compare with NVIDIA Medium highlights exactly
+    // {frame.indirectMode, frame.dlssQuality} and closed-section counts match deduplicated settingsRows
+    {
+        const LabConfig shipped{};
+        test::check(differingSwitches(shipped, shipped).empty(), "Compare with Shipped highlights 0 rows");
+        const LabConfig& nvidiaMedium = comparisons[1];
+        const std::vector<LabSwitchValue> mediumDiff = differingSwitches(nvidiaMedium, shipped);
+        std::set<std::string_view> mediumDiffNames;
+        for (const LabSwitchValue& diff : mediumDiff) {
+            mediumDiffNames.insert(diff.entry->name);
+        }
+        const std::set<std::string_view> expectedMediumDiff{"frame.indirectMode", "frame.dlssQuality"};
+        test::check(mediumDiffNames == expectedMediumDiff,
+                    "Compare with NVIDIA Medium highlights exact {frame.indirectMode, frame.dlssQuality}");
+        // closed section distinct counts (with Show Advanced Settings on/off): shared DI/GI thresholds count once
+        const auto countSection = [](const std::vector<LabSwitchValue>& diffs,
+                                     std::initializer_list<SettingsRows> lists, bool showAdvanced) -> uint32_t {
+            std::set<std::string_view> seen;
+            for (const SettingsRows rows : lists) {
+                for (const SettingsRow& row : rows) {
+                    if (row.isAdvanced && !showAdvanced) {
+                        continue;
+                    }
+                    for (const LabSwitchValue& diff : diffs) {
+                        if (std::string_view(diff.entry->name) == row.switchName) {
+                            seen.insert(row.switchName);
+                        }
+                    }
+                }
+            }
+            return static_cast<uint32_t>(seen.size());
+        };
+        using namespace settingsRows;
+        test::check(countSection(mediumDiff, {kIndirect, kIndirectReuse, kIndirectNrc, kIndirectTemporal,
+                                              kIndirectSpatial, kIndirectEngine, kIndirectPtProfile},
+                                 false) == 1 &&
+                        countSection(mediumDiff, {kDenoising, kDenoisingDlss}, false) == 1 &&
+                        countSection(mediumDiff, {kDirect, kDirectLocalLights, kDirectInitial, kDirectTemporal,
+                                                  kDirectSpatial, kDirectFinal, kDirectEngine},
+                                     true) == 0,
+                    "Compare with NVIDIA Medium closed-section counts (Indirect=1, Denoising=1, Direct=0)");
+        // shared threshold deduplication: editing di.depthThreshold appears in both kDirectTemporal and kDirectSpatial
+        LabConfig thresholdEdit{};
+        thresholdEdit.di.depthThreshold = shipped.di.depthThreshold + 0.1f;
+        const std::vector<LabSwitchValue> thresholdDiff = differingSwitches(shipped, thresholdEdit);
+        test::check(countSection(thresholdDiff, {kDirectTemporal, kDirectSpatial}, false) == 0 &&
+                        countSection(thresholdDiff, {kDirectTemporal, kDirectSpatial}, true) == 1,
+                    "shared advanced DI threshold hidden when !showAdvanced and counted once when showAdvanced");
+    }
 
     std::set<std::string_view> caseNames;
     for (const LabCase& labCase : kLabCases) {

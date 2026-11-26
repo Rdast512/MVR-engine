@@ -96,7 +96,7 @@ The overview integration map remains [docs/vulkan_extensions_reference.md](../..
 | `VK_KHR_fragment_shading_rate` | [VK_KHR_fragment_shading_rate.md](./VK_KHR_fragment_shading_rate.md) | Enabled, not consumed |
 | `VK_KHR_copy_memory_indirect` | [VK_KHR_copy_memory_indirect.md](./VK_KHR_copy_memory_indirect.md) | Enabled, not consumed |
 | `VK_KHR_shader_untyped_pointers` | [VK_KHR_shader_untyped_pointers.md](./VK_KHR_shader_untyped_pointers.md) | Enabled, not consumed |
-| `VK_KHR_device_address_commands` | [VK_KHR_device_address_commands.md](./VK_KHR_device_address_commands.md) | Enabled, not consumed |
+| `VK_KHR_device_address_commands` | [VK_KHR_device_address_commands.md](./VK_KHR_device_address_commands.md) | Consumed per frame (indirect dispatch, mesh count draw, fill, update, counter readback copies); load-time asset copies still buffer-based. A/B 2026-11-26: no measurable GPU or CPU change |
 | `VK_EXT_descriptor_heap` | [VK_EXT_descriptor_heap.md](./VK_EXT_descriptor_heap.md) | Partially consumed (runtime-gated) |
 | `VK_EXT_memory_budget` | [VK_EXT_memory_budget.md](./VK_EXT_memory_budget.md) | Partially consumed (VMA) |
 | `VK_EXT_memory_priority` | [VK_EXT_memory_priority.md](./VK_EXT_memory_priority.md) | Partially consumed (VMA priority) |

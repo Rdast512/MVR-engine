@@ -21,6 +21,8 @@ static const float kNrcDivergedRatio = 50.0;
 // absolute per-lane ceiling when a wave has no direct/emissive light at X2 (50x c_MaxIndirectRadiance, well below
 // C-I16-5's ~3000 mean)
 static const float kNrcUntracedDivergedLuminance = 500.0;
+// matches indirect.slang kMaxIndirectRadiance (M8.1 BUG-E6)
+static const float kMaxIndirectRadiance = 10.0;
 
 // NrcCache's divergence detector (m8 I16 C-I16-5): waves with traced light compare scale-free against tracedSum;
 // shadowed waves (tracedSum == 0) count only when non-finite or above kNrcUntracedDivergedLuminance so healthy dark
@@ -86,17 +88,31 @@ void nrcResolveMain(uint3 id : SV_DispatchThreadID)
     // a non-finite answer would poison the reservoir and every pixel that reuses it
     if (any(cached > 0.0))
     {
-        const float ao = tex2D(gRtxdiBridge.current.sampled[kGuideDiffuseAlbedo]).Load(int3(int2(id.xy), 0)).a;
+        // M8.1 BUG-E2: apply primary pixel AO only when ReSTIR GI reuse is off so pixel A's AO never leaks into
+        // shared reservoirs reused at pixel B
+        const float ao = constants.giResamplingMode == 0
+            ? tex2D(gRtxdiBridge.current.sampled[kGuideDiffuseAlbedo]).Load(int3(int2(id.xy), 0)).a
+            : 1.0;
         const float3 added = cached * ao;
         if (any(added > 0.0) && isFiniteFloat3(added) && isFiniteFloat3(reservoir.radiance + added))
         {
             reservoir.radiance += added;
+            // M8.1 BUG-E6: enforce kGiFlagFireflyClamp after adding cached multi-bounce radiance
+            if ((constants.giFlags & kGiFlagFireflyClamp) != 0)
+            {
+                const float totalLuminance = luminance(reservoir.radiance);
+                if (totalLuminance > kMaxIndirectRadiance)
+                {
+                    reservoir.radiance *= kMaxIndirectRadiance / totalLuminance;
+                }
+            }
             shouldStore = true;
         }
     }
-    // m8 I2 F13: indirect kept X2's true position while an NRC query was pending; if radiance is still zero after
-    // resolve, replace it with the far miss placeholder so dark reservoirs keep Jacobian ~1 during reuse
-    if (all(reservoir.radiance <= 0.0))
+    // m8 I2 F13 + M8.1 BUG-D6: indirect kept X2's true position while an NRC query was pending; if radiance is still
+    // below LogLuv's 1e-6 floor after resolve, replace it with the far miss placeholder so dark reservoirs keep
+    // Jacobian ~1 during reuse
+    if (luminance(reservoir.radiance) < 1.0e-6)
     {
         const RAB_Surface primary = RAB_GetGBufferSurface(int2(id.xy), false);
         if (RAB_IsSurfaceValid(primary))

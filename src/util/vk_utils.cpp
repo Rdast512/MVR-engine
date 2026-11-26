@@ -103,7 +103,14 @@ void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags2 usage, vk::MemoryPr
         // cached readback buffers must avoid uncached ReBAR write-combined VRAM (100x slower CPU reads)
         allocInfo.flags = isHostCached ? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
                                        : VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-        allocInfo.priority = 0.25f; // staging / CPU-visible (NVIDIA memory priority)
+        // NVIDIA memory priority: the descriptor heaps and data every pass reads stay resident; staging and
+        // readback demote first. VMA applies it to dedicated allocations only; suballocations take 0.5
+        const bool isGpuRead = !isHostCached &&
+            (usage & ~(vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eTransferDst)) !=
+                vk::BufferUsageFlags2{};
+        allocInfo.priority = (usage & vk::BufferUsageFlagBits2::eDescriptorHeapEXT) ? 1.0f
+            : isGpuRead                                                             ? 0.75f
+                                                                                    : 0.25f;
     } else {
         allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         if (properties & vk::MemoryPropertyFlagBits::eDeviceLocal) {
@@ -139,6 +146,15 @@ void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags2 usage, vk::MemoryPr
     const uint64_t id = allocationCounter.fetch_add(1, std::memory_order_relaxed);
     const std::string uniqueName = std::format("{}Memory_{}", debugName, id);
     vmaSetAllocationName(allocator, bufferMemory, uniqueName.c_str());
+}
+
+void dispatchIndirectAt(const vk::raii::CommandBuffer& cmd, vk::DeviceAddress address,
+                        vk::AddressCommandFlagsKHR flags)
+{
+    cmd.dispatchIndirect2KHR(vk::DispatchIndirect2InfoKHR{
+        .addressRange = {.address = address, .size = sizeof(vk::DispatchIndirectCommand)},
+        .addressFlags = flags,
+    });
 }
 
 void submitAndWait(vk::raii::CommandBuffer& commandBuffer, const vk::raii::Queue& queue)
@@ -179,18 +195,19 @@ void destroyHostBuffer(VmaAllocator allocator, HostBuffer& target, const char* t
 }
 
 CounterReadback createCounterReadback(vk::DeviceSize size, VmaAllocator allocator, const vk::raii::Device& device,
-                                      const std::vector<uint32_t>& queueFamilyIndices, std::string_view debugName)
+                                      const std::vector<uint32_t>& queueFamilyIndices, std::string_view debugName,
+                                      vk::BufferUsageFlags2 extraUsage)
 {
     CounterReadback target;
     target.size = size;
     createBuffer(size,
                  vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress |
-                     vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eTransferDst,
+                     vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eTransferDst | extraUsage,
                  vk::MemoryPropertyFlagBits::eDeviceLocal, target.counters, target.countersMemory, allocator, device,
                  queueFamilyIndices, debugName);
     target.address = device.getBufferAddress({.buffer = *target.counters});
     // host-cached: the CPU reads it, uncached ReBAR reads are slow
-    createBuffer(size, vk::BufferUsageFlagBits2::eTransferDst,
+    createBuffer(size, vk::BufferUsageFlagBits2::eTransferDst | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
                  vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent |
                      vk::MemoryPropertyFlagBits::eHostCached,
                  target.readback.buffer, target.readback.memory, allocator, device, queueFamilyIndices,
@@ -198,6 +215,7 @@ CounterReadback createCounterReadback(vk::DeviceSize size, VmaAllocator allocato
     VmaAllocationInfo allocationInfo{};
     vmaGetAllocationInfo(allocator, target.readback.memory, &allocationInfo);
     target.readback.mapped = allocationInfo.pMappedData;
+    target.readback.address = device.getBufferAddress({.buffer = *target.readback.buffer});
     std::memset(target.readback.mapped, 0, static_cast<size_t>(size));
     return target;
 }
@@ -211,7 +229,7 @@ void destroyCounterReadback(VmaAllocator allocator, CounterReadback& target)
 
 void recordCounterReset(const vk::raii::CommandBuffer& cmd, const CounterReadback& target)
 {
-    cmd.fillBuffer(*target.counters, 0, target.size, 0);
+    cmd.fillMemoryKHR({.address = target.address, .size = target.size}, kBoundStorageAddress, 0);
     const vk::MemoryBarrier2 resetBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eClear,
         .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
@@ -221,16 +239,23 @@ void recordCounterReset(const vk::raii::CommandBuffer& cmd, const CounterReadbac
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &resetBarrier});
 }
 
-void recordCounterReadback(const vk::raii::CommandBuffer& cmd, const CounterReadback& target)
+void recordCounterReadback(const vk::raii::CommandBuffer& cmd, const CounterReadback& target,
+                           vk::PipelineStageFlags2 writerStages)
 {
     const vk::MemoryBarrier2 copyBarrier{
-        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcStageMask = writerStages,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
         .dstStageMask = vk::PipelineStageFlagBits2::eCopy,
         .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &copyBarrier});
-    cmd.copyBuffer(*target.counters, *target.readback.buffer, vk::BufferCopy{.size = target.size});
+    const vk::DeviceMemoryCopyKHR region{
+        .srcRange = {.address = target.address, .size = target.size},
+        .srcFlags = kBoundStorageAddress,
+        .dstRange = {.address = target.readback.address, .size = target.size},
+        .dstFlags = kBoundAddress,
+    };
+    cmd.copyMemoryKHR(vk::CopyDeviceMemoryInfoKHR{.regionCount = 1, .pRegions = &region});
     // a fence wait alone does not make device writes visible to the host
     const vk::MemoryBarrier2 hostBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eCopy,

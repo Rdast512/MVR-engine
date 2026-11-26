@@ -53,11 +53,28 @@ namespace
         return std::format("{:.2f} MiB", static_cast<double>(bytes) / (1024.0 * 1024.0));
     }
 
-    // build output readable by the next build, or by the host after the submit
+    // build output readable by the next build, trace passes, or the host after the submit
     void buildBarrier(const vk::raii::CommandBuffer& cmd, vk::PipelineStageFlags2 dstStage, vk::AccessFlags2 dstAccess)
     {
         const vk::MemoryBarrier2 barrier{.srcStageMask = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
                                          .srcAccessMask = vk::AccessFlagBits2::eAccelerationStructureWriteKHR,
+                                         .dstStageMask = dstStage,
+                                         .dstAccessMask = dstAccess};
+        cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &barrier});
+    }
+
+    // staged inputs readable by micromap and cluster AS builds
+    void copyToBuildBarrier(const vk::raii::CommandBuffer& cmd, bool hasMicromaps)
+    {
+        vk::PipelineStageFlags2 dstStage = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
+        vk::AccessFlags2 dstAccess = vk::AccessFlagBits2::eAccelerationStructureReadKHR |
+            vk::AccessFlagBits2::eAccelerationStructureWriteKHR | vk::AccessFlagBits2::eShaderRead;
+        if (hasMicromaps) {
+            dstStage |= vk::PipelineStageFlagBits2::eMicromapBuildEXT;
+            dstAccess |= vk::AccessFlagBits2::eMicromapReadEXT;
+        }
+        const vk::MemoryBarrier2 barrier{.srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+                                         .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
                                          .dstStageMask = dstStage,
                                          .dstAccessMask = dstAccess};
         cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &barrier});
@@ -358,6 +375,7 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
     // MG-P6: scratch serves only eComputeSizes and eExplicitDestinations; eImplicitDestinations is queried solely for
     // the clasEstimate log and must not inflate buildScratchSize
     vk::DeviceSize scratchBytes = 0;
+    vk::DeviceSize blasScratchBytes = 0;
     vk::DeviceSize implicitScratchBytes = 0;
     vk::DeviceSize clasEstimate = 0;
     for (vk::ClusterAccelerationStructureInputInfoNV* input : {&opaqueClasInput, &ommClasInput, &blasInput}) {
@@ -370,6 +388,9 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
             const vk::AccelerationStructureBuildSizesInfoKHR sizes =
                 device.getClusterAccelerationStructureBuildSizesNV(*input);
             scratchBytes = std::max(scratchBytes, sizes.buildScratchSize);
+            if (input == &blasInput) {
+                blasScratchBytes = std::max(blasScratchBytes, sizes.buildScratchSize);
+            }
         }
         input->opMode = vk::ClusterAccelerationStructureOpModeNV::eImplicitDestinations;
         const vk::AccelerationStructureBuildSizesInfoKHR implicitSizes =
@@ -379,6 +400,16 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
             clasEstimate += implicitSizes.accelerationStructureSize;
         }
     }
+    // M8.1 C-GA-1 / C-T-6 / C-I14-6: NVIDIA driver 621.01 under-reports buildScratchSize for
+    // eBuildClustersBottomLevel (measured 144 B of 0xFFFFFFFF written past scratch end on
+    // MetalRoughSpheres_flat_normals_front: 24,281 clusters / 5 BLAS, overwriting whichever adjacent VMA
+    // suballocation lands at scratch + size). Pad transient cluster-BLAS scratch until the driver is fixed.
+    const vk::DeviceSize scratchAlignment =
+        std::max<vk::DeviceSize>(limits.clusterScratchByteAlignment, scratchOffsetAlignment);
+    const vk::DeviceSize blasScratchGuard =
+        blasScratchBytes > 0 ? alignUp(std::max<vk::DeviceSize>(64 * 1024, blasScratchBytes / 16), scratchAlignment)
+                             : vk::DeviceSize{0};
+    scratchBytes = std::max(scratchBytes, blasScratchBytes + blasScratchGuard);
 
     using TriangleClusterInfo = vk::ClusterAccelerationStructureBuildTriangleClusterInfoNV;
     using BottomLevelInfo = vk::ClusterAccelerationStructureBuildClustersBottomLevelInfoNV;
@@ -403,21 +434,24 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
         plan.indexOffset = layout.add(geometry.ommBakes[plan.primitive].indices.size());
     }
 
+    // M8.1 BUG-B3: stage CPU-written build inputs into device-local VRAM so CLAS/BLAS reads and dstAddressesArray
+    // writes never depend on VMA host-visible heap placement (C-GA-1 / C-T-6 / C-I14-6)
+    OwnedBuffer staging = createOwnedBuffer(layout.bytes(), kInputAlignment, vk::BufferUsageFlagBits2::eTransferSrc,
+                                            BufferMemory::HostWrite, "ClusterAsInputStaging");
     // the base alignment keeps the micromap sections 256 B aligned as addresses, not just as offsets
     OwnedBuffer inputs = createOwnedBuffer(
         layout.bytes(), kMicromapAlignment,
-        vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eAccelerationStructureBuildInputReadOnlyKHR |
+        vk::BufferUsageFlagBits2::eTransferDst | vk::BufferUsageFlagBits2::eStorageBuffer |
+            vk::BufferUsageFlagBits2::eAccelerationStructureBuildInputReadOnlyKHR |
             vk::BufferUsageFlagBits2::eMicromapBuildInputReadOnlyEXT,
-        BufferMemory::HostWrite, "ClusterAsInputs");
+        BufferMemory::DeviceLocal, "ClusterAsInputs");
     // MG-B2: GPU -> CPU size readback in host-cached memory instead of uncached WC VRAM
     OwnedBuffer sizesReadback =
         createOwnedBuffer(sizeof(uint32_t) * std::max(clusterCount, blasCount), alignof(uint32_t),
                           vk::BufferUsageFlagBits2::eStorageBuffer, BufferMemory::HostReadback,
                           "ClusterAsSizesReadback");
     // the micromap builds and every cluster pass take turns on one scratch buffer
-    OwnedBuffer scratch = createOwnedBuffer(std::max(scratchBytes, micromapScratchBytes),
-                                            std::max<vk::DeviceSize>(limits.clusterScratchByteAlignment,
-                                                                     scratchOffsetAlignment),
+    OwnedBuffer scratch = createOwnedBuffer(std::max(scratchBytes, micromapScratchBytes), scratchAlignment,
                                             vk::BufferUsageFlagBits2::eStorageBuffer, BufferMemory::DeviceLocal,
                                             "ClusterAsScratch");
     const auto inputAddress = [&inputs](vk::DeviceSize offset) { return inputs.address + offset; };
@@ -444,9 +478,9 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
             model.micromapFlags[plan.primitive] = 1;
 
             const OmmBake& bake = geometry.ommBakes[plan.primitive];
-            std::memcpy(inputs.mapped + plan.dataOffset, plan.data.data(), plan.data.size_bytes());
-            std::memcpy(inputs.mapped + plan.trianglesOffset, plan.triangles.data(), plan.triangles.size_bytes());
-            std::memcpy(inputs.mapped + plan.indexOffset, bake.indices.data(), bake.indices.size());
+            std::memcpy(staging.mapped + plan.dataOffset, plan.data.data(), plan.data.size_bytes());
+            std::memcpy(staging.mapped + plan.trianglesOffset, plan.triangles.data(), plan.triangles.size_bytes());
+            std::memcpy(staging.mapped + plan.indexOffset, bake.indices.data(), bake.indices.size());
         }
     }
 
@@ -454,9 +488,9 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
         std::vector<glm::vec3> positions(geometry.meshletVertices.size());
         std::ranges::transform(geometry.meshletVertices, positions.begin(),
                                [&](uint32_t vertex) { return geometry.vertices[vertex].pos; });
-        std::memcpy(inputs.mapped + positionsOffset, positions.data(), std::span(positions).size_bytes());
+        std::memcpy(staging.mapped + positionsOffset, positions.data(), std::span(positions).size_bytes());
     }
-    std::memcpy(inputs.mapped + trianglesOffset, geometry.meshletTriangles.data(),
+    std::memcpy(staging.mapped + trianglesOffset, geometry.meshletTriangles.data(),
                 geometry.meshletTriangles.size_bytes());
     std::vector<TriangleClusterInfo> clasInfosByRow(clusterCount);
     for (uint32_t row = 0; row < clusterCount; ++row) {
@@ -500,7 +534,7 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
     for (uint32_t i = 0; i < clusterCount; ++i) {
         clasInfos[i] = clasInfosByRow[splitOrder[i]];
     }
-    std::memcpy(inputs.mapped + clasInfosOffset, clasInfos.data(), std::span(clasInfos).size_bytes());
+    std::memcpy(staging.mapped + clasInfosOffset, clasInfos.data(), std::span(clasInfos).size_bytes());
     std::vector<BottomLevelInfo> blasInfos(blasCount);
     for (uint32_t i = 0; i < blasCount; ++i) {
         const GpuPrimitive& primitive = geometry.primitives[blasPrimitives[i]];
@@ -511,7 +545,7 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
             .clusterReferences = inputAddress(clasAddressesOffset + sizeof(vk::DeviceAddress) * primitive.firstMeshlet),
         };
     }
-    std::memcpy(inputs.mapped + blasInfosOffset, blasInfos.data(), std::span(blasInfos).size_bytes());
+    std::memcpy(staging.mapped + blasInfosOffset, blasInfos.data(), std::span(blasInfos).size_bytes());
 
     const auto commandsInfo = [&](const vk::ClusterAccelerationStructureInputInfoNV& input,
                                   vk::ClusterAccelerationStructureOpModeNV mode, vk::DeviceSize infosOffset,
@@ -551,7 +585,7 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
         for (size_t i = 0; i < offsets.size(); ++i) {
             addresses[i] = target.address + offsets[i];
         }
-        std::memcpy(inputs.mapped + addressesOffset, addresses.data(), std::span(addresses).size_bytes());
+        std::memcpy(staging.mapped + addressesOffset, addresses.data(), std::span(addresses).size_bytes());
         if (outAddresses != nullptr) {
             *outAddresses = std::move(addresses);
         }
@@ -577,6 +611,12 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
 
     // micromaps before every CLAS pass that references them, in the same submit (D2 must-not)
     submit([&](const vk::raii::CommandBuffer& cmd) {
+        const vk::BufferCopy2 fullCopy{.srcOffset = 0, .dstOffset = 0, .size = layout.bytes()};
+        cmd.copyBuffer2(vk::CopyBufferInfo2{.srcBuffer = *staging.buffer,
+                                            .dstBuffer = *inputs.buffer,
+                                            .regionCount = 1,
+                                            .pRegions = &fullCopy});
+        copyToBuildBarrier(cmd, !micromapBuilds.empty());
         if (!micromapBuilds.empty()) {
             cmd.buildMicromapsEXT(micromapBuilds);
             micromapBarrier(cmd);
@@ -609,16 +649,29 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
     for (uint32_t i = 0; i < clusterCount; ++i) {
         splitClasAddresses[i] = clasByRow[splitOrder[i]];
     }
-    std::memcpy(inputs.mapped + clasDstAddressesOffset, splitClasAddresses.data(),
+    std::memcpy(staging.mapped + clasDstAddressesOffset, splitClasAddresses.data(),
                 std::span(splitClasAddresses).size_bytes());
 
     // BLAS sizes depend on the built CLAS they reference
     submit([&](const vk::raii::CommandBuffer& cmd) {
+        const vk::DeviceSize clasAddressBytes = sizeof(vk::DeviceAddress) * clusterCount;
+        const std::array<vk::BufferCopy2, 2> addressCopies{{
+            {.srcOffset = clasDstAddressesOffset, .dstOffset = clasDstAddressesOffset, .size = clasAddressBytes},
+            {.srcOffset = clasAddressesOffset, .dstOffset = clasAddressesOffset, .size = clasAddressBytes},
+        }};
+        cmd.copyBuffer2(vk::CopyBufferInfo2{.srcBuffer = *staging.buffer,
+                                            .dstBuffer = *inputs.buffer,
+                                            .regionCount = static_cast<uint32_t>(addressCopies.size()),
+                                            .pRegions = addressCopies.data()});
+        copyToBuildBarrier(cmd, false);
         if (opaqueCount > 0) {
             cmd.buildClusterAccelerationStructureIndirectNV(commandsInfo(opaqueClasInput, kExplicit, clasInfosOffset,
                                                                          sizeof(TriangleClusterInfo),
                                                                          clasDstAddressesOffset, opaqueCount));
-            buildBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+            buildBarrier(cmd,
+                         vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR |
+                             vk::PipelineStageFlagBits2::eComputeShader |
+                             vk::PipelineStageFlagBits2::eRayTracingShaderKHR,
                          vk::AccessFlagBits2::eAccelerationStructureReadKHR |
                              vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
         }
@@ -626,7 +679,10 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
             cmd.buildClusterAccelerationStructureIndirectNV(commandsInfo(ommClasInput, kExplicit, ommInfosOffset,
                                                                          sizeof(TriangleClusterInfo),
                                                                          ommDstAddressesOffset, ommCount));
-            buildBarrier(cmd, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR,
+            buildBarrier(cmd,
+                         vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR |
+                             vk::PipelineStageFlagBits2::eComputeShader |
+                             vk::PipelineStageFlagBits2::eRayTracingShaderKHR,
                          vk::AccessFlagBits2::eAccelerationStructureReadKHR |
                              vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
         }
@@ -639,8 +695,21 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
                                  "ClusterBlas", &builtBlasAddresses);
 
     submit([&](const vk::raii::CommandBuffer& cmd) {
+        const vk::BufferCopy2 blasAddressCopy{.srcOffset = blasAddressesOffset,
+                                              .dstOffset = blasAddressesOffset,
+                                              .size = sizeof(vk::DeviceAddress) * blasCount};
+        cmd.copyBuffer2(vk::CopyBufferInfo2{.srcBuffer = *staging.buffer,
+                                            .dstBuffer = *inputs.buffer,
+                                            .regionCount = 1,
+                                            .pRegions = &blasAddressCopy});
+        copyToBuildBarrier(cmd, false);
         cmd.buildClusterAccelerationStructureIndirectNV(commandsInfo(
             blasInput, kExplicit, blasInfosOffset, sizeof(BottomLevelInfo), blasAddressesOffset, blasCount));
+        // M8.1 BUG-B2: make built cluster BLAS visible to async PTLAS builds and ray queries under Vulkan Memory Model
+        buildBarrier(cmd,
+                     vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR |
+                         vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eRayTracingShaderKHR,
+                     vk::AccessFlagBits2::eAccelerationStructureReadKHR);
     });
 
     for (uint32_t i = 0; i < blasCount; ++i) {

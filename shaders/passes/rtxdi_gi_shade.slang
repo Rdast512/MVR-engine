@@ -131,7 +131,10 @@ float decorrelationProbability(RTXDI_PTDecorrelationParameters params, float smo
     }
     else if (params.decorrelationMode == RTXDI_PT_DECORRELATION_MODE_STAGNANCY)
     {
-        const float stagnancyScale = pow(saturate(smoothedStagnancy), max(0.0, params.decorrelationStagnancyExponent));
+        // M8.1 BUG-D3: guard pow(0.0, 0.0) UB when exponent == 0
+        const float s = saturate(smoothedStagnancy);
+        const float exponent = params.decorrelationStagnancyExponent;
+        const float stagnancyScale = exponent <= 0.0 ? 1.0 : (s > 0.0 ? pow(s, exponent) : 0.0);
         probability = saturate(4.0 * saturate(params.decorrelationFactor) * stagnancyScale);
     }
     return params.fireflyReplacementFilterEnable != 0 && isFirefly ? 1.0 : probability;
@@ -359,7 +362,10 @@ void rtxdiGiShadeMain(uint3 id : SV_DispatchThreadID, uint3 localId : SV_GroupTh
         float smoothedStagnancy = 0.0;
         if (isDecorrelated && decorrelation.decorrelationMode == RTXDI_PT_DECORRELATION_MODE_STAGNANCY && isInBounds)
         {
-            smoothedStagnancy = smoothStagnancy(root, targets, id.xy, stagnancy, decorrelation.decorrelationEmaFactor);
+            // M8.1 BUG-D4: skip 25-tap stagnancy filter on sky/background pixels so sky never bleeds across silhouettes
+            smoothedStagnancy = RAB_IsSurfaceValid(surface)
+                ? smoothStagnancy(root, targets, id.xy, stagnancy, decorrelation.decorrelationEmaFactor)
+                : 0.0;
             storageTex2D<float, kImageFormatR32f>(targets.giStagnancyStorage)[id.xy] = smoothedStagnancy;
         }
         const float probability =

@@ -126,8 +126,8 @@ public:
     // outside the render pass, before the phase's DGC preprocess; heaps must be bound. early first: it resets the
     // counters of both phases
     void recordCull(const vk::raii::CommandBuffer& cmd, CullPhase phase) const;
-    // after the late raster: makes the counters of both phases visible to readBackCounters
-    static void recordCounterReadback(const vk::raii::CommandBuffer& cmd);
+    // after the late raster: copies the counters of both phases for readBackCounters
+    void recordCounterReadback(const vk::raii::CommandBuffer& cmd) const;
 
     [[nodiscard]] const MeshletCullStats& getStats() const noexcept { return stats; }
 
@@ -185,9 +185,9 @@ private:
     {
         // PhaseCullViews
         HostBuffer cullView;
-        // GpuCullCounters per phase in host-visible VRAM: atomics stay on the device, the CPU reads them after the
-        // fence
-        HostBuffer counters;
+        // GpuCullCounters per phase: device-local for the atomics and indirect reads, one copy per frame to cached
+        // readback for the CPU after the fence (no CPU reads of write-combined VRAM)
+        CounterReadback counters;
         HostBuffer instanceItems;
         // uint per instance item: early-occluded rows for the late phase, sized with instanceCapacity
         DeviceBuffer instanceCandidates;

@@ -266,6 +266,9 @@ int main()
             {punctualRow(kSpotLight, {0.0f, 3.0f, 0.0f}, 10.0f, 40.0f, {1.0f, 1.0f, 1.0f}), false},
             // past the f16 range
             {triangleRow({0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {7.0e4f, 1.0f, 1.0f}, 0u), false},
+            // M8.1 BUG-A4: below f16 normal range falls back to fp32 worldLights
+            {triangleRow({0.0f, 0.0f, 0.0f}, {1.0e-5f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, 0u), false},
+            {punctualRow(kPointLight, {0.0f, 1.0f, 0.0f}, 5.0f, 10.0f, {1.0e-5f, 1.0f, 1.0f}), false},
         };
         const auto lightCount = static_cast<uint32_t>(compactCases.size());
         test::HostBuffer lightIn = test::createHostBuffer(vulkan, lightCount * sizeof(LightRow));

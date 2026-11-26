@@ -377,8 +377,9 @@ void NrcCache::ensureDebugResolveTarget()
     constexpr vk::Format kDebugResolveFormat = vk::Format::eR32G32B32A32Sfloat;
     allocator.createImage2D(targetExtent.width, targetExtent.height, 1, vk::SampleCountFlagBits::e1,
                             kDebugResolveFormat,
-                            vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferSrc, debugResolveImage,
-                            debugResolveMemory, "NrcDebugResolveMemory");
+                            vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferSrc |
+                                vk::ImageUsageFlagBits::eTransferDst,
+                            debugResolveImage, debugResolveMemory, "NrcDebugResolveMemory");
     setDebugName(device.vkdevice, debugResolveImage, "NrcDebugResolve");
     debugResolveView = vk::raii::ImageView(device.vkdevice,
                                            vk::ImageViewCreateInfo{
@@ -420,7 +421,7 @@ nrc::FrameSettings NrcCache::frameSettings() const
     constexpr uint32_t kMaxAnnealFrames = 128;
     if (isTrainingFrame && settings.idleTrainingFrames >= 4) {
         const uint32_t annealFrames = std::max(std::min(settings.idleTrainingFrames / 2, kMaxAnnealFrames), 1u);
-        if (trainingFramesRemaining <= annealFrames) {
+        if (trainingFramesRemaining > 0 && trainingFramesRemaining <= annealFrames) {
             const float progress = 1.0f - static_cast<float>(trainingFramesRemaining - 1) / static_cast<float>(annealFrames);
             frame.learningRate = kBaseLearningRate * std::pow(kFinalLearningRate / kBaseLearningRate, progress);
         }
@@ -502,33 +503,33 @@ void NrcCache::recordDebugResolve(const vk::raii::CommandBuffer& cmd, vk::Image 
     }
     constexpr vk::ImageSubresourceRange kColorRange{
         .aspectMask = vk::ImageAspectFlagBits::eColor, .levelCount = 1, .layerCount = 1};
-    if (!isDebugResolveInitialized) {
-        const vk::ImageMemoryBarrier2 toGeneral{
-            .srcStageMask = vk::PipelineStageFlagBits2::eNone,
-            .srcAccessMask = vk::AccessFlagBits2::eNone,
-            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-            .dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-            .oldLayout = vk::ImageLayout::eUndefined,
-            .newLayout = vk::ImageLayout::eGeneral,
-            .image = *debugResolveImage,
-            .subresourceRange = kColorRange,
-        };
-        cmd.pipelineBarrier2(vk::DependencyInfo{.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &toGeneral});
-        isDebugResolveInitialized = true;
-    } else {
-        const vk::ImageMemoryBarrier2 reuseBarrier{
-            .srcStageMask = vk::PipelineStageFlagBits2::eBlit,
-            .srcAccessMask = vk::AccessFlagBits2::eTransferRead,
-            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-            .dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-            .oldLayout = vk::ImageLayout::eGeneral,
-            .newLayout = vk::ImageLayout::eGeneral,
-            .image = *debugResolveImage,
-            .subresourceRange = kColorRange,
-        };
-        cmd.pipelineBarrier2(vk::DependencyInfo{.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &reuseBarrier});
-    }
-    nrcBoundary(cmd);
+    // M8.1 BUG-E3: clear debugResolveImage before api.resolve so pixels NRC leaves unwritten never show stale data
+    const vk::ImageMemoryBarrier2 toClear{
+        .srcStageMask = isDebugResolveInitialized ? vk::PipelineStageFlagBits2::eBlit : vk::PipelineStageFlagBits2::eNone,
+        .srcAccessMask =
+            isDebugResolveInitialized ? vk::AccessFlagBits2::eTransferRead : vk::AccessFlagBits2::eNone,
+        .dstStageMask = vk::PipelineStageFlagBits2::eClear,
+        .dstAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .oldLayout = isDebugResolveInitialized ? vk::ImageLayout::eGeneral : vk::ImageLayout::eUndefined,
+        .newLayout = vk::ImageLayout::eGeneral,
+        .image = *debugResolveImage,
+        .subresourceRange = kColorRange,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &toClear});
+    isDebugResolveInitialized = true;
+    cmd.clearColorImage(*debugResolveImage, vk::ImageLayout::eGeneral,
+                        vk::ClearColorValue{std::array{0.0f, 0.0f, 0.0f, 1.0f}}, kColorRange);
+    const vk::ImageMemoryBarrier2 clearToResolve{
+        .srcStageMask = vk::PipelineStageFlagBits2::eClear,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .oldLayout = vk::ImageLayout::eGeneral,
+        .newLayout = vk::ImageLayout::eGeneral,
+        .image = *debugResolveImage,
+        .subresourceRange = kColorRange,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &clearToResolve});
     driverHeap.bind(cmd);
     checkNrc(api.resolve(context, *cmd, *debugResolveView), "Resolve");
 
@@ -545,7 +546,7 @@ void NrcCache::recordDebugResolve(const vk::raii::CommandBuffer& cmd, vk::Image 
         },
         vk::ImageMemoryBarrier2{
             .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-            .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+            .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eShaderSampledRead,
             .dstStageMask = vk::PipelineStageFlagBits2::eBlit,
             .dstAccessMask = vk::AccessFlagBits2::eTransferWrite,
             .oldLayout = vk::ImageLayout::eGeneral,

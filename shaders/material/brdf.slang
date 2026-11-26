@@ -26,8 +26,10 @@ public BrdfInputs fromMaterial(SampledMaterial material)
 
 public float3 fresnelSchlick(float3 f0, float vDotH)
 {
+    // M8.1 BUG-A2: suppress grazing Fresnel when f0 == 0 (Bistro spec-gloss), matching envBrdfApprox / RTXPT
+    const float f90 = saturate(max(f0.r, max(f0.g, f0.b)) * 50.0);
     // a dot of unit vectors can round above 1; pow of a negative base is undefined
-    return f0 + (1.0 - f0) * pow(saturate(1.0 - vDotH), 5.0);
+    return f0 + (f90 - f0) * pow(saturate(1.0 - vDotH), 5.0);
 }
 
 // cross(n, h) keeps 1 - (N.H)^2 accurate near N = H for low roughness (Filament / Lagarde)
@@ -82,6 +84,12 @@ public float3 evalBrdf(float3 n, float3 cDiff, float3 f0, float roughness, float
 // independent of l, so sampling and pdf agree
 float specularProbability(float3 cDiff, float3 f0, float nDotV)
 {
+    // M8.1 BUG-A2: zero-reflectance materials have no specular lobe
+    const float f90 = saturate(max(f0.r, max(f0.g, f0.b)) * 50.0);
+    if (f90 <= 0.0)
+    {
+        return 0.0;
+    }
     if (luminance(cDiff) <= 0.0)
     {
         return 1.0;

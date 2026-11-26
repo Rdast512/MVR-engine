@@ -223,5 +223,7 @@ void glassMain(uint3 id : SV_DispatchThreadID)
         return;
     }
     const float3 behindColor = storageTex2D<float4, kImageFormatRgba16f>(color)[pixel].rgb;
-    storageTex2D<float4, kImageFormatRgba16f>(color)[pixel] = float4(overlay + throughput * behindColor, 1.0);
+    // M8.2 BUG-E5: match combine.slang's dlssInputScale (root.exposure) on glass overlay when != 1.0
+    const float3 scaledOverlay = root.exposure != 1.0 ? overlay * max(root.exposure, 1e-6) : overlay;
+    storageTex2D<float4, kImageFormatRgba16f>(color)[pixel] = float4(scaledOverlay + throughput * behindColor, 1.0);
 }

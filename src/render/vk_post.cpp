@@ -2,7 +2,6 @@
 #include "push_data.hpp"
 #include "vk_shader_objects.hpp"
 
-#include <cstring>
 #include <format>
 
 namespace
@@ -11,6 +10,8 @@ namespace
     constexpr uint32_t kPostTonemapTile = 8;       // matches shaders/passes/post.slang
 
     constexpr uint32_t postGroupCount(uint32_t value, uint32_t divisor) { return (value + divisor - 1) / divisor; }
+
+    constexpr vk::DeviceSize kHistogramBytes = kExposureHistogramBins * sizeof(uint64_t);
 
     // compute writes -> the next pass's reads and writes
     void postComputeBarrier(const vk::raii::CommandBuffer& cmd)
@@ -29,23 +30,23 @@ namespace
 PostProcess::PostProcess(const Device& device, const VkAllocator& allocator, const ShaderObjects& shaderObjects) :
     allocator(allocator), shaderObjects(shaderObjects)
 {
-    // host-visible VRAM (ReBAR): zeroed once here, then cleared by the exposure pass
-    constexpr auto histogramBytes = kExposureHistogramBins * sizeof(uint64_t);
-    histogram = createHostBuffer(histogramBytes, allocator.allocator, device.vkdevice, device.queueFamilyIndices,
-                                 "ExposureHistogram", nullptr);
-    std::memset(histogram.mapped, 0, histogramBytes);
+    createBuffer(kHistogramBytes,
+                 vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress |
+                     vk::BufferUsageFlagBits2::eTransferDst,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal, histogram, histogramMemory, allocator.allocator,
+                 device.vkdevice, device.queueFamilyIndices, "ExposureHistogram");
+    histogramAddress = device.vkdevice.getBufferAddress({.buffer = *histogram});
     for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
-        readbacks[slot] = createHostBuffer(sizeof(GpuExposureReadback), allocator.allocator, device.vkdevice,
-                                           device.queueFamilyIndices, std::format("ExposureReadback_{}", slot),
-                                           nullptr);
+        readbacks[slot] = createCounterReadback(sizeof(GpuExposureReadback), allocator.allocator, device.vkdevice,
+                                                device.queueFamilyIndices, std::format("ExposureReadback_{}", slot));
     }
 }
 
 PostProcess::~PostProcess()
 {
-    destroyHostBuffer(allocator.allocator, histogram, nullptr);
-    for (HostBuffer& readback : readbacks) {
-        destroyHostBuffer(allocator.allocator, readback, nullptr);
+    destroyVmaBuffer(allocator.allocator, histogram, histogramMemory);
+    for (CounterReadback& readback : readbacks) {
+        destroyCounterReadback(allocator.allocator, readback);
     }
 }
 
@@ -59,7 +60,7 @@ void PostProcess::record(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot,
     }
     const ExposurePushData exposurePush{
         .frameRoot = frameRoot,
-        .histogram = histogram.address,
+        .histogram = histogramAddress,
         .readback = readbacks[frameSlot].address,
         .deltaSeconds = deltaSeconds,
         .compensationEv = settings.compensationEv,
@@ -75,6 +76,17 @@ void PostProcess::record(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot,
     const vk::PushDataInfoEXT exposurePushInfo{.offset = 0,
                                                .data = {.address = &exposurePush, .size = sizeof(exposurePush)}};
 
+    if (!isHistogramZeroed) {
+        cmd.fillMemoryKHR({.address = histogramAddress, .size = kHistogramBytes}, kBoundStorageAddress, 0);
+        const vk::MemoryBarrier2 fillBarrier{
+            .srcStageMask = vk::PipelineStageFlagBits2::eClear,
+            .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
+        };
+        cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &fillBarrier});
+        isHistogramZeroed = true;
+    }
     // the input's writes and the last exposure pass's histogram clear -> the histogram
     postComputeBarrier(cmd);
     ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.exposureHistogram);
@@ -92,21 +104,14 @@ void PostProcess::record(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot,
     cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &postPush, .size = sizeof(postPush)}});
     cmd.dispatch(postGroupCount(displayExtent.width, kPostTonemapTile), postGroupCount(displayExtent.height, kPostTonemapTile), 1);
 
-    // a fence wait alone does not make device writes visible to the host
-    const vk::MemoryBarrier2 readbackBarrier{
-        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
-        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
-    };
-    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &readbackBarrier});
+    recordCounterReadback(cmd, readbacks[frameSlot]);
     isReadbackPending[frameSlot] = true;
 }
 
 void PostProcess::readBack(uint32_t frameSlot)
 {
     if (isReadbackPending[frameSlot]) {
-        lastExposure = *static_cast<const GpuExposureReadback*>(readbacks[frameSlot].mapped);
+        lastExposure = *static_cast<const GpuExposureReadback*>(readbacks[frameSlot].readback.mapped);
         isReadbackPending[frameSlot] = false;
     }
 }

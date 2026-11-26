@@ -97,6 +97,39 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
     {
         return;
     }
+    const GpuRtxdiConstants constants = loadRtxdiConstants(root);
+    const NrcContext nrc = nrcQueryContext(root, pixel);
+    const bool isCacheView = (loadNrcConstants(root).flags & kNrcFlagCacheView) != 0;
+    NrcPathState nrcPath = NrcCreatePathState(nrc.constants, 0.0);
+    float3 nrcThroughput = float3(1.0, 1.0, 1.0);
+    float3 nrcRadiance = float3(0.0, 0.0, 0.0);
+
+    // M8.1 BUG-E3 / PERF-E2: cache view queries vertex 0 directly without tracing bounce-1 rays
+    if (isCacheView)
+    {
+        const RAB_Surface primary = RAB_GetGBufferSurface(int2(pixel), false);
+        if (RAB_IsSurfaceValid(primary) && primary.isLit && gNrcBridge.isActive)
+        {
+            NrcUpdateOnHit(nrc, nrcPath,
+                           nrcSurfaceAttributes(nrc.constants, primary.position, primary.normal, primary.viewDir,
+                                                primary.roughness, primary.diffuseAlbedo, primary.specularF0),
+                           length(primary.position - gRtxdiBridge.cameraPos), 0, nrcThroughput, nrcRadiance);
+        }
+        else if (gNrcBridge.isActive)
+        {
+            NrcUpdateOnMiss(nrcPath);
+        }
+        RTXDI_StoreGIReservoir(RTXDI_EmptyGIReservoir(), constants.giReservoirBuffer,
+                               RTXDI_PixelPosToReservoirPos(pixel, constants.runtime.activeCheckerboardField),
+                               kGiInitialReservoirArray);
+        NrcWriteFinalPathInfo(nrc, nrcPath, nrcThroughput, nrcRadiance);
+        if (gRtxdiBridge.specularHitDistanceStorage != kNoneIndex)
+        {
+            storageTex2D<float, kImageFormatR16f>(gRtxdiBridge.specularHitDistanceStorage)[pixel] = 0.0;
+        }
+        return;
+    }
+
     const PrimaryBounce bounce = samplePrimaryBounce(root, pixel);
     const RayDesc ray = bounce.ray;
     const float pdf = bounce.pdf;
@@ -104,13 +137,6 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
 
     RayHit hit = {};
     const bool isHit = isActive && traceClosest(root, ray, hit);
-
-    const GpuRtxdiConstants constants = loadRtxdiConstants(root);
-    const NrcContext nrc = nrcQueryContext(root, pixel);
-    const bool isCacheView = (loadNrcConstants(root).flags & kNrcFlagCacheView) != 0;
-    NrcPathState nrcPath = NrcCreatePathState(nrc.constants, 0.0);
-    float3 nrcThroughput = float3(1.0, 1.0, 1.0);
-    float3 nrcRadiance = float3(0.0, 0.0, 0.0);
 
     RTXDI_GIReservoir reservoir = RTXDI_EmptyGIReservoir();
     if (isHit)
@@ -151,10 +177,10 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
             }
         }
         // an unlit X2 reflects no light, so the cache has nothing to add
-        const bool hasNrcQuery = !isCacheView && secondary.surface.isLit && gNrcBridge.isActive;
-        // m8 I2 F13: zero-radiance hits with no pending NRC cache term store the far miss placeholder so their
-        // Jacobian stays ~1 and dark neighbors/history never fail validation and drop their M from piSum
-        const bool isZeroPlaceholder = all(radiance <= 0.0) && !hasNrcQuery;
+        const bool hasNrcQuery = secondary.surface.isLit && gNrcBridge.isActive;
+        // m8 I2 F13 + M8.1 BUG-D6: zero-radiance hits (matching RTXDI_EncodeRGBToLogLuv's 1e-6 floor) with no pending
+        // NRC cache term store the far miss placeholder so their Jacobian stays ~1 during reuse
+        const bool isZeroPlaceholder = luminance(radiance) < 1.0e-6 && !hasNrcQuery;
         const float3 samplePos =
             isZeroPlaceholder ? ray.Origin + ray.Direction * kMissDistance : secondary.surface.position;
         const float3 sampleNormal = isZeroPlaceholder ? -ray.Direction : secondary.surface.geoNormal;
@@ -178,18 +204,6 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
         if (isActive)
         {
             NrcUpdateOnMiss(nrcPath);
-        }
-    }
-    // NRC cache view: the cache at vertex zero, the SDK's DirectCacheView through the custom path
-    if (isCacheView)
-    {
-        const RAB_Surface primary = RAB_GetGBufferSurface(int2(pixel), false);
-        if (RAB_IsSurfaceValid(primary) && primary.isLit && gNrcBridge.isActive)
-        {
-            NrcUpdateOnHit(nrc, nrcPath,
-                           nrcSurfaceAttributes(nrc.constants, primary.position, primary.normal, primary.viewDir,
-                                                primary.roughness, primary.diffuseAlbedo, primary.specularF0),
-                           length(primary.position - gRtxdiBridge.cameraPos), 0, nrcThroughput, nrcRadiance);
         }
     }
     // every pixel: the GI passes and the debug view load each pixel's reservoir, the NRC resolve each pixel's query

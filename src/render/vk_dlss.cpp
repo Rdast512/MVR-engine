@@ -199,6 +199,10 @@ Dlss::~Dlss()
 void Dlss::releaseFeature()
 {
     if (feature != nullptr) {
+        // M8.1 BUG-E8: release NGX internal VRAM pools across mode/preset/resize recreations
+        if (parameters != nullptr) {
+            NVSDK_NGX_Parameter_SetI(parameters, NVSDK_NGX_Parameter_FreeMemOnReleaseFeature, 1);
+        }
         NVSDK_NGX_VULKAN_ReleaseFeature(feature);
         feature = nullptr;
     }

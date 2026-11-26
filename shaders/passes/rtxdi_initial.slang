@@ -35,7 +35,8 @@ void rtxdiInitialMain(uint3 id : SV_DispatchThreadID)
 
     const RAB_Surface surface = RAB_GetGBufferSurface(int2(id.xy), false);
     RTXDI_DIReservoir reservoir = RTXDI_EmptyDIReservoir();
-    if (RAB_IsSurfaceValid(surface))
+    // M8.1 BUG-C3: skip DI candidate sampling on unlit surfaces
+    if (RAB_IsSurfaceValid(surface) && surface.isLit)
     {
         RTXDI_DIInitialSamplingParameters sampling = constants.initialSampling;
         // m8 I6 O8: without emissive triangles or an environment light no BRDF ray can hit a light

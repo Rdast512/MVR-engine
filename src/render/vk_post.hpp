@@ -57,9 +57,13 @@ public:
 private:
     const VkAllocator& allocator;
     const ShaderObjects& shaderObjects;
-    // two 32-bit words per weighted bin, cleared by the exposure pass
-    HostBuffer histogram;
-    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> readbacks;
+    // two 32-bit words per weighted bin, GPU-only: zeroed by the first record, then cleared by the exposure pass
+    vk::raii::Buffer histogram = nullptr;
+    VmaAllocation histogramMemory = nullptr;
+    vk::DeviceAddress histogramAddress = 0;
+    bool isHistogramZeroed = false;
+    // the CPU reads the copy in cached memory, never write-combined VRAM
+    std::array<CounterReadback, MAX_FRAMES_IN_FLIGHT> readbacks;
     std::array<bool, MAX_FRAMES_IN_FLIGHT> isReadbackPending{};
     GpuExposureReadback lastExposure{};
     bool isSnapPending = true;

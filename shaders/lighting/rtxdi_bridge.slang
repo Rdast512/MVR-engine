@@ -359,6 +359,12 @@ float3 rasterRayOrigin(RAB_Surface surface)
 
 bool RAB_SurfaceImportanceSampleBrdf(RAB_Surface surface, inout RTXDI_RandomSamplerState rng, out float3 direction)
 {
+    // M8.1 BUG-C3: unlit surfaces reflect no light and must not trace BRDF candidate rays
+    if (!surface.isLit)
+    {
+        direction = float3(0.0, 0.0, 0.0);
+        return false;
+    }
     const float3 u = float3(RTXDI_GetNextRandom(rng), RTXDI_GetNextRandom(rng), RTXDI_GetNextRandom(rng));
     const BrdfSample brdf =
         sampleBrdf(surface.normal, surface.diffuseAlbedo, surface.specularF0, surface.roughness, surface.viewDir, u);

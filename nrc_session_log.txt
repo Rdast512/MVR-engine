@@ -1,0 +1,4 @@
+[ERR][20:44:41] NRC SDK: Loading the default network config data.
+
+[ERR][20:44:41] NRC v0.16 (1 October 2026) Context successfully initialized. 
+

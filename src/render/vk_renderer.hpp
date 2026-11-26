@@ -188,7 +188,7 @@ private:
     // thin-walled glass layers over noisyColor, between combine and DLSS-RR (m8 I13)
     void recordGlass(const vk::raii::CommandBuffer& cmd);
     // after the fence: the running mean's frame count (§4.4), and the accumulated target's creation and retirement
-    void prepareAccumulation();
+    void prepareAccumulation(bool isLightingStateChanged);
     // noisyColor into the running mean; returns the post input
     [[nodiscard]] uint32_t recordAccumulation(const vk::raii::CommandBuffer& cmd);
     void recordDebugView(const vk::raii::CommandBuffer& cmd);
@@ -232,7 +232,8 @@ private:
     {
         IndirectMode mode = kDefaultIndirectMode;
         bool isGiReference = false;
-        bool isGroundTruthPaths = false;
+        // M8.2 BUG-UI-7: track exact bounce count so dragging "Bounces after X2" resets indirect/DLSS/Accumulation
+        uint32_t giReferenceBounces = 0;
         bool arePathInfiniteLightsExact = RtxdiContext::defaultGiSettings().areInfiniteLightsShadedExactly;
         RtxdiContext::GiSettings giSettings = RtxdiContext::defaultGiSettings();
 
@@ -268,6 +269,7 @@ private:
     DenoiserMode appliedDenoiser = DenoiserMode::DlssRr;
     // frames in the running mean, 0 while the Accumulation mode is not active
     uint32_t accumulatedFrames = 0;
+    uint32_t lastAccumulationFrameLimit = 0;
     bool isAccumulationResetRequested = false;
     // the last frame that recorded the accumulate pass; its target is released once that frame retired
     uint32_t lastAccumulationFrame = 0;
@@ -278,6 +280,8 @@ private:
     // false after a resize or a frame without the Lit view: the next evaluation resets DLSS history
     bool isDlssHistoryValid = false;
     Dlss::Guides appliedDlssGuides{};
+    NrcResolveMode appliedNrcResolveMode = NrcResolveMode::AddQueryResultToOutput;
+    bool appliedJitterEnabled = true;
     enum class DlssInputAccumulationMode : uint8_t
     {
         None,

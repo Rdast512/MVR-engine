@@ -47,6 +47,16 @@ void createBuffer(
     VmaAllocationCreateFlags extraAllocationFlags = 0,
     vk::DeviceSize minAlignment = 0);
 
+// KHR_device_address_commands range flags. Engine buffers are bound at creation (no sparse); the storage bit must
+// match the buffer's STORAGE_BUFFER usage exactly (VUID-...-13122 / 13123)
+inline constexpr vk::AddressCommandFlagsKHR kBoundAddress = vk::AddressCommandFlagBitsKHR::eFullyBound;
+inline constexpr vk::AddressCommandFlagsKHR kBoundStorageAddress =
+    kBoundAddress | vk::AddressCommandFlagBitsKHR::eStorageBufferUsage;
+
+// vkCmdDispatchIndirect2KHR of the VkDispatchIndirectCommand at address
+void dispatchIndirectAt(const vk::raii::CommandBuffer& cmd, vk::DeviceAddress address,
+                        vk::AddressCommandFlagsKHR flags);
+
 // Ends a one-time command buffer, submits it and blocks until the queue drains.
 void submitAndWait(vk::raii::CommandBuffer& commandBuffer, const vk::raii::Queue& queue);
 
@@ -77,15 +87,18 @@ struct CounterReadback {
     HostBuffer readback;
 };
 
+// extraUsage adds to the counters' storage | device address | transfer usage, e.g. indirect arguments
 [[nodiscard]] CounterReadback createCounterReadback(vk::DeviceSize size, VmaAllocator allocator,
                                                     const vk::raii::Device& device,
                                                     const std::vector<uint32_t>& queueFamilyIndices,
-                                                    std::string_view debugName);
+                                                    std::string_view debugName, vk::BufferUsageFlags2 extraUsage = {});
 void destroyCounterReadback(VmaAllocator allocator, CounterReadback& target);
 // zeroes the counters, ordered before this frame's compute writers
 void recordCounterReset(const vk::raii::CommandBuffer& cmd, const CounterReadback& target);
-// after the compute writers: copies the counters into readback, visible to the host after the slot's fence
-void recordCounterReadback(const vk::raii::CommandBuffer& cmd, const CounterReadback& target);
+// after the shader writers in writerStages: copies the counters into readback, visible to the host after the slot's
+// fence
+void recordCounterReadback(const vk::raii::CommandBuffer& cmd, const CounterReadback& target,
+                           vk::PipelineStageFlags2 writerStages = vk::PipelineStageFlagBits2::eComputeShader);
 
 // first candidate whose tiling features include features; throws when none does
 [[nodiscard]] vk::Format findSupportedFormat(const vk::raii::PhysicalDevice& physicalDevice,

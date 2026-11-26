@@ -697,7 +697,9 @@ void RtxdiContext::configure()
         isReference ? kReferenceLocalLightSamples : settings.activeLocalLightSamples();
     initialSampling.numInfiniteLightSamples =
         isReference ? kReferenceInfiniteLightSamples : settings.infiniteLightSamples;
-    initialSampling.enableInitialVisibility = settings.isInitialVisibilityEnabled ? 1u : 0u;
+    // M8.1 BUG-C1: ResamplingMode::None shades directly without reuse, so initial visibility would trace a duplicate
+    // shadow ray (rtxdi_shade traces final visibility because age == 0 skips reuse)
+    initialSampling.enableInitialVisibility = (!isReference && settings.isInitialVisibilityEnabled) ? 1u : 0u;
     // RAB_TraceRayForLocalLight traces from the offset brdfRayOrigin stashed in RAB_SurfaceImportanceSampleBrdf (I14)
     initialSampling.brdfRayMinT = 0.0f;
     context.SetInitialSamplingParameters(initialSampling);
@@ -713,9 +715,14 @@ void RtxdiContext::configure()
     temporal.enablePermutationSampling = settings.isPermutationSamplingEnabled ? 1u : 0u;
     context.SetTemporalResamplingParameters(temporal);
 
+    // M8.1 BUG-C2: StratifiedLowDiscrepancy walks pairs of quadrants; normalize non-zero counts to even [2, 32]
+    constexpr auto normalizeSpatialCount = [](uint32_t count) -> uint32_t {
+        constexpr uint32_t kMaxSpatialSamples = 32;
+        return count == 0u ? 0u : (std::clamp(count, 2u, kMaxSpatialSamples) + 1u) & ~1u;
+    };
     RTXDI_DISpatialResamplingParameters spatial = context.GetSpatialResamplingParameters();
-    spatial.numSamples = settings.spatialSamples;
-    spatial.numDisocclusionBoostSamples = settings.disocclusionBoostSamples;
+    spatial.numSamples = normalizeSpatialCount(settings.spatialSamples);
+    spatial.numDisocclusionBoostSamples = normalizeSpatialCount(settings.disocclusionBoostSamples);
     spatial.samplingRadius = settings.samplingRadius;
     spatial.biasCorrectionMode = settings.spatialBiasCorrection;
     spatial.depthThreshold = settings.depthThreshold;

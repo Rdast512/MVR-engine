@@ -642,8 +642,11 @@ void SettingsWindow::drawDirectLighting()
         ImGui::TreePop();
     }
     drawDirectInitialSampling();
-    ImGui::BeginDisabled(rtxdi.isReference);
+    // M8.2 BUG-UI-3: disable Temporal in Spatial-only mode and Spatial in Temporal-only mode
+    ImGui::BeginDisabled(rtxdi.isReference || rtxdi.isSpatialOnly);
     drawDirectTemporal();
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(rtxdi.isReference || rtxdi.isTemporalOnly);
     drawDirectSpatial();
     ImGui::EndDisabled();
     drawDirectFinalShading();
@@ -723,11 +726,16 @@ void SettingsWindow::drawDirectInitialSampling()
     notInEngine("Initial Environment Samples",
                 "Number of samples drawn from the environment map when it is "
                 "importance sampled.");
-    ImGui::EndDisabled();
+    // M8.2 BUG-UI-2: Resampling Mode None forces enableInitialVisibility = 0 (BUG-C1)
     beginRow({"di.initialVisibility"});
-    ImGui::Checkbox("Enable Initial Visibility", &di.isInitialVisibilityEnabled);
-    endRow("Engine: one shadow ray per pixel in the initial pass; occluded samples are dropped before reuse.");
     const RTXDI_DIInitialSamplingParameters initial = renderer.getRtxdi().getAppliedParameters().initialSampling;
+    bool initialVisibility = rtxdi.isReference ? (initial.enableInitialVisibility != 0) : di.isInitialVisibilityEnabled;
+    if (ImGui::Checkbox("Enable Initial Visibility", &initialVisibility) && !rtxdi.isReference) {
+        di.isInitialVisibilityEnabled = initialVisibility;
+    }
+    endRow("Engine: one shadow ray per pixel in the initial pass; occluded samples are dropped before reuse. Forced "
+           "off in Resampling Mode None (final shading traces visibility once).");
+    ImGui::EndDisabled();
     fixedText("BRDF Sample Cutoff", std::format("{:.4f}", initial.brdfCutoff),
               "Determine how much to shorten BRDF rays. 0 to disable shortening");
     fixedText("BRDF Ray Min T", std::format("{:.3f}", initial.brdfRayMinT),
@@ -933,23 +941,34 @@ void SettingsWindow::drawIndirectLighting()
                        indirectModeInfo(kDefaultIndirectMode).label)
                .c_str());
 
+    const bool isGiReuse = indirectMode != IndirectMode::Nrc && !rtxdi.isGiReference;
+    // M8.2 BUG-UI-4: GiFlag::SecondaryRoughnessFloor is forced off whenever GI reuse is inactive (vk_rtxdi.cpp)
+    ImGui::BeginDisabled(!isGiReuse);
     beginRow({"gi.roughnessFloor"});
-    ImGui::Checkbox("##enableMinSecondaryRoughness", &gi.isSecondaryRoughnessFloorEnabled);
+    bool isRoughnessFloor = isGiReuse && gi.isSecondaryRoughnessFloorEnabled;
+    if (ImGui::Checkbox("##enableMinSecondaryRoughness", &isRoughnessFloor)) {
+        gi.isSecondaryRoughnessFloorEnabled = isRoughnessFloor;
+    }
     endRow();
     ImGui::SameLine();
-    float roughness = gi.isSecondaryRoughnessFloorEnabled ? kSecondaryRoughnessFloor : 0.0f;
+    float roughness = isRoughnessFloor ? kSecondaryRoughnessFloor : 0.0f;
     ImGui::BeginDisabled();
     ImGui::SliderFloat("Min Secondary Roughness", &roughness, 0.0f, 1.0f);
     ImGui::EndDisabled();
+    ImGui::EndDisabled();
     helpMarker("Engine: on or off at the sample's 0.5; shades X2 with roughness at least 0.5 while GI reuse runs: no "
-               "glossy caustics in the reused samples, biased on glossy X2.");
+               "glossy caustics in the reused samples, biased on glossy X2. Off without GI reuse.");
 
     if (ImGui::TreeNode("Secondary Surface Light Sampling")) {
-        const uint32_t localSamples = rtxdi.settings.activeLocalLightSamples();
-        fixedText("Indirect Local Light Samples", std::format("{}", localSamples));
-        fixedText("Indirect Inifinite Light Samples", std::format("{}", rtxdi.settings.infiniteLightSamples));
+        // M8.2 BUG-UI-1: display applied initialSampling counts and account for exact directional lights at X2
+        const RTXDI_DIInitialSamplingParameters appliedInitial = rtxdi.getAppliedParameters().initialSampling;
+        const uint32_t infiniteSamples =
+            rtxdi.arePathInfiniteLightsExact() ? 0u : appliedInitial.numInfiniteLightSamples;
+        fixedText("Indirect Local Light Samples", std::format("{}", appliedInitial.numLocalLightSamples));
+        fixedText("Indirect Infinite Light Samples", std::format("{}", infiniteSamples));
         notInEngine("Indirect Environment Samples");
-        helpMarker("Engine: path vertices sample lights with the primary surface's settings (sampleLightsAt).");
+        helpMarker("Engine: path vertices sample lights with the applied primary surface settings (sampleLightsAt); "
+                   "infinite samples are 0 when exact directional lights shade them outside RIS.");
         ImGui::TreePop();
     }
     if (beginNode("Reuse Primary Samples", kIndirectReuse)) {
@@ -968,12 +987,15 @@ void SettingsWindow::drawIndirectLighting()
     }
     drawIndirectNrc();
     drawIndirectResampling();
+    ImGui::BeginDisabled(!isGiReuse);
     beginRow({"gi.finalVisibility"});
     ImGui::Checkbox("Final visibility", &gi.isFinalVisibilityEnabled);
-    endRow("Engine: a reconnection ray from the pixel to its final sample, which may be a neighbor's.");
+    endRow("Engine: a reconnection ray from the pixel to its final sample, which may be a neighbor's. Inactive without "
+           "GI reuse.");
     beginRow({"gi.finalMis"});
     ImGui::Checkbox("Final MIS", &gi.isFinalMisEnabled);
-    endRow("Engine: blend in the pixel's own initial sample where its BRDF lobe is glossy.");
+    endRow("Engine: blend in the pixel's own initial sample where its BRDF lobe is glossy. Inactive without GI reuse.");
+    ImGui::EndDisabled();
     drawIndirectEngine();
     endNode();
     ImGui::Separator();
@@ -989,9 +1011,12 @@ void SettingsWindow::drawIndirectNrc()
     NrcCache::Settings& nrc = nrcCache.settings;
     const nrc::ContextSettings& context = nrcCache.getContextSettings();
     const nrc::FrameSettings frame = nrcCache.frameSettings();
+    const bool isNrcPaused = renderer.isNrcPaused();
+    ImGui::BeginDisabled(isNrcPaused);
     beginRow({"nrc.training"});
     ImGui::Checkbox("Train The Cache", &nrc.isTrainingEnabled);
     endRow("Engine: off freezes the cache and skips the training paths.");
+    ImGui::EndDisabled();
     fixedText("Training Bounces", std::format("{}", context.maxPathVertices), "Engine: the context's maxPathVertices.");
     fixedCheckbox("Learn Irradiance", context.learnIrradiance);
     fixedCheckbox("Include Direct Illumination", context.includeDirectLighting,
@@ -1000,12 +1025,14 @@ void SettingsWindow::drawIndirectNrc()
     fixedText("Heuristic Threshold", std::format("{:.3f}", frame.terminationHeuristicThreshold));
     fixedText("Max Average Radiance Value", std::format("{:.3f}", frame.maxExpectedAverageRadianceValue));
     int resolveMode = static_cast<int>(nrc.resolveMode);
+    ImGui::BeginDisabled(isNrcPaused);
     beginRow({"nrc.resolveMode"});
     if (ImGui::Combo("Resolve Mode", &resolveMode, nrcCache.resolveModeComboString())) {
         nrc.resolveMode = static_cast<NrcResolveMode>(resolveMode);
     }
     endRow("Engine: AddQueryResultToOutput runs the custom GI reservoir resolve; any other mode runs NRC's SDK debug "
            "resolve into Indirect radiance (Debug view > Indirect radiance).");
+    ImGui::EndDisabled();
     const vk::Extent2D training = nrcCache.getTrainingExtent();
     if (!nrcCache.isActive()) {
         ImGui::TextDisabled("no scene, training paths %ux%u", training.width, training.height);
@@ -1027,12 +1054,16 @@ void SettingsWindow::drawIndirectResampling()
     using namespace settingsRows;
     RtxdiContext& rtxdi = renderer.getRtxdi();
     RtxdiContext::GiSettings& gi = rtxdi.giSettings;
+    // M8.2 BUG-UI-4: IndirectMode::Nrc forces giResamplingMode == None regardless of isGiReference
+    const bool isNrcOnly = renderer.indirectMode == IndirectMode::Nrc;
+    const bool isGiReuse = !isNrcOnly && !rtxdi.isGiReference;
     // isGiReference is the GI check's, not a lab switch: no highlight
     ImGui::PushItemWidth(kModeComboWidth);
     constexpr std::array kModes{"None", "Temporal", "Spatial", "Temporal + Spatial", "Fused Spatiotemporal"};
     constexpr size_t kNone = 0;
     constexpr size_t kTemporalAndSpatial = 3;
-    const size_t current = rtxdi.isGiReference ? kNone : kTemporalAndSpatial;
+    const size_t current = isGiReuse ? kTemporalAndSpatial : kNone;
+    ImGui::BeginDisabled(isNrcOnly);
     if (ImGui::BeginCombo("Resampling Mode", kModes[current])) {
         for (size_t i = 0; i < kModes.size(); ++i) {
             ImGui::BeginDisabled(i != kNone && i != kTemporalAndSpatial);
@@ -1043,8 +1074,9 @@ void SettingsWindow::drawIndirectResampling()
         }
         ImGui::EndCombo();
     }
+    ImGui::EndDisabled();
     helpMarker("Engine: None shades each pixel's initial sample alone, the unbiased estimate the reuse converges to; "
-               "otherwise Temporal + Spatial. The NRC mode shades without reuse whatever is set here.");
+               "otherwise Temporal + Spatial. The NRC mode shades without reuse (forced None).");
     ImGui::PopItemWidth();
     ImGui::Separator();
 
@@ -1052,7 +1084,7 @@ void SettingsWindow::drawIndirectResampling()
     constexpr std::array kBiasModes{RTXDI_GIBiasCorrectionMode::Off, RTXDI_GIBiasCorrectionMode::Basic,
                                     RTXDI_GIBiasCorrectionMode::Raytraced};
     // NVIDIA hides both nodes without reuse; disabled keeps the closed section's count matching what opens
-    ImGui::BeginDisabled(rtxdi.isGiReference);
+    ImGui::BeginDisabled(!isGiReuse);
     if (beginNode("Temporal Resampling", kIndirectTemporal)) {
         beginRow({"gi.depthThreshold"});
         sliderFloat("Temporal Depth Threshold", gi.depthThreshold, 0.001f, 1.0f);
@@ -1121,6 +1153,8 @@ void SettingsWindow::drawIndirectEngine()
     RtxdiContext& rtxdi = renderer.getRtxdi();
     RtxdiContext::GiSettings& gi = rtxdi.giSettings;
     // spec m8 O11: ReSTIR PT's DLSS-RR profile ported to ReSTIR GI, under NVIDIA's ReSTIR PT labels
+    const bool isGiReuse = renderer.indirectMode != IndirectMode::Nrc && !rtxdi.isGiReference;
+    ImGui::BeginDisabled(!isGiReuse);
     if (beginNode("ReSTIR PT DLSS-RR profile", kIndirectPtProfile)) {
         beginRow({"gi.decorrelation"});
         comboEnum("Decorrelation mode", gi.decorrelationMode, std::array{"None", "Uniform", "Stagnancy-based"},
@@ -1140,7 +1174,6 @@ void SettingsWindow::drawIndirectEngine()
                "(bypassing temporal/spatial resampling). In Uniform mode this value is used directly across all "
                "pixels; in Stagnancy mode it is further scaled by the smoothed duplication signal (0 where reservoirs "
                "are fresh, ramping up to this slider value where reservoirs have been reused heavily).");
-        ImGui::EndDisabled();
         ImGui::BeginDisabled(!isStagnancy);
         beginRow({"gi.decorrelationExponent"});
         sliderFloat("Decorrelation stagnancy exponent", gi.decorrelationStagnancyExponent, 0.1f, 8.0f);
@@ -1152,11 +1185,15 @@ void SettingsWindow::drawIndirectEngine()
         endRow("Stagnancy mode only. Exponential-moving-average blend factor for the temporally-smoothed duplication "
                "map. 1 fully uses the current frame's age/40 (no smoothing, more noisy); smaller values keep more "
                "history (smoother, slower to react). 0 means never update (not useful in practice).");
+        ImGui::EndDisabled();
+        // M8.2 BUG-UI-8: rtxdi_gi_shade runs firefly replacement and bias reduction in both Uniform and Stagnancy
+        // modes whenever decorrelationFactor > 0
+        ImGui::BeginDisabled(gi.decorrelationFactor <= 0.0f);
         beginRow({"gi.fireflyReplacement"});
         ImGui::Checkbox("Decorrelation firefly replacement", &gi.isFireflyReplacementEnabled);
-        endRow("Stagnancy mode only. When enabled, the FinalShading pass runs an additional boiling filter and forces "
-               "full decorrelation on pixels whose contribution looks like an outlier within their tile. Independent "
-               "of the temporal-resampling boiling filter.");
+        endRow("When decorrelation is active (Uniform or Stagnancy with factor > 0), the FinalShading pass runs an "
+               "additional boiling filter and forces full decorrelation on pixels whose contribution looks like an "
+               "outlier within their tile. Independent of the temporal-resampling boiling filter.");
         ImGui::BeginDisabled(!gi.isFireflyReplacementEnabled);
         beginRow({"gi.fireflyStrength"});
         sliderFloat("Decorrelation firefly filter strength", gi.fireflyReplacementStrength, 0.0f, 1.0f);
@@ -1167,16 +1204,17 @@ void SettingsWindow::drawIndirectEngine()
         ImGui::EndDisabled();
         beginRow({"gi.fireflyBound"});
         ImGui::Checkbox("Firefly replacement bias reduction", &gi.isFireflyReplacementBounded);
-        endRow("Stagnancy mode only. When the decorrelation path swaps in the preserved initial-sampling reservoir, "
-               "clamp its WeightSum to at most `multiplier bound * previous WeightSum` on pixels whose duplication "
-               "value indicates fresh reservoirs (age == 0). Reduces bias from replacing resampled (filtered) firefly "
-               "with higher value initial firefly.");
+        endRow("When the decorrelation path swaps in the preserved initial-sampling reservoir, clamp its WeightSum to "
+               "at most `multiplier bound * previous WeightSum` on pixels whose duplication value indicates fresh "
+               "reservoirs (age == 0). Reduces bias from replacing resampled (filtered) firefly with higher value "
+               "initial firefly.");
         ImGui::BeginDisabled(!gi.isFireflyReplacementBounded);
         beginRow({"gi.fireflyMultiplyBound"});
         sliderFloat("Firefly replacement multiplier bound", gi.fireflyReplacementMultiplyBound, 1.0f, 100.0f);
         endRow("Upper-bound multiplier used by the firefly-replacement bias-reduction clamp. The replacement "
                "reservoir's WeightSum is limited to `multiplier bound * previous WeightSum`. Smaller values reduces "
                "bias but can introduce more post-denoise correlation artifacts.");
+        ImGui::EndDisabled();
         ImGui::EndDisabled();
         ImGui::EndDisabled();
         beginRow({"gi.duplicationReduction"});
@@ -1191,6 +1229,7 @@ void SettingsWindow::drawIndirectEngine()
         ImGui::EndDisabled();
         endNode();
     }
+    ImGui::EndDisabled();
 
     beginRow({"gi.fireflyClamp"});
     ImGui::Checkbox("Firefly clamp", &gi.isFireflyClampEnabled);
@@ -1260,8 +1299,7 @@ void SettingsWindow::drawDenoising()
         ImGui::Checkbox("Auto-apply denoiser compatibility preset", &isCompatPresetAutoApplied);
         helpMarker("On a denoiser switch, and after a DI preset with DLSS-RR, set the ReSTIR GI fields that depend on "
                    "the denoiser: history length, age limit, duplication history reduction, decorrelation and the "
-                   "boiling filter. Off: ReSTIR PT's non-DLSS-RR profile. DLSS-RR: the shipped values, the engine's "
-                   "DLSS-RR profile.");
+                   "boiling filter. Off: ReSTIR PT's non-DLSS-RR profile. DLSS-RR: the shipped ReSTIR GI defaults.");
 
         ImGui::BeginDisabled(renderer.denoiser != DenoiserMode::DlssRr);
         if (beginNode("DLSS-RR", kDenoisingDlss)) {
@@ -1337,6 +1375,9 @@ void SettingsWindow::drawPostProcessing()
             ImGui::TextDisabled("Post processing provided by DLSS-RR");
         }
 
+        // M8.2 BUG-UI-10: Accum. Frame Limit only applies while Denoiser is Off and AA is Accumulation
+        const bool isAccumulation = !isDlssRr && renderer.aaMode == AaMode::Accumulation;
+        ImGui::BeginDisabled(!isAccumulation);
         ImGui::PushItemWidth(kFrameLimitWidth);
         beginRow({"frame.accumulationFrames"});
         const uint32_t minimum = 0;
@@ -1344,7 +1385,8 @@ void SettingsWindow::drawPostProcessing()
                           &kMaxAccumulationFrames, "%u", ImGuiSliderFlags_AlwaysClamp);
         endRow("Engine: 0 = no limit; at the limit the mean becomes an exponential average of that length.");
         ImGui::PopItemWidth();
-        if (renderer.aaMode == AaMode::Accumulation && !isDlssRr) {
+        ImGui::EndDisabled();
+        if (isAccumulation) {
             ImGui::SameLine();
             ImGui::TextDisabled("// %u frame(s)", renderer.getAccumulatedFrames());
         }
@@ -1404,27 +1446,10 @@ void SettingsWindow::drawPostProcessing()
 void SettingsWindow::drawConfig()
 {
     if (ImGui::Button("Defaults")) {
-        RtxdiContext& rtxdi = renderer.getRtxdi();
+        // M8.2 BUG-UI-5: reset every LabConfig switch (including camera.isJitterEnabled) plus PTLAS & triangle lights
+        applyLabConfig(LabConfig{}, renderer, camera);
         renderer.getRayTracingScene().settings = {};
-        rtxdi.isReference = false;
-        rtxdi.isSpatialOnly = false;
-        rtxdi.isTemporalOnly = false;
-        rtxdi.settings = RtxdiContext::defaultSettings();
-        rtxdi.isGiReference = false;
-        rtxdi.giSettings = RtxdiContext::defaultGiSettings();
-        rtxdi.giReferenceBounces = 0;
-        renderer.getDlss().settings = {};
-        renderer.getDlss().guides = {};
-        renderer.dlssInputScale = 1.0f;
-        renderer.preDenoiserClamp = 0.0f;
-        renderer.inputHistoryWeight = 0.0f;
-        renderer.extraFrameFlags = 0;
-        renderer.getNrc().settings = {};
-        renderer.indirectMode = kDefaultIndirectMode;
-        renderer.denoiser = DenoiserMode::DlssRr;
-        renderer.aaMode = AaMode::None;
-        renderer.accumulationFrameLimit = 0;
-        renderer.glass = {};
+        renderer.getWorldLights().areTriangleLightsSampled = true;
     }
     ImGui::SetItemTooltip("every setting the config string carries, back to shipped");
     // the settings lab's config string (spec/features/planned/full_testing.md §2.1): an A/B found here becomes a plan

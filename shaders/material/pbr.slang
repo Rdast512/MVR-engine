@@ -213,10 +213,13 @@ public float3 sampleShadingNormal(GpuMaterial material, Surface surface, float l
         }
         n = normalize(tangentNormal.x * t + tangentNormal.y * b + tangentNormal.z * surface.normal);
     }
-    // m8 I2 F19 (ND9): keep the shading normal in the geometric normal's hemisphere (RTXGI Pathtracer.hlsl:421, 469)
-    if (dot(surface.geoNormal, n) < 0.0)
+    // M8.1 BUG-A3: project steep normal-mapped normals back into geoNormal's hemisphere instead of flipping 180 deg
+    const float geoDotN = dot(surface.geoNormal, n);
+    if (geoDotN < 1e-4)
     {
-        n = -n;
+        const float3 projected = n + surface.geoNormal * (1e-4 - geoDotN);
+        const float lenSq = dot(projected, projected);
+        n = lenSq > 1e-8 ? projected * rsqrt(lenSq) : surface.geoNormal;
     }
     return n;
 }

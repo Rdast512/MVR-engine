@@ -82,12 +82,9 @@ void MeshletCulling::createFrameBuffers()
                            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
                            device, allocator, std::format("CullView_{}", slot), nullptr);
         // indirect: the meshlet dispatch and the DGC sequence counts are read from here
-        createMappedBuffer(frames[slot].counters, sizeof(kInitialCullCounters),
-                           vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eIndirectBuffer |
-                               vk::BufferUsageFlagBits2::eTransferDst,
-                           vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible |
-                               vk::MemoryPropertyFlagBits::eHostCoherent,
-                           device, allocator, std::format("CullCounters_{}", slot), nullptr);
+        frames[slot].counters =
+            createCounterReadback(sizeof(kInitialCullCounters), allocator, device.vkdevice, device.queueFamilyIndices,
+                                  std::format("CullCounters_{}", slot), vk::BufferUsageFlagBits2::eIndirectBuffer);
     }
 }
 
@@ -97,7 +94,7 @@ void MeshletCulling::destroyFrameBuffers()
     for (FrameBuffers& buffers : frames) {
         // persistently mapped (MAPPED_BIT): VMA unmaps on destroy
         destroyVmaBuffer(allocator, buffers.cullView.buffer, buffers.cullView.memory);
-        destroyVmaBuffer(allocator, buffers.counters.buffer, buffers.counters.memory);
+        destroyCounterReadback(allocator, buffers.counters);
         destroyVmaBuffer(allocator, buffers.instanceItems.buffer, buffers.instanceItems.memory,
                          kInstanceItemsTracyName);
         destroyVmaBuffer(allocator, buffers.instanceCandidates.buffer, buffers.instanceCandidates.memory,
@@ -158,8 +155,7 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera, cons
     std::array<uint32_t, kRasterBinCount> maxSequences{};
     std::ranges::transform(templates.binMeshlets, maxSequences.begin(),
                            [perSequence](uint32_t meshlets) { return divideRoundUp(meshlets, perSequence); });
-    dgc.prepareFrame(frameSlot, maxSequences, *frames[frameSlot].counters.buffer,
-                     frames[frameSlot].counters.address);
+    dgc.prepareFrame(frameSlot, maxSequences, frames[frameSlot].counters.address);
     writeCullView(frameSlot, camera, hiz, history, perSequence);
 
     recorded[frameSlot] = RecordedFrame{
@@ -188,7 +184,7 @@ void MeshletCulling::readBackCounters(uint32_t frameSlot)
     }
     // the slot's fence has signaled, so its counters are final
     stats = record.totals;
-    stats.phases = *static_cast<const decltype(kInitialCullCounters)*>(frames[frameSlot].counters.mapped);
+    stats.phases = *static_cast<const decltype(kInitialCullCounters)*>(frames[frameSlot].counters.readback.mapped);
 
     [[maybe_unused]] const GpuCullCounters& early = stats.phase(CullPhase::Early);
     [[maybe_unused]] const GpuCullCounters& late = stats.phase(CullPhase::Late);
@@ -486,11 +482,13 @@ void MeshletCulling::recordCull(const vk::raii::CommandBuffer& cmd, CullPhase ph
     ZoneScopedN("MeshletCulling::recordCull");
     const FrameBuffers& buffers = frames[frame];
     const bool isEarly = phase == CullPhase::Early;
-    const vk::DeviceSize countersOffset = std::to_underlying(phase) * sizeof(GpuCullCounters);
+    const vk::DeviceAddress phaseCounters =
+        buffers.counters.address + std::to_underlying(phase) * sizeof(GpuCullCounters);
     if (isEarly) {
         // one write for both phases: zeroes plus the y = z = 1 of each indirect dispatch
-        cmd.updateBuffer<std::array<GpuCullCounters, kCullPhaseCount>>(*buffers.counters.buffer, 0,
-                                                                        kInitialCullCounters);
+        cmd.updateMemoryKHR<std::array<GpuCullCounters, kCullPhaseCount>>(
+            {.address = buffers.counters.address, .size = sizeof(kInitialCullCounters)}, kBoundStorageAddress,
+            kInitialCullCounters);
     }
     // early: counter reset and the previous frame's late pyramid. late: candidates and their count from the early
     // instance cull, and the early pyramid
@@ -514,7 +512,7 @@ void MeshletCulling::recordCull(const vk::raii::CommandBuffer& cmd, CullPhase ph
         if (isEarly) {
             cmd.dispatch(static_cast<uint32_t>(templates.instances.size()), 1, 1);
         } else {
-            cmd.dispatchIndirect(*buffers.counters.buffer, countersOffset + offsetof(GpuCullCounters, instanceDispatch));
+            dispatchIndirectAt(cmd, phaseCounters + offsetof(GpuCullCounters, instanceDispatch), kBoundStorageAddress);
         }
 
         // draw records feed the meshlet cull, their count its indirect dispatch
@@ -535,16 +533,17 @@ void MeshletCulling::recordCull(const vk::raii::CommandBuffer& cmd, CullPhase ph
             .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
         };
         ShaderObjects::bindComputeShader(cmd, shaderObjects.cullShaders.cullMeshlets);
-        cmd.dispatchIndirect(*buffers.counters.buffer, countersOffset + offsetof(GpuCullCounters, meshletDispatch));
+        dispatchIndirectAt(cmd, phaseCounters + offsetof(GpuCullCounters, meshletDispatch), kBoundStorageAddress);
         cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &cullBarrier});
 
         // one workgroup per early record: the early meshlet cull wrote the reject masks, the early instance cull the
         // record count; inputBarrier made both visible
         if (!isEarly) {
             ShaderObjects::bindComputeShader(cmd, shaderObjects.cullShaders.cullRejectedMeshlets);
-            cmd.dispatchIndirect(*buffers.counters.buffer,
-                                 std::to_underlying(CullPhase::Early) * sizeof(GpuCullCounters) +
-                                     offsetof(GpuCullCounters, meshletDispatch));
+            dispatchIndirectAt(cmd,
+                               buffers.counters.address + std::to_underlying(CullPhase::Early) * sizeof(GpuCullCounters) +
+                                   offsetof(GpuCullCounters, meshletDispatch),
+                               kBoundStorageAddress);
             cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &cullBarrier});
         }
 
@@ -565,14 +564,9 @@ void MeshletCulling::recordCull(const vk::raii::CommandBuffer& cmd, CullPhase ph
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &outputBarrier});
 }
 
-// a fence wait alone does not make device writes visible to the host
-void MeshletCulling::recordCounterReadback(const vk::raii::CommandBuffer& cmd)
+// the cull passes and the mesh shaders' triangle counts are the writers
+void MeshletCulling::recordCounterReadback(const vk::raii::CommandBuffer& cmd) const
 {
-    const vk::MemoryBarrier2 readbackBarrier{
-        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eMeshShaderEXT,
-        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
-        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
-    };
-    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &readbackBarrier});
+    ::recordCounterReadback(cmd, frames[frame].counters,
+                            vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eMeshShaderEXT);
 }

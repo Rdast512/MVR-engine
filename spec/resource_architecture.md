@@ -69,12 +69,14 @@ All buffers go through `createBuffer` (`src/util/vk_utils.cpp`); images through 
 | Request | VMA policy |
 |---|---|
 | `eDeviceLocal` buffer | `AUTO_PREFER_DEVICE`, required `DEVICE_LOCAL`, priority 0.75, created unbound, named, then bound |
-| `eHostVisible` buffer | `AUTO`, required `HOST_VISIBLE`, preferred `HOST_VISIBLE \| HOST_COHERENT`, `HOST_ACCESS_SEQUENTIAL_WRITE`, priority 0.25 |
+| `eHostVisible` buffer | `AUTO`, required `HOST_VISIBLE`, preferred `HOST_VISIBLE \| HOST_COHERENT`, `HOST_ACCESS_SEQUENTIAL_WRITE` (`HOST_ACCESS_RANDOM` with `HOST_CACHED`); priority 1.0 for descriptor heaps, 0.75 when the GPU reads it, 0.25 for staging and readback |
 | Image | optimal tiling, exclusive sharing; priority 1.0 for attachments, 0.9 otherwise |
+
+- **Priority reach:** VMA passes `VmaAllocationCreateInfo::priority` only to dedicated allocations (driver-preferred or forced). Suballocations inherit their default-pool block's 0.5, so the values above take effect for large buffers, the resource heap and driver-dedicated images (depth, vis buffer).
 
 - **Sharing:** buffers are `CONCURRENT` whenever more than one queue family is in use, so transfer-queue uploads need no ownership transfer. Images are `EXCLUSIVE` and touched only by the graphics queue.
 - **ReBAR:** the engine targets ReBAR PCs (spec §3). Host-visible buffers do not request a memory type explicitly; VMA may place them in host-visible VRAM.
-- **Host writes:** write whole structs front to back; never read mapped memory back, except the cull counters after their fence.
+- **Host writes:** write whole structs front to back; never read host-visible VRAM back (uncached write-combined reads: 7.7 µs per frame for 224 B of cull counters, measured 2026-11-26). Results the CPU reads come from a `CounterReadback` copy.
 - **GPU-written counters the host reads:** shaders never write `HOST_CACHED` memory, which is system memory on NVIDIA and puts every atomic on PCIe (considerations C-M85-1: 1.9 ms in one pass). Use `CounterReadback` (`vk_utils.hpp`): device-local counters, `recordCounterReset` before the writers, `recordCounterReadback` after them.
 - **Mapping style decides teardown:** `MAPPED_BIT` buffers (`HostBuffer`) are unmapped by VMA. Buffers mapped with `vmaMapMemory` (camera, heaps) must be unmapped before `destroyVmaBuffer`, or VMA asserts `m_MapCount == 0`. Never mix the two on one allocation.
 - **Teardown order:** unmap (explicit maps only) → reset image views → `destroyVmaBuffer` / `destroyVmaImage` with the same Tracy name used at allocation. `Engine::cleanup()` resets every module that owns allocations before `allocator.reset()`.

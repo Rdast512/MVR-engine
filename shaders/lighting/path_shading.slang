@@ -99,9 +99,27 @@ float3 shadeLightReservoir<Origin : IRayOrigin>(RAB_Surface surface, Origin orig
     return shadeVisibleLight(surface, origin, lightSample) * RTXDI_GetDIReservoirInvPdf(reservoir);
 }
 
-// one RIS-sampled light without reuse and one visibility ray, plus the exact directional lights
-float3 directLightAt<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, GpuRtxdiConstants constants,
-                                          inout RTXDI_RandomSamplerState rng,
+// a light's visible contribution attenuated by the glass on its shadow segment (m8 I13 §3)
+float3 throughGlass<Origin : IRayOrigin>(GpuFrameRoot root, Origin origin, RAB_LightSample lightSample, float3 radiance)
+{
+    if ((root.glassFlags & kGlassFlagShadowTransmittance) == 0 || !any(radiance > 0.0))
+    {
+        return radiance;
+    }
+    const float3 spawn = origin.spawn();
+    float3 dir;
+    float tMax;
+    if (!lightVisibilitySegment(spawn, lightSample, dir, tMax))
+    {
+        return radiance;
+    }
+    return radiance * shadowTransmittance(root, spawn, dir, tMax);
+}
+
+// one RIS-sampled light without reuse and one visibility ray, plus the exact directional lights (M8.1 BUG-E4: applies
+// glass shadowTransmittance when active so NRC training and reference paths match secondaryDirectLight)
+float3 directLightAt<Origin : IRayOrigin>(GpuFrameRoot root, RAB_Surface surface, Origin origin,
+                                          GpuRtxdiConstants constants, inout RTXDI_RandomSamplerState rng,
                                           inout RTXDI_RandomSamplerState coherentRng)
 {
     if (gRtxdiBridge.lightCount == 0 || !surface.isLit)
@@ -110,10 +128,12 @@ float3 directLightAt<Origin : IRayOrigin>(RAB_Surface surface, Origin origin, Gp
     }
     RAB_LightSample lightSample;
     const RTXDI_DIReservoir reservoir = sampleLightsAt(surface, constants, rng, coherentRng, lightSample);
-    float3 radiance = shadeLightReservoir(surface, origin, reservoir, lightSample);
+    float3 radiance =
+        throughGlass(root, origin, lightSample, shadeLightReservoir(surface, origin, reservoir, lightSample));
     for (uint i = 0; i < exactInfiniteLightCount(constants); ++i)
     {
-        radiance += shadeVisibleLight(surface, origin, exactInfiniteLightSample(constants, i, surface));
+        const RAB_LightSample sun = exactInfiniteLightSample(constants, i, surface);
+        radiance += throughGlass(root, origin, sun, shadeVisibleLight(surface, origin, sun));
     }
     return radiance;
 }
@@ -133,23 +153,6 @@ RTXDI_DISpatialResamplingParameters secondaryResamplingParams(GpuRtxdiConstants 
     params.discountNaiveSamples = 0;
     params.targetHistoryLength = 0;
     return params;
-}
-
-// a light's visible contribution attenuated by the glass on its shadow segment (m8 I13 §3)
-float3 throughGlass(GpuFrameRoot root, HitOrigin origin, RAB_LightSample lightSample, float3 radiance)
-{
-    if (!any(radiance > 0.0))
-    {
-        return radiance;
-    }
-    const float3 spawn = origin.spawn();
-    float3 dir;
-    float tMax;
-    if (!lightVisibilitySegment(spawn, lightSample, dir, tMax))
-    {
-        return radiance;
-    }
-    return radiance * shadowTransmittance(root, spawn, dir, tMax);
 }
 
 // X2's direct light (the indirect pass, the glass pass's reflections); with kGiFlagSecondaryResampling the sampled
@@ -278,7 +281,10 @@ PathHit shadeRayHit(GpuFrameRoot root, RayHit hit, RayDesc ray, float coneDistan
         sampleMaterial(loadMaterial(root, materialRow(decoded.draw.primitive)), decoded.surface, 0.0);
     PathHit result;
     result.surface = rayHitSurface(decoded, material, ray.Direction, hit.t);
-    result.emissive = isLightEmissionKept ? material.emissive : hitEmission(root, hit, material.emissive);
+    // M8.1 BUG-A5: single-sided back faces do not emit on ray hits (matches triangle_lights.slang)
+    const float3 rawEmissive =
+        (decoded.surface.isFrontFacing || decoded.draw.isDoubleSided) ? material.emissive : float3(0.0, 0.0, 0.0);
+    result.emissive = isLightEmissionKept ? rawEmissive : hitEmission(root, hit, rawEmissive);
     return result;
 }
 
@@ -339,7 +345,8 @@ float3 referencePathRadiance(GpuFrameRoot root, RAB_Surface start, HitOrigin sta
         pathLength += hit.t;
         origin.hit = hit;
         origin.geoNormal = next.surface.geoNormal;
-        radiance += throughput * (next.emissive + directLightAt(next.surface, origin, constants, lightRng, coherentRng));
+        radiance +=
+            throughput * (next.emissive + directLightAt(root, next.surface, origin, constants, lightRng, coherentRng));
         vertex = next.surface;
     }
     return radiance;

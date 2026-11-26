@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -264,8 +266,13 @@ OmmBake OmmBaker::bake(const OmmBakeInput& input) const
     textureDesc.format = ommCpuTextureFormat_UNORM8;
     textureDesc.mips = &mip;
     textureDesc.mipCount = 1;
+    // M8.1 BUG-B5: OMM SDK treats alpha == cutoff as transparent (<=), while glTF/raster keeps alpha >= cutoff (RTXPT
+    // OmmBuildQueue)
+    const float ommCutoff = input.alphaCutoff == 0.0f
+        ? -std::numeric_limits<float>::min()
+        : std::nextafter(input.alphaCutoff, -std::numeric_limits<float>::infinity());
     // must equal the bake's cutoff; lets the SDK precompute its coverage table
-    textureDesc.alphaCutoff = input.alphaCutoff;
+    textureDesc.alphaCutoff = ommCutoff;
     ommCpuTexture rawTexture = nullptr;
     check(ommCpuCreateTexture(baker.get(), &textureDesc, &rawTexture), "ommCpuCreateTexture", input.name);
     const TextureHandle texture(rawTexture, TextureDeleter{baker.get()});
@@ -283,7 +290,7 @@ OmmBake OmmBaker::bake(const OmmBakeInput& input) const
     bakeDesc.indexBuffer = input.indices.data();
     bakeDesc.indexCount = static_cast<uint32_t>(input.indices.size());
     bakeDesc.dynamicSubdivisionScale = input.dynamicSubdivisionScale;
-    bakeDesc.alphaCutoff = input.alphaCutoff;
+    bakeDesc.alphaCutoff = ommCutoff;
     bakeDesc.format = ommFormat_OC1_4_State;
     bakeDesc.unknownStatePromotion = ommUnknownStatePromotion_ForceOpaque;
     bakeDesc.maxSubdivisionLevel = input.maxSubdivisionLevel;

@@ -4,6 +4,7 @@ import core.frame;
 import core.math;
 import geometry.mesh;
 import geometry.surface;
+import lighting.compact_lights;
 import material.pbr;
 
 // RTXDI_LinearIndexToZCurve: the PDF texel of a light must be the one RTXDI's presampling maps back to its index
@@ -199,7 +200,14 @@ void lightWorldMain(uint3 id : SV_DispatchThreadID)
     float power = 0.0;
     if (id.x < root.lightCount)
     {
-        const GpuLight light = worldLight(root, id.x);
+        GpuLight light = worldLight(root, id.x);
+        // M8.1 BUG-A4: canonicalize compactable lights so worldLights and risLightData share one quantized geometry
+        uint4 compact0;
+        uint4 compact1;
+        if (packCompactLight(light, compact0, compact1))
+        {
+            light = unpackCompactLight(compact0, compact1);
+        }
         bdaPtr<GpuLight>(root.worldLights)[id.x] = light;
         // the local region: RTXDI never selects a texel past it
         if (id.x < root.localLightCount)
