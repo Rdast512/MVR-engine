@@ -170,6 +170,8 @@ private:
     // signals frameNumber on FrameSync::computeTimeline
     void submitComputeCommands();
     void recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase);
+    // DGC execute (ENGINE_DGC=1), or the indirect count draw
+    void recordRasterBin(vk::raii::CommandBuffer& cmd, CullPhase phase, RasterBin bin) const;
     void recordClassify(const vk::raii::CommandBuffer& cmd);
     void recordResolve(const vk::raii::CommandBuffer& cmd);
     void recordDirectLight(const vk::raii::CommandBuffer& cmd);

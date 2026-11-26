@@ -6,15 +6,19 @@
 #include "vk_shader_objects.hpp"
 
 #include <array>
+#include <string_view>
 #include <vulkan/vulkan_raii.hpp>
 
 class DescriptorManager;
+struct MeshPushData;
 
 // GPU-driven mesh draws: PUSH_DATA + DRAW_MESH_TASKS via VK_EXT_device_generated_commands.
 // The meshlet cull pass writes the sequences and their counts; one execute per (CullPhase, RasterBin).
 // Each pair owns a sequence region and a preprocess region.
 // The material-binned resolve (spec/m7/e1_material_binning.md) is one compute execute: EXECUTION_SET + PUSH_DATA +
-// DISPATCH over the sequences passes/classify.slang writes, one per non-empty MaterialBin
+// DISPATCH over the sequences passes/classify.slang writes, one per non-empty MaterialBin.
+// without ENGINE_DGC=1 (default, spec/features/planned/dgc_toggle.md): no DGC object; only the sequence buffers
+// remain, drawn by recordIndirectDraw, and the renderer dispatches the resolve per bin
 class DeviceGeneratedCommands
 {
 public:
@@ -30,9 +34,10 @@ public:
     void init();
 
     // sizes this slot's buffers for maxSequences per group in every phase (the slot must not be in flight); counts
-    // are read from GpuCullCounters::sequenceCount of each phase, the first phase's counters at countersAddress
+    // are read from GpuCullCounters::sequenceCount of each phase, the first phase's counters at the start of
+    // countersBuffer (countersAddress)
     void prepareFrame(uint32_t frameSlot, const std::array<uint32_t, kRasterBinCount>& maxSequences,
-                      vk::DeviceAddress countersAddress);
+                      vk::Buffer countersBuffer, vk::DeviceAddress countersAddress);
 
     // valid after prepareFrame: where the cull pass writes each group's sequences
     [[nodiscard]] vk::DeviceAddress sequenceAddress() const { return sequenceAddresses[frame]; }
@@ -46,6 +51,10 @@ public:
     void recordPreprocess(vk::raii::CommandBuffer& cmd, CullPhase phase) const;
     // binds the bin's mesh state, then executes its sequences; nothing when the bin holds no meshlet
     void recordExecute(vk::raii::CommandBuffer& cmd, CullPhase phase, RasterBin group) const;
+    // without DGC: the same sequences as one vkCmdDrawMeshTasksIndirectCountEXT, push from
+    // MeshletCulling::indirectDrawPush; nothing when the bin holds no meshlet
+    void recordIndirectDraw(const vk::raii::CommandBuffer& cmd, CullPhase phase, RasterBin group,
+                            const MeshPushData& push) const;
 
     // materialBins: RenderTargets' GpuMaterialBins, its sequences made visible to the preprocess stage
     void recordResolvePreprocess(const vk::raii::CommandBuffer& cmd, vk::DeviceAddress materialBins) const;
@@ -63,6 +72,8 @@ private:
     [[nodiscard]] vk::GeneratedCommandsInfoEXT generatedCommandsInfo(CullPhase phase, RasterBin group) const;
     void createResolveCommands();
     [[nodiscard]] vk::GeneratedCommandsInfoEXT resolveCommandsInfo(vk::DeviceAddress materialBins) const;
+    // a DGC record call without DGC is a renderer bug
+    void requireEnabled(std::string_view caller) const;
 
     Device& device;
     const VkAllocator& allocator;
@@ -99,6 +110,7 @@ private:
     // sequences of all groups of one phase
     uint32_t phaseSequences = 0;
     vk::DeviceAddress counters = 0;
+    vk::Buffer sequenceCountBuffer;
 
     // device-local, written by buildMeshSequences
     std::array<vk::raii::Buffer, MAX_FRAMES_IN_FLIGHT> sequenceBuffers = {nullptr, nullptr};

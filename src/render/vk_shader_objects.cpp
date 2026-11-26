@@ -40,9 +40,23 @@ bool isGpuAvResolvePerBinRequested()
     return text != nullptr && *text != '\0' && std::string_view(text) != "0";
 }
 
+bool isDgcRequested()
+{
+    const char* text = std::getenv("ENGINE_DGC");
+    if (text == nullptr || *text == '\0') {
+        return false;
+    }
+    const std::string_view value(text);
+    if (value != "0" && value != "1") {
+        logError(std::format("ENGINE_DGC='{}' is unknown (0 or 1); DGC stays off", value), "ShaderObjects");
+    }
+    return value == "1";
+}
+
 ShaderObjects::ShaderObjects(const vk::raii::Device& device) : device(device)
 {
-    if (isResolvePerBin) {
+    logInfo(isDgcEnabled ? "Command path: DGC (ENGINE_DGC=1)" : "Command path: plain indirect", "ShaderObjects");
+    if (isResolvePerBin && isDgcEnabled) {
         logInfo("TEMPORARY GPU-AV resolve path (ENGINE_GPUAV_RESOLVE_PER_BIN, considerations C-E1-3): per-bin "
                 "vkCmdDispatchIndirect, no DGC execution set; not the shipped path",
                 "ShaderObjects");
@@ -64,14 +78,14 @@ void ShaderObjects::createMeshShaders()
     visRaster = createMeshShaderPair({
         .meshFile = "mesh_raster.spv",
         .fragmentFile = "mesh_fragment.spv",
-        .meshEntry = "meshMain",
+        .meshEntry = isDgcEnabled ? "meshMain" : "meshIndirectMain",
         .fragmentEntry = "fragMain",
         .debugName = "VisRaster",
     });
     visRasterAlpha = createMeshShaderPair({
         .meshFile = "mesh_raster.spv",
         .fragmentFile = "mesh_alpha_fragment.spv",
-        .meshEntry = "meshAlphaMain",
+        .meshEntry = isDgcEnabled ? "meshAlphaMain" : "meshAlphaIndirectMain",
         .fragmentEntry = "alphaFragMain",
         .debugName = "VisRasterAlpha",
     });
@@ -147,7 +161,7 @@ void ShaderObjects::createResolveShaders()
         {MaterialBin::Standard, "resolveStandardMain", "ResolveStandard"},
         {MaterialBin::Unlit, "resolveUnlitMain", "ResolveUnlit"},
     }};
-    // C-E1-3: GPU-AV disables itself on any INDIRECT_BINDABLE shader, so the temporary per-bin path drops the flag
+    // C-E1-3: GPU-AV disables itself on any INDIRECT_BINDABLE shader; the per-bin path (GPU-AV, no DGC) drops it
     const vk::ShaderCreateFlagsEXT bindableFlags =
         isResolvePerBin ? vk::ShaderCreateFlagsEXT{} : vk::ShaderCreateFlagBitsEXT::eIndirectBindable;
     for (const BinEntry& binEntry : kBinEntries) {

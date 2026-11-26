@@ -110,8 +110,8 @@ void binArgsMain()
     bins.sequenceCount = sequenceCount;
 }
 
-// TEMPORARY (considerations C-E1-3, ENGINE_GPUAV_RESOLVE_PER_BIN): sequence slot = bin, 0 groups when empty, for one
-// vkCmdDispatchIndirect per bin under GPU-AV instead of the DGC execute
+// no DGC, or GPU-AV (considerations C-E1-3, ENGINE_GPUAV_RESOLVE_PER_BIN): sequence slot = bin, 0 groups when
+// empty, for one vkCmdDispatchIndirect per bin instead of the DGC execute
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void binArgsPerBinMain()

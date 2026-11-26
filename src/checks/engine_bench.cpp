@@ -1,5 +1,6 @@
 #include "engine_bench.hpp"
 #include "../static_headers/logger.hpp"
+#include "render/vk_shader_objects.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -118,6 +119,7 @@ void EngineBench::logResults(const GpuTimer& timer, const MeshletCullStats& cull
     logInfo(std::format("Bench: field side {}{}, {} windows of {} frames after {} warm-up frames", config.fieldSide,
                         config.isFieldMoving ? " (moving)" : "", windowCount, GpuTimer::kHistorySize, kWarmupFrames),
             "Bench");
+    logInfo(std::format("  command path: {}", isDgcRequested() ? "DGC (ENGINE_DGC=1)" : "plain indirect"), "Bench");
     double total = 0.0;
     for (size_t i = 0; i < kGpuTimerScopeCount; ++i) {
         const auto scope = static_cast<GpuTimerScope>(i);

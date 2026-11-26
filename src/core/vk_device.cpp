@@ -105,6 +105,9 @@ constexpr std::array kRequiredFeatures = {
     ENGINE_CORE_FEATURE(shaderInt64),
     // NRC's HLSL packs with f32tof16 / f16tof32, which Slang lowers to Float16 + Int16 (gi/nrc_bridge.slang)
     ENGINE_CORE_FEATURE(shaderInt16),
+    // raster without DGC: DrawIndex in the indirect mesh entries, vkCmdDrawMeshTasksIndirectCountEXT
+    ENGINE_FEATURE(PhysicalDeviceVulkan11Features, shaderDrawParameters),
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, drawIndirectCount),
     // mesh.slang: uint8_t* meshletTriangles via PhysicalStorageBuffer
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, storageBuffer8BitAccess),
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderInt8),

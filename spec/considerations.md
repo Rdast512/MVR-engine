@@ -131,6 +131,7 @@ Stamped M4, the current milestone; [rtxdi_3_2_update.md](./features/done/rtxdi_3
   - under GPU-AV, the guide capture passes 2/2 + 3/3 and the motion test 12/13 (C-T-1); the only error is the C-G3-3 NRC leak;
   - a temporary out-of-bounds read in `resolveUnlitMain` was reported against `ShaderObject_ResolveUnlit_Compute` at `vkCmdDispatchIndirect` (VUID-RuntimeSpirv-PhysicalStorageBuffer64-11819), so the bins are instrumented.
   **Exit:** remove the switch with C-E1-3 (a layer release that accepts indirect-bindable heap shader objects); until then, run GPU-AV with `ENGINE_GPUAV_RESOLVE_PER_BIN=1`.
+  2026-11-26: the per-bin path is also the default resolve (no DGC unless `ENGINE_DGC=1`) ([features/planned/dgc_toggle.md](./features/planned/dgc_toggle.md)), so its code stays when this switch goes; only `ENGINE_GPUAV_RESOLVE_PER_BIN` is removed.
 
 ## M7 · E2 emissive triangles
 

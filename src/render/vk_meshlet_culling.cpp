@@ -158,7 +158,8 @@ void MeshletCulling::prepareFrame(uint32_t frameSlot, const Camera& camera, cons
     std::array<uint32_t, kRasterBinCount> maxSequences{};
     std::ranges::transform(templates.binMeshlets, maxSequences.begin(),
                            [perSequence](uint32_t meshlets) { return divideRoundUp(meshlets, perSequence); });
-    dgc.prepareFrame(frameSlot, maxSequences, frames[frameSlot].counters.address);
+    dgc.prepareFrame(frameSlot, maxSequences, *frames[frameSlot].counters.buffer,
+                     frames[frameSlot].counters.address);
     writeCullView(frameSlot, camera, hiz, history, perSequence);
 
     recorded[frameSlot] = RecordedFrame{
@@ -370,8 +371,10 @@ uint32_t MeshletCulling::meshletsPerSequence(uint32_t totalMeshlets) const
     if (settings.maxMeshletsPerSequence != 0) {
         perSequence = std::min(perSequence, settings.maxMeshletsPerSequence);
     }
-    // a small UI value must not push a group past maxIndirectSequenceCount
-    const uint32_t maxSequences = device.capabilities.deviceGeneratedCommands.maxIndirectSequenceCount;
+    // a small UI value must not push a group past maxIndirectSequenceCount, or maxDrawIndirectCount without DGC
+    const uint32_t maxSequences =
+        std::min(device.capabilities.deviceGeneratedCommands.maxIndirectSequenceCount,
+                 device.capabilities.properties2.properties.limits.maxDrawIndirectCount);
     return std::max(perSequence, divideRoundUp(totalMeshlets, maxSequences));
 }
 
@@ -404,7 +407,8 @@ void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, con
     const glm::vec2 jitterPixels =
         glm::abs(camera.cameraData.jitterOffset) * 0.5f * camera.cameraData.renderTargetSize;
 
-    const FrameBuffers& buffers = frames[frameSlot];
+    FrameBuffers& buffers = frames[frameSlot];
+    buffers.meshletsPerSequence = perSequence;
     const GpuCullView view{
         .cameraPos = position,
         .flags = (settings.isFrustumEnabled ? CullFlag::Frustum : 0u) | (settings.isConeEnabled ? CullFlag::Cone : 0u) |
@@ -457,12 +461,24 @@ void MeshletCulling::writeCullView(uint32_t frameSlot, const Camera& camera, con
                                                                : camera.cameraData.prevViewProj;
         std::exclusive_scan(templates.binMeshlets.begin(), templates.binMeshlets.end(),
                             phaseView.binVisibleOffset.begin(), phase * phaseVisibleRows);
+        buffers.binVisibleOffsets[phase] = phaseView.binVisibleOffset;
         for (uint32_t group = 0; group < kRasterBinCount; ++group) {
             phaseView.binSequenceOffset[group] =
                 dgc.binSequenceOffset(static_cast<CullPhase>(phase), static_cast<RasterBin>(group));
         }
     }
     *static_cast<PhaseCullViews*>(buffers.cullView.mapped) = views;
+}
+
+MeshPushData MeshletCulling::indirectDrawPush(uint32_t frameSlot, CullPhase phase, RasterBin bin,
+                                             vk::DeviceAddress frameRoot) const
+{
+    const FrameBuffers& buffers = frames[frameSlot];
+    return MeshPushData{
+        .frameRoot = frameRoot,
+        .firstVisible = buffers.binVisibleOffsets[std::to_underlying(phase)][std::to_underlying(bin)],
+        .meshletCount = buffers.meshletsPerSequence,
+    };
 }
 
 void MeshletCulling::recordCull(const vk::raii::CommandBuffer& cmd, CullPhase phase) const

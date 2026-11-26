@@ -273,10 +273,10 @@ function(engine_add_slang_pass rel_path)
   set(COMPILED_SHADERS ${_spv} ${COMPILED_SHADERS} PARENT_SCOPE)
 endfunction()
 
-engine_add_slang_pass(passes/mesh_raster.slang ENTRIES meshMain meshAlphaMain)
+engine_add_slang_pass(passes/mesh_raster.slang ENTRIES meshMain meshAlphaMain meshIndirectMain meshAlphaIndirectMain)
 engine_add_slang_pass(passes/mesh_fragment.slang ENTRIES fragMain)
 engine_add_slang_pass(passes/mesh_alpha_fragment.slang ENTRIES alphaFragMain)
-engine_add_slang_pass(passes/classify.slang ENTRIES classifyMain binArgsMain binArgsPerBinMain)  # binArgsPerBinMain: TEMPORARY, considerations C-E1-3
+engine_add_slang_pass(passes/classify.slang ENTRIES classifyMain binArgsMain binArgsPerBinMain)  # binArgsPerBinMain: no DGC (default) and GPU-AV (C-E1-3)
 engine_add_slang_pass(passes/resolve.slang ENTRIES resolveBackgroundMain resolveStandardMain resolveUnlitMain)
 engine_add_slang_pass(passes/debug_view.slang ENTRIES debugViewMain FLAGS ${RTXDI_SLANG_FLAGS})
 engine_add_slang_pass(passes/present.slang ENTRIES presentMesh presentFrag)

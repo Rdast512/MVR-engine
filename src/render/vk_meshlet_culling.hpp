@@ -8,6 +8,7 @@
 #include "core/vk_frame_data.hpp"
 #include "scene/vk_camera.hpp"
 #include "scene/vk_scene.hpp"
+#include "push_data.hpp"
 #include "vk_dgc.hpp"
 #include "vk_hiz.hpp"
 #include "vk_shader_objects.hpp"
@@ -157,6 +158,10 @@ public:
     {
         return frames[frameSlot].triangleCullFlags;
     }
+    // without DGC: the push of one (phase, bin) indirect count draw; draw i adds i * meshletCount rows
+    // (passes/mesh_raster.slang meshIndirectMain), reproducing buildMeshSequences' sequence i
+    [[nodiscard]] MeshPushData indirectDrawPush(uint32_t frameSlot, CullPhase phase, RasterBin bin,
+                                                vk::DeviceAddress frameRoot) const;
     // half a step of the device's sub-pixel grid
     [[nodiscard]] float getSubpixelSnap() const noexcept { return subpixelSnap; }
 
@@ -203,6 +208,9 @@ private:
         uint32_t lateVisibleBase = 0;
         // TriangleCullFlag bits from the settings of the frame recorded into the slot
         uint32_t triangleCullFlags = 0;
+        // GpuCullView::binVisibleOffset and maxMeshletsPerSequence of the recorded frame, for indirectDrawPush
+        std::array<std::array<uint32_t, kRasterBinCount>, kCullPhaseCount> binVisibleOffsets{};
+        uint32_t meshletsPerSequence = 0;
     };
     // what prepareFrame recorded into a slot, paired with its counters on readback
     struct RecordedFrame

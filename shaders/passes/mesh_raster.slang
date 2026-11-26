@@ -92,13 +92,14 @@ groupshared float4 clipCorners[kMaxMeshletVertices];
 
 // one workgroup per visible meshlet; the cull pass already dropped empty and culled ones
 void rasterMeshlet<V : IRasterVertex>(
+    MeshPushData drawPush,
     uint gtid,
     uint gid,
     out vertices V verts[kMaxMeshletVertices],
     out indices uint3 tris[kMaxMeshletTriangles],
     out primitives MeshPrimitiveOut prims[kMaxMeshletTriangles])
 {
-    DrawContext draw = loadDrawContext(push, gid);
+    DrawContext draw = loadDrawContext(drawPush, gid);
     GpuMeshletDesc meshlet = loadMeshlet(draw);
     const uint vertCount = min(uint(meshlet.vertexCount), kMaxMeshletVertices);
     const uint primCount = min(uint(meshlet.triangleCount), kMaxMeshletTriangles);
@@ -164,7 +165,7 @@ void meshMain(
     out indices uint3 tris[kMaxMeshletTriangles],
     out primitives MeshPrimitiveOut prims[kMaxMeshletTriangles])
 {
-    rasterMeshlet<MeshVertexOut>(gtid, gid, verts, tris, prims);
+    rasterMeshlet<MeshVertexOut>(push, gtid, gid, verts, tris, prims);
 }
 
 [shader("mesh")]
@@ -177,5 +178,42 @@ void meshAlphaMain(
     out indices uint3 tris[kMaxMeshletTriangles],
     out primitives MeshPrimitiveOut prims[kMaxMeshletTriangles])
 {
-    rasterMeshlet<MeshAlphaVertexOut>(gtid, gid, verts, tris, prims);
+    rasterMeshlet<MeshAlphaVertexOut>(push, gtid, gid, verts, tris, prims);
+}
+
+// without DGC (default): one vkCmdDrawMeshTasksIndirectCountEXT per (phase, bin) over the DGC sequences. The push
+// holds the bin's first row and meshletsPerSequence; draw i is sequence i of buildMeshSequences
+MeshPushData indirectDrawPush(uint drawIndex)
+{
+    MeshPushData drawPush = push;
+    drawPush.firstVisible += drawIndex * push.meshletCount;
+    return drawPush;
+}
+
+[shader("mesh")]
+[numthreads(kGroupSize, 1, 1)]
+[outputtopology("triangle")]
+void meshIndirectMain(
+    uint gtid : SV_GroupThreadID,
+    uint gid  : SV_GroupID,
+    uint drawIndex : SV_DrawIndex,
+    out vertices MeshVertexOut verts[kMaxMeshletVertices],
+    out indices uint3 tris[kMaxMeshletTriangles],
+    out primitives MeshPrimitiveOut prims[kMaxMeshletTriangles])
+{
+    rasterMeshlet<MeshVertexOut>(indirectDrawPush(drawIndex), gtid, gid, verts, tris, prims);
+}
+
+[shader("mesh")]
+[numthreads(kGroupSize, 1, 1)]
+[outputtopology("triangle")]
+void meshAlphaIndirectMain(
+    uint gtid : SV_GroupThreadID,
+    uint gid  : SV_GroupID,
+    uint drawIndex : SV_DrawIndex,
+    out vertices MeshAlphaVertexOut verts[kMaxMeshletVertices],
+    out indices uint3 tris[kMaxMeshletTriangles],
+    out primitives MeshPrimitiveOut prims[kMaxMeshletTriangles])
+{
+    rasterMeshlet<MeshAlphaVertexOut>(indirectDrawPush(drawIndex), gtid, gid, verts, tris, prims);
 }

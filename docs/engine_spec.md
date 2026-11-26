@@ -345,7 +345,7 @@ After the final goal (§16.3):
 | Hi-Z | `nvhiz-update` port, 3 levels per dispatch, min reduction (built in M1) |
 | Target | visibility buffer (§8.3) + depth, render resolution, 1 sample, jittered projection |
 | Buckets | opaque and alpha-tested (own fragment shader with `discard`); two-sided by winding flip, no cull-mode bucket (§8.1 A6). One DGC execute per bucket per phase. Both bins are built (alpha-tested since M6 D3), with one rule for which primitives are alpha-tested in raster and rays (`isAlphaTested`, §10.5) |
-| DGC | the raster path ([dgc_comparison.md §7–9](../reference/dgc_comparison.md)): GPU-written sequences + count; an execution set once buckets need different shaders. The sample's one indirect mesh draw per list is intentionally not followed |
+| DGC | the raster path ([dgc_comparison.md §7–9](../reference/dgc_comparison.md)): GPU-written sequences + count; an execution set once buckets need different shaders. The sample's one indirect mesh draw per list is intentionally not followed. **Default since 2026-11-26: no DGC**: `vkCmdDrawMeshTasksIndirectCountEXT` over the same sequences, resolve per bin (§9.2), faster on the RTX 5070 in every scene; `ENGINE_DGC=1` runs the DGC path ([dgc_toggle.md](../spec/features/planned/dgc_toggle.md) §7) |
 | Mesh shader | visible entry → node instance → model → `MeshletPrimitives[meshletRow]` → primitive (material `DoubleSided` flag; no draw record read) → vertex transform → triangle culling → ids only; no material fetch except in the alpha-tested bucket |
 
 ### 8.3 Visibility buffer
@@ -375,7 +375,7 @@ One compute pass reads the visibility buffer in 8×8 tiles and appends each tile
 
 ### 9.2 Resolve and shade
 
-Dispatched with **DGC compute**: one sequence per non-empty bin, an `EXECUTION_SET` of compute shader objects, `DISPATCH` tokens, sequence count from the GPU. This is the engine's main DGC use ([dgc_comparison.md §9](../reference/dgc_comparison.md#9-dgc-for-the-planned-gpu-work)).
+Dispatched with **DGC compute**: one sequence per non-empty bin, an `EXECUTION_SET` of compute shader objects, `DISPATCH` tokens, sequence count from the GPU. This is the engine's main DGC use ([dgc_comparison.md §9](../reference/dgc_comparison.md#9-dgc-for-the-planned-gpu-work)). Since 2026-11-26 the default dispatches each bin with `vkCmdDispatchIndirect` instead (the C-E1-3 per-bin path); the DGC execute runs only with `ENGINE_DGC=1`.
 
 **Overlap guard:** a tile with several materials is in several bins, so several bin shaders run over the same pixels. Each bin shader is `[numthreads(8, 8, 1)]`, launched with `groupCount = (tileCount[bin], 1, 1)`, and returns early when the pixel's bin id (one load from the bin-id image) is not its own. Every pixel is written by exactly one bin, so the §9.3 images see no races or overwrites.
 

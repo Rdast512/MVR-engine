@@ -47,6 +47,10 @@ DeviceGeneratedCommands::~DeviceGeneratedCommands()
 
 void DeviceGeneratedCommands::init()
 {
+    if (!shaderObjects.isDgcEnabled) {
+        logInfo("DGC off (ENGINE_DGC=1 enables it): sequence buffers only", "DGC");
+        return;
+    }
     const auto& props = device.capabilities.deviceGeneratedCommands;
     if (props.maxIndirectSequenceCount == 0 || props.maxIndirectCommandsTokenCount < 2) {
         throw std::runtime_error("DGC sequence/token limits too small");
@@ -276,10 +280,11 @@ vk::DeviceSize DeviceGeneratedCommands::queryPreprocessSize(uint32_t capacity) c
 
 void DeviceGeneratedCommands::prepareFrame(uint32_t frameSlot,
                                            const std::array<uint32_t, kRasterBinCount>& maxSequences,
-                                           vk::DeviceAddress countersAddress)
+                                           vk::Buffer countersBuffer, vk::DeviceAddress countersAddress)
 {
     frame = frameSlot;
     binMaxSequences = maxSequences;
+    sequenceCountBuffer = countersBuffer;
     counters = countersAddress;
     std::exclusive_scan(maxSequences.begin(), maxSequences.end(), groupOffsets.begin(), 0u);
     phaseSequences = groupOffsets.back() + maxSequences.back();
@@ -311,7 +316,9 @@ void DeviceGeneratedCommands::ensureFrameCapacity(uint32_t frameSlot, uint32_t m
             "DGC");
     destroyFrameResources(frameSlot);
     allocateSequenceBuffer(frameSlot, newCapacity);
-    allocatePreprocessBuffer(frameSlot, newCapacity);
+    if (shaderObjects.isDgcEnabled) {
+        allocatePreprocessBuffer(frameSlot, newCapacity);
+    }
 }
 
 void DeviceGeneratedCommands::allocateSequenceBuffer(uint32_t frameSlot, uint32_t capacity)
@@ -399,6 +406,7 @@ vk::GeneratedCommandsInfoEXT DeviceGeneratedCommands::generatedCommandsInfo(Cull
 void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd, CullPhase phase) const
 {
     ZoneScopedN("DeviceGeneratedCommands::recordPreprocess");
+    requireEnabled("recordPreprocess");
     bool hasWork = false;
     // groups use disjoint preprocess regions, so no barrier is needed between them
     for (const RasterBin group : kRasterBins) {
@@ -425,12 +433,31 @@ void DeviceGeneratedCommands::recordPreprocess(vk::raii::CommandBuffer& cmd, Cul
 void DeviceGeneratedCommands::recordExecute(vk::raii::CommandBuffer& cmd, CullPhase phase, RasterBin group) const
 {
     ZoneScopedN("DeviceGeneratedCommands::recordExecute");
+    requireEnabled("recordExecute");
     if (binMaxSequences[std::to_underlying(group)] == 0) {
         return;
     }
     // execute leaves the bound graphics state undefined; rebind exactly what preprocess saw
     shaderObjects.bindMeshState(cmd, group);
     cmd.executeGeneratedCommandsEXT(vk::True, generatedCommandsInfo(phase, group));
+}
+
+void DeviceGeneratedCommands::recordIndirectDraw(const vk::raii::CommandBuffer& cmd, CullPhase phase, RasterBin group,
+                                                 const MeshPushData& push) const
+{
+    ZoneScopedN("DeviceGeneratedCommands::recordIndirectDraw");
+    const uint32_t index = std::to_underlying(group);
+    if (binMaxSequences[index] == 0) {
+        return;
+    }
+    shaderObjects.bindMeshState(cmd, group);
+    cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
+    const vk::DeviceSize drawOffset = vk::DeviceSize{binSequenceOffset(phase, group)} * sizeof(MeshDgcSequence) +
+        offsetof(MeshDgcSequence, draw);
+    const vk::DeviceSize countOffset = std::to_underlying(phase) * sizeof(GpuCullCounters) +
+        offsetof(GpuCullCounters, sequenceCount) + index * sizeof(uint32_t);
+    cmd.drawMeshTasksIndirectCountEXT(*sequenceBuffers[frame], drawOffset, sequenceCountBuffer, countOffset,
+                                      binMaxSequences[index], sizeof(MeshDgcSequence));
 }
 
 vk::GeneratedCommandsInfoEXT DeviceGeneratedCommands::resolveCommandsInfo(vk::DeviceAddress materialBins) const
@@ -453,6 +480,7 @@ void DeviceGeneratedCommands::recordResolvePreprocess(const vk::raii::CommandBuf
                                                       vk::DeviceAddress materialBins) const
 {
     ZoneScopedN("DeviceGeneratedCommands::recordResolvePreprocess");
+    requireEnabled("recordResolvePreprocess");
     cmd.preprocessGeneratedCommandsEXT(resolveCommandsInfo(materialBins), *resolveStateCommandBuffer);
     const vk::MemoryBarrier2 preprocessBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eCommandPreprocessEXT,
@@ -467,7 +495,15 @@ void DeviceGeneratedCommands::recordResolveExecute(const vk::raii::CommandBuffer
                                                    vk::DeviceAddress materialBins) const
 {
     ZoneScopedN("DeviceGeneratedCommands::recordResolveExecute");
+    requireEnabled("recordResolveExecute");
     // the state the preprocess saw; execute leaves the bound compute shader undefined afterwards
     ShaderObjects::bindComputeShader(cmd, shaderObjects.resolveShaders[std::to_underlying(MaterialBin::Background)]);
     cmd.executeGeneratedCommandsEXT(vk::True, resolveCommandsInfo(materialBins));
+}
+
+void DeviceGeneratedCommands::requireEnabled(std::string_view caller) const
+{
+    if (!shaderObjects.isDgcEnabled) {
+        throw std::logic_error(std::format("DeviceGeneratedCommands::{} without ENGINE_DGC=1", caller));
+    }
 }

@@ -836,6 +836,16 @@ void Renderer::dispatchFullscreen(const vk::raii::CommandBuffer& cmd, const vk::
     cmd.dispatch(divideRoundUp(extent.width, tile), divideRoundUp(extent.height, tile), 1);
 }
 
+void Renderer::recordRasterBin(vk::raii::CommandBuffer& cmd, CullPhase phase, RasterBin bin) const
+{
+    if (shaderObjects.isDgcEnabled) {
+        dgc.recordExecute(cmd, phase, bin);
+        return;
+    }
+    const vk::DeviceAddress frameRoot = frameData.frameRootAddress(currentFrame);
+    dgc.recordIndirectDraw(cmd, phase, bin, culling.indirectDrawPush(currentFrame, phase, bin, frameRoot));
+}
+
 // cull -> preprocess -> vis-buffer raster -> hi-z; the late phase draws over the early one
 void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase)
 {
@@ -860,8 +870,10 @@ void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase)
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneDgcPreprocess, *cmd, "GPU_DgcPreprocess", gpuTrace);
 #endif
-        // preprocess takes its state from the state command buffer
-        dgc.recordPreprocess(cmd, phase);
+        // preprocess takes its state from the state command buffer; the scope stays without DGC so bench rows match
+        if (shaderObjects.isDgcEnabled) {
+            dgc.recordPreprocess(cmd, phase);
+        }
         gpuTimer.end(cmd, scope(GpuTimerScope::EarlyPreprocess, GpuTimerScope::LatePreprocess));
     }
 
@@ -920,9 +932,9 @@ void Renderer::recordPhase(vk::raii::CommandBuffer& cmd, CullPhase phase)
         TracyVkNamedZone(gpuCtx, gpuZoneDrawCalls, *cmd, "GPU_DrawCalls", gpuTrace);
 #endif
         // opaque first: its depth makes occluded alpha-tested fragments fail the test before they sample
-        dgc.recordExecute(cmd, phase, RasterBin::Opaque);
+        recordRasterBin(cmd, phase, RasterBin::Opaque);
         gpuTimer.end(cmd, scope(GpuTimerScope::EarlyDraw, GpuTimerScope::LateDraw));
-        dgc.recordExecute(cmd, phase, RasterBin::AlphaTested);
+        recordRasterBin(cmd, phase, RasterBin::AlphaTested);
         gpuTimer.end(cmd, scope(GpuTimerScope::EarlyAlphaDraw, GpuTimerScope::LateAlphaDraw));
     }
     cmd.endRendering();
@@ -997,7 +1009,8 @@ void Renderer::recordClassify(const vk::raii::CommandBuffer& cmd)
     gpuTimer.end(cmd, GpuTimerScope::Classify);
 }
 
-// one DGC execute: a sequence per non-empty bin, each bin shader over its tile list with the overlap guard
+// one DGC execute (per-bin dispatches without DGC): a sequence per non-empty bin, each bin shader over its tile list
+// with the overlap guard
 void Renderer::recordResolve(const vk::raii::CommandBuffer& cmd)
 {
     // sequences and count -> preprocess and execute; binIds and tile lists -> the bin shaders
@@ -1011,8 +1024,8 @@ void Renderer::recordResolve(const vk::raii::CommandBuffer& cmd)
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &sequenceBarrier});
     if (shaderObjects.isResolvePerBin) {
-        // TEMPORARY (considerations C-E1-3): binArgsPerBinMain's slot per bin, same shaders and push data as the
-        // DGC sequence; an empty bin dispatches 0 groups
+        // no DGC or GPU-AV (C-E1-3): binArgsPerBinMain's slot per bin, same shaders and push data as the DGC
+        // sequence; an empty bin dispatches 0 groups
         const vk::Buffer materialBinsBuffer = targets.getMaterialBinsBuffer();
         for (uint32_t bin = 0; bin < kMaterialBinCount; ++bin) {
             const ResolvePushData push{

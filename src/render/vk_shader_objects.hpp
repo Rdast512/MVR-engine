@@ -25,6 +25,9 @@ inline constexpr bool kDebugRays = true;
 // INDIRECT_BINDABLE and dispatches each bin with vkCmdDispatchIndirect instead of the DGC execution set, so GPU-AV can
 // run. Only for GPU-AV runs, never the shipped path (engine spec §9.2); bench mode refuses it. Remove with C-E1-3
 [[nodiscard]] bool isGpuAvResolvePerBinRequested();
+// default: no DGC command (spec/features/planned/dgc_toggle.md, faster on the RTX 5070). Raster draws with
+// vkCmdDrawMeshTasksIndirectCountEXT, the resolve takes the per-bin path above. ENGINE_DGC=1: the DGC path
+[[nodiscard]] bool isDgcRequested();
 
 // linked mesh + fragment VK_EXT_shader_object pairs plus the unlinked compute shaders; all raster state is dynamic
 class ShaderObjects
@@ -141,8 +144,10 @@ public:
 
     // passes/resolve.slang, one per MaterialBin: the resolve's DGC execution set (ResolvePushData)
     std::array<vk::raii::ShaderEXT, kMaterialBinCount> resolveShaders = {nullptr, nullptr, nullptr};
-    // TEMPORARY (C-E1-3): resolve shaders not indirect-bindable, binArgs from binArgsPerBinMain, no execution set
-    bool isResolvePerBin = isGpuAvResolvePerBinRequested();
+    // false: visRaster / visRasterAlpha use the indirect mesh entries; declared before isResolvePerBin
+    bool isDgcEnabled = isDgcRequested();
+    // GPU-AV (C-E1-3) or no DGC: resolve shaders not indirect-bindable, binArgs from binArgsPerBinMain, no exec set
+    bool isResolvePerBin = isGpuAvResolvePerBinRequested() || !isDgcEnabled;
 
     // async compute RT scene passes
     struct RtShaders
