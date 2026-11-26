@@ -105,19 +105,8 @@ NrcCache::NrcCache(const Device& device, const VkAllocator& allocator, const Nrc
     for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
         constants[slot] = createHostBuffer(sizeof(GpuNrcConstants), allocator.allocator, device.vkdevice,
                                            device.queueFamilyIndices, std::format("NrcConstants_{}", slot), nullptr);
-        // host-cached readback memory avoids uncached ReBAR reads in isNetworkDiverged
-        HostBuffer& healthSlot = health[slot];
-        createBuffer(sizeof(GpuNrcHealth),
-                     vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent |
-                         vk::MemoryPropertyFlagBits::eHostCached,
-                     healthSlot.buffer, healthSlot.memory, allocator.allocator, device.vkdevice,
-                     device.queueFamilyIndices, std::format("NrcHealth_{}", slot), VMA_ALLOCATION_CREATE_MAPPED_BIT);
-        VmaAllocationInfo allocationInfo{};
-        vmaGetAllocationInfo(allocator.allocator, healthSlot.memory, &allocationInfo);
-        healthSlot.mapped = allocationInfo.pMappedData;
-        healthSlot.address = device.vkdevice.getBufferAddress({.buffer = *healthSlot.buffer});
-        *static_cast<GpuNrcHealth*>(healthSlot.mapped) = {};
+        health[slot] = createCounterReadback(sizeof(GpuNrcHealth), allocator.allocator, device.vkdevice,
+                                             device.queueFamilyIndices, std::format("NrcHealth_{}", slot));
     }
     if (const char* idleEnv = std::getenv("ENGINE_NRC_IDLE_FRAMES"); idleEnv != nullptr && *idleEnv != '\0') {
         uint32_t frames = 0;
@@ -141,8 +130,8 @@ NrcCache::~NrcCache()
     for (HostBuffer& slot : constants) {
         destroyHostBuffer(allocator.allocator, slot, nullptr);
     }
-    for (HostBuffer& slot : health) {
-        destroyHostBuffer(allocator.allocator, slot, nullptr);
+    for (CounterReadback& slot : health) {
+        destroyCounterReadback(allocator.allocator, slot);
     }
     if (context != nullptr) {
         api.destroyContext(*context);
@@ -172,8 +161,8 @@ bool NrcCache::hasNewBounds(const BoundingBox& sceneBounds) const noexcept
 
 void NrcCache::resetHealth() noexcept
 {
-    for (HostBuffer& slot : health) {
-        *static_cast<GpuNrcHealth*>(slot.mapped) = {};
+    for (CounterReadback& slot : health) {
+        *static_cast<GpuNrcHealth*>(slot.readback.mapped) = {};
     }
     divergedFrames = 0;
 }
@@ -184,7 +173,7 @@ void NrcCache::prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, 
         wasPaused = true;
         isTrainingFrame = false;
         divergedFrames = 0;
-        *static_cast<GpuNrcHealth*>(health[frameSlot].mapped) = {};
+        *static_cast<GpuNrcHealth*>(health[frameSlot].readback.mapped) = {};
         std::memset(constants[frameSlot].mapped, 0, sizeof(GpuNrcConstants));
         return;
     }
@@ -202,7 +191,7 @@ void NrcCache::prepareFrame(uint32_t frameSlot, const BoundingBox& sceneBounds, 
         if (!isConfigured) {
             isTrainingFrame = false;
             divergedFrames = 0;
-            *static_cast<GpuNrcHealth*>(health[frameSlot].mapped) = {};
+            *static_cast<GpuNrcHealth*>(health[frameSlot].readback.mapped) = {};
             std::memset(constants[frameSlot].mapped, 0, sizeof(GpuNrcConstants));
             return;
         }
@@ -232,7 +221,7 @@ bool NrcCache::isNetworkDiverged(uint32_t frameSlot)
     if (!isConfigured) {
         return false;
     }
-    auto& counts = *static_cast<GpuNrcHealth*>(health[frameSlot].mapped);
+    auto& counts = *static_cast<GpuNrcHealth*>(health[frameSlot].readback.mapped);
     const GpuNrcHealth last = counts;
     counts = {};
     // no resolve in that frame (paused, cache view), or too few lit waves: reset streak
@@ -489,6 +478,16 @@ void NrcCache::recordTrain(const vk::raii::CommandBuffer& cmd)
     checkNrc(api.queryAndTrain(context, *cmd, nullptr), "QueryAndTrain");
     // query radiance -> the resolve and debug view
     nrcBoundary(cmd);
+}
+
+void NrcCache::recordHealthReset(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot) const
+{
+    recordCounterReset(cmd, health[frameSlot]);
+}
+
+void NrcCache::recordHealthReadback(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot) const
+{
+    recordCounterReadback(cmd, health[frameSlot]);
 }
 
 bool NrcCache::isDebugResolveActive() const noexcept

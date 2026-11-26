@@ -220,7 +220,7 @@ The user decides from §4. The spec only fixes what each outcome changes.
 |---|---|---|---|---|---|
 | Sponza (566) | 0.057 → 0.022 | −0.022 | −0.013 | 0.094 → 0.075 (−20%) | 2.848 → 2.799 (−0.049, −1.7%) |
 | Field 32×32 (1501) | 0.058 → 0.030 | −0.022 | −0.006 | 0.093 → 0.075 (−19%) | 2.862 → 2.822 (−0.040, −1.4%) |
-| Bistro (203) | 0.113 → 0.067 | −0.036 | −0.010 | 0.096 → 0.069 (−28%) | 3.010 → 2.964 (−0.046, −1.5%) |
+| Bistro startup view, outside the café (203) | 0.113 → 0.067 | −0.036 | −0.010 | 0.096 → 0.069 (−28%) | 3.010 → 2.964 (−0.046, −1.5%) |
 
 **Reading:**
 - Every scene and every round agrees. Off is faster in each scope, and the scope deltas are well above the round-to-round spread (≤0.004 ms on the raster scopes).

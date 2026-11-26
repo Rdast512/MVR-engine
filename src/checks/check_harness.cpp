@@ -189,6 +189,19 @@ CheckRequest CheckHarness::attach(const CheckHostContext& host)
     if (glassBenchPose != kBistroGlassCheckPoses.end()) {
         camera.lookAt(glassBenchPose->position, glassBenchPose->target);
     }
+    // the café interior poses of ENGINE_CHECK_SCENE=bistro_cafe, under the default sun
+    const auto cafeBenchPose = std::ranges::find_if(
+        kBistroCafeCheckPoses, [&](const CheckPose& pose) { return r.bench && benchPose == pose.name; });
+    if (cafeBenchPose != kBistroCafeCheckPoses.end()) {
+        camera.lookAt(cafeBenchPose->position, cafeBenchPose->target);
+    }
+    if (!benchPose.empty() && benchPose != "courtyard" && glassBenchPose == kBistroGlassCheckPoses.end() &&
+        cafeBenchPose == kBistroCafeCheckPoses.end()) {
+        logError(std::format("ENGINE_BENCH_POSE='{}' is unknown (courtyard, street windows, bar shelf, cafe tables, "
+                             "cafe dining); the startup view stays",
+                             benchPose),
+                 "Bench");
+    }
     r.applyEngineConfig();
     // the guide shots show the glTF samples' own lights, as Khronos renders them
     renderer.getWorldLights().sun.isEnabled = !r.guideCapture;

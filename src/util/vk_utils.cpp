@@ -5,6 +5,7 @@
 #include "../static_headers/logger.hpp"
 
 #include <atomic>
+#include <cstring>
 #include <format>
 #include <string>
 #include <stdexcept>
@@ -175,6 +176,69 @@ void destroyHostBuffer(VmaAllocator allocator, HostBuffer& target, const char* t
     destroyVmaBuffer(allocator, target.buffer, target.memory, tracyName);
     target.mapped = nullptr;
     target.address = 0;
+}
+
+CounterReadback createCounterReadback(vk::DeviceSize size, VmaAllocator allocator, const vk::raii::Device& device,
+                                      const std::vector<uint32_t>& queueFamilyIndices, std::string_view debugName)
+{
+    CounterReadback target;
+    target.size = size;
+    createBuffer(size,
+                 vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress |
+                     vk::BufferUsageFlagBits2::eTransferSrc | vk::BufferUsageFlagBits2::eTransferDst,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal, target.counters, target.countersMemory, allocator, device,
+                 queueFamilyIndices, debugName);
+    target.address = device.getBufferAddress({.buffer = *target.counters});
+    // host-cached: the CPU reads it, uncached ReBAR reads are slow
+    createBuffer(size, vk::BufferUsageFlagBits2::eTransferDst,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent |
+                     vk::MemoryPropertyFlagBits::eHostCached,
+                 target.readback.buffer, target.readback.memory, allocator, device, queueFamilyIndices,
+                 std::format("{}Readback", debugName), VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    VmaAllocationInfo allocationInfo{};
+    vmaGetAllocationInfo(allocator, target.readback.memory, &allocationInfo);
+    target.readback.mapped = allocationInfo.pMappedData;
+    std::memset(target.readback.mapped, 0, static_cast<size_t>(size));
+    return target;
+}
+
+void destroyCounterReadback(VmaAllocator allocator, CounterReadback& target)
+{
+    destroyVmaBuffer(allocator, target.counters, target.countersMemory);
+    destroyHostBuffer(allocator, target.readback, nullptr);
+    target.address = 0;
+}
+
+void recordCounterReset(const vk::raii::CommandBuffer& cmd, const CounterReadback& target)
+{
+    cmd.fillBuffer(*target.counters, 0, target.size, 0);
+    const vk::MemoryBarrier2 resetBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eClear,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &resetBarrier});
+}
+
+void recordCounterReadback(const vk::raii::CommandBuffer& cmd, const CounterReadback& target)
+{
+    const vk::MemoryBarrier2 copyBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eCopy,
+        .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &copyBarrier});
+    cmd.copyBuffer(*target.counters, *target.readback.buffer, vk::BufferCopy{.size = target.size});
+    // a fence wait alone does not make device writes visible to the host
+    const vk::MemoryBarrier2 hostBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
+    };
+    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &hostBarrier});
 }
 
 vk::Format findSupportedFormat(const vk::raii::PhysicalDevice& physicalDevice, std::span<const vk::Format> candidates,

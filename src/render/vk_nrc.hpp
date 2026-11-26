@@ -119,6 +119,9 @@ public:
     // after the query pass: inference at the queries, then training. Binds the driver's descriptor heap; the caller
     // rebinds the engine heaps
     void recordTrain(const vk::raii::CommandBuffer& cmd);
+    // around passes/nrc_resolve.slang: zero the slot's health counters, then copy them for isNetworkDiverged
+    void recordHealthReset(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot) const;
+    void recordHealthReadback(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot) const;
     // SDK debug resolve (ND5): writes the active NrcResolveMode into an internal RGBA32F target (matching NRC's
     // Rgba32f storage image descriptor) and blits the renderExtent region into indirectRadiance
     [[nodiscard]] bool isDebugResolveActive() const noexcept;
@@ -161,7 +164,7 @@ private:
     nrc::vulkan::Context* context = nullptr;
     DriverDescriptorHeap driverHeap;
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> constants;
-    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> health;
+    std::array<CounterReadback, MAX_FRAMES_IN_FLIGHT> health;
     std::array<SdkBuffer, static_cast<size_t>(nrc::BufferIdx::Count)> sdkBuffers;
     nrc::vulkan::Buffers sdkBufferInfo{};
     // lazily allocated RGBA32F target for NRC's built-in Resolve debug pass (0 bytes in normal rendering)

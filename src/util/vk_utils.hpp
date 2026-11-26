@@ -66,6 +66,27 @@ void destroyVmaImage(VmaAllocator allocator, vk::raii::Image& image, VmaAllocati
 // VMA unmaps on destroy; no-op when never created
 void destroyHostBuffer(VmaAllocator allocator, HostBuffer& target, const char* tracyName);
 
+// GPU-written counters the host reads after the slot's fence. Shaders write the device-local buffer at address; one
+// copy per frame lands in host-cached readback. GPU atomics into host-cached (system) memory cross PCIe
+// (considerations C-M85-1)
+struct CounterReadback {
+    vk::raii::Buffer counters = nullptr;
+    VmaAllocation countersMemory = nullptr;
+    vk::DeviceAddress address = 0;
+    vk::DeviceSize size = 0;
+    HostBuffer readback;
+};
+
+[[nodiscard]] CounterReadback createCounterReadback(vk::DeviceSize size, VmaAllocator allocator,
+                                                    const vk::raii::Device& device,
+                                                    const std::vector<uint32_t>& queueFamilyIndices,
+                                                    std::string_view debugName);
+void destroyCounterReadback(VmaAllocator allocator, CounterReadback& target);
+// zeroes the counters, ordered before this frame's compute writers
+void recordCounterReset(const vk::raii::CommandBuffer& cmd, const CounterReadback& target);
+// after the compute writers: copies the counters into readback, visible to the host after the slot's fence
+void recordCounterReadback(const vk::raii::CommandBuffer& cmd, const CounterReadback& target);
+
 // first candidate whose tiling features include features; throws when none does
 [[nodiscard]] vk::Format findSupportedFormat(const vk::raii::PhysicalDevice& physicalDevice,
                                              std::span<const vk::Format> candidates, vk::ImageTiling tiling,

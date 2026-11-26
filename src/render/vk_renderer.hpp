@@ -316,7 +316,7 @@ private:
     // per frame slot, GpuRayDebugCounters; empty unless kDebugRays
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> rayDebugCounters;
     // per frame slot, GpuGlassCounters; reset by the host after the slot's fence
-    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> glassCounters;
+    std::array<CounterReadback, MAX_FRAMES_IN_FLIGHT> glassCounters;
     std::array<bool, MAX_FRAMES_IN_FLIGHT> isGlassRecorded{};
     GpuGlassCounters lastGlassCounters{};
     // GlassSettings of the frame being recorded: the ray commands are recorded before the frame root is written

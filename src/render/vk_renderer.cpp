@@ -52,19 +52,8 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
         logInfo(std::format("NRC host wait (C-G3-6): {}", isNrcHostWaitEnabled ? "on" : "off"), "Renderer");
     }
     for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
-        // MG-B2: host-cached readback memory avoids uncached WC VRAM reads in drawFrame()
-        HostBuffer& counters = glassCounters[slot];
-        createBuffer(sizeof(GpuGlassCounters),
-                     vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent |
-                         vk::MemoryPropertyFlagBits::eHostCached,
-                     counters.buffer, counters.memory, allocator.allocator, device.vkdevice, device.queueFamilyIndices,
-                     std::format("GlassCounters_{}", slot), VMA_ALLOCATION_CREATE_MAPPED_BIT);
-        VmaAllocationInfo allocationInfo{};
-        vmaGetAllocationInfo(allocator.allocator, counters.memory, &allocationInfo);
-        counters.mapped = allocationInfo.pMappedData;
-        counters.address = device.vkdevice.getBufferAddress({.buffer = *counters.buffer});
-        *static_cast<GpuGlassCounters*>(counters.mapped) = {};
+        glassCounters[slot] = createCounterReadback(sizeof(GpuGlassCounters), allocator.allocator, device.vkdevice,
+                                                    device.queueFamilyIndices, std::format("GlassCounters_{}", slot));
     }
     if constexpr (kDebugRays) {
         for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
@@ -90,8 +79,8 @@ Renderer::~Renderer()
     for (HostBuffer& counters : rayDebugCounters) {
         destroyHostBuffer(allocator.allocator, counters, nullptr);
     }
-    for (HostBuffer& counters : glassCounters) {
-        destroyHostBuffer(allocator.allocator, counters, nullptr);
+    for (CounterReadback& counters : glassCounters) {
+        destroyCounterReadback(allocator.allocator, counters);
     }
 }
 
@@ -298,9 +287,7 @@ void Renderer::drawFrame()
     gpuTimer.collect(currentFrame);
     post.readBack(currentFrame);
     if (isGlassRecorded[currentFrame]) {
-        auto& counters = *static_cast<GpuGlassCounters*>(glassCounters[currentFrame].mapped);
-        lastGlassCounters = counters;
-        counters = {};
+        lastGlassCounters = *static_cast<const GpuGlassCounters*>(glassCounters[currentFrame].readback.mapped);
     } else {
         lastGlassCounters = {};
     }
@@ -589,7 +576,7 @@ void Renderer::recordFrameCommands(vk::raii::CommandBuffer& cmd)
     TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
 #endif
 
-    cmd.begin({});
+    cmd.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     {
         ZoneScopedN("TransitionToRender");
@@ -726,7 +713,7 @@ const vk::raii::CommandBuffer& Renderer::beginRaySegment()
     }
     vk::raii::CommandBuffer& cmd = raySegments[raySegmentCount++];
     cmd.reset();
-    cmd.begin({});
+    cmd.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     // heap bindings do not carry over between command buffers
     bindHeaps(cmd);
     return cmd;
@@ -758,7 +745,7 @@ void Renderer::recordPresentCommands(vk::raii::CommandBuffer& cmd, uint32_t imag
     TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
 #endif
 
-    cmd.begin({});
+    cmd.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     // heap bindings do not carry over from the frame command buffer
     cmd.bindResourceHeapEXT(descriptorManager.resourceHeapInfo);
     cmd.bindSamplerHeapEXT(descriptorManager.samplerHeapInfo);
@@ -1132,7 +1119,9 @@ const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandB
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneNrcResolve, **cmd, "GPU_NrcResolve", gpuTrace);
 #endif
+        nrc.recordHealthReset(*cmd, currentFrame);
         dispatchFullscreen(*cmd, shaderObjects.frameShaders.nrcResolve);
+        nrc.recordHealthReadback(*cmd, currentFrame);
     }
     gpuTimer.end(*cmd, GpuTimerScope::NrcResolve);
     recordIndirectResampling(*cmd);
@@ -1153,15 +1142,12 @@ void Renderer::recordIndirectResampling(const vk::raii::CommandBuffer& cmd)
     TracyVkNamedZone(gpuCtx, gpuZoneRestirGi, *cmd, "GPU_RestirGi", gpuTrace);
 #endif
     // GI reservoir stores (indirect pass, NRC resolve, temporal pass) -> the next pass's loads and stores and the
-    // debug view; NRC resolve's health atomics -> host readback after the slot's fence
-    const bool hasNrcHealthWrite = isNrcRecorded && debugView.view != DebugView::NrcCache;
+    // debug view
     const vk::MemoryBarrier2 reservoirBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader |
-            (hasNrcHealthWrite ? vk::PipelineStageFlagBits2::eHost : vk::PipelineStageFlags2{}),
-        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite |
-            (hasNrcHealthWrite ? vk::AccessFlagBits2::eHostRead : vk::AccessFlags2{}),
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
     };
     const vk::DependencyInfo dependency{.memoryBarrierCount = 1, .pMemoryBarriers = &reservoirBarrier};
     cmd.pipelineBarrier2(dependency);
@@ -1375,15 +1361,10 @@ void Renderer::recordGlass(const vk::raii::CommandBuffer& cmd)
         .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &colorBarrier});
+    recordCounterReset(cmd, glassCounters[currentFrame]);
     dispatchFullscreen(cmd, shaderObjects.frameShaders.glass);
     // the counters are read on the host after the slot's fence; noisyColor's consumers order themselves
-    const vk::MemoryBarrier2 readbackBarrier{
-        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
-        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
-    };
-    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &readbackBarrier});
+    recordCounterReadback(cmd, glassCounters[currentFrame]);
 }
 
 void Renderer::recordDebugView(const vk::raii::CommandBuffer& cmd)

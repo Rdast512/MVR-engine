@@ -75,6 +75,7 @@ All buffers go through `createBuffer` (`src/util/vk_utils.cpp`); images through 
 - **Sharing:** buffers are `CONCURRENT` whenever more than one queue family is in use, so transfer-queue uploads need no ownership transfer. Images are `EXCLUSIVE` and touched only by the graphics queue.
 - **ReBAR:** the engine targets ReBAR PCs (spec §3). Host-visible buffers do not request a memory type explicitly; VMA may place them in host-visible VRAM.
 - **Host writes:** write whole structs front to back; never read mapped memory back, except the cull counters after their fence.
+- **GPU-written counters the host reads:** shaders never write `HOST_CACHED` memory, which is system memory on NVIDIA and puts every atomic on PCIe (considerations C-M85-1: 1.9 ms in one pass). Use `CounterReadback` (`vk_utils.hpp`): device-local counters, `recordCounterReset` before the writers, `recordCounterReadback` after them.
 - **Mapping style decides teardown:** `MAPPED_BIT` buffers (`HostBuffer`) are unmapped by VMA. Buffers mapped with `vmaMapMemory` (camera, heaps) must be unmapped before `destroyVmaBuffer`, or VMA asserts `m_MapCount == 0`. Never mix the two on one allocation.
 - **Teardown order:** unmap (explicit maps only) → reset image views → `destroyVmaBuffer` / `destroyVmaImage` with the same Tracy name used at allocation. `Engine::cleanup()` resets every module that owns allocations before `allocator.reset()`.
 - **Limits:** capacities come from queried device properties (`HardwareCapabilities`), never fixed numbers (spec §3, S11).
