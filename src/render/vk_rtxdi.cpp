@@ -492,9 +492,11 @@ RtxdiContext::Settings RtxdiContext::nvidiaPreset(QualityPreset preset)
 
 RtxdiContext::Settings RtxdiContext::nvidiaSettings() { return nvidiaPreset(QualityPreset::Medium); }
 
-RtxdiContext::Settings RtxdiContext::defaultSettings()
+RtxdiContext::Settings RtxdiContext::defaultSettings() { return nvidiaSettings(); }
+
+RtxdiContext::Settings RtxdiContext::tunedSettings()
 {
-    // M8 I6 tuned defaults over NVIDIA's Medium preset (spec/fixesM1-6/i6_restir_di_tuning.md):
+    // M8 I6 tuning over NVIDIA's Medium preset (spec/fixesM1-6/i6_restir_di_tuning.md):
     // - Power_RIS removes ReGIR's async presample stall on multi-light scenes (F12) and its PDF mismatch with BRDF
     //   candidates
     // - Fresh final visibility (isFinalVisibilityReused = false, O10) eliminates shadow-edge light leak and keeps
@@ -528,7 +530,7 @@ RtxdiContext::Settings RtxdiContext::defaultSettings()
 }
 RtxdiContext::Settings RtxdiContext::convergedSettings()
 {
-    Settings converged = defaultSettings();
+    Settings converged = tunedSettings();
     converged.brdfSamples = 0;
     // ReGIR's cells select by volume weight but BRDF candidates are weighed against the power PDF, as in the RTXDI
     // sample: a structured +0.19% on EmissiveStrengthTest. Power_RIS weighs both by the same PDF
@@ -580,14 +582,16 @@ RtxdiContext::GiSettings RtxdiContext::nvidiaGiSettings()
     return settings;
 }
 
-RtxdiContext::GiSettings RtxdiContext::defaultGiSettings()
+RtxdiContext::GiSettings RtxdiContext::defaultGiSettings() { return nvidiaGiSettings(); }
+
+RtxdiContext::GiSettings RtxdiContext::tunedGiSettings()
 {
     // Basic spatial correction darkens occluded places: -27% / -9% against the one-bounce ground truth in ReSTIR GI
     // mode (considerations C-G5-2, spec/fixesM1-6/m8_optimization_and_fixes.md O1). The temporal pass's Basic
     // correction does not; rays there cost 0.06 ms for nothing
     GiSettings settings = nvidiaGiSettings();
     settings.spatialBiasCorrection = RTXDI_GIBiasCorrectionMode::Raytraced;
-    // the frame always goes through DLSS-RR: ReSTIR PT's DLSS-RR profile, which the RTXDI sample applies whenever
+    // tuned for DLSS-RR: ReSTIR PT's DLSS-RR profile, which the RTXDI sample applies whenever
     // DLSS-RR runs (O11). Stagnancy decorrelation and firefly replacement take the boiling filter's place, with 20
     // frames of history; without the replacement those three let fireflies through (O1)
     const RTXDI_PTTemporalResamplingParameters temporal = rtxdi::GetDefaultReSTIRPTTemporalResamplingParams(true);
@@ -634,13 +638,15 @@ RtxdiContext::GiSettings RtxdiContext::convergedGiSettings()
 void RtxdiContext::applyDenoiserCompatDefaults(GiSettings& settings, bool isDlssRr)
 {
     if (isDlssRr) {
-        const GiSettings shipped = defaultGiSettings();
-        settings.maxHistoryLength = shipped.maxHistoryLength;
-        settings.maxReservoirAge = shipped.maxReservoirAge;
-        settings.isDuplicationHistoryReductionEnabled = shipped.isDuplicationHistoryReductionEnabled;
-        setDecorrelation(settings, decorrelationParameters(shipped));
-        settings.isBoilingFilterEnabled = shipped.isBoilingFilterEnabled;
-        settings.boilingFilterStrength = shipped.boilingFilterStrength;
+        // the shipped values: NVIDIA's DLSS-RR preset changes ReSTIR PT only, so with DLSS-RR ReSTIR GI is the
+        // library's
+        const GiSettings defaults = defaultGiSettings();
+        settings.maxHistoryLength = defaults.maxHistoryLength;
+        settings.maxReservoirAge = defaults.maxReservoirAge;
+        settings.isDuplicationHistoryReductionEnabled = defaults.isDuplicationHistoryReductionEnabled;
+        setDecorrelation(settings, decorrelationParameters(defaults));
+        settings.isBoilingFilterEnabled = defaults.isBoilingFilterEnabled;
+        settings.boilingFilterStrength = defaults.boilingFilterStrength;
         return;
     }
     const RTXDI_PTTemporalResamplingParameters temporal = rtxdi::GetDefaultReSTIRPTTemporalResamplingParams(false);

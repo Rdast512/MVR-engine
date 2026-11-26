@@ -27,6 +27,7 @@ option(ENABLE_SANITIZERS "ASan+UBSan in Debug (engine and third-party)" OFF)
 option(ENGINE_ENABLE_COVERAGE "Clang source-based coverage in Debug (engine targets)" OFF)
 option(ENGINE_UNITY_BUILD "UNITY_BUILD on engine libraries" OFF)
 option(ENGINE_USE_MIMALLOC "Use mimalloc for engine and third-party allocations" ON)
+option(ENGINE_BUILD_CHECKS "engine checks, bench and settings lab (engine_checks.dll)" OFF)
 
 if (NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU")
   message(FATAL_ERROR "Unsupported compiler: ${CMAKE_CXX_COMPILER_ID}. This project targets Clang toolchains.")
@@ -278,16 +279,18 @@ engine_add_slang_pass(passes/mesh_alpha_fragment.slang ENTRIES alphaFragMain)
 engine_add_slang_pass(passes/classify.slang ENTRIES classifyMain binArgsMain binArgsPerBinMain)  # binArgsPerBinMain: TEMPORARY, considerations C-E1-3
 engine_add_slang_pass(passes/resolve.slang ENTRIES resolveBackgroundMain resolveStandardMain resolveUnlitMain)
 engine_add_slang_pass(passes/debug_view.slang ENTRIES debugViewMain FLAGS ${RTXDI_SLANG_FLAGS})
-engine_add_slang_pass(passes/motion_check.slang ENTRIES motionCheckMain)
 engine_add_slang_pass(passes/present.slang ENTRIES presentMesh presentFrag)
 engine_add_slang_pass(passes/meshlet_cull.slang
     ENTRIES cullInstances cullMeshlets cullRejectedMeshlets buildMeshSequences)
 engine_add_slang_pass(passes/hiz_view.slang ENTRIES hizViewMesh hizViewFrag)
 engine_add_slang_pass(passes/hiz_build.slang ENTRIES hizBuild)
 engine_add_slang_pass(passes/rt_instances.slang ENTRIES rtInstancesMain)
-engine_add_slang_pass(passes/rt_check.slang ENTRIES rayCheckMain)
-# shelved with SER (considerations C-G1-3): raytracing/ser.slang and this pass stay in the tree, unbuilt
-# engine_add_slang_pass(passes/rt_ser_check.slang ENTRIES serCheckRaygen serCheckClosestHit serCheckMiss)
+if (ENGINE_BUILD_CHECKS)
+  engine_add_slang_pass(checks/motion_check.slang ENTRIES motionCheckMain)
+  engine_add_slang_pass(checks/rt_check.slang ENTRIES rayCheckMain)
+  # shelved with SER (considerations C-G1-3): raytracing/ser.slang and this pass stay in the tree, unbuilt
+  # engine_add_slang_pass(checks/rt_ser_check.slang ENTRIES serCheckRaygen serCheckClosestHit serCheckMiss)
+endif ()
 # NRC's path mode is a compile-time macro (Nrc.hlsli): the indirect pass is the query pass
 engine_add_slang_pass(passes/indirect.slang ENTRIES indirectMain
     FLAGS ${RTXDI_SLANG_FLAGS} -DNRC_QUERY=1)

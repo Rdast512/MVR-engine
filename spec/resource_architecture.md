@@ -1,7 +1,7 @@
 # Resource architecture
 
-**Date:** 2026-10-24, updated 2026-11-20
-**Status:** §1–§11 describe the working tree with M1–M4 built (vis buffer, reverse Z, resolve + guides, Mega Geometry CLAS/PTLAS, RTXDI ReSTIR DI + GI, NRC, DLSS-RR, post); §12 lists the remaining resource changes the target architecture requires. Living document: update it in the same change that alters resource code, and log the change in [Changelog](#changelog).
+**Date:** 2026-10-24, updated 2026-11-25
+**Status:** §1–§11 describe the core resource architecture (M1–M4, M6–M7 built, plus `fixesM1-6` packed surface guide O4, glass counters I13, and lazy accumulation target); §12 lists the remaining resource changes the target architecture requires (including M8 composable pipeline toggles & SHaRC BDA buffers). Living document: update it in the same change that alters resource code, and log the change in [Changelog](#changelog).
 **Target:** [engine_spec.md](../docs/engine_spec.md) is normative for the end state. Where this document describes code that the spec removes or replaces, §12 says so.
 **Related:** [shader_architecture_plan.md](./shader_architecture_plan.md), [pbr_implementation_plan.md](./pbr_implementation_plan.md), [culling_comparison.md](../reference/culling_comparison.md)
 **Code:** `src/core/vk_asset_buffers.*`, `src/core/vk_frame_data.*`, `src/core/vk_frame_sync.*`, `src/render/vk_render_targets.*`, `src/core/types.hpp`, `src/core/geometry_store.*`, `src/render/push_data.hpp`, `src/core/texture_manager.*`, `src/core/vk_descriptors.*`, `src/render/vk_dgc.*`, `src/render/vk_meshlet_culling.*`, `src/render/vk_hiz.*`, `src/util/vk_utils.*`, `shaders/types.slang`, `shaders/core/{frame,binding}.slang`
@@ -479,9 +479,9 @@ What the target architecture adds to or removes from the resources above, by spe
 | M2 | **Done (2026-11-14).** Per-cluster CLAS (object space, shared by instances), one cluster BLAS per primitive, one PTLAS updated in place with its scratch and a 48-byte state row per instance (PBR C4); per frame slot the CPU-written `GpuRayInstance[]` + `GpuRayInstanceBuild[]` (per layout), the GPU-written `VkPartitionedAccelerationStructureWriteInstanceDataNV[]` and a host-visible op entry; build scratch freed after load, CLAS moved to final size; `tlas` and `rayInstances` in the frame root | §10.2–10.3 |
 | M2 | **Done (2026-11-13).** Async compute queue for the RT scene build, timeline semaphore before the first ray pass | §5, §13 |
 | M3–M4 | **Done on RTX 5070 (2026-11-19).** RTXDI DI + GI reservoirs, world light buffers (`worldLights`, `prevWorldLights`) and `GpuRtxdiConstants` (496 B); VMA-allocated NRC SDK buffers and `GpuNrcConstants` (168 B); `directRadiance`, `indirectRadiance`, `noisyColor`, `upscaled`, `post`, `exposure`; per-SDK constants in the frame root | §11, §12 |
-| M6 | OMM arrays per primitive (NVIDIA OMM SDK) with a per-cluster OMM index buffer, baked from the final cluster triangles | §7.1, §10.5 |
-| M7 | Material bin tile lists, counts and the per-pixel bin-id image; DGC compute execution set | §9.1–9.2 |
-| M7 | Emissive-triangle light list built on the GPU at load | §6.1, §11.2 |
+| M6 | **Done (2026-11-20).** OMM arrays per primitive (NVIDIA OMM SDK) with a per-cluster OMM index buffer, baked from the final cluster triangles | §7.1, §10.5 |
+| M7 | **Done (2026-11-20/21).** Material bin tile lists, counts and the per-pixel bin-id image; DGC compute execution set; emissive-triangle light list + `Power_RIS` / `ReGIR_RIS` buffers | §6.1, §9.1–9.2, §11.2 |
+| M8 | **Planned (2026-11-25, [spec/m8/README.md](./m8/README.md)).** Composable pipeline toggle flags in `GpuFrameRoot` (Direct / Indirect / Cache / Denoiser); lazy BDA SHaRC hash-entries, accumulation, resolved, and training-scratch buffers (`shaderBufferInt64Atomics`) allocated only when Cache = `SHaRC` and retired when off; lazy GI reservoir allocation/skipping when ReSTIR GI = `Off` | §11.2–11.7 |
 | M9 | Uploads through GDeflate pages in ReBAR staging, `vkCmdDecompressMemoryEXT` on a graphics or compute queue; host image copy only for first-load source images; KTX2 BC7 / BC5 produced automatically and cached; geometry cache per asset + processing version | §3, §6.4, §7.2 |
 | M9 | Geometry streams: octahedral snorm16 normal + packed tangent, half2 UV, vertex order by `meshopt_optimizeVertexFetchRemap` | §6.3 |
 | L1–L3 (post-1.0) | Cluster DAG levels in the same model slices (`meshletRow` space grows), node tree + `TraversalMetric`, `generatingGroup` per cluster, fixed list capacities with clamping, per-frame cluster BLAS with sharing / merging / caching, all LOD levels' CLAS resident | §7.1, §10.3, §16.3 |
@@ -511,6 +511,7 @@ The binding model (§1, model slices, frame root, handle-or-address) carries ove
 
 | Date | Change |
 |---|---|
+| 2026-11-25 | Updated §12 for M6/M7 done and new M8 ([spec/m8/README.md](./m8/README.md)): composable pipeline toggle flags and lazy BDA SHaRC buffers (M8.3–M8.4) |
 | 2026-11-20 | Brought up to M2–M4 as built: `GpuFrameRoot` 192 B (`prevWorldLights` @ 184), `GpuTargets` 208 B (`indirectRadiance*` @ 168), `GpuRtxdiConstants` 496 B (DI + GI), `GpuNrcConstants` 168 B; `RenderTargets` lighting/upscaled/post/exposure rows; `Normals`/`Tangents`/`Uv1` read by `geometry/surface.slang`; §12 M2–M4 marked done; frame order lists the ray command buffers; the mesh-local normals issue removed (`surface.slang` applies `normalMatrix`) |
 | 2026-11-15 | RTXDI 3.2 ([rtxdi_3_2_update.md](./features/done/rtxdi_3_2_update.md)): `GpuRtxdiConstants` 328 B, without the spatiotemporal block, with 3.2's longer temporal block and `resamplingMode` in place of `isFusedResampling`. Reservoirs unchanged |
 | 2026-11-14 | PBR H2: `RenderTargets` gains the display-resolution post target (RGBA16F) and the 1×1 R32F exposure image; `GpuTargets` 200 B. `PostProcess` owns a host-visible 256-bin histogram buffer and one `GpuExposureReadback` (16 B) per frame slot |

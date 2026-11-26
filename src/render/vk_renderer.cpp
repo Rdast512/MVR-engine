@@ -17,8 +17,6 @@
 namespace
 {
     const vk::ImageSubresourceRange kColorRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-    // matches passes/classify.slang, passes/debug_view.slang and the passes/rtxdi_*.slang
-    constexpr uint32_t kFullscreenTile = 8;
     static_assert(kFullscreenTile == kMaterialTileSize, "classify launches one group per resolve tile");
     // matches shaders/passes/rtxdi_gi_duplication.slang kDuplicationGroup
     constexpr uint32_t kGiDuplicationTile = 16;
@@ -95,64 +93,15 @@ Renderer::~Renderer()
     for (HostBuffer& counters : glassCounters) {
         destroyHostBuffer(allocator.allocator, counters, nullptr);
     }
-    for (HostBuffer& stats : motionCheckStats) {
-        destroyHostBuffer(allocator.allocator, stats, nullptr);
-    }
-    for (HostBuffer& stats : rayCheckStats) {
-        destroyHostBuffer(allocator.allocator, stats, nullptr);
-    }
-    for (HostBuffer& capture : displayCaptures) {
-        destroyHostBuffer(allocator.allocator, capture, nullptr);
-    }
 }
 
-void Renderer::enableMotionCheck()
+Renderer::PresentedImage Renderer::getPresentedImage() const
 {
-    for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
-        if (motionCheckStats[slot].mapped == nullptr) {
-            motionCheckStats[slot] = createHostBuffer(sizeof(GpuMotionCheckStats), allocator.allocator, device.vkdevice,
-                                                      device.queueFamilyIndices,
-                                                      std::format("MotionCheckStats_{}", slot), nullptr);
-        }
+    // both are RGBA16F
+    if (isLitPresented()) {
+        return {.image = targets.post().image, .extent = targets.getDisplayExtent()};
     }
-}
-
-void Renderer::enableRayCheck()
-{
-    for (uint32_t slot = 0; slot < MAX_FRAMES_IN_FLIGHT; ++slot) {
-        if (rayCheckStats[slot].mapped == nullptr) {
-            rayCheckStats[slot] = createHostBuffer(sizeof(GpuRayCheckStats), allocator.allocator, device.vkdevice,
-                                                   device.queueFamilyIndices, std::format("RayCheckStats_{}", slot),
-                                                   nullptr);
-        }
-    }
-}
-
-const GpuRayCheckStats& Renderer::getLastRayCheck() const
-{
-    if (rayCheckStats[lastRecordedFrame].mapped == nullptr) {
-        throw std::logic_error("ray check read without enableRayCheck");
-    }
-    return *static_cast<const GpuRayCheckStats*>(rayCheckStats[lastRecordedFrame].mapped);
-}
-
-const GpuMotionCheckStats& Renderer::getLastMotionCheck() const
-{
-    if (motionCheckStats[lastRecordedFrame].mapped == nullptr) {
-        throw std::logic_error("motion check read without enableMotionCheck");
-    }
-    return *static_cast<const GpuMotionCheckStats*>(motionCheckStats[lastRecordedFrame].mapped);
-}
-
-std::optional<Renderer::DisplayCapture> Renderer::getLastDisplayCapture() const
-{
-    const std::optional<vk::Extent2D>& extent = displayCaptureExtents[lastRecordedFrame];
-    if (!extent) {
-        return std::nullopt;
-    }
-    const size_t halfCount = static_cast<size_t>(extent->width) * extent->height * 4;
-    return DisplayCapture{.extent = *extent,
-                          .rgba16f = {static_cast<const uint16_t*>(displayCaptures[lastRecordedFrame].mapped), halfCount}};
+    return {.image = targets.getDisplayImage(), .extent = targets.getExtent()};
 }
 
 void Renderer::setTracyContext(VkTracyContext* tracyContextIn) { tracyContext = tracyContextIn; }
@@ -254,8 +203,8 @@ void Renderer::drawFrame()
         : (extraFrameFlags & FrameFlag::DlssInputFrozen) != 0           ? DlssInputAccumulationMode::Frozen
         : inputHistoryWeight > 0.0f                                     ? DlssInputAccumulationMode::Ema
                                                                         : DlssInputAccumulationMode::None;
-    // EngineLab warms up with DlssInputAccumulate and freezes with DlssInputFrozen; keep that accumulated sum and
-    // DLSS-RR history across the freeze boundary, clear on every other entry into accumulation
+    // the settings lab warms up with DlssInputAccumulate and freezes with DlssInputFrozen; keep that accumulated sum
+    // and DLSS-RR history across the freeze boundary, clear on every other entry into accumulation
     const bool isFreezeTransition = appliedAccumulationMode == DlssInputAccumulationMode::Accumulate &&
         accumulationMode == DlssInputAccumulationMode::Frozen;
     const bool isAccumulationModeReset = accumulationMode != appliedAccumulationMode && !isFreezeTransition;
@@ -348,13 +297,6 @@ void Renderer::drawFrame()
     prepareAccumulation();
     gpuTimer.collect(currentFrame);
     post.readBack(currentFrame);
-    if (void* stats = motionCheckStats[currentFrame].mapped) {
-        // host writes before the submit are visible to it
-        *static_cast<GpuMotionCheckStats*>(stats) = {};
-    }
-    if (void* stats = rayCheckStats[currentFrame].mapped) {
-        *static_cast<GpuRayCheckStats*>(stats) = {};
-    }
     if (isGlassRecorded[currentFrame]) {
         auto& counters = *static_cast<GpuGlassCounters*>(glassCounters[currentFrame].mapped);
         lastGlassCounters = counters;
@@ -468,7 +410,7 @@ void Renderer::drawFrame()
     const bool isPreAcquireRaySubmit = preSdkRaySegmentCount > 0;
     // NRC frames trace after the split (NRC update, indirect), so their ray signal stays post-acquire
     const bool isPreSdkRaySignal =
-        isPreAcquireRaySubmit && !isNrcRecorded && rayCheckStats[currentFrame].mapped == nullptr;
+        isPreAcquireRaySubmit && !isNrcRecorded && !(frameHook != nullptr && frameHook->tracesRays());
     vk::SemaphoreSubmitInfo tlasWait{};
     {
         const auto submitStart = std::chrono::steady_clock::now();
@@ -751,19 +693,16 @@ void Renderer::recordRayCommands()
 #endif
         recordDebugView(*cmd);
     }
-    if (motionCheckStats[currentFrame].mapped != nullptr) {
-        recordMotionCheck(*cmd);
+    if (frameHook != nullptr) {
+        const PresentedImage presented = getPresentedImage();
+        frameHook->recordAfterDebugView(FrameHookContext{.cmd = *cmd,
+                                                         .frameSlot = currentFrame,
+                                                         .frameRoot = frameData.frameRootAddress(currentFrame),
+                                                         .renderExtent = targets.getExtent(),
+                                                         .presentedImage = presented.image,
+                                                         .presentedExtent = presented.extent});
     }
-    if (rayCheckStats[currentFrame].mapped != nullptr) {
-        recordRayCheck(*cmd);
-    }
-    gpuTimer.end(*cmd, GpuTimerScope::SelfTests);
-    displayCaptureExtents[currentFrame].reset();
-    if (isDisplayCapturePending) {
-        recordDisplayCapture(*cmd);
-        isDisplayCapturePending = false;
-    }
-    lastRecordedFrame = currentFrame;
+    gpuTimer.end(*cmd, GpuTimerScope::FrameHook);
     if (rayDebugCounters[currentFrame].mapped != nullptr) {
         // every ray pass of the frame is on this queue before here; a fence wait alone does not make device writes
         // visible to the host
@@ -1445,107 +1384,11 @@ void Renderer::recordDebugView(const vk::raii::CommandBuffer& cmd)
         .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageRead,
     };
     cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &guideBarrier});
-    // the post target replaces it; the motion and ray checks still find the barrier above
+    // the post target replaces it; the frame hook still finds the barrier above
     if (!isLitPresented()) {
         dispatchFullscreen(cmd, shaderObjects.frameShaders.debugView);
     }
     gpuTimer.end(cmd, GpuTimerScope::DebugView);
-}
-
-// reads what the debug view reads, after the same barrier; only the stats buffer is written
-void Renderer::recordMotionCheck(const vk::raii::CommandBuffer& cmd)
-{
-    const MotionCheckPushData push{.frameRoot = frameData.frameRootAddress(currentFrame),
-                                   .stats = motionCheckStats[currentFrame].address};
-    ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.motionCheck);
-    cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
-    const vk::Extent2D extent = targets.getExtent();
-    cmd.dispatch(divideRoundUp(extent.width, kFullscreenTile), divideRoundUp(extent.height, kFullscreenTile), 1);
-    // a fence wait alone does not make device writes visible to the host
-    const vk::MemoryBarrier2 readbackBarrier{
-        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
-        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
-    };
-    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &readbackBarrier});
-}
-
-// reads what the resolve reads, after the debug view's barrier; only the stats buffer is written
-void Renderer::recordRayCheck(const vk::raii::CommandBuffer& cmd)
-{
-    const RayCheckPushData push{.frameRoot = frameData.frameRootAddress(currentFrame),
-                                .stats = rayCheckStats[currentFrame].address};
-    ShaderObjects::bindComputeShader(cmd, shaderObjects.frameShaders.rayCheck);
-    cmd.pushDataEXT(vk::PushDataInfoEXT{.offset = 0, .data = {.address = &push, .size = sizeof(push)}});
-    const vk::Extent2D extent = targets.getExtent();
-    cmd.dispatch(divideRoundUp(extent.width, kFullscreenTile), divideRoundUp(extent.height, kFullscreenTile), 1);
-    // a fence wait alone does not make device writes visible to the host
-    const vk::MemoryBarrier2 readbackBarrier{
-        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
-        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
-    };
-    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &readbackBarrier});
-}
-
-void Renderer::recordDisplayCapture(const vk::raii::CommandBuffer& cmd)
-{
-    constexpr vk::DeviceSize kTexelBytes = 8;
-    // the image present reads: both are RGBA16F
-    const bool isUpscaled = isLitPresented();
-    const vk::Extent2D extent = isUpscaled ? targets.getDisplayExtent() : targets.getExtent();
-    const vk::Image source = isUpscaled ? targets.post().image : targets.getDisplayImage();
-    const vk::DeviceSize size = vk::DeviceSize{extent.width} * extent.height * kTexelBytes;
-    HostBuffer& capture = displayCaptures[currentFrame];
-    if (displayCaptureCapacities[currentFrame] < size) {
-        destroyHostBuffer(allocator.allocator, capture, nullptr);
-        // read back by the CPU: cached memory, not ReBAR
-        createBuffer(size, vk::BufferUsageFlagBits2::eTransferDst,
-                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent |
-                         vk::MemoryPropertyFlagBits::eHostCached,
-                     capture.buffer, capture.memory, allocator.allocator, device.vkdevice, device.queueFamilyIndices,
-                     std::format("DisplayCapture_{}", currentFrame), VMA_ALLOCATION_CREATE_MAPPED_BIT);
-        VmaAllocationInfo allocationInfo{};
-        vmaGetAllocationInfo(allocator.allocator, capture.memory, &allocationInfo);
-        capture.mapped = allocationInfo.pMappedData;
-        displayCaptureCapacities[currentFrame] = size;
-    }
-
-    // debug view writes -> copy; the display image stays in eGeneral
-    const vk::MemoryBarrier2 copyBarrier{
-        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eCopy,
-        .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
-    };
-    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &copyBarrier});
-    const vk::BufferImageCopy2 region{
-        .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
-        .imageExtent = {extent.width, extent.height, 1},
-    };
-    cmd.copyImageToBuffer2(vk::CopyImageToBufferInfo2{.srcImage = source,
-                                                      .srcImageLayout = vk::ImageLayout::eGeneral,
-                                                      .dstBuffer = *capture.buffer,
-                                                      .regionCount = 1,
-                                                      .pRegions = &region});
-    const std::array<vk::MemoryBarrier2, 2> afterCopy{{
-        {
-            .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
-            .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
-            .dstStageMask = vk::PipelineStageFlagBits2::eHost,
-            .dstAccessMask = vk::AccessFlagBits2::eHostRead,
-        },
-        // the next frame's debug view overwrites the copied texels: execution dependency only
-        {
-            .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
-            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        },
-    }};
-    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = static_cast<uint32_t>(afterCopy.size()),
-                                            .pMemoryBarriers = afterCopy.data()});
-    displayCaptureExtents[currentFrame] = extent;
 }
 
 // display image -> swapchain, then the Hi-Z view and ImGui on top

@@ -1,17 +1,8 @@
 #pragma once
 #include "../Constants.h"
 #include "assets_loader.hpp"
-#include "engine_bench.hpp"
-#include "engine_cull_check.hpp"
-#include "engine_dlss_check.hpp"
-#include "engine_gi_check.hpp"
-#include "engine_ray_check.hpp"
-#include "engine_guide_capture.hpp"
-#include "engine_motion_test.hpp"
-#include "engine_temporal_check.hpp"
 #include "texture_manager.hpp"
-#include "lab/engine_lab.hpp"
-#include "lab/settings_registry.hpp"
+#include "render/settings_registry.hpp"
 #include "../render/nrc_library.hpp"
 #include "../render/vk_renderer.hpp"
 #include "../render/vk_shader_objects.hpp"
@@ -27,6 +18,9 @@
 #include "scene/vk_scene.hpp"
 #if ENGINE_ENABLE_IMGUI
     #include "ui/engine_ui.hpp"
+#endif
+#if ENGINE_ENABLE_CHECKS
+    #include "checks/check_harness.hpp"
 #endif
 
 #include <filesystem>
@@ -67,23 +61,11 @@ class Engine
     // after renderer: reads it through UiContext, destroyed before it
     std::unique_ptr<EngineUi> ui;
 #endif
-    // set from the environment: fixed camera, no input, uncapped present, quits after logging GPU timings
-    std::optional<EngineBench> bench;
-    // set from the environment: scripted motion-vector checks, no camera input, quits after logging the results
-    std::optional<EngineMotionTest> motionTest;
-    // set from the environment: guide PNGs of glTF samples, no camera input, quits after the last one
-    std::optional<EngineGuideCapture> guideCapture;
-    // set from the environment: culling image check on the startup scene, quits after logging the results
-    std::optional<EngineCullCheck> cullCheck;
-    std::optional<EngineGiCheck> giCheck;
-    // set from the environment: DLSS-RR clean-input and perturbation check (ENGINE_DLSS_CHECK=1, m8 I14 F25)
-    std::optional<EngineDlssCheck> dlssCheck;
-    // set from the environment: one M8 I1 temporal runner (stability, light change, screen edge), quits after it
-    std::optional<EngineTemporalCheck> temporalCheck;
-    // set from the environment: primary rays against the vis buffer every frame, alongside another runner or alone
-    std::optional<EngineRayCheck> rayCheck;
-    // ENGINE_LAB=<plan>: the settings lab, alone in its process (spec/features/planned/full_testing.md §8), quits after the plan
-    std::optional<EngineLab> lab;
+#if ENGINE_ENABLE_CHECKS
+    // set from the environment: the runners, bench, lab and ENGINE_CONFIG (engine_checks.dll). After renderer: its
+    // frame hook is registered with it, destroyed before it
+    std::unique_ptr<CheckHarness> checks;
+#endif
     // ENGINE_INDIRECT_MODE=cycle: the indirect mode follows the frame number
     bool isIndirectModeCycling = false;
     // the lighting settings of the last frame in the Accumulation AA mode: an edit starts a new mean
@@ -108,16 +90,12 @@ class Engine
     SceneActionStatus spawnInstanceField(glm::vec3 center, int side, float spacing);
     // erases every entity of the field model; nullopt: the model is not loaded
     std::optional<SceneActionStatus> clearInstanceField();
-    // loads and resizes the motion test asks for before its frame
-    void applyMotionTestRequest(const EngineMotionTest::Request& request);
     // loads model at the origin, then unloads every entity that was there before it
     void replaceModels(const std::filesystem::path& model, std::string_view subsystem);
-    // the model swap and capture the guide capture asks for before its frame
-    void applyGuideCaptureRequest(const EngineGuideCapture::Request& request);
-    // the lab's model swap before its frame
-    void applyLabRequest(const EngineLab::Request& request);
-    // ENGINE_CONFIG for the interactive engine and bench runs; the checks and the lab log that they ignore it
-    void applyEngineConfig();
+#if ENGINE_ENABLE_CHECKS
+    // the scene and window actions the runners ask for; a failed startup instance field throws
+    void applyCheckRequest(const CheckRequest& request);
+#endif
     // the one recreate path, at most once per frame before it is built: swapchain, swapchain-sized resources and the
     // UI image count
     void recreateSwapchain();

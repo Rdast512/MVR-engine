@@ -1,13 +1,13 @@
 ---
 name: pbr-implementation-plan
-description: Task plan for glTF metallic-roughness PBR on the engine_spec architecture (NVIDIA RTX 20+ only) — visibility-buffer compute resolve, Mega Geometry cluster RT (CLAS, GPU PTLAS), compute ray queries in 1.0 (SER RT pipeline shelved to post-1.0 V1), RTXDI ReSTIR DI and ReSTIR GI (1.0 default) with optional NRC radiance cache toggle, per-cluster opacity micromaps, DLSS Ray Reconstruction. Use when implementing BRDF, lights, sampleMaterial, the resolve and its guides, CLAS/TLAS, OMM, RTXDI, NRC, ReSTIR GI, DLSS-RR, or post.
+description: Task plan for glTF metallic-roughness PBR on the engine_spec architecture (NVIDIA RTX 20+ only) — visibility-buffer compute resolve, Mega Geometry cluster RT (CLAS, GPU PTLAS), compute ray queries in 1.0 (SER RT pipeline when Slang supports EXT HitObject / post-1.0 V1), composable runtime toggles covering RTXPT / RTXDI / RTXGI (RTXDI Streaming RIS or Temporal-only Basic ReSTIR DI, raw uncorrelated 1-bounce PT + ReSTIR GI toggle, NRC + SHaRC multi-bounce cache toggle), per-cluster opacity micromaps, DLSS Ray Reconstruction (with Off + Accumulation toggle). Use when implementing BRDF, lights, materials, sampleMaterial, the resolve and its guides, CLAS/TLAS, OMM, RTXDI, NRC, SHaRC, ReSTIR GI, DLSS-RR, or post.
 ---
 
-# Plan: PBR on the visibility buffer + RTXDI + ReSTIR GI (+ NRC) + OMM + DLSS-RR
+# Plan: PBR on the visibility buffer + RTXDI + 1-Bounce PT / ReSTIR GI + NRC / SHaRC + OMM + DLSS-RR
 
-**Date:** 2026-11-07, updated 2026-11-20 · **Verified against:** `feature-pbr` working tree on `bdd86e1bf`, Slang `v2026.22`, meshoptimizer `v1.3`
+**Date:** 2026-11-07, updated 2026-11-25 · **Verified against:** `feature-pbr` working tree on `3d24416c6`, Slang `v2026.22.1`, meshoptimizer `v1.3`
 **Precedence:** [docs/engine_spec.md](../docs/engine_spec.md) is the architecture. This plan holds the shading tasks and follows it; where they disagree, the spec wins. Milestones are the spec's M0–M10 (§16.2).
-**Status (2026-11-20):** owned by engine spec §16.2 (spec §20.4). M1 and M3 are done; M0, M2 (C1–C4) and M4 (G1 built then shelved 2026-11-17 to post-1.0 V1; G2, G3, G5, G6, G7 built; ReSTIR GI is the 1.0 default since 2026-11-20 with NRC paused as a comparison toggle) are built on the RTX 5070. M6 (OMM) and M8 (optimization and fixes) are planned; 2060 Super timings stay open. See §3.
+**Status (2026-11-25):** owned by engine spec §16.2 (spec §20.4). M0–M4, M6, M7 and the prior `spec/fixesM1-6/` fixes (I1–I10, I13–I16) are built on the RTX 5070. New **M8** ([spec/m8/README.md](./m8/README.md)) shifts the 1.0 target to one unified Vulkan RTXPT / RTXDI / RTXGI renderer with composable toggles (Streaming RIS or Temporal-only Basic ReSTIR DI with Max History 4–8 & Spatial OFF; raw uncorrelated 1-bounce PT; NRC with SHaRC toggle; ReSTIR GI toggle; DLSS-RR with Off toggle) aimed at beating NVIDIA's demos in FPS. 2060 Super timings stay open. See §3.
 
 | Doc | Role |
 |---|---|
@@ -32,10 +32,10 @@ Vendor SDKs own all lighting. The engine writes only the glue they need.
 |---|---|---|
 | Primary visibility | engine: vis buffer + compute resolve (**done**) | payload raster, resolve, guides |
 | RT geometry | **Mega Geometry**: CLAS per cluster, cluster BLAS per primitive, PTLAS | load-time builds, GPU-written PTLAS ops |
-| Direct light | **RTXDI** ReSTIR DI (punctual + emissive-triangle lights) | `RAB_*` bridge, GPU light buffer, three CS entry points (initial, temporal, spatial + shade) |
-| Indirect light | one compute ray-query bounce + **RTXDI ReSTIR GI** (1.0 default) + optional **NRC** comparison mode (SER RT pipeline shelved to post-1.0 V1) | compute indirect pass, ReSTIR GI passes, NRC bridge, custom resolve, indirect mode toggle |
+| Direct light | **RTXDI** Streaming RIS or ReSTIR DI (target: Temporal ON, Max History 4–8, Basic, Spatial OFF; full modes + Off toggleable) | `RAB_*` bridge, GPU light buffer, Streaming RIS / DI compute passes |
+| Indirect light | **Raw uncorrelated 1-bounce PT** (1 diffuse-or-specular ray/px, OMM, SER when Slang adds it, ReGIR or simple NEE) + **NRC / SHaRC** multi-bounce cache toggle + optional **ReSTIR GI** toggle | compute indirect pass, NRC bridge + custom resolve, SHaRC update/resolve/query (M8.4), ReSTIR GI passes, composable toggles |
 | Alpha-tested rays | **NVIDIA OMM SDK** CPU baker + `VK_EXT_opacity_micromap`, attached per cluster | load-time bake, micromap build, CLAS attach |
-| Denoise + upscale | **DLSS Ray Reconstruction** (NGX) | guides (exist), host evaluate |
+| Denoise + upscale | **DLSS Ray Reconstruction** (NGX) + `Off` (`No AA` / `Accumulation`) toggle | guides (exist), host evaluate, accumulation pass |
 
 Load-time geometry processing (tangents, normals, clusters) is **meshoptimizer**; OMM baking is the **NVIDIA OMM SDK**. The engine has no tangent, normal, clustering or OMM algorithm of its own.
 
@@ -64,17 +64,15 @@ every frame                                     GRAPHICS                     ASY
   resolve (CS)          vis buffer → Surface → sampleMaterial → guides     │
                         (done, M1; per-bin shaders in M7)          [E1]    │
   ─────────────── timeline wait: TLAS ready ───────────────────────────────┘
-  rtxdi_initial (CS+RQ) local + infinite + BRDF candidates → reservoirs    [F3]
-  rtxdi_temporal (CS)   temporal resampling → boiling filter               [F3]
-  rtxdi_shade (CS+RQ)   spatial resampling → final visibility → direct     [F3]
-  nrc_update (CS+RQ)    training paths (NRC comparison modes only)         [G3]
-  indirect (CS+RQ)      1 ray/px → X₂ shading → (cache query) → GI samples [G2]
-  NRC                   QueryAndTrain → nrc_resolve (NRC modes only)       [G3]
-  rtxdi_gi_temporal/shade (CS+RQ)  temporal + spatial → indirect           [G5]
-                        (§11.7: ReSTIR GI default skips NRC; NRC mode skips ReSTIR GI) [G7]
-  combine (CS)          direct + indirect + emissive → noisy HDR           [G6]
-  DLSS-RR (host NGX)    noisy HDR + guides → display-res HDR               [H1]
-  post (CS) + present   exposure → tonemap → display image → swapchain, ImGui [H2]
+  direct (CS+RQ)        [Off | Streaming RIS | ReSTIR DI (target: Temporal, Hist 4-8, Basic, Spatial OFF)] [F3, M8]
+  cache update (CS+RQ)  [Off | NRC nrc_update | SHaRC sharc_update + sharc_resolve]                        [G3, M8.4]
+  indirect (CS+RQ)      [Off | Raw 1-bounce PT (1 diffuse/spec ray/px, NEE + cache query)]                 [G2, M8.3]
+  NRC resolve           QueryAndTrain → nrc_resolve (when Cache = NRC)                                     [G3]
+  rtxdi_gi_* (CS+RQ)    [Off (target) | On (RTXDI analog)] temporal + spatial → indirect                   [G5, M8.3]
+  combine (CS)          direct + indirect + emissive → noisy HDR                                           [G6]
+  glass (CS+RQ)         thin-walled glass layers (skipped without glass)                                   [I13]
+  denoiser              [DLSS-RR (target) | Off (No AA / Accumulation)] → display-res HDR                  [H1, M8]
+  post (CS) + present   exposure → tonemap → display image → swapchain, ImGui                              [H2]
 ```
 
 Every ray pass reads the TLAS address from `GpuFrameRoot.tlas`: the one PTLAS (C4).
@@ -86,7 +84,7 @@ Every ray pass reads the TLAS address from `GpuFrameRoot.tlas`: the one PTLAS (C
 | # | Decision |
 |---|---|
 | 0 | **Hardware:** NVIDIA RTX 20+ only, no vendor checks, fallbacks or ports (spec §1.2). NVIDIA-only pieces (Mega Geometry, SER, NRC, NGX, cooperative vectors) are the target stack. Each SDK still lives in its own module (`vk_nrc`, `vk_dlss`, `vk_mega_geometry`) for ownership |
-| 1 | **Lighting stack:** RTXDI ReSTIR DI (direct), one compute ray-query indirect bounce + RTXDI ReSTIR GI (indirect, 1.0 default; NRC kept built as a comparison toggle since 2026-11-20, spec §11.7; SER shelved to post-1.0 V1), OMM (alpha on rays), DLSS-RR (denoise + upscale). All required. Tiers change resolution, ray counts and NRC settings, never the algorithm (spec P1) |
+| 1 | **Lighting stack (updated 2026-11-25, M8):** composable runtime toggles on one base reproducing RTXPT, RTXDI, and RTXGI while beating NVIDIA demos in FPS. **1.0 target default:** **DLSS-RR** + **RTXDI** (`Streaming RIS` or `ReSTIR DI` Temporal ON, Max History 4–8, `Basic` bias correction, Spatial OFF) + **raw uncorrelated 1-bounce PT** (1 diffuse-or-specular ray/px, OMM, SER when Slang adds it, ReGIR or simple/`Power_RIS` NEE) + **NRC** (default) with runtime toggle to **SHaRC**. ReSTIR GI, full ReSTIR DI presets, and `Off` per stage stay runtime toggles (spec §11.7) |
 | 2 | **Primary visibility:** visibility buffer (`R32_UINT`, `visibleRow << 7 \| triangle`) + reverse-Z `D32_SFLOAT`, render resolution, 1 sample, jittered from M3. The compute resolve writes the guides (spec §8.3, §9) |
 | 3 | **Rays:** in 1.0 every ray pass (both shaded hits and visibility) runs in compute with `RayQuery` (`traceClosest` / `traceVisibility`). The SER RT pipeline shape (`HitObject::TraceRay` → `ReorderThread(hit, materialBin)` → minimal closest-hit → shade in raygen, dispatched with `vkCmdTraceRaysIndirect2KHR`) was built in G1 and shelved on 2026-11-17 (considerations C-G1-3), returning as a toggle in post-1.0 V1 (spec §11.1, §16.5). No any-hit anywhere |
 | 4 | **RT geometry:** one CLAS per cluster (the raster meshlets, same triangle order), one cluster BLAS per mesh primitive built once at load and shared by every instance of the model. Instance ops are written on the GPU and one PTLAS is updated in place every frame, on async compute (C4; required since 2026-11-14). No KHR triangle BLAS. This is the state through 1.0. After it, cluster LOD (spec §16.3 L2) builds cluster BLAS per frame from the RT LOD cut, with sharing, merging and caching, so no code may assume a BLAS lives as long as its model |
@@ -96,8 +94,8 @@ Every ray pass reads the TLAS address from `GpuFrameRoot.tlas`: the one PTLAS (C
 | 8 | **Material table:** `MaterialStore` on `Scene`, deduplicated and refcounted across models. `GpuPrimitive::materialId` is an absolute row. No pass owns a second table |
 | 9 | **Default material:** metallic 1, roughness 1, white. It renders dark without GI, which is correct |
 | 10 | **AO:** sampled in the resolve and stored with the guides. Applied only to the radiance-cache query term at the primary vertex. Never on direct light |
-| 11 | **GI cache:** NRC only, on every tier (M4), with no cache interface: the indirect pass calls the NRC bridge directly. Kept built as a runtime comparison switch since 2026-11-20 (spec §11.7); 1.0 ships ReSTIR GI mode (NRC paused) until C-G5-3 is fixed |
-| 12 | **RTXDI light sampling:** `Uniform` for punctual-only scenes (M3). Since M7 F1 presampled as the RTXDI sample's `Medium`: `ReGIR_RIS` by default, its cells filled from `Power_RIS` tiles (presample passes + PDF texture); `Power_RIS` and `Uniform` selectable ([m7/f1_light_presampling.md](./m7/f1_light_presampling.md)). Resampling: `TemporalAndSpatial` (RTXDI 3.2 dropped `FusedSpatiotemporal`; [rtxdi_3_2_update.md](./features/done/rtxdi_3_2_update.md)) |
+| 11 | **GI cache (updated 2026-11-25, M8.4):** **NRC** integrated as the default multi-bounce tail, with a runtime toggle to **SHaRC** (reversing 2026-11-14 "NRC only", `C-G3-1`) and `Off` (1-bounce only). NRC stays paused rather than destroyed on a switch (C-G3-3); SHaRC BDA buffers are allocated lazily when active and retired when off (spec §11.4, §11.7) |
+| 12 | **RTXDI light sampling (updated 2026-11-25, M8):** `Power_RIS`, `ReGIR_RIS`, and `Uniform` all selectable ([m7/f1_light_presampling.md](./m7/f1_light_presampling.md)). Target direct lighting: **Streaming RIS** (Initial Sampling only) or **ReSTIR DI Temporal-only** (`Max History = 4–8`, `Basic` bias correction, Spatial OFF); `Spatial` and `TemporalAndSpatial` stay callable as toggles (spec §11.2) |
 | 13 | **Scene data per frame:** the CPU writes `GpuFrameRoot`, the camera and changed transforms. Ray instance ops, the PTLAS update and the RTXDI light buffer are written on the GPU from the persistent tables (spec P2) |
 | 14 | **C++ style** (`cpp-guidelines` skill, `.clang-tidy`): PascalCase types and `enum class` enumerators; camelCase functions, members, locals; class constants `kPascalCase`; getters `getX` / `isX` / `hasX`; no `m_` or trailing `_`. RAII owners of AS, micromaps, RT pipelines and SDK objects are move-only (Rule of Five); everything else follows the Rule of Zero. `const`/`constexpr` by default, `explicit` single-argument constructors, `[[nodiscard]]` on getters, named constants instead of magic numbers. Failures throw `std::runtime_error` with context. `.hpp` + `#pragma once`, no `using namespace` in headers |
 | 15 | **Comments** (`main-guidelines` skill), in C++ and Slang: lowercase, 2–8 words, why or non-obvious behavior only, no trailing period |
@@ -922,8 +920,8 @@ A4 + C1 → D1 → D2 ; D1 → D3 ; D2 → D4
 | M4 Indirect | G1 (shelved, C-G1-3), G2 (**built**), G3 NRC (**built**), G5 ReSTIR GI (**built**), G6 combine (**built**), G7 indirect mode toggle (**built**; ReSTIR GI default since 2026-11-20). Open: 2060 Super timings (C-M0-1, C-G3-2); default tuning and NRC bias moved to M8 |
 | M5 | merged into M4 (2026-11-14) |
 | [M6 Alpha](./m6/README.md) | D1, D2, D3, D4 (built 2026-11-20) |
-| M7 Material binning | E2 emissive triangles, F1 `Power_RIS`, resolve per bin (spec §9.1–9.2) |
-| [M8 Optimization and fixes](./fixesM1-6/README.md) | I1–I12 (milestone planned 2026-11-20, steps re-planned 2026-11-21; findings in [m8_optimization_and_fixes.md](./fixesM1-6/m8_optimization_and_fixes.md) and [mg_optimizations_fixes.md](./fixesM1-6/mg_optimizations_fixes.md)) |
+| [M7 Material binning](./m7/README.md) | E1 material binning, E2 emissive triangles, F1 `Power_RIS` / `ReGIR_RIS` presampling (built 2026-11-20/21) |
+| [M8 Unified RTXPT / RTXDI / RTXGI pipeline](./m8/README.md) | M8.1 pipeline audit vs NVIDIA demos, M8.2 ImGui wiring audit, M8.3 composable pipeline toggles, M8.4 SHaRC toggle beside NRC, M8.5 target stack & Vulkan perf (beat NVIDIA demos FPS), M8.6 verification & floor tier (supersedes [spec/fixesM1-6](./fixesM1-6/README.md), whose landed fixes I1–I10 and I13–I16 remain as baseline) |
 
 PR order follows the milestones. The **first lit pixel** is F3 through the H2 bring-up path.
 
@@ -954,7 +952,7 @@ Rules: `MaterialStore` / `LightStore` stay on `Scene`. `AssetBuffers::flush` rem
 
 | Area | Never |
 |---|---|
-| lighting | any light, GI or denoise path outside RTXDI / ReSTIR GI / NRC / DLSS-RR. A second renderer or reference loop (ground truth is RTXDI's `None` mode and the accumulation mode of the same path code, spec §14), a homegrown cache or MLP, SVGF, or TAA. Raster lighting (shadow maps, SSAO, SSR) |
+| lighting | any light, GI or denoise path outside RTXDI (Streaming RIS / ReSTIR DI / ReSTIR GI) / raw 1-bounce PT / NRC / SHaRC / DLSS-RR. A second renderer or reference loop (ground truth is RTXDI's `None` mode and the accumulation mode of the same path code, spec §14), a homegrown cache or MLP, SVGF, or TAA. Raster lighting (shadow maps, SSAO, SSR) |
 | hardware | AMD/Intel code paths, vendor checks or fallbacks. NVIDIA SDK calls outside their module (`vk_nrc`, `vk_dlss`, `vk_mega_geometry`) |
 | shading | a second BRDF. Perceptual roughness in `D`. Double or missing `NdotL`. AO on direct. Emissive × `NdotL`. sRGB on metal-rough/normal/AO. Premultiplied alpha before the BRDF |
 | lights | `dot(spotDir, L)`. Node scale on intensity/range/cone. A CPU loop over lights per frame |
@@ -987,6 +985,14 @@ Open problems, accepted limitations and current workarounds, stamped by mileston
 ---
 
 Appendices are history, newest first. The plan body above is the current state. Rows a later revision reversed are marked: in the **Now** column of the two oldest tables, inline elsewhere.
+
+## Appendix — changes on 2026-11-25
+
+| Removed | Replaced by | Why |
+|---|---|---|
+| §2 #1: 1.0 default = ReSTIR DI (`Medium`/Spatial) + ReSTIR GI (or NRC + ReSTIR GI) | Composable runtime toggles covering RTXPT / RTXDI / RTXGI on one base; 1.0 target = DLSS-RR + RTXDI (Streaming RIS *or* Temporal-only `Basic` ReSTIR DI, Max History 4–8, Spatial OFF) + raw uncorrelated 1-bounce PT + NRC (default) with SHaRC toggle | ReSTIR GI and spatial/long-history ReSTIR DI feed correlated blotches to DLSS-RR and burn GPU time; refocus on beating NVIDIA's RTXPT / RTXDI / RTXGI demos in FPS ([spec/m8/README.md](./m8/README.md)) |
+| §2 #11: NRC only (2026-11-14 reversal of SHaRC) | NRC default + runtime SHaRC toggle (M8.4) + `Off` | matches `reference/RTXPT-main` (v1.9.0 SHaRC) alongside `reference/RTXGI` (NRC) in one engine |
+| §6 M8 = `spec/fixesM1-6/` (I1–I16) | M8 = [spec/m8/README.md](./m8/README.md) (M8.1–M8.6); `spec/fixesM1-6/` archived as landed M1–M7 fixes history | audits, composable toggles, SHaRC, and NVIDIA-demo FPS target |
 
 ## Appendix — changes on 2026-11-14
 

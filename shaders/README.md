@@ -12,8 +12,9 @@
 | `lighting/rtxdi_bridge`, `lighting/path_shading` | RTXDI application bridge (textual); hit shading and one sampled light at a path vertex (X₂, glass reflections and diffuse share). Including passes also `import lighting.glass;` |
 | `lighting/glass`, `passes/glass` | Thin-walled glass layer terms and the shadow transmittance on `kRayMaskGlass`; the glass pass compositing the layers into noisy color before DLSS-RR (M8 I13) |
 | `gi/nrc_bridge` | NRC SDK HLSL over BDA (textual), `GpuNrcConstants` mirror |
-| `raytracing/ser`, `passes/rt_ser_check` | SER trace (`traceShaded`) and its check: shelved, not built (considerations C-G1-3) |
+| `raytracing/ser`, `checks/rt_ser_check` | SER trace (`traceShaded`) and its check: shelved, not built (considerations C-G1-3) |
 | `passes/*` | Compile units, one dispatch or RT pipeline each |
+| `checks/*` | Check passes and `checks/check_types` (their structs); compiled only with `ENGINE_BUILD_CHECKS=ON` (spec/features/planned/checks_dll.md) |
 
 Files land with the milestone that fills them ([docs/engine_spec.md §16.2](../docs/engine_spec.md#162-milestones)); no empty stubs.
 

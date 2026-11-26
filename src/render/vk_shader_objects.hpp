@@ -4,6 +4,7 @@
 #include "../core/types.hpp"
 
 #include <array>
+#include <filesystem>
 #include <string_view>
 #include <vector>
 
@@ -15,7 +16,9 @@ inline constexpr bool kDebugRays = false;
 inline constexpr bool kDebugRays = true;
 #endif
 
-// SPIR-V of a file under ENGINE_SHADER_DIR/passes; throws when it cannot be opened
+// SPIR-V of a file under ENGINE_SHADER_DIR; throws when it cannot be opened
+[[nodiscard]] std::vector<char> readShaderSpirv(const std::filesystem::path& relativePath);
+// SPIR-V of a file under ENGINE_SHADER_DIR/passes
 [[nodiscard]] std::vector<char> readPassSpirv(std::string_view file);
 
 // TEMPORARY (considerations C-E1-3): ENGINE_GPUAV_RESOLVE_PER_BIN=1 creates the resolve bin shaders without
@@ -46,6 +49,14 @@ public:
     // fullscreen display image -> swapchain: no culling, no depth; push PresentPushData, then draw one mesh task
     void bindPresentState(const vk::raii::CommandBuffer& cmd) const;
     static void bindComputeShader(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader);
+    // descriptor-heap compute shader with the debug-rays specialization; extraFlags: on top of eDescriptorHeap
+    [[nodiscard]] vk::raii::ShaderEXT createComputeShader(const std::vector<char>& spirv, const char* entry,
+                                                          std::string_view debugName,
+                                                          vk::ShaderCreateFlagsEXT extraFlags = {}) const;
+    // file under ENGINE_SHADER_DIR/passes
+    [[nodiscard]] vk::raii::ShaderEXT createComputeShader(std::string_view file, const char* entry,
+                                                          std::string_view debugName,
+                                                          vk::ShaderCreateFlagsEXT extraFlags = {}) const;
 
     const vk::raii::Device& device;
     struct MeshShaderPair
@@ -92,10 +103,6 @@ public:
         vk::raii::ShaderEXT binArgs = nullptr;
         // passes/debug_view.slang
         vk::raii::ShaderEXT debugView = nullptr;
-        // passes/motion_check.slang, MotionCheckPushData; ENGINE_MOTION_TEST only
-        vk::raii::ShaderEXT motionCheck = nullptr;
-        // passes/rt_check.slang, RayCheckPushData; ENGINE_RT_CHECK only
-        vk::raii::ShaderEXT rayCheck = nullptr;
         // passes/light_world.slang; async compute, before the TLAS build
         vk::raii::ShaderEXT lightWorld = nullptr;
         // passes/light_pdf_mips.slang (LightPdfMipsPushData) and passes/rtxdi_presample.slang: the local light PDF's
@@ -162,9 +169,4 @@ private:
     static void setRasterState(const vk::raii::CommandBuffer& cmd, vk::CullModeFlags cullMode, bool isDepthEnabled);
     // fullscreen triangle into the swapchain
     static void setFullscreenState(const vk::raii::CommandBuffer& cmd, const MeshShaderPair& shaderPair);
-    // file under ENGINE_SHADER_DIR/passes
-    // extraFlags: on top of eDescriptorHeap
-    [[nodiscard]] vk::raii::ShaderEXT createComputeShader(std::string_view file, const char* entry,
-                                                          std::string_view debugName,
-                                                          vk::ShaderCreateFlagsEXT extraFlags = {}) const;
 };

@@ -8,17 +8,18 @@
 // every mode; ReSTIR GI mode only pauses it
 enum class IndirectMode : uint8_t
 {
-    // cache-terminated samples, then ReSTIR GI: the default of both tiers
+    // cache-terminated samples, then ReSTIR GI: the tuning target (m8 I15)
     NrcRestirGi,
-    // cache-terminated samples shaded without reuse (RTXGI IndirectDiffuse Nrc mode)
+    // cache-terminated samples shaded without reuse (RTXGI IndirectDiffuse Nrc mode): the default
     Nrc,
     // one-bounce samples, then ReSTIR GI (RTXDI sample)
     RestirGi,
     Count,
 };
 
-// the shipped mode and the tuning target (m8 I15, 2026-11-24): multi-bounce GI, ReSTIR GI mode stays selectable
-inline constexpr IndirectMode kDefaultIndirectMode = IndirectMode::NrcRestirGi;
+// shipped since 2026-11-25: NVIDIA's NRC sample, as the other defaults are NVIDIA's; NRC + ReSTIR GI stays the
+// tuning target
+inline constexpr IndirectMode kDefaultIndirectMode = IndirectMode::Nrc;
 
 struct IndirectModeInfo
 {

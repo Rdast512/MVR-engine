@@ -3,7 +3,7 @@
 **Date:** 2026-11-25 · **Status:** implemented, GPU checks of S3–S5 pending (considerations C-NS-1) · **Milestone:** M8 tooling, beside the settings lab ([full_testing.md](./full_testing.md))
 **Implements:** a `Settings` window that copies the RTXDI FullSample's ImGui layout (sections, order, labels, ranges, help text), so an engine config and an NVIDIA sample config can be compared row by row; a denoiser mode with `Off`; NVIDIA's `Accumulation` AA mode for converged images without a denoiser; highlighting of the rows that differ from a chosen comparison config
 **Reference:** RTXDI `Samples/FullSample/Source/UserInterface.cpp` (`buildUI` L2198, `SceneSettings` L1876, `GeneralRenderingSettings` L549, `SamplingSettings` L602, `DenoiserSettings` L1658, `PostProcessSettings` L1357, `UIData::ApplyPreset`, `ApplyDenoiserCompatDefaults` L443, header colors L532–533); RTXDI `App/SceneRenderer.cpp` (`ProcessAccumulationModeLogic` L1321, camera-static test L1078, `ResolveAA` L1670), `Shaders/AccumulationPass.hlsl`; RTXGI `Samples/IndirectDiffuse/UI.cpp` (`NRC:` header L294, denoiser radio L237–275)
-**Touches:** `src/ui/engine_ui.{hpp,cpp}`, `src/render/vk_renderer.{hpp,cpp}`, `src/render/vk_post.*`, `src/render/vk_rtxdi.{hpp,cpp}`, `src/lab/settings_registry.{hpp,cpp}`, [docs/settings.md](../../../docs/settings.md)
+**Touches:** `src/ui/engine_ui.{hpp,cpp}`, `src/render/vk_renderer.{hpp,cpp}`, `src/render/vk_post.*`, `src/render/vk_rtxdi.{hpp,cpp}`, `src/render/settings_registry.{hpp,cpp}`, [docs/settings.md](../../../docs/settings.md)
 
 Today the lighting settings sit under one `Ray tracing` header in the engine's own order (Mega Geometry, ReSTIR DI, glass, DLSS-RR, indirect mode, NRC, ReSTIR GI), with labels and ranges of our own, plus separate `Sun` and `Post` headers. The RTXDI sample groups the same settings differently (Scene → General Rendering → Static Context → Direct Lighting → Indirect Lighting → Denoising → Post-Processing → Debug), names them differently ("Discard Invisible Samples" is our "Visibility shortcut") and nests them in tree nodes per resampling stage. Comparing a config against the sample means translating every row by hand.
 
@@ -256,7 +256,7 @@ A `Compare with` combo at the top of the window highlights every row whose value
 - `RtxdiContext`: `nvidiaPreset()`, the `Temporal` resampling mode, read-only accessors for the disabled rows' fixed values.
 - `PostProcess::record` takes its input image from the caller.
 - `shaders/passes/accumulate.slang` and an `accumulated` target in `RenderTargets` (created only while `Accumulation` is selected, freed with the slot's retirement when it is left).
-- The comparison (§5) runs in the UI from `src/lab/settings_registry.hpp`; the settings window depends on the registry, not the reverse.
+- The comparison (§5) runs in the UI from `src/render/settings_registry.hpp`; the settings window depends on the registry, not the reverse.
 
 ---
 

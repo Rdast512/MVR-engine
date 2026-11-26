@@ -69,19 +69,11 @@ add_subdirectory(render)
 add_subdirectory(scene)
 
 # ui/engine_ui.cpp is empty when Constants.h sets ENGINE_ENABLE_IMGUI to 0
-add_library(engine_runtime SHARED core/vk_engine.cpp core/vk_engine.hpp core/engine_bench.cpp core/engine_bench.hpp
-    core/engine_motion_test.cpp core/engine_motion_test.hpp
-    core/engine_guide_capture.cpp core/engine_guide_capture.hpp
-    core/engine_cull_check.cpp core/engine_cull_check.hpp
-    core/engine_ray_check.cpp core/engine_ray_check.hpp
-    core/engine_gi_check.cpp core/engine_gi_check.hpp
-    core/engine_dlss_check.cpp core/engine_dlss_check.hpp
-    core/engine_temporal_check.cpp core/engine_temporal_check.hpp core/check_poses.hpp core/check_images.cpp core/check_images.hpp core/gi_settings_sets.hpp
-    core/convergence_metrics.cpp core/convergence_metrics.hpp
-    lab/engine_lab.cpp lab/engine_lab.hpp lab/lab_cases.hpp lab/lab_metrics.cpp lab/lab_metrics.hpp
-    lab/lab_plan.cpp lab/lab_plan.hpp lab/settings_registry.cpp lab/settings_registry.hpp
+add_library(engine_runtime SHARED core/vk_engine.cpp core/vk_engine.hpp
     ui/engine_ui.cpp ui/engine_ui.hpp ui/settings_rows.hpp ui/settings_window.cpp ui/settings_window.hpp ui/ui_color.hpp)
 target_compile_definitions(engine_runtime PRIVATE ENGINE_LOG_DLL=\"runtime\")
+# public: main.cpp includes vk_engine.hpp, whose members depend on it
+target_compile_definitions(engine_runtime PUBLIC ENGINE_ENABLE_CHECKS=$<BOOL:${ENGINE_BUILD_CHECKS}>)
 target_link_libraries(engine_runtime
     PUBLIC
         engine_build_config
@@ -98,6 +90,38 @@ target_link_libraries(engine_runtime PRIVATE
 
 target_precompile_headers(engine_runtime PRIVATE ${PCH_HEADER})
 
+# engine checks, bench and settings lab (spec/features/planned/checks_dll.md); engine_runtime owns one CheckHarness
+if (ENGINE_BUILD_CHECKS)
+    add_library(engine_checks SHARED
+        checks/check_harness.cpp checks/check_harness.hpp
+        checks/check_passes.cpp checks/check_passes.hpp checks/check_types.hpp
+        checks/check_images.cpp checks/check_images.hpp checks/check_poses.hpp
+        checks/convergence_metrics.cpp checks/convergence_metrics.hpp checks/gi_settings_sets.hpp
+        checks/engine_bench.cpp checks/engine_bench.hpp
+        checks/engine_motion_test.cpp checks/engine_motion_test.hpp
+        checks/engine_guide_capture.cpp checks/engine_guide_capture.hpp
+        checks/engine_cull_check.cpp checks/engine_cull_check.hpp
+        checks/engine_ray_check.cpp checks/engine_ray_check.hpp
+        checks/engine_gi_check.cpp checks/engine_gi_check.hpp
+        checks/engine_dlss_check.cpp checks/engine_dlss_check.hpp
+        checks/engine_temporal_check.cpp checks/engine_temporal_check.hpp
+        checks/lab/engine_lab.cpp checks/lab/engine_lab.hpp checks/lab/lab_cases.hpp
+        checks/lab/lab_metrics.cpp checks/lab/lab_metrics.hpp checks/lab/lab_plan.cpp checks/lab/lab_plan.hpp)
+    target_compile_definitions(engine_checks PRIVATE ENGINE_LOG_DLL=\"checks\")
+    target_link_libraries(engine_checks
+        PUBLIC
+            engine_build_config
+            engine_core
+            engine_render
+            engine_scene
+            engine_util
+            ThirdParty::all
+    )
+    target_precompile_headers(engine_checks PRIVATE ${PCH_HEADER})
+    target_link_libraries(engine_runtime PRIVATE engine_checks)
+    set(ENGINE_CHECKS_TARGET engine_checks)
+endif ()
+
 add_executable(engine main.cpp)
 target_compile_definitions(engine PRIVATE ENGINE_LOG_DLL=\"app\")
 target_link_libraries(engine PRIVATE engine_runtime)
@@ -108,7 +132,7 @@ target_precompile_headers(engine PRIVATE ${PCH_HEADER})
 add_dependencies(engine Shaders)
 
 if (ENGINE_USE_MIMALLOC)
-    foreach (_miTarget engine_util engine_core engine_render engine_scene engine_runtime engine)
+    foreach (_miTarget engine_util engine_core engine_render engine_scene ${ENGINE_CHECKS_TARGET} engine_runtime engine)
         target_link_libraries(${_miTarget} PRIVATE engine_mi_new_delete)
     endforeach ()
 
@@ -186,7 +210,7 @@ else()
         endif()
     endforeach()
 
-    foreach (_t engine engine_runtime engine_core engine_render engine_util engine_scene)
+    foreach (_t engine engine_runtime engine_core engine_render engine_util engine_scene ${ENGINE_CHECKS_TARGET})
         if (TARGET ${_t})
             set_target_properties(${_t} PROPERTIES
                 BUILD_WITH_INSTALL_RPATH TRUE
@@ -197,7 +221,7 @@ else()
 endif()
 
 if (ENGINE_UNITY_BUILD)
-    foreach (_t engine_util engine_core engine_render engine_scene engine_runtime)
+    foreach (_t engine_util engine_core engine_render engine_scene ${ENGINE_CHECKS_TARGET} engine_runtime)
         if (TARGET ${_t})
             set_target_properties(${_t} PROPERTIES UNITY_BUILD ON)
         endif ()

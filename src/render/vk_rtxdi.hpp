@@ -291,13 +291,18 @@ public:
     [[nodiscard]] static Settings nvidiaPreset(QualityPreset preset);
     // the RTXDI sample's default Medium preset (spec/features/done/rtxdi_3_2_update.md §3.3)
     [[nodiscard]] static Settings nvidiaSettings();
-    // shipped: Power_RIS, fresh final visibility, ray-traced disocclusion boost only (spec/fixesM1-6/i6_restir_di_tuning.md)
+    // shipped since 2026-11-25: NVIDIA's Medium preset, so the engine starts as the sample does
     [[nodiscard]] static Settings defaultSettings();
+    // the m8 I6-I16 tuning for DLSS-RR in NRC + ReSTIR GI mode: Power_RIS, exact sun, permutation, 2 spatial samples
+    // (spec/fixesM1-6/i6_restir_di_tuning.md, i16_denoiser_friendly_noise.md)
+    [[nodiscard]] static Settings tunedSettings();
     // the RTXDI sample's ReSTIR GI settings: the library defaults, temporal and spatial (spec/m4/g5_restir_gi.md §1)
     [[nodiscard]] static GiSettings nvidiaGiSettings();
-    // shipped: NVIDIA's with ray-traced spatial bias correction (spec/fixesM1-6/m8_optimization_and_fixes.md O1) and
-    // ReSTIR PT's DLSS-RR profile (O11)
+    // shipped since 2026-11-25: NVIDIA's (the sample's DLSS-RR preset leaves ReSTIR GI alone)
     [[nodiscard]] static GiSettings defaultGiSettings();
+    // NVIDIA's with ray-traced spatial bias correction (spec/fixesM1-6/m8_optimization_and_fixes.md O1) and ReSTIR PT's
+    // DLSS-RR profile (O11); what the GI check gates
+    [[nodiscard]] static GiSettings tunedGiSettings();
     // the GI check's ReSTIR GI configuration (spec/m4/g5_restir_gi.md §3): bias correction with rays; no sample age
     // limit, fallback, permutation or boiling filter
     [[nodiscard]] static GiSettings convergedGiSettings();
@@ -403,7 +408,8 @@ public:
     GiSettings giSettings = defaultGiSettings();
     // > 0: the indirect pass traces this many bounces after X2 instead of querying NRC, which the renderer pauses
     uint32_t giReferenceBounces = 0;
-    // deterministic per-phase RNG seed override for self-test runners (EngineGiCheck); nullopt uses Renderer::frameNumber
+    // deterministic per-phase RNG seed override for self-test runners (the GI check); nullopt uses
+    // Renderer::frameNumber
     std::optional<uint32_t> frameIndexOverride;
 
 private:

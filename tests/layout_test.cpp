@@ -1,11 +1,13 @@
-// Compares the scalar layout Slang reflects for every struct in shaders/types.slang, for GpuRtxdiConstants in
-// shaders/lighting/rtxdi_constants.slang and for GpuNrcConstants in shaders/gi/nrc_constants.slang, with sizeof /
-// offsetof of its C++ mirror. A Slang struct without a mirror, a field missing on either side, or a size or offset that differs
-// fails the test. A field the C++ side renames fails to compile (offsetof). Also checks the storage-image format
-// constants of shaders/core/binding.slang against SlangImageFormat.
+// Compares the scalar layout Slang reflects for every struct in shaders/types.slang and
+// shaders/checks/check_types.slang, for GpuRtxdiConstants in shaders/lighting/rtxdi_constants.slang and for
+// GpuNrcConstants in shaders/gi/nrc_constants.slang, with sizeof / offsetof of its C++ mirror. A Slang struct without a
+// mirror, a field missing on either side, or a size or offset that differs fails the test. A field the C++ side renames
+// fails to compile (offsetof). Also checks the storage-image format constants of shaders/core/binding.slang against
+// SlangImageFormat.
 // --dump prints the reflected layouts instead of checking them.
 #include "pch.h"
 
+#include "checks/check_types.hpp"
 #include "core/types.hpp"
 #include "render/push_data.hpp"
 #include "render/vk_nrc.hpp"
@@ -875,6 +877,17 @@ int main(int argc, char** argv)
         const StructLayout* mirror = findMirror(type.name);
         if (check(mirror != nullptr, std::format("{} has a C++ mirror", type.name).c_str())) {
             verify(type, *mirror);
+        }
+    }
+    // the check passes' structs: their own module, checked in every build since this reads sources only
+    if (slang::IModule* checkModule = slang.load("checks/check_types")) {
+        const std::vector<Reflected> checkTypes = reflectTypes(*checkModule);
+        check(!checkTypes.empty(), "checks/check_types.slang declares structs");
+        for (const Reflected& type : checkTypes) {
+            const StructLayout* mirror = findMirror(type.name);
+            if (check(mirror != nullptr, std::format("{} has a C++ mirror", type.name).c_str())) {
+                verify(type, *mirror);
+            }
         }
     }
     if (slang::IModule* rtxdiModule = slang.loadText("rtxdi_constants_layout", "lighting/rtxdi_constants.slang")) {

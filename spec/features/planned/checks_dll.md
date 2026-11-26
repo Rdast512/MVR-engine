@@ -1,6 +1,6 @@
 # Feature: Checks DLL
 
-**Date:** 2026-11-23 · **Status:** spec; CK1–CK7 open · **Milestone:** tooling, independent of the M8 steps
+**Date:** 2026-11-23 · **Status:** CK1–CK7 implemented 2026-11-26, see §7 for what differs from this spec · **Milestone:** tooling, independent of the M8 steps
 **Implements:** every engine check, the bench and the settings lab move out of `engine_runtime` and `engine_render` into one shared library, `engine_checks`, built only with `-DENGINE_BUILD_CHECKS=ON`
 **Related:** [engine_ui_split.md](../done/engine_ui_split.md) (same pattern: `Engine` owns one object behind a compile switch), [full_testing.md](./full_testing.md) §0 (checks vs lab), [docs/streaming_server_spec.md](../../../docs/streaming_server_spec.md) §"engine_stream" (a separate SHARED library that `engine_runtime` owns one object of)
 
@@ -245,3 +245,27 @@ A checks build without a runner variable creates no harness and installs no hook
 | Bench unchanged | `ENGINE_BENCH_FRAMES` on Sponza and the instance field, ON build vs HEAD before CK1 (`build/h`, .spv unchanged): every scope within ±5%, vkconfig and validation off |
 | Validation | one motion test, one RT check and one guide capture run clean under core + sync + best practices |
 | Interactive | OFF build starts, renders, UI opens; ON build without variables behaves the same and logs no harness |
+
+---
+
+## 7. As built (2026-11-26)
+
+What differs from §1–§6:
+
+| Item | Spec | Built | Why |
+|---|---|---|---|
+| Settings registry | test code, moves to `src/checks/lab/` | `src/render/settings_registry.{hpp,cpp}` in `engine_render` | since 2026-11-25 the Settings window uses it (Compare with, presets, *Copy config*) and `Engine` uses it for the Accumulation reset. In `engine_runtime` it would make `engine_checks` and `engine_runtime` link each other; the registry depends on render and scene only. *Copy config* stays unguarded. The §6 source check therefore leaves `settings_registry` out |
+| `ENGINE_CONFIG` reader | `CheckHarness` | `CheckHarness`; `readEngineConfig` left the registry | as specced |
+| `ENGINE_ENABLE_CHECKS` | PRIVATE on `engine_runtime` | PUBLIC | `main.cpp` includes `vk_engine.hpp`, whose `checks` member depends on it; PRIVATE would give the exe and the DLL different `Engine` layouts |
+| `engine_dlss_check` | not listed (added after the spec) | moved with the others; same place in `beginFrame` / `endFrame` (after GI, before temporal) | |
+| `attach` | after `rebuildSwapchainResources` | before it, where `applyEngineConfig` ran | `ENGINE_CONFIG` may change what the swapchain resources size; the bench pose `lookAt` moves from right after the startup load to here, before the first frame either way |
+| `onInstanceFieldSpawned` | `(firstEntity, count)` | adds the spawn status line | it is logged under `Bench`, as before |
+| `CheckRequest` | `replaceModels`, `load`, `windowSize`, `instanceField` | adds `logSubsystem` | a failed load keeps its runner's subsystem (`MotionTest`, `GuideCapture`, `Lab`, `Bench`) |
+| Request order | per runner | one request per frame, applied after all `beginFrame`s | only differs when the motion test and guide capture run together, which both drive the camera |
+| Check shaders | created by `ShaderObjects` at startup | created by `CheckPasses` on `enableMotionCheck` / `enableRayCheck` | the bytes overload is `createComputeShader(const std::vector<char>&, …)`: a `std::span<const char>` overload is ambiguous with the string-literal calls; `readShaderSpirv(path)` reads under `ENGINE_SHADER_DIR` |
+| `kFullscreenTile` | a render header | `render/frame_hook.hpp` | |
+| Log tag | — | runner lines carry `[checks]` instead of `[runtime]` | `ENGINE_LOG_DLL="checks"`; the subsystem and the message are unchanged |
+| OFF build | — | logs `Checks not built (ENGINE_BUILD_CHECKS=OFF): runner variables and ENGINE_CONFIG are ignored` once | |
+
+
+Verified 2026-11-26 (release, validation off, a subset of §6 at the user's request): OFF and ON trees build with no new warnings; `ctest` 7/7 OFF, 8/8 ON (`layout`, `lab_registry`); `llvm-nm` finds no runner, `CheckPasses`, `MotionCheck`, `RayCheck` or `DisplayCapture` symbol in the OFF tree's `libengine_runtime.dll`, `libengine_render.dll` and `engine.exe` (HEAD's runtime had 150), and the OFF tree has no `shaders/checks/`. Against HEAD before CK1, the runner lines from the subsystem column on are identical: cull check 16 of 16, motion test 13 of 13, RT check 32 of 32 frames, stability 28 steps 0 failed (30 lines byte-identical). Not run: GI check, guide capture, DLSS check, café / Bistro scenes, bench A/B, the validation runs, the debug trees.

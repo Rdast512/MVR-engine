@@ -2,10 +2,10 @@
 // before overrides, every built-in plan parses. CPU only: no device, no engine run
 #include "test_support.hpp"
 
-#include "lab/engine_lab.hpp"
-#include "lab/lab_cases.hpp"
-#include "lab/lab_plan.hpp"
-#include "lab/settings_registry.hpp"
+#include "checks/lab/engine_lab.hpp"
+#include "checks/lab/lab_cases.hpp"
+#include "checks/lab/lab_plan.hpp"
+#include "render/settings_registry.hpp"
 #include "ui/settings_rows.hpp"
 
 #include <array>
@@ -118,7 +118,7 @@ int main()
     for (const char* text :
          {"di=shipped gi=shipped frame=shipped", "di=nvidia gi=nvidia", "di=converged gi=converged", "di=reference",
           "gi=nvidia frame.indirectMode=nrc", "di=fast", "di=medium", "di=unbiased", "di=ultra",
-          "frame.denoiser=off frame.aa=accumulation frame.accumulationFrames=64", "di.temporalOnly=1"}) {
+          "frame.denoiser=off frame.aa=accumulation frame.accumulationFrames=64", "di.temporalOnly=1", "di=tuned gi=tuned"}) {
         const LabConfigParse parse = parseLabConfig(text);
         test::check(parse.config.has_value() && roundTrips(*parse.config),
                     std::format("'{}' round-trips", text).c_str());
@@ -159,6 +159,10 @@ int main()
     using Preset = RtxdiContext::QualityPreset;
     test::check(RtxdiContext::nvidiaSettings() == RtxdiContext::nvidiaPreset(Preset::Medium),
                 "the NVIDIA defaults are the Medium preset");
+    test::check(RtxdiContext::defaultSettings() == RtxdiContext::nvidiaSettings() &&
+                    RtxdiContext::defaultGiSettings() == RtxdiContext::nvidiaGiSettings() &&
+                    LabConfig{}.indirectMode == IndirectMode::Nrc,
+                "the shipped settings are NVIDIA's, in NRC mode");
     {
         const RtxdiContext::Settings fast = RtxdiContext::nvidiaPreset(Preset::Fast);
         test::check(fast.localLightSamplingMode == ReSTIRDI_LocalLightSamplingMode::Power_RIS &&
@@ -197,6 +201,10 @@ int main()
         config.dlss.quality = Dlss::Quality::Dlaa;
         comparisons.push_back(config);
     }
+    comparisons.emplace_back();
+    comparisons.back().di = RtxdiContext::tunedSettings();
+    comparisons.back().gi = RtxdiContext::tunedGiSettings();
+    comparisons.back().indirectMode = IndirectMode::NrcRestirGi;
     comparisons.emplace_back();
     comparisons.back().di = RtxdiContext::convergedSettings();
     comparisons.back().gi = RtxdiContext::convergedGiSettings();

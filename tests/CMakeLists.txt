@@ -117,14 +117,16 @@ endif ()
 add_test(NAME layout COMMAND layout_test)
 
 # --- Settings lab: registry round trips and built-in plans (spec/features/planned/full_testing.md T1, T4), CPU only ---
-add_executable(lab_registry_test lab_registry_test.cpp)
-target_link_libraries(lab_registry_test PRIVATE engine_runtime engine_test_support)
-# engine headers rely on the engine's precompiled header
-target_precompile_headers(lab_registry_test PRIVATE ${CMAKE_SOURCE_DIR}/src/pch.h)
-if (ENGINE_USE_MIMALLOC)
-    target_link_libraries(lab_registry_test PRIVATE ThirdParty::mimalloc engine_mi_new_delete)
+if (ENGINE_BUILD_CHECKS)
+    add_executable(lab_registry_test lab_registry_test.cpp)
+    target_link_libraries(lab_registry_test PRIVATE engine_checks engine_test_support)
+    # engine headers rely on the engine's precompiled header
+    target_precompile_headers(lab_registry_test PRIVATE ${CMAKE_SOURCE_DIR}/src/pch.h)
+    if (ENGINE_USE_MIMALLOC)
+        target_link_libraries(lab_registry_test PRIVATE ThirdParty::mimalloc engine_mi_new_delete)
+    endif ()
+    add_test(NAME lab_registry COMMAND lab_registry_test)
 endif ()
-add_test(NAME lab_registry COMMAND lab_registry_test)
 
 # --- NRC: Windows-only binaries ---
 if (WIN32)

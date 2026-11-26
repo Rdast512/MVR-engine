@@ -14,6 +14,7 @@ set(RENDER_SOURCES
     vk_rtxdi.cpp
     vk_world_lights.cpp
     vk_shader_objects.cpp
+    settings_registry.cpp
 )
 
 add_library(engine_render SHARED ${RENDER_SOURCES})

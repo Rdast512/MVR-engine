@@ -1,6 +1,6 @@
 # Engine end-goal specification
 
-**Date:** 2026-10-31, updated 2026-11-23 · **Status:** target architecture, normative for new work · **Working tree:** `feature-pbr` on `b3edb2e5c`
+**Date:** 2026-10-31, updated 2026-11-25 · **Status:** target architecture, normative for new work · **Working tree:** `feature-pbr` on `3d24416c6`
 **Audit:** §20 holds the 2026-11-10 architecture audit, its decisions and the documents named below that are not in the repository (§20.4).
 **Inputs:** `end_goal.md` (target) and `meshoptimizer.md`, both folded into this spec and not in the repository; [pbr_implementation_plan.md](../spec/pbr_implementation_plan.md), [resource_architecture.md](../spec/resource_architecture.md), [shader_architecture_plan.md](../spec/shader_architecture_plan.md), [meshlet_culling_options.md](./meshlet_culling_options.md), [culling_comparison.md](../reference/culling_comparison.md), [dgc_comparison.md](../reference/dgc_comparison.md)
 **Precedence:** where this spec and an input disagree, this spec wins. §17 lists every overridden decision. Detailed task plans (PBR plan tasks, culling stages) stay valid wherever they don't conflict.
@@ -13,25 +13,31 @@ The engine is a **GPU-driven, bindless, hybrid visibility + real-time path traci
 
 ### 1.1 Goals
 
-1. **60 fps with full ray-traced lighting** (direct + indirect — 1-bounce ReSTIR GI shipped in 1.0, multi-bounce via the NRC comparison switch of §11.7 — no raster lighting, no baked data) on the target tiers of §2.
-2. **Zero CPU per-object work per frame.** The CPU writes O(1) frame constants and O(changed) scene deltas. Culling, draw generation, acceleration-structure builds and material binning run on the GPU.
-3. **Every stage optimized and measured.** Each pass has a GPU budget (§2.3), a timer and a Tracy zone. A pass over budget is a bug.
-4. **Latest hardware paths only:** mesh shaders, shader objects, descriptor heaps, BDA, DGC, RTX Mega Geometry, OMM, SER, cooperative vectors, DLSS Ray Reconstruction, GPU memory decompression.
-5. **Compressed uploads.** Textures and geometry cross PCIe GDeflate-compressed and are decompressed on the GPU with `VK_EXT_memory_decompression`; textures are converted to GPU-native KTX2 automatically (§6.4, §7.2).
-6. **CPU and GPU work in parallel.**
+1. **Beat NVIDIA's reference demos (RTXPT, RTXDI, RTXGI) in FPS** while hitting **60+ fps with full ray-traced lighting** (no raster lighting, no baked data) on the target tiers of §2, using modern Vulkan 1.4+ and its latest extensions.
+2. **One unified engine covering RTXPT, RTXDI, and RTXGI via runtime toggles.** Every lighting stage — direct lighting (`Off` / Streaming RIS / ReSTIR DI), indirect bounce 1 (`Off` / raw uncorrelated 1-bounce PT / ReSTIR GI), multi-bounce radiance cache (`Off` / NRC / SHaRC), and denoiser (`DLSS-RR` / `Off`) — is independently switchable at runtime on the same visibility-buffer + Mega Geometry + OMM base (§11.7).
+3. **Zero CPU per-object work per frame.** The CPU writes O(1) frame constants and O(changed) scene deltas. Culling, draw generation, acceleration-structure builds and material binning run on the GPU.
+4. **Every stage optimized and measured.** Each pass has a GPU budget (§2.3), a timer and a Tracy zone. A pass over budget is a bug.
+5. **Latest hardware paths only:** mesh shaders, shader objects, descriptor heaps, BDA, DGC, RTX Mega Geometry, OMM, SER (once Slang supports EXT `HitObject`), cooperative vectors, DLSS Ray Reconstruction, GPU memory decompression.
+6. **Compressed uploads.** Textures and geometry cross PCIe GDeflate-compressed and are decompressed on the GPU with `VK_EXT_memory_decompression`; textures are converted to GPU-native KTX2 automatically (§6.4, §7.2).
+7. **CPU and GPU work in parallel.**
    - The CPU never waits for the GPU inside a frame, and the GPU never idles waiting for the CPU.
    - Independent GPU work overlaps across queues: RT structure builds on async compute while graphics rasterizes.
    - Long CPU jobs (asset processing, conversion, cache I/O) run on worker threads while the GPU renders.
    - The jobs and their milestones are in §13.1.
 
-**Final goal (version 1.0):** the full Bistro scene loaded and lit by the complete lighting stack (§11) at the §2.1 targets (milestone M10). The lighting stack is the full RTXDI stack: ReSTIR DI for direct light (§11.2) and ReSTIR GI for indirect light (§11.3, §11.5). NRC stays built as a runtime switch for comparison (§11.7), not the shipped path (decided 2026-11-20).
+**Final goal (version 1.0):** the full Bistro scene loaded and lit by the complete toggle-composable lighting stack (§11) at the §2.1 targets (milestone M10), beating NVIDIA's `RTXPT`, `RTXDI FullSample`, and `RTXGI IndirectDiffuse` demos in FPS at matched settings. The **1.0 target lighting stack** (decided 2026-11-25) is:
+- **Denoiser + Upscaler:** **DLSS-RR** (with toggle to `Off` + `Accumulation`);
+- **Direct Lighting:** **RTXDI** — either **Streaming RIS** (Initial Sampling only) or **ReSTIR DI** with **Temporal ON (`Max History = 4–8`), `Basic` bias correction, and Spatial OFF** (full ReSTIR DI modes/presets and `Off` kept as runtime toggles, §11.2);
+- **Indirect Lighting (Bounce 1):** **raw uncorrelated 1-bounce PT** (1 probabilistic diffuse-or-specular ray/pixel, SER when Slang adds it + OMM enabled, `ReGIR` or simple/`Power_RIS` NEE for bounce lights; ReSTIR GI and `Off` kept as runtime toggles, §11.3, §11.5);
+- **Multi-Bounce Tail:** **NRC** integrated into the pipeline, with a runtime toggle to **SHaRC** (and `Off` for 1-bounce only, §11.4).
 
 **Post-1.0 targets:**
 - the same Bistro scene rendered entirely from Nanite-like cluster-LOD geometry built and traversed as in `vk_lod_clusters`, in raster and ray tracing, with the same lighting stack and targets (§16.3, L3);
 - multithreaded rendering: CPU frame work and command recording spread over a job system (§16.4);
 - switchable ray paths: the SER RT pipeline beside the 1.0 ray-query passes, expected to become the default, and triangle BLAS instead of cluster BLAS for static geometry, each behind a toggle so both ways stay (§16.5);
 - animation: glTF node animation, skinning and morph targets, deformed on the GPU, with the ray-traced geometry rebuilt every frame through RTX Mega Geometry cluster templates instead of refits (§16.6, AN1–AN4);
-- streaming: geometry streamed per cluster-LOD group with GPU-built CLAS, hit-based streaming for rays, and texture mip streaming, so scenes no longer have to fit in VRAM (§16.7, ST1–ST4).
+- streaming: geometry streamed per cluster-LOD group with GPU-built CLAS, hit-based streaming for rays, and texture mip streaming, so scenes no longer have to fit in VRAM (§16.7, ST1–ST4);
+- game-like hybrid Ray Tracing with a **Cleanest Image Quality** toggle (§16.8, HQ1–HQ3).
 
 1.0 stays static and resident (decided 2026-11-23): one CLAS path, every asset in VRAM, no deformation. The post-1.0 work above builds on that path rather than replacing it.
 
@@ -53,12 +59,12 @@ The engine is a **GPU-driven, bindless, hybrid visibility + real-time path traci
 
 | # | Principle | Consequence |
 |---|---|---|
-| P1 | **One path, scaled by quality knobs, not by fallbacks** | Tiers change resolution, ray counts, NRC settings and LOD error. They never swap algorithms. Runtime toggles that keep every path built (the indirect modes of §11.7, the ray paths of §16.5) are for A/B measurement and debugging; each tier still ships one default |
+| P1 | **Composable toggles over one shared base, no legacy fallbacks** | Tiers change resolution, ray counts, cache settings and LOD error. Runtime toggles switch modern RT pipeline components (Direct: Off / Streaming RIS / ReSTIR DI; Indirect: Off / Raw 1-Bounce PT / ReSTIR GI; Cache: Off / NRC / SHaRC; Denoiser: DLSS-RR / Off; ray paths of §16.5) so one engine reproduces RTXPT, RTXDI and RTXGI on the same visibility-buffer + Mega Geometry base while shipping one target default (§11.7) |
 | P2 | **GPU owns the scene per frame** | Persistent GPU scene + delta uploads; the CPU never loops over instances, clusters or lights per frame |
 | P3 | **Two access mechanisms** | Buffers through BDA, images and samplers through descriptor-heap indices ([resource_architecture.md §1](../spec/resource_architecture.md#1-overview)) |
 | P4 | **One root pointer** | Every pass reaches all scene data from `GpuFrameRoot`; push data carries the root address plus pass-local values |
 | P5 | **Measure before and after** | No optimization lands without timer numbers on the reference tier |
-| P6 | **Vendor SDKs over homegrown code** | RTXDI, RTXGI (NRC), DLSS-RR, NVIDIA OMM SDK, meshoptimizer. The engine writes only the glue |
+| P6 | **Vendor SDKs over homegrown code** | RTXDI, RTXGI (NRC & SHaRC), DLSS-RR, NVIDIA OMM SDK, meshoptimizer. The engine writes only the glue |
 
 ---
 
@@ -110,13 +116,13 @@ Allocations, not measurements. They are the acceptance criteria per stage: each 
 | Visibility-buffer raster, both phases (§8) | 1.0 | 1.2 | mesh shaders via DGC |
 | RT scene: instance ops, PTLAS update (cluster BLAS builds after LOD) (§10) | 1.0 | 1.5 | async compute where possible |
 | Material resolve + shading + guides (§9) | 1.2 | 1.2 | compute, DGC execution sets |
-| ReSTIR DI: initial + temporal + spatial + 1 visibility ray (§11.2) | 2.0 | 2.2 | ray query |
-| Indirect: 1 ray/pixel + hit shading + cache query (§11.3) | 3.0 | 3.5 | ray query in compute (SER RT pipeline post-1.0), half-res on the floor tier; the cache query runs in the NRC modes only |
-| Radiance cache update / train (§11.4) | 0.8 | 0.6 | NRC, in the comparison modes only since 2026-11-20 (§11.7): the shipped path spends nothing here. The floor number was set for SHaRC and is unmeasured for NRC (R4) |
-| ReSTIR GI resampling (§11.5) | 1.2 | 1.0 | |
-| DLSS-RR (§12) | 2.5 | 3.0 | NGX; measure early, it is the floor-tier risk |
+| Direct lighting: RTXDI Streaming RIS or ReSTIR DI Temporal-only (Max History 4–8, Basic, Spatial OFF) (§11.2) | 1.5 | 1.8 | ray query; full Spatial+Temporal ReSTIR DI stays selectable as a toggle |
+| Indirect (Bounce 1): raw uncorrelated 1-bounce PT (1 diffuse-or-specular ray/px + hit shading + cache query) (§11.3) | 3.0 | 3.5 | ray query in compute (SER RT pipeline post-1.0), OMM enabled, ReGIR or simple/`Power_RIS` NEE at X₂; half-res on the floor tier if needed |
+| Radiance cache tail: NRC (default) or SHaRC (toggle) (§11.4) | 0.8 | 0.6 | NRC or SHaRC update / train / resolve; 0 ms when cache is `Off` |
+| ReSTIR GI resampling (optional toggle, off in 1.0 target) (§11.5) | 0.0 (1.2 if on) | 0.0 (1.0 if on) | 0 ms in the target stack; active only when ReSTIR GI toggle is enabled (RTXDI analog) |
+| DLSS-RR (§12) | 2.5 | 3.0 | NGX; 0 ms when denoiser is `Off`; measure early, it is the floor-tier risk |
 | Post + UI (§12.3) | 0.4 | 0.4 | |
-| **Headroom** | 2.9 | 1.2 | variance, driver, OS |
+| **Headroom** | 4.6 | 2.6 | variance, driver, OS; target also beats NVIDIA RTXPT / RTXDI / RTXGI demo FPS at matched settings |
 | **Total** | 16.6 | 16.6 | |
 
 **Measured, M1** (2026-11-13; RTX 5070, driver 621.01, 1280×720, release, validation off, `ENGINE_BENCH_FRAMES=3000`; mean ms). The 2060 Super is not measured yet.
@@ -203,15 +209,18 @@ GRAPHICS QUEUE                                          ASYNC COMPUTE QUEUE
  8 classify       vis buffer → material tiles/bins      │
  9 resolve+shade  DGC compute exec set → G-surface + DLSS guides
    ─────── wait: TLAS ready (timeline semaphore) ───────┘
-10 ReSTIR DI      initial → temporal → spatial → visibility ray  → direct
-11 NRC + indirect (§11.4), all on the graphics queue:
-   update paths + indirect 1 ray/px (ray query; SER post-1.0) as query → QueryAndTrain → custom resolve
-   (writes X₂ radiance into the GI samples)
-12 ReSTIR GI      temporal + spatial on indirect samples         → indirect
-   (§11.7 indirect modes: the default "ReSTIR GI" skips the NRC work of 11; "NRC" skips 12; "NRC → ReSTIR GI" runs both)
-13 combine        direct + indirect + emissive                   → noisy HDR
+10 Direct         [Off | Streaming RIS | ReSTIR DI]                → direct
+                  (target: Streaming RIS or Temporal-only Basic ReSTIR DI, Max History 4–8, Spatial OFF)
+11 Indirect + Cache (§11.3–11.4), graphics queue (skipped if Indirect = Off):
+   - Cache update: NRC update paths OR SHaRC update + resolve (skipped if Cache = Off)
+   - Indirect bounce 1: raw uncorrelated 1-bounce PT (1 diffuse-or-specular ray/px, OMM, SER when Slang adds it,
+     ReGIR or simple/Power_RIS NEE at X₂) + cache query (NRC or SHaRC)
+   - NRC QueryAndTrain + custom resolve (when Cache = NRC)
+12 ReSTIR GI      [Off (target) | On (RTXDI analog)]               → indirect
+                  (when Off, stage 11 writes indirectRadiance directly with zero GI reservoir traffic)
+13 combine        direct + indirect + emissive                     → noisy HDR
 13' glass         thin-walled glass layers over the noisy HDR (§12.4; skipped without glass)
-14 DLSS-RR        noisy HDR + guides                             → display-res HDR
+14 Denoiser       [DLSS-RR (target) | Off (No AA / Accumulation)]  → display-res HDR
 15 post           auto exposure → tonemap → swapchain, ImGui
 ```
 
@@ -494,77 +503,74 @@ SBT per pass: one raygen, one miss, one hit group (closest-hit only). No per-mat
 
 The code is identical on every tier. Whether `ReorderThread` reorders is the driver's choice, reported by `rayTracingInvocationReorderReorderingHint` (§2.2); the floor budget (§2.3) assumes no reordering gain until the 2060 Super's timings show one. The RT pipeline uses the descriptor-heap pipeline flag like the shader objects do, plus `allowClusterAccelerationStructure` for cluster hits. DGC does not drive ray dispatch: driver 621.01 reports no RT stages for DGC, so dispatch is `vkCmdTraceRaysIndirect2KHR`.
 
-### 11.2 Direct light: RTXDI ReSTIR DI
+### 11.2 Direct light: RTXDI (Streaming RIS / ReSTIR DI)
 
-PBR plan F1–F3, extended:
+PBR plan F1–F3, extended (M8 target updated 2026-11-25):
 
 - Light sources: punctual lights + **emissive triangles**, one light per triangle of each emitting primitive. `light_world` writes them every frame (M7 E2, [e2_emissive_triangles.md](../spec/m7/e2_emissive_triangles.md)), and a BRDF ray that hits an emitter names its light, so emission is counted once along every path. An environment map is used when present (none yet, C-F3-5).
-- Local light sampling: presampled, as the RTXDI sample. `light_world` writes each local light's power into the light PDF (`R32_FLOAT`, full mip chain), `light_pdf_mips` reduces it, and `rtxdi_presample` fills the `Power_RIS` tiles and ReGIR's onion cells around the camera (async compute, before the TLAS signal). **`Power_RIS` ships** (M8 I6 F12): on Bistro's 76K triangle lights, ReGIR's presample cost 0.44 ms and stalled the ray start by 0.35 ms, while `Power_RIS` costs 0.03 ms with the same `Lit` stability. NVIDIA's `ReGIR_RIS` (`Medium`) and `Uniform` stay selectable (`ENGINE_DI_SAMPLING`), and every path vertex samples in the same mode ([spec/m7/f1_light_presampling.md](../spec/m7/f1_light_presampling.md)).
-- Resampling: temporal, then spatial (RTXDI 3.2 dropped the fused pass); one final visibility ray per pixel.
-- Output: `directRadiance` (RGBA16F).
-- As built (F3, 2026-11-14; RTXDI 3.2, 2026-11-15): `rtxdi_initial`, `rtxdi_temporal` and `rtxdi_shade` (spatial + shading) run first in the ray command buffer. NVIDIA's set is the RTXDI sample's `Medium` preset (`RtxdiContext::nvidiaSettings`), kept callable for cost comparisons with NVIDIA's sample: `Raytraced` temporal reuse with the visibility shortcut, 2 `Basic` spatial samples per frame, permutation sampling, 1 BRDF candidate, final visibility reuse and `ReGIR_RIS` with 8 candidates.
+- Local light sampling: presampled, as the RTXDI sample (`light_world` → `light_pdf_mips` → `rtxdi_presample` on async compute before the TLAS signal). `Power_RIS`, `ReGIR_RIS` and `Uniform` are all runtime-selectable (`ENGINE_DI_SAMPLING`, [spec/m7/f1_light_presampling.md](../spec/m7/f1_light_presampling.md)).
+- **1.0 target direct lighting (decided 2026-11-25, [spec/m8](../spec/m8/README.md)):** RTXDI configured as either:
+  1. **Streaming RIS** (Initial Sampling only, 1 final visibility ray, zero temporal/spatial reservoir traffic — matching `reference/RTXPT-main`'s `IntroSample/RTXDIStreamingRISLightingPass.hlsl`), or
+  2. **ReSTIR DI Temporal-only:** Temporal ON with **Max History = 4–8**, **`Basic` bias correction**, and **Spatial OFF** (skipping spatial neighbor loads and rays so DLSS-RR receives low-correlation noise without spatial blotches).
+  The choice of default between Streaming RIS and Temporal-only ReSTIR DI is decided by M8.5 FPS and stability measurements on Sponza and Bistro; both remain runtime toggles.
+- **Toggles and presets:** Direct lighting can be disabled completely (`Off`, 0 ms GPU cost), switched to `Streaming RIS`, or run full `ReSTIR DI` (`Temporal`, `Spatial`, `Temporal + Spatial`, `Reference/None`). NVIDIA's sample presets (`Fast`, `Medium`, `Unbiased`, `Ultra`, `Reference`) and the M8 `fixesM1-6` `Tuned` / `Converged` sets stay callable for RTXDI-analog comparisons and convergence checks.
+- Output: `directRadiance` (RGBA16F; skipped in `combine` when Direct = `Off`).
 
-**Shipped set** (`defaultSettings`, M8 I6, [i6_restir_di_tuning.md](../spec/fixesM1-6/i6_restir_di_tuning.md)), `Medium` with these changes:
-- `Power_RIS`;
-- no steady-state spatial reuse; instead, a ray-traced disocclusion boost of 8 samples while M < 4;
-- no permutation;
-- fresh final visibility (O10: no shadow-edge leak);
-- no BRDF candidate ray in a scene without emitters (O8).
+### 11.3 Indirect (Bounce 1): raw uncorrelated 1-bounce PT
 
-The shipped set cuts ReSTIR DI by 37–40% against `Medium` and passes all three convergence shots. The convergence check pins its own `convergedSettings` (`Power_RIS`, no BRDF candidate, no boiling filter, no reuse shortcuts). RTXDI's unbiased `None` configuration is the reference (`ENGINE_RTXDI_REFERENCE=1`). Open: the café's emissive-only interior flickers under DLSS-RR (F22). The planned I15 Phase 1 decides `spatialSamples = 2` from the settings lab, and I12 re-checks it on Bistro.
+Target updated 2026-11-25 ([spec/m8](../spec/m8/README.md)):
 
-### 11.3 Indirect: one bounce + cache termination
+- **1.0 target indirect bounce 1:** **raw uncorrelated 1-bounce path tracing** — 1 probabilistic diffuse-or-specular ray per pixel from the primary surface (`sampleBrdf`, VNDF), **OMM 2-state enabled**, **SER enabled once Slang fixes EXT `HitObject`** (C-G1-3, §16.5 V1; compute `RayQuery` in the meantime), with **`ReGIR` or simple / `Power_RIS` NEE** for direct lights at the bounce hit X₂, plus one visibility ray and a multi-bounce **radiance cache query** (NRC or SHaRC, §11.4).
+- When ReSTIR GI is `Off` (the 1.0 target), the indirect pass writes `indirectRadiance` directly (or via `nrc_resolve` when Cache = NRC) with **zero GI reservoir packing/unpacking or reuse overhead**, giving DLSS-RR temporally uncorrelated bounce-1 samples.
+- **Toggles:** Indirect Bounce 1 can be set to `Off` (skips the indirect pass, cache passes, and ReSTIR GI completely — 0 ms), `Raw 1-Bounce PT` (target default), or `ReSTIR GI` (feeds the bounce-1 samples into §11.5 ReSTIR GI resampling for the RTXDI analog). Secondary roughness floor (O9), secondary DI resampling (O2), and X₂ firefly clamp (O6) remain optional toggles for ReSTIR GI mode.
 
-- One indirect ray per pixel from the primary surface (`sampleBrdf`, VNDF). Floor tier: half resolution, checkerboard, reconstructed by ReSTIR GI + DLSS-RR (target; not built: every tier traces every pixel until the 2060 Super is measured, considerations C-G2-1, M8 I11).
-- At the secondary hit X₂: direct light via RTXDI sampling without reuse + one visibility ray, then terminate and **query the radiance cache** for bounces 2…∞. Optional, off by default: X₂'s light resampled from the primary ReSTIR DI reservoirs where X₂ is on screen, and a firefly clamp on X₂'s radiance (`GiSettings::isSecondaryResamplingEnabled` / `isFireflyClampEnabled`, O2 / O6). Neither gained on Sponza, and both are re-checked with many lights in M8 I12 ([i12_many_light_recheck.md](../spec/fixesM1-6/i12_many_light_recheck.md)). NVIDIA's `Medium` turns both on, so I12 Phase 0 adds them to the NVIDIA GI set. X₂ roughness is floored at 0.5 (O9, the sample's `minSecondaryRoughness`; on by default), and I12 checks it on a glossy scene.
-- Writes the ReSTIR GI initial sample (hit position, normal, radiance). With NRC the radiance from X₂ onward is not known in this pass: it writes the query record, and the custom resolve (§11.4) completes the sample after `QueryAndTrain`.
-- 1.0 ships ReSTIR GI mode (§11.7): the sample ends after X₂'s direct light and emission (one bounce), and no cache is queried. The cache termination above runs in the NRC comparison modes.
+### 11.4 Multi-bounce radiance cache: NRC (default) with SHaRC toggle
 
-### 11.4 Radiance cache: NRC
+Target updated 2026-11-25 ([spec/m8](../spec/m8/README.md), reversing the 2026-11-14 "NRC only" restriction): both **NRC** and **SHaRC** are integrated as runtime toggles (plus `Off` for 1-bounce only), so the same engine covers both `RTXGI` (NRC) and `RTXPT` (SHaRC) and benchmarks both caches directly.
 
-| | NRC |
-|---|---|
-| Method | tiny MLP trained online on tensor cores (the SDK's CUDA kernels through `VK_NVX_binary_import`) |
-| Update | sparse training paths |
-| Frame order | update + query paths → `QueryAndTrain` (inference, then one training step) → resolve |
-| Resolve | custom resolve (NRC guide, step 7) writing `throughput × cached radiance` into the ReSTIR GI samples, instead of the SDK's combined-signal resolve |
-| Cost | CUDA runtime DLLs; HLSL layout matching in the bridge |
-| Quality | handles glossy, adapts without parameters |
-| Tiers | a comparison switch on both tiers (§11.7), not the shipped path since 2026-11-20 (then C-G5-3, worked around in M8 I7); in the NRC modes the floor tier lowers the training budget, never swaps the cache (P1) |
+| | NRC (default) | SHaRC (toggle, M8.4) |
+|---|---|---|
+| Method | tiny MLP trained online on tensor cores (SDK CUDA kernels via `VK_NVX_binary_import`) | spatially hashed world-space radiance cache (pure Vulkan 1.4 compute + `shaderBufferInt64Atomics` over BDA) |
+| Update | sparse training paths (`nrc_update.slang`) | sparse multi-bounce paths (e.g. 1 per 4×4 block, `sharc_update.slang`, following `reference/RTXPT-main/Rtxpt/Sharc/`) |
+| Frame order | update + bounce-1 query → `QueryAndTrain` → resolve (`nrc_resolve.slang`) | `sharc_update` → `sharc_resolve` → bounce-1 query inline in `indirect.slang` |
+| Cost / dependencies | prebuilt NRC + CUDA DLLs, isolated SDK command buffers (C-G3-6), `C-G3-7` sentinel workaround | pure Slang/Vulkan shaders, zero external runtime DLLs, lazy BDA hash/accum/resolved buffers |
+| Quality | handles glossy, adapts smoothly, no grid discretization | fast on all tiers, deterministic Vulkan execution, matches RTXPT 1.9.0 |
+| Toggle behavior | when switched away, NRC is paused (never destroyed, C-G3-3); when `Off`, 0 ms | buffers allocated lazily when selected and retired cleanly when switched off; 0 ms when inactive |
 
-NRC is the only radiance cache (decided 2026-11-14: the target is NVIDIA only). The indirect pass calls the NRC bridge directly; there is no cache interface. Linkage test: `tests/nrc_library_test.cpp`. Integrated in M4.
+References: `reference/RTXGI` (NRC 0.16, `Docs/NrcGuide.md`), `reference/RTXPT-main` (`Rtxpt/Sharc/`, `Shaders/IntroSample/SHaRC*.hlsl`, `PathTracerSHaRC.hlsli`), `ThirdParty/_deps/src/sharc`.
 
-### 11.5 Indirect resampling: ReSTIR GI
+### 11.5 Indirect resampling: ReSTIR GI (optional toggle)
 
-RTXDI ReSTIR GI on the §11.3 samples: temporal then spatial reuse, then the final shading with a reconnection ray and the glossy MIS against the pixel's initial sample.
+RTXDI ReSTIR GI (`rtxdi_gi_temporal`, `rtxdi_gi_shade`, optional `rtxdi_gi_duplication`) remains built as a runtime toggle so the engine reproduces NVIDIA's `RTXDI FullSample` and supports A/B quality/FPS comparisons against raw 1-bounce PT (§11.3).
 
-**Shipped set** (`defaultGiSettings`), NVIDIA's library defaults with these changes:
-- ray-traced spatial bias correction: NVIDIA's `Basic` reads −27% in the gallery (considerations C-G5-2, O1);
-- ReSTIR PT's DLSS-RR profile, which the RTXDI sample applies whenever DLSS-RR runs (O11): 20 frames of history, no age rejection, stagnancy decorrelation and firefly replacement in place of the boiling filter, with RTXDI's boiling filter tested over the full tile (F15);
-- without the profile's two darkening parts: duplication history reduction and the fresh-swap bound;
-- 1 spatial sample (I5, −0.23 ms).
-
-Against the one-bounce ground truth it reads +1.09% / −1.21% (gallery / courtyard, seed 0), and the GI check gates it at ±2% ([i5_restir_gi_tuning.md](../spec/fixesM1-6/i5_restir_gi_tuning.md); [m8_optimization_and_fixes.md](../spec/fixesM1-6/m8_optimization_and_fixes.md) §2.5, §2.10). NVIDIA's set (`nvidiaGiSettings`) and the converged set stay callable. Open: the café's +10% (dim tiles +25%) excess, F23, which the planned I15 Phase 2 addresses. Output: `indirectRadiance` (RGBA16F). A failed BRDF sample is a zero-radiance sample (M = 1), not an empty reservoir. The GI check (`ENGINE_GI_CHECK`) holds it to the §14 ground truth ([g5_restir_gi.md](../spec/m4/g5_restir_gi.md)). ReSTIR PT is a later quality option (§15).
+- **1.0 target state (decided 2026-11-25):** **Off by default.** ReSTIR GI adds ~0.85–0.95 ms per frame and feeds temporally correlated indirect noise into DLSS-RR (`spec/fixesM1-6/` I15–I16 findings).
+- When enabled, both NVIDIA's library defaults (`nvidiaGiSettings`) and the `fixesM1-6` tuned set (`tunedGiSettings`: ray-traced spatial correction, 1 spatial sample, O11 DLSS-RR decorrelation profile, age 30) plus `convergedGiSettings` stay selectable and gated by `ENGINE_GI_CHECK`. ReSTIR PT stays in §15.
 
 ### 11.6 Combine
 
-`noisyColor = directRadiance + indirectRadiance + emissive` (RGBA16F), the only place the terms meet. AO is never applied to direct light (PBR plan §2 #10); with path-traced indirect, material AO applies only to the cache query term. Built in G6 ([g6_combine.md](../spec/m4/g6_combine.md)): the `DLSS input` debug view shows the sum, `Direct lighting` the direct term + emissive that the ReSTIR DI checks compare.
+`noisyColor = directRadiance + indirectRadiance + emissive` (RGBA16F), the only place the terms meet. Disabled stages contribute zero without being sampled (or zero-masked by flags). AO is never applied to direct light (PBR plan §2 #10); with path-traced indirect, material AO applies only to the cache query term. Built in G6 ([g6_combine.md](../spec/m4/g6_combine.md)): the `DLSS input` debug view shows the sum, `Direct lighting` the direct term + emissive that the ReSTIR DI checks compare.
 
-### 11.7 Indirect modes
+### 11.7 Pipeline toggles and demo-analog modes
 
-A runtime toggle picks how `indirectRadiance` is made; NRC stays initialized in every mode (plan G7, [g7_indirect_modes.md](../spec/m4/g7_indirect_modes.md)):
+Replaces the earlier 3-way `IndirectMode { NrcRestirGi, Nrc, RestirGi }` (G7) with independent, composable runtime toggles (implemented in M8.3–M8.4, [spec/m8/README.md](../spec/m8/README.md)):
 
-| Mode | Sample radiance at X₂ | Passes | Reference |
-|---|---|---|---|
-| **NRC → ReSTIR GI** (default, both tiers, since 2026-11-24) | direct + emission + cache query (§11.3–11.4) | NRC, then ReSTIR GI (§11.5) | this spec |
-| **NRC** | the same | NRC; the resolved sample shaded at the primary surface, no ReSTIR GI | RTXGI IndirectDiffuse `Nrc` mode |
-| **ReSTIR GI** (default 2026-11-20 – 11-24) | direct + emission only (one bounce) | ReSTIR GI; NRC paused (no update paths, `QueryAndTrain`, resolve or `EndFrame`; weights kept) | RTXDI sample |
+| Axis | Runtime options | 1.0 Target default |
+|---|---|---|
+| **Direct Lighting** | `Off` \| `Streaming RIS` \| `ReSTIR DI` (`Temporal` / `Spatial` / `Temporal + Spatial` / `Reference`) | `Streaming RIS` *or* `ReSTIR DI Temporal` (`Max History = 4–8`, `Basic`, Spatial OFF) |
+| **Indirect (Bounce 1)** | `Off` \| `Raw 1-Bounce PT` \| `ReSTIR GI` | `Raw 1-Bounce PT` |
+| **Radiance Cache (Multi-Bounce)** | `Off` \| `NRC` \| `SHaRC` | `NRC` (with one-click toggle to `SHaRC`) |
+| **Denoiser** | `DLSS-RR` \| `Off` (`No AA` / `Accumulation`) | `DLSS-RR` |
 
-Rules: a switch happens at a frame boundary without a reload or a reconfigure, and resets ReSTIR GI and DLSS-RR history for one frame. The NRC context is never destroyed on a switch (SDK leaks, considerations C-G3-3). The self-test runners cover every mode. Defaults change only by a spec decision backed by the G7 timings and convergence numbers (P1).
+**Switchable NVIDIA demo-analog presets** (one engine, toggle presets only):
 
-Built in G7 (2026-11-19): `Renderer::indirectMode`, `ENGINE_INDIRECT_MODE` (a mode id, or `cycle`). A paused cache has zeroed constants; NRC mode is RTXDI's resampling mode `None`; a change sets `FrameFlag::IndirectHistoryReset`. With `convergedGiSettings`, ReSTIR GI mode converges to the one-bounce ground truth (GI check, gated). The shipped defaults read +1.09% / −1.21% (gallery / courtyard) and have been gated since M8 I5. M8 I7 found the NRC modes' ~10% excess (C-G5-3): an upstream NRC 0.16 leak of direct light on `hasExitedScene` training paths, worked around in `nrc_update.slang` (C-G3-7). Both NRC phases have been gated since then, and the GI check passes 14 of 14. On the RTX 5070 at 1280×720: GPU total 3.3 / 2.9 / 2.7 ms for NRC → ReSTIR GI / NRC / ReSTIR GI.
+| Preset | Direct | Indirect Bounce 1 | Radiance Cache | Denoiser | Analog of |
+|---|---|---|---|---|---|
+| **Engine Target** (shipped) | Streaming RIS / ReSTIR DI Temporal (`Basic`, Spatial OFF, History 4–8) | Raw 1-Bounce PT | NRC *(or SHaRC)* | DLSS-RR | Target Vulkan 1.0 stack |
+| **RTXPT Analog** | Streaming RIS / NEE | Raw 1-Bounce PT | SHaRC | DLSS-RR | `reference/RTXPT-main` |
+| **RTXDI Analog** | ReSTIR DI (`Medium`) | ReSTIR GI | Off | DLSS-RR | `reference/RTXDI/Samples/FullSample` |
+| **RTXGI Analog** | Streaming RIS / ReSTIR DI | Raw 1-Bounce PT | NRC | DLSS-RR | `reference/RTXGI/Samples/IndirectDiffuse` |
 
-Default decision (2026-11-24, user): **NRC → ReSTIR GI on both tiers** (`kDefaultIndirectMode`, `indirect_mode.hpp`). It is the end goal and the tuning target: its image should look ideal in noise, ReSTIR DI included, so DI and GI settings are judged by `Lit` stability in this mode and by bias against the multi-bounce ground truth (M8 I15). ReSTIR GI mode stays selectable and gated. Earlier decision (2026-11-20, user): ReSTIR GI on both tiers. NRC reads ~10% bright against the ground truth in both NRC modes (considerations C-G5-3), while ReSTIR GI mode was within +8.1% / +1.7% of its one-bounce ground truth with the shipped settings of the time and cost 0.6 ms less (since M8 I5: +1.09% / −1.21%, gated). NRC stays built and paused. Since M8 I7 (2026-11-22), C-G5-3 is worked around and the NRC phases are gated. A switch of the default back to NRC is a separate user decision, backed by the cost numbers (NRC + ReSTIR GI costs 0.6–0.8 ms more, I4). Optimizations from the RTXDI sample and 3.1 / 3.2 are reviewed in [m8_optimization_and_fixes.md](../spec/fixesM1-6/m8_optimization_and_fixes.md).
+Rules: every toggle switches at a frame boundary without a scene reload, resets affected temporal histories (ReSTIR / DLSS-RR / Accumulation) for one frame, and incurs **0 ms GPU cost** when off. The NRC context is paused rather than destroyed on a switch (C-G3-3); SHaRC buffers are allocated lazily when active and retired cleanly when off. Every preset and toggle is exposed in `SettingsWindow`, `SettingsRegistry` (`ENGINE_CONFIG`), and covered by the self-test runners.
 
 ---
 
@@ -681,7 +687,7 @@ Each is a separate stage, added only when the baseline meets §2.3 and the techn
 
 ## 16. Roadmap
 
-### 16.1 Current state (`b3edb2e5c` plus the working tree, 2026-11-23)
+### 16.1 Current state (`3d24416c6` plus the working tree, 2026-11-25)
 
 | Area | State |
 |---|---|
@@ -697,13 +703,14 @@ Each is a separate stage, added only when the baseline meets §2.3 and the techn
 | Punctual lights (PBR B3): `evalLight` in `lighting/lights.slang`, `tests/lights_test.cpp` | built; called by the RTXDI bridge (PBR F2) and the `Unshadowed lights` / `Shadowed lights` views |
 | Debug views, GPU timers, Tracy | done |
 | Per-stage timings on both cards (M0, M1 rows of §2.3) | RTX 5070 recorded 2026-11-13 and as the full frame profile in M8 I4 (§2.3); the 2060 Super not recorded (M8 I11) |
-| DLSS, NRC | DLSS-RR evaluated every Lit frame (PBR H1); NRC built since M4 (PBR G3), trained and queried in the NRC modes only, paused by default since 2026-11-20 (§11.7); linkage test in `tests/` |
-| Direct and indirect lighting (ReSTIR DI 3.2, compute indirect bounce, ReSTIR GI, NRC, combine, indirect mode toggle), DLSS-RR, auto exposure + ACES tonemap, cluster AS and PTLAS, GI ground truth | built (M2–M4; §16.2) |
+| DLSS, NRC, SHaRC | DLSS-RR evaluated on Lit with `DenoiserMode::Off` + `Accumulation` added (`nvidia_settings_layout.md`, GPU checks pending C-NS-1); NRC 0.16 built since M4 (G3, leak worked around C-G3-7, divergence guard C-I16-5); SHaRC planned in M8.4 as a runtime toggle beside NRC |
+| Direct and indirect lighting (ReSTIR DI 3.2, compute indirect bounce, ReSTIR GI, NRC, combine, indirect mode toggle), DLSS-RR, auto exposure + ACES tonemap, cluster AS and PTLAS, GI ground truth | built (M2–M4; §16.2); composable Direct / Indirect / Cache / Denoiser toggles planned in M8.3 |
 | OMM and the alpha-tested raster bin | built (M6, [spec/m6](../spec/m6/README.md), 2026-11-20) |
-| Material binning, emissive-triangle lights, light presampling | built (M7, [spec/m7](../spec/m7/README.md), 2026-11-20/21); `Power_RIS` default since M8 I6 |
-| Bistro | loads with KTX2 textures and spec-gloss materials (C-M7-1); glass composited (M8 I13); café and glass check scenes |
-| Optimization and fixes (M8) | I1–I10 and I13 built; I11 (floor tier), I12, I14, I15 planned (§16.2) |
-| SER RT pipeline, triangle BLAS, cluster LOD, animation, streaming | SER built in M4 and shelved 2026-11-17, returns post-1.0 (§16.5 V1); triangle BLAS measured in I10 and kept post-1.0 (V2); cluster LOD, animation and streaming post-1.0 (§16.3, §16.6, §16.7) |
+| Material binning, emissive-triangle lights, light presampling | built (M7, [spec/m7](../spec/m7/README.md), 2026-11-20/21); `Power_RIS` and `ReGIR_RIS` selectable |
+| Bistro | loads with KTX2 textures and spec-gloss materials (C-M7-1); glass composited (I13); café and glass check scenes |
+| Prior M1–M7 fixes & tuning ([spec/fixesM1-6](../spec/fixesM1-6/README.md)) | I1–I10, I13, I14, I15, partial I16, settings lab, and `SettingsWindow` built; superseded by new M8 ([spec/m8](../spec/m8/README.md)) |
+| Unified RTXPT/RTXDI/RTXGI pipeline, audits, toggles, SHaRC, perf (M8) | planned 2026-11-25 ([spec/m8/README.md](../spec/m8/README.md)): M8.1–M8.6 |
+| SER RT pipeline, triangle BLAS, cluster LOD, animation, streaming, hybrid RT + Cleanest Image Quality | SER shelved to post-1.0 (§16.5 V1); triangle BLAS post-1.0 (V2); cluster LOD (§16.3), multithreading (§16.4), animation (§16.6), streaming (§16.7), and game-like hybrid RT + Cleanest Image Quality toggle (§16.8) post-1.0 |
 | Structure and document debt | §20 |
 
 ### 16.2 Milestones
@@ -720,16 +727,17 @@ Each milestone renders something testable and is measured against §2.3 before t
 | M5 | — | merged into M4 (2026-11-14): NRC is the only cache | — |
 | M6 | Alpha | OMM bake per primitive, attach per cluster, build (§10.5), alpha-tested raster bucket | foliage cut-outs in raster and shadows; zero ray candidates |
 | M7 | Material binning | tile classification + bin-id image (§9.1), DGC compute execution set with the overlap guard (§9.2), emissive-triangle lights, `Power_RIS` | per-bin timings; Bistro emissives lit |
-| M8 | Optimization and fixes | bias and stability of the default lighting, the NRC bias, measured perf levers across the frame, and the check runners that hold them: GI-check seeding, stability, light-change and screen-edge runners; frame profile; ReSTIR GI and DI tuning with NVIDIA's sets kept callable; NRC bias and cost; RTXDI surface traffic; Mega Geometry fixes and perf; floor tier; many-light and glossy re-check after M7; thin-walled glass; the Bistro audit fixes and café settings; plan: [spec/fixesM1-6](../spec/fixesM1-6/README.md) (I1–I15), findings: [m8_optimization_and_fixes.md](../spec/fixesM1-6/m8_optimization_and_fixes.md), [mg_optimizations_fixes.md](../spec/fixesM1-6/mg_optimizations_fixes.md) | shipped ReSTIR GI gated in the GI check (or its bias a documented choice); NRC phases gated or C-G5-3's cause known; `Lit` stability no worse than the 2026-11-20 baseline; every lever of the frame profile landed or closed with its numbers on both tiers |
+| M8 | Unified RTXPT / RTXDI / RTXGI pipeline, audits, toggles, SHaRC & perf | M8.1 pipeline audit (BRDF, Mega Geometry + OMM, ReSTIR DI, ReSTIR GI, NRC, NRC + ReSTIR GI) vs NVIDIA demos (`RTXPT-main`, `RTXDI`, `RTXGI`, `RTXMG-main`, `vk_lod_clusters`, `vk_denoise_dlssrr`, `vk_gltf_renderer`) + bug fixes (`C-GA-1`/`C-T-6`); M8.2 ImGui & settings wiring audit (`C-NS-1`); M8.3 composable pipeline toggles (Direct `Off`/Streaming RIS/ReSTIR DI, Indirect `Off`/Raw 1-Bounce PT/ReSTIR GI, Cache `Off`/NRC/SHaRC, Denoiser `DLSS-RR`/`Off`, plus demo-analog presets); M8.4 SHaRC multi-bounce cache toggle beside NRC; M8.5 lean target-stack implementation & modern Vulkan/shader perf optimization + head-to-head FPS benchmarks vs NVIDIA demos; M8.6 full verification & RTX 2060 Super floor tier. Plan: [spec/m8/README.md](../spec/m8/README.md) (supersedes [spec/fixesM1-6](../spec/fixesM1-6/README.md)) | audits complete with fixes landed; every toggle & demo-analog preset switches cleanly with 0 ms cost when disabled; SHaRC & NRC both work as toggles; target lighting stack meets §2.3 budgets and beats NVIDIA RTXPT / RTXDI / RTXGI demos in FPS on the RTX 5070; all runners and validation (including GPU-AV) clean; 5070 + 2060 Super tables recorded |
 | M9 | Asset pipeline | §6.4 and §7.2: automatic KTX2 conversion, GDeflate cache, GPU decompression for textures and geometry; background loading on worker threads, async upload and build, deferred destruction on unload (§13.1 X3–X5) | §6.4 and §7.2 hold; Bistro load time and PCIe bytes recorded; loading a model while rendering causes no frame over budget |
-| M10 | **1.0 final goal: Bistro** | full Bistro scene, complete lighting stack (ReSTIR DI + ReSTIR GI, the NRC switch kept for comparison); fixed benchmark paths; per-stage tuning on both tiers; CPU/GPU overlap verified (§13.1) | §2.3 met on the reference tier; floor result recorded (met, or overrun list → §2.1 outcome); §13.1 done criteria met |
+| M10 | **1.0 final goal: Bistro** | full Bistro scene, complete toggle-composable lighting stack (target default: DLSS-RR + Streaming RIS or Temporal-only Basic ReSTIR DI + Raw 1-Bounce PT + NRC/SHaRC; RTXPT / RTXDI / RTXGI presets callable); fixed benchmark paths; per-stage tuning on both tiers; CPU/GPU overlap verified (§13.1) | §2.3 met on the reference tier and beats NVIDIA demos in FPS; floor result recorded (met, or overrun list → §2.1 outcome); §13.1 done criteria met |
 
-**Status (2026-11-23):**
+**Status (2026-11-25):**
 - **Done:** M1, M3 and M6.
 - **Built on the RTX 5070:** M0, M2, M4 and M7. Their 2060 Super checks stay open (C-M0-1), as does the M2 overlap capture, which I4 recorded for the 5070 (F9).
-- **M4:** G1 was built, then shelved 2026-11-17 to post-1.0 V1. G2, G3, G5, G6 and G7 are built, and the default switched to ReSTIR GI on 2026-11-20.
+- **M4:** G1 was built, then shelved 2026-11-17 to post-1.0 V1. G2, G3, G5, G6 and G7 are built.
 - **M5** was merged into M4.
-- **M8 is in progress:** I1–I10 and I13 are built; I11, I12, I14 and I15 are planned.
+- **Prior M1–M7 fixes (`spec/fixesM1-6/`):** I1–I10, I13, I14, I15, partial I16, settings lab, and `SettingsWindow` landed; superseded on 2026-11-25 by the new **M8** ([spec/m8/README.md](../spec/m8/README.md)).
+- **M8 is planned (2026-11-25):** M8.1–M8.6.
 - **Not started:** M9 and M10.
 
 AU items not marked done are optional (§20.2).
@@ -744,7 +752,7 @@ AU items not marked done are optional (§20.2).
 | M5 | — | merged into M4 (2026-11-14) |
 | M6 | D1 OMM SDK bake per alpha primitive; D2 micromap per primitive built before its CLAS, per-cluster OMM index ranges, alpha instances without `FORCE_OPAQUE`; D3 alpha-tested raster bin; D4 zero-candidate counter and the `alpha-edge` RT-check class. `AlphaBlendModeTest` and Sponza's plants cut out in raster and shadows; every runner green, GPU-AV clean ([spec/m6](../spec/m6/README.md)) | **done** (2026-11-20). Accepted: micromap build cost (C-D2-1), the known-area gate on Sponza's chains (C-D1-2) |
 | M7 | E1 material binning (classify + DGC execution set of `Background` / `Standard` / `Unlit`, guides bit-identical); E2 emissive-triangle lights written per frame by `light_world`; F1 light PDF, `Power_RIS` tiles and ReGIR cells ([spec/m7](../spec/m7/README.md)). Bistro loads with its spec-gloss materials (C-M7-1) | built (2026-11-20/21). Open: GPU-AV on the execution set (C-E1-3, temporary per-bin switch), C-E2-2, C-F1-4 to C-F1-6; the "Bistro emissives lit" check is still to be run; M8 I14 Phase 4 adds an independent Bistro textured-emission check |
-| M8 | O1, O2/O6 (off), O3 (closed), O9, O11, F10 and the sampling audit ahead of the steps. I1 check runners; I2 shading correctness (F13–F20); I3 Mega Geometry fixes (MG-B1–B4); I4 frame profile; I5 ReSTIR GI tuning (shipped GI gated, +1.09% / −1.21%); I6 ReSTIR DI tuning (`Power_RIS`, −37–40% DI); I7 NRC bias (upstream `hasExitedScene` leak found and worked around; NRC phases gated, GI check 14 of 14); I8 NRC cost; I9 RTXDI surface traffic; I10 Mega Geometry perf (MG-P1, P3, P4, P5 layout, P6, P7 kept; P2 and explicit boxes reverted; 1.0 stays on CLAS); I13 thin-walled glass; the settings lab ([spec/fixesM1-6](../spec/fixesM1-6/README.md)) | I11 floor tier (needs the 2060 Super); I14 Bistro sampling, reuse, DLSS-RR and rays (F24–F27); I15 café DI and GI settings (F22, F23); I12 many-light and glossy re-check after I14 and I15 Phase 1 (Phase 0 can land now). NRC bias closed in I7 (C-G5-3 worked around, upstream C-G3-7) |
+| M8 | Prior `spec/fixesM1-6/` fixes landed as baseline: I1–I10, I13 glass, I14 Bistro ray/DLSS/light-PDF fixes, I15 café DI/GI, partial I16 (exact sun, specular hit distance, NRC divergence guard), settings lab, and `SettingsWindow` + denoiser `Off` + `Accumulation` (`3d24416c6`) | New M8 ([spec/m8/README.md](../spec/m8/README.md)): M8.1 pipeline audit vs NVIDIA demos (incl. `C-GA-1`/`C-T-6`), M8.2 ImGui wiring audit (`C-NS-1`), M8.3 composable pipeline toggles, M8.4 SHaRC cache toggle, M8.5 target lighting stack + Vulkan perf optimization + beat NVIDIA demo FPS benchmark, M8.6 full verification & RTX 2060 Super floor tier |
 | M9–M10 | — | not started |
 
 **Work added by the audit (§20.2):**
@@ -848,6 +856,20 @@ Rules:
 - RT and raster stream from the same residency table. The RT cut may want groups the raster cut does not (ST3), but no ray traces a group whose CLAS is not built. The §10.4 hybrid rule holds inside the frustum.
 - 7-bit CLAS truncation (reverted MG-P2) and the large-world PTLAS items (re-centering the grid, streaming partition allocation) are re-measured here, as residency levers.
 
+### 16.8 Post-1.0 target: game-like hybrid Ray Tracing with Cleanest Image Quality toggle
+
+Starts after M10 (added 2026-11-25). Separate from 1.0's FPS-first unified RTXPT / RTXDI / RTXGI path-tracing modes: builds a production game-engine style hybrid ray-tracing mode and a dedicated **Cleanest Image Quality** toggle that prioritizes rock-solid temporal stability and noise-free output under DLSS-RR (inspired by `reference/RTXPT-main`'s `IntroSample` hybrid progression and `Rtxpt` path-space guide decomposition / PSR).
+
+| # | Milestone | Content | Done when |
+|---|---|---|---|
+| HQ1 | Game-like hybrid RT mode | Selective game-style ray-traced passes over the visibility buffer: raster primary surface + deterministic/analytic dominant lights + selective RT shadows, glossy reflections, and bounded-cost diffuse GI (NRC or SHaRC), tunable per effect like a shipping AAA hybrid renderer | hybrid mode toggles cleanly at runtime beside the 1.0 path-tracing presets; per-pass timings and quality recorded on Sponza and Bistro |
+| HQ2 | Full DLSS-RR guide fidelity (PSR + reflection MVs + hit distances) | Primary Surface Replacement (PSR) for mirror/smooth reflections (`reference/RTXPT-main` `Docs/Design.md` §Path Trace Pre-Pass), specular reflection motion vectors (`pInMotionVectorsReflections`), diffuse and specular hit distances, and clean path-space guide blending for glass and glossy surfaces | `ENGINE_DLSS_CHECK` gains guide-sensitive moving-reflection tests (closes `C-I14-7`); reflection stability under camera motion matches or beats RTXPT |
+| HQ3 | **Cleanest Image Quality** toggle | One-click quality toggle combining uncorrelated low-variance inputs, deterministic dominant lights, full DLSS-RR guides (HQ2), adaptive/multi-sample budget on high-variance edges/interiors, and zero ReSTIR boiling/popping — judged on static and moving `Lit` temporal stability (`cafe.tables`, `cafe.dining`, `sponza`, `bistro.street`) | static and moving `Lit` temporal std and flicker reach near DLSS-RR's clean-input floor across Sponza and Bistro café without bias regressions, with frame cost documented against the 1.0 FPS-first target |
+
+Rules:
+- Lives behind runtime toggles beside the 1.0 path-tracing modes; never slows down or complicates the 1.0 FPS-first path when disabled.
+- Every guide and sampling upgrade is verified against the check runners and recorded with ABBA GPU timings.
+
 ---
 
 ## 17. Superseded decisions
@@ -877,6 +899,8 @@ Rules:
 | spec §7.1 (2026-11-07) | `meshopt_buildMeshletsFlex` (min = max / 3, split factor 2) | `meshopt_buildMeshletsSpatial` (min = max / 3, fill 0.75; §7.1) | M8 I10 MG-P3: −7 to −13% `RaySum` |
 | end_goal §2 | `VK_EXT_descriptor_buffer` / `mutable_descriptor_type` | `VK_EXT_descriptor_heap` | engine already migrated; descriptor heap replaces descriptor buffer |
 | end_goal §3 | Hi-Z from "previous frame's" depth with previous transforms | as built: previous pyramid with previous matrices, no depth reprojection | [meshlet_culling_options.md §8](./meshlet_culling_options.md#8-review-proposed-4-tier-pipeline--visibility-buffer) |
+| spec §1.1, §11.2–11.7 (2026-11-20 / 2026-11-24) | 1.0 target = ReSTIR DI + ReSTIR GI (or NRC → ReSTIR GI), NRC-only cache (SHaRC dropped 2026-11-14), fixed 3-way `IndirectMode` | **2026-11-25:** one unified Vulkan RTXPT + RTXDI + RTXGI analog via composable runtime toggles beating NVIDIA demos in FPS. 1.0 target stack: DLSS-RR + RTXDI Streaming RIS *or* Temporal-only `Basic` ReSTIR DI (`Max History = 4–8`, Spatial OFF) + raw uncorrelated 1-bounce PT (1 diffuse-or-specular ray/px, OMM, SER when Slang adds it, ReGIR or simple/`Power_RIS` NEE) + NRC default with SHaRC toggle. ReSTIR GI kept as runtime toggle (off in target) | ReSTIR GI and spatial/long-history ReSTIR DI feed temporally correlated blotches to DLSS-RR and burn GPU time; refocusing on beating NVIDIA RTXPT / RTXDI / RTXGI demos in FPS via modern Vulkan + toggles ([spec/m8/README.md](../spec/m8/README.md)) |
+| spec §16.2 M8 (2026-11-20) | M8 = `spec/fixesM1-6/` optimization and fixes (I1–I16) | **2026-11-25:** M8 = [spec/m8/README.md](../spec/m8/README.md) (M8.1 pipeline audit, M8.2 ImGui audit, M8.3 composable toggles, M8.4 SHaRC toggle, M8.5 target stack & Vulkan perf / beat NVIDIA demos FPS, M8.6 floor tier & verification); `spec/fixesM1-6/` stays as completed M1–M7 fixes history | refocus on audited NVIDIA-parity unified architecture and FPS target; I16 ReSTIR boiling hacks superseded, I11/I12 folded into M8.5–M8.6 |
 
 ---
 
@@ -921,9 +945,9 @@ Local notes are in [reference/](../reference/); sources are under `reference/` o
 | Tessellated clusters | nvpro-samples/vk_tessellated_clusters, NVIDIA-RTX/RTXMG | — |
 | RT pipeline, SER, ray query in Slang | nvpro-samples/vk_raytracing_tutorial_KHR (`v2`) | [vk_raytracing_tutorial_v2_reference.md](../reference/vk_raytracing_tutorial_v2_reference.md) |
 | glTF PBR, textures | nvpro-samples/nvpro_core2, vk_gltf_renderer | [nvpro_core2_textures_pbr.md](../reference/nvpro_core2_textures_pbr.md) |
-| Full RT lighting stack integration (ReSTIR, NRC, RR, SER, OMM) | NVIDIA-RTX/RTXPT | — |
-| Direct + indirect resampling | NVIDIA-RTX/RTXDI | — |
-| Radiance cache | NVIDIA-RTX/RTXGI (NRC) | [NrcGuide.md](../reference/NrcGuide.md) |
+| Full RT lighting stack integration (Streaming RIS, ReSTIR DI, 1-bounce PT, SHaRC, DLSS-RR, SER, OMM, PSR) | NVIDIA-RTX/RTXPT v1.9.0 (`Rtxpt` + `IntroSample`) | local source in `reference/RTXPT-main` (`Docs/Design.md`, `Docs/intro-sample.md`, `Rtxpt/Sharc/`, `Rtxpt/Shaders/IntroSample/`) |
+| Direct + indirect resampling | NVIDIA-RTX/RTXDI | local source in `reference/RTXDI` |
+| Radiance caches (NRC & SHaRC) | NVIDIA-RTX/RTXGI (NRC 0.16, SHaRC) | local source in `reference/RTXGI`, [NrcGuide.md](../reference/NrcGuide.md), `reference/RTXGI/Docs/SharcGuide.md`, `ThirdParty/_deps/src/sharc` |
 | Neural shading / textures | NVIDIA-RTX/RTXNS, NVIDIA-RTX/RTXNTC | — |
 | Reconstruction | NVIDIA/DLSS (NGX) | — |
 | GPU decompression, GDeflate | `VK_EXT_memory_decompression`; GDeflate reference codec in microsoft/DirectStorage | [VK_EXT_memory_decompression.md](../spec/VkExtensionsSpecs/VK_EXT_memory_decompression.md) (its "transfer queue" advice is wrong, §3); §6.4, §7.2 |
@@ -1024,6 +1048,7 @@ Root cause of the drift: the same facts (vis-buffer format, the §9.3 guide tabl
 
 | Date | Change |
 |---|---|
+| 2026-11-25 | Refocused 1.0 goal and new **M8** ([spec/m8/README.md](../spec/m8/README.md), superseding [spec/fixesM1-6](../spec/fixesM1-6/README.md)): one unified modern Vulkan 1.4+ renderer covering RTXPT, RTXDI, and RTXGI via composable runtime toggles and beating NVIDIA's demos in FPS. New 1.0 target lighting stack (§1.1, §2.3, §5, §11.2–11.7, §17): DLSS-RR + RTXDI Streaming RIS *or* Temporal-only `Basic` ReSTIR DI (`Max History = 4–8`, Spatial OFF) + raw uncorrelated 1-bounce PT (1 diffuse-or-specular ray/px, OMM, SER when Slang adds it, ReGIR or simple/`Power_RIS` NEE) + NRC default with SHaRC toggle (M8.4); ReSTIR GI kept as runtime toggle (off in target). M8 opens with M8.1 pipeline audit vs NVIDIA demos (`RTXPT-main`, `RTXDI`, `RTXGI`, `RTXMG-main`, `vk_lod_clusters`, `vk_denoise_dlssrr`, `vk_gltf_renderer`), M8.2 ImGui & settings wiring audit, M8.3 composable toggles, M8.4 SHaRC cache toggle, M8.5 target stack & Vulkan perf / NVIDIA demo FPS benchmark, M8.6 verification & floor tier. Added post-1.0 target §16.8: game-like hybrid Ray Tracing with Cleanest Image Quality toggle (HQ1–HQ3). Updated §19 reference map and synced `pbr_implementation_plan.md`, `pbr_lighting_materials.md`, `shader_architecture_plan.md`, `resource_architecture.md`, `docs/settings.md`, and `considerations.md` |
 | 2026-11-23 | Post-1.0 animation (§16.6, AN1–AN4: GPU node animation, skinning and morphs, Mega Geometry cluster templates instantiated per frame, procedural foliage) and streaming (§16.7, ST1–ST4: GPU-only CLAS/BLAS builds, LOD-group geometry streaming, hit-based streaming, texture mips) added from `vk_animated_clusters`, `vk_lod_clusters` and RTXMG; §1.1, §1.2, §5, §6.4, §7.3, §10.1, §10.2, §13.1, §14, §17, R7, R9, Q11, Q12 and §19 follow. 1.0 stays static and resident |
 | 2026-11-24 | NRC → ReSTIR GI is the default indirect mode on both tiers and the tuning target for DI and GI noise (§11.7, user decision, M8 I15) |
 | 2026-11-23 | Consistency pass against the step specs (M6, M7, M8 I1–I15): M6 done, M7 built, M8 status per step (§16.1, §16.2); shipped ReSTIR DI (`Power_RIS`, I6) and ReSTIR GI (O11 profile, gated, I5) sets (§11.2, §11.5, §11.7); NRC bias found and gated in I7 (§11.4, §11.7); spatial meshlets (MG-P3, §7.1), split OMM CLAS and truncation result (MG-P1, MG-P2, §10.2), PTLAS layout and overlap (MG-P5, MG-P7, §10.3); material binning and emissive lights as built (§6.1, §9.1, §11.2); alpha bin built (§8.1, §8.2); glass in the frame overview (§5); I4 frame profile in §2.3; check runners, check scenes and the settings lab (§14); broken findings links fixed |

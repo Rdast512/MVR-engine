@@ -55,6 +55,20 @@
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
+      "name": "windows-clang-debug-checks",
+      "displayName": "Windows (MSYS2) | Clang | Debug | Checks",
+      "inherits": "windows-clang-debug",
+      "binaryDir": "${sourceDir}/build/windows-clang-debug-checks",
+      "cacheVariables": { "ENGINE_BUILD_CHECKS": "ON" }
+    },
+    {
+      "name": "windows-clang-release-checks",
+      "displayName": "Windows (MSYS2) | Clang | Release | Checks",
+      "inherits": "windows-clang-release",
+      "binaryDir": "${sourceDir}/build/windows-clang-release-checks",
+      "cacheVariables": { "ENGINE_BUILD_CHECKS": "ON" }
+    },
+    {
       "name": "windows-clang-relwithdebinfo",
       "displayName": "Windows (MSYS2) | Clang | RelWithDebInfo",
       "inherits": "relwithdebinfo",
@@ -102,6 +116,8 @@
   "buildPresets": [
     { "name": "windows-clang-debug", "configurePreset": "windows-clang-debug" },
     { "name": "windows-clang-release", "configurePreset": "windows-clang-release" },
+    { "name": "windows-clang-debug-checks", "configurePreset": "windows-clang-debug-checks" },
+    { "name": "windows-clang-release-checks", "configurePreset": "windows-clang-release-checks" },
     { "name": "windows-clang-relwithdebinfo", "configurePreset": "windows-clang-relwithdebinfo" },
     { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug" },
     { "name": "linux-clang-release", "configurePreset": "linux-clang-release" },

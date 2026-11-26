@@ -1,5 +1,4 @@
 #include "vk_engine.hpp"
-#include "check_poses.hpp"
 #include "../Constants.h"
 #include "../static_headers/logger.hpp"
 #include "../util/debug.hpp"
@@ -24,7 +23,6 @@ namespace
     // ENGINE_INDIRECT_MODE=cycle: the scripted mode switch of spec/m4/g7_indirect_modes.md
     constexpr uint32_t kIndirectModeCycleFrames = 64;
     constexpr std::string_view kIndirectModeCycle = "cycle";
-    constexpr uint32_t kGiCheckBenchFrames = 50'000;
 
     // ENGINE_WINDOW_SIZE=WxH (e.g. 2560x1369 for C-G3-6 stress runs)
     [[nodiscard]] std::pair<int, int> requestedWindowSize()
@@ -98,63 +96,24 @@ void Engine::initialize()
                                                             device->queueFamilyIndices, device->capabilities);
     descriptorManager->init();
 
-    if (EngineMotionTest::isRequested()) {
-        motionTest.emplace();
-    }
-    if (EngineGuideCapture::isRequested()) {
-        guideCapture.emplace();
-    }
-    if (EngineCullCheck::isRequested()) {
-        cullCheck.emplace();
-    }
-    if (EngineGiCheck::isRequested()) {
-        giCheck.emplace();
-    }
-    if (EngineDlssCheck::isRequested()) {
-        dlssCheck.emplace();
-    }
-    if (EngineRayCheck::isRequested()) {
-        rayCheck.emplace();
-    }
-    if (const std::optional<EngineTemporalCheck::Kind> kind = EngineTemporalCheck::requestedKind()) {
-        // each drives the camera and the lighting settings
-        if (motionTest || guideCapture || cullCheck || giCheck || dlssCheck) {
-            logError("temporal check ignored: another scene runner is requested", "Engine");
-        } else {
-            temporalCheck.emplace(*kind);
-        }
-    }
-
-    if (const std::optional<std::string> planName = EngineLab::requestedPlan()) {
-        // one tool per process: it measures the shipped state or tries settings, never both (full_testing.md §8)
-        if (motionTest || guideCapture || cullCheck || giCheck || dlssCheck || rayCheck || temporalCheck ||
-            EngineBench::readConfig(0)) {
-            throw std::runtime_error("ENGINE_LAB refused: an engine check or bench variable is set too");
-        }
-        lab.emplace(*planName);
-    }
-
-    const uint32_t defaultBenchFrames = giCheck ? kGiCheckBenchFrames : 0;
-    if (const auto benchConfig = EngineBench::readConfig(defaultBenchFrames)) {
-        // TEMPORARY (considerations C-E1-3): the per-bin GPU-AV resolve is not the shipped path, so it never times; the
-        // GI check only drives its frames through the bench and stays allowed
-        if (!giCheck && isGpuAvResolvePerBinRequested()) {
-            throw std::runtime_error("bench refused: ENGINE_GPUAV_RESOLVE_PER_BIN is a GPU-AV-only resolve path");
-        }
-        bench.emplace(*benchConfig);
-    }
+#if ENGINE_ENABLE_CHECKS
+    checks = CheckHarness::fromEnvironment();
+    const bool isAutomated = checks && checks->isAutomated();
+#else
+    logInfo("Checks not built (ENGINE_BUILD_CHECKS=OFF): runner variables and ENGINE_CONFIG are ignored", "Engine");
+    constexpr bool isAutomated = false;
+#endif
 
     swapChain = std::make_unique<SwapChain>(window, *device);
-    swapChain->isUncapped =
-        bench.has_value() || motionTest.has_value() || guideCapture.has_value() || cullCheck.has_value() ||
-        giCheck.has_value() || dlssCheck.has_value() || rayCheck.has_value() || temporalCheck.has_value() ||
-        lab.has_value();
+    swapChain->isUncapped = isAutomated;
     swapChain->init();
 
     camera = std::make_unique<Camera>(*swapChain);
-    // the motion test and the guide normal checks compare frames pixel by pixel, which jitter changes by design
-    camera->isJitterEnabled = Camera::jitterRequest().value_or(
-        !EngineMotionTest::isRequested() && !EngineGuideCapture::isRequested() && !EngineGiCheck::isRequested());
+#if ENGINE_ENABLE_CHECKS
+    camera->isJitterEnabled = Camera::jitterRequest().value_or(!checks || checks->isJitterEnabledByDefault());
+#else
+    camera->isJitterEnabled = Camera::jitterRequest().value_or(true);
+#endif
     camera->isJitterForced = Camera::jitterRequest().value_or(false);
     textureManager = std::make_unique<TextureManager>(*device, *allocator, *descriptorManager);
     textureManager->init();
@@ -164,34 +123,24 @@ void Engine::initialize()
                                                   scene->materialStore, scene->lightStore);
 
     const glm::vec3 initialAssetPos{0.0f, 0.0f, 0.0f};
-    // a check scene (ENGINE_CHECK_SCENE) selects the model of the GI and temporal checks; ENGINE_MODEL any run's
-    // (m8 I13), relative to the repository root like the lab cases
-    const char* checkModel = (giCheck || dlssCheck || temporalCheck) ? checkSceneModel(readCheckScene()) : nullptr;
-    const char* modelOverride = std::getenv("ENGINE_MODEL");
-    const auto repositoryPath = [](const char* path) {
-        const std::filesystem::path model(path);
-        return (model.is_absolute() ? model : std::filesystem::path(ENGINE_MODELS_DIR).parent_path() / model).string();
-    };
-    const std::string startupModel = checkModel != nullptr
-        ? (std::filesystem::path(ENGINE_MODELS_DIR) / checkModel).string()
-        : (modelOverride != nullptr && *modelOverride != '\0') ? repositoryPath(modelOverride)
-        : (bench && !bench->getConfig().modelPath.empty())     ? bench->getConfig().modelPath
-                                                               : MODEL_PATH.string();
+    // ENGINE_MODEL: any run's model (m8 I13), relative to the repository root like the lab cases
+    std::optional<std::filesystem::path> engineModel;
+    if (const char* modelOverride = std::getenv("ENGINE_MODEL"); modelOverride != nullptr && *modelOverride != '\0') {
+        const std::filesystem::path model(modelOverride);
+        engineModel = model.is_absolute() ? model : std::filesystem::path(ENGINE_MODELS_DIR).parent_path() / model;
+    }
+#if ENGINE_ENABLE_CHECKS
+    // a check scene (ENGINE_CHECK_SCENE) or the bench may choose it
+    const std::string startupModel = checks ? checks->chooseStartupModel(engineModel, MODEL_PATH).string()
+                                            : engineModel.value_or(MODEL_PATH).string();
+#else
+    const std::string startupModel = engineModel.value_or(MODEL_PATH).string();
+#endif
     if (!assetsLoader->loadModel(startupModel, initialAssetPos)) {
         logError(std::format("Startup model failed to load: {}", startupModel), "Engine");
     }
     // scene is visible immediately
     camera->focusOn(initialAssetPos);
-    if (bench && bench->getConfig().pose == "courtyard") {
-        camera->lookAt(kCourtyardPose.position, kCourtyardPose.target);
-    }
-    // m8 I13's glass poses by name, under their sun (below)
-    const auto glassBenchPose = std::ranges::find_if(kBistroGlassCheckPoses, [&](const CheckPose& pose) {
-        return bench && bench->getConfig().pose == pose.name;
-    });
-    if (glassBenchPose != kBistroGlassCheckPoses.end()) {
-        camera->lookAt(glassBenchPose->position, glassBenchPose->target);
-    }
     frameSync = std::make_unique<FrameSync>(*device);
     // flushes the startup model
     assetBuffers = std::make_unique<AssetBuffers>(*device, *allocator, *frameSync, scene->geometryStore,
@@ -231,23 +180,22 @@ void Engine::initialize()
             logError(std::format("ENGINE_INDIRECT_MODE='{}' is not a mode; ignored", request), "Engine");
         }
     }
-    applyEngineConfig();
-    // the guide shots show the glTF samples' own lights, as Khronos renders them
-    renderer->getWorldLights().sun.isEnabled = !EngineGuideCapture::isRequested();
-    if (glassBenchPose != kBistroGlassCheckPoses.end()) {
-        renderer->getWorldLights().sun.azimuthDegrees = kBistroGlassSunAzimuthDegrees;
-        renderer->getWorldLights().sun.elevationDegrees = kBistroGlassSunElevationDegrees;
+#if ENGINE_ENABLE_CHECKS
+    // before the swapchain resources: ENGINE_CONFIG may change what they size
+    std::optional<CheckRequest> startupRequest;
+    if (checks) {
+        startupRequest = checks->attach(CheckHostContext{
+            .device = *device,
+            .allocator = *allocator,
+            .shaderObjects = *shaderObjects,
+            .scene = *scene,
+            .assets = *assetBuffers,
+            .renderer = *renderer,
+            .camera = *camera,
+        });
     }
+#endif
     renderer->rebuildSwapchainResources();
-    if (motionTest) {
-        renderer->enableMotionCheck();
-        logInfo("Motion test: scripted motion-vector checks, results follow", "MotionTest");
-    }
-    if (rayCheck) {
-        renderer->enableRayCheck();
-        logInfo("Ray check: primary rays against the vis buffer every frame, results follow",
-                "RayCheck");
-    }
 
 #if ENGINE_ENABLE_IMGUI
     ui = std::make_unique<EngineUi>(UiContext{
@@ -262,23 +210,11 @@ void Engine::initialize()
     });
 #endif
 
-    if (bench && bench->getConfig().fieldSide > 0) {
-        constexpr float kBenchFieldSpacing = 1.5f;
-        const EntityId firstFieldEntity = scene->objectStorage.size();
-        const SceneActionStatus status = spawnInstanceField(initialAssetPos, bench->getConfig().fieldSide,
-                                                            kBenchFieldSpacing);
-        if (status.isError) {
-            throw std::runtime_error(status.text);
-        }
-        const uint32_t fieldCount = scene->objectStorage.size() - firstFieldEntity;
-        if (fieldCount > 0) {
-            const ModelId fieldModel = scene->objectStorage.modelIds[firstFieldEntity];
-            const float cellSize = kBenchFieldSpacing * 2.0f * assetBuffers->models()[fieldModel].localBounds.w;
-            bench->setFieldMotion(firstFieldEntity, fieldCount, static_cast<uint32_t>(bench->getConfig().fieldSide),
-                                  initialAssetPos.x, cellSize);
-        }
-        logInfo(status.text, "Bench");
+#if ENGINE_ENABLE_CHECKS
+    if (startupRequest) {
+        applyCheckRequest(*startupRequest);
     }
+#endif
 
     initialized = true;
 }
@@ -299,13 +235,13 @@ bool Engine::run()
     constexpr double kUnfocusedTargetMs = 1000.0 / 30.0;
     constexpr float kCameraSpeed = 5.0f;
     auto& deviceRef = device->vkdevice;
-    // the bench, motion-test, guide-capture and cull-check views move only as they script it
-    const bool isCameraInputEnabled =
-        !bench && !motionTest && !guideCapture && !cullCheck && !rayCheck && !giCheck && !dlssCheck &&
-        !temporalCheck && !lab;
-    // no other runner drives the camera or the scene: the ray check holds the startup view and ends the run
-    const bool isRayCheckStandalone =
-        !bench && !motionTest && !guideCapture && !cullCheck && !giCheck && !dlssCheck && !temporalCheck;
+#if ENGINE_ENABLE_CHECKS
+    // automated runs own the camera, the scene and the frame pace
+    const bool isAutomated = checks && checks->isAutomated();
+#else
+    constexpr bool isAutomated = false;
+#endif
+    const bool isCameraInputEnabled = !isAutomated;
 
     // game focus captures the mouse and hides the cursor; UI focus (I key) frees both
     const auto setGameFocus = [this](bool gameFocused)
@@ -426,50 +362,11 @@ bool Engine::run()
                 }
             }
 
-            bool isCaptureRequested = false;
-            if (motionTest) {
-                applyMotionTestRequest(motionTest->beginFrame(*camera, scene->objectStorage));
+#if ENGINE_ENABLE_CHECKS
+            if (checks) {
+                applyCheckRequest(checks->beginFrame());
             }
-            if (guideCapture) {
-                const ObjectStorage& objects = scene->objectStorage;
-                const std::optional<glm::vec4> bounds =
-                    objects.size() > 0 ? std::optional(objects.localBounds[0]) : std::nullopt;
-                const EngineGuideCapture::Request request =
-                    guideCapture->beginFrame(*camera, renderer->debugView, renderer->getRtxdi().settings, bounds);
-                isCaptureRequested = request.shouldCapture || isCaptureRequested;
-                applyGuideCaptureRequest(request);
-            }
-            if (cullCheck &&
-                cullCheck->beginFrame(*camera, renderer->getCulling().settings, renderer->debugView).shouldCapture) {
-                isCaptureRequested = true;
-                renderer->requestDisplayCapture();
-            }
-            if (giCheck && giCheck->beginFrame(*camera, renderer->getRtxdi(), renderer->indirectMode, renderer->debugView)
-                               .shouldCapture) {
-                isCaptureRequested = true;
-                renderer->requestDisplayCapture();
-            }
-            if (dlssCheck && dlssCheck->beginFrame(*camera, *renderer).shouldCapture) {
-                isCaptureRequested = true;
-                renderer->requestDisplayCapture();
-            }
-            if (temporalCheck && temporalCheck->beginFrame(*camera, *renderer).shouldCapture) {
-                isCaptureRequested = true;
-                renderer->requestDisplayCapture();
-            }
-            if (lab) {
-                const ObjectStorage& objects = scene->objectStorage;
-                const EngineLab::Request request = lab->beginFrame(
-                    *camera, *renderer, objects.size() > 0 ? std::optional(objects.localBounds[0]) : std::nullopt);
-                applyLabRequest(request);
-                if (request.shouldCapture) {
-                    isCaptureRequested = true;
-                    renderer->requestDisplayCapture();
-                }
-            }
-            if (bench) {
-                bench->stepField(scene->objectStorage);
-            }
+#endif
             if (isIndirectModeCycling) {
                 renderer->indirectMode = static_cast<IndirectMode>(renderer->frameNumber / kIndirectModeCycleFrames %
                                                                    std::to_underlying(IndirectMode::Count));
@@ -488,68 +385,18 @@ bool Engine::run()
                 ZoneScopedN("DrawFrame");
                 renderer->drawFrame();
             }
-            if (motionTest) {
-                // the check reads this frame's stats; speed does not matter here
-                deviceRef.waitIdle();
-                quit = motionTest->endFrame(renderer->getLastMotionCheck());
+#if ENGINE_ENABLE_CHECKS
+            if (checks) {
+                quit = checks->endFrame();
             }
-            if (guideCapture) {
-                if (isCaptureRequested) {
-                    deviceRef.waitIdle();
-                }
-                quit = guideCapture->endFrame(isCaptureRequested ? renderer->getLastDisplayCapture() : std::nullopt) ||
-                    quit;
-            }
-            if (cullCheck) {
-                if (isCaptureRequested) {
-                    deviceRef.waitIdle();
-                }
-                quit = cullCheck->endFrame(isCaptureRequested ? renderer->getLastDisplayCapture() : std::nullopt) ||
-                    quit;
-            }
-            if (giCheck) {
-                if (isCaptureRequested) {
-                    deviceRef.waitIdle();
-                }
-                quit = giCheck->endFrame(isCaptureRequested ? renderer->getLastDisplayCapture() : std::nullopt) ||
-                    quit;
-            }
-            if (dlssCheck) {
-                if (isCaptureRequested) {
-                    deviceRef.waitIdle();
-                }
-                quit = dlssCheck->endFrame(isCaptureRequested ? renderer->getLastDisplayCapture() : std::nullopt) ||
-                    quit;
-            }
-            if (temporalCheck) {
-                if (isCaptureRequested) {
-                    deviceRef.waitIdle();
-                }
-                quit = temporalCheck->endFrame(*camera, isCaptureRequested ? renderer->getLastDisplayCapture()
-                                                                           : std::nullopt) ||
-                    quit;
-            }
-            if (lab) {
-                if (isCaptureRequested) {
-                    deviceRef.waitIdle();
-                }
-                quit = lab->endFrame(*camera, isCaptureRequested ? renderer->getLastDisplayCapture() : std::nullopt) ||
-                    quit;
-            }
-            if (rayCheck) {
-                deviceRef.waitIdle();
-                quit = rayCheck->endFrame(renderer->getLastRayCheck(), isRayCheckStandalone) || quit;
-            }
+#endif
         } else {
             ZoneScopedN("MinimizedWait");
             SDL_Delay(100);
         }
 
         // unfocused windows often lose vsync pacing and burn CPU/GPU; automated runners stay uncapped
-        const bool isAutomatedRunner =
-            bench || motionTest || guideCapture || cullCheck || giCheck || dlssCheck || rayCheck || temporalCheck ||
-            lab;
-        if (!windowFocused && !minimized && !quit && !isAutomatedRunner) {
+        if (!windowFocused && !minimized && !quit && !isAutomated) {
             ZoneScopedN("UnfocusedFramePacing");
             const auto frameEndTime = std::chrono::high_resolution_clock::now();
             const double elapsedMs = std::chrono::duration<double, std::milli>(frameEndTime - currentTime).count();
@@ -560,43 +407,13 @@ bool Engine::run()
 
         lastTime = currentTime;
         FrameMark;
-        if (bench && !minimized &&
-            bench->onFrame(renderer->getGpuTimer(), renderer->getCulling().getStats(),
-                           renderer->getRayTracingStats(), renderer->getLightPrepStats(), renderer->getCpuStats(),
-                           renderer->getGlassCounters())) {
-            quit = true;
-        }
     }
     deviceRef.waitIdle();
-    if (rayCheck) {
-        rayCheck->logSummary();
-    }
-    bool isPassed = true;
-    if (motionTest) {
-        isPassed = motionTest->isPassed() && isPassed;
-    }
-    if (guideCapture) {
-        isPassed = guideCapture->isPassed() && isPassed;
-    }
-    if (cullCheck) {
-        isPassed = cullCheck->isPassed() && isPassed;
-    }
-    if (giCheck) {
-        isPassed = giCheck->isPassed() && isPassed;
-    }
-    if (dlssCheck) {
-        isPassed = dlssCheck->isPassed() && isPassed;
-    }
-    if (rayCheck) {
-        isPassed = rayCheck->isPassed() && isPassed;
-    }
-    if (temporalCheck) {
-        isPassed = temporalCheck->isPassed() && isPassed;
-    }
-    if (lab) {
-        isPassed = lab->isPassed() && isPassed;
-    }
-    return isPassed;
+#if ENGINE_ENABLE_CHECKS
+    return checks ? checks->finish() : true;
+#else
+    return true;
+#endif
 }
 
 #if ENGINE_ENABLE_IMGUI
@@ -632,20 +449,6 @@ void Engine::applyUiRequests(const UiRequests& requests)
 }
 #endif
 
-void Engine::applyMotionTestRequest(const EngineMotionTest::Request& request)
-{
-    if (request.loadModelAt) {
-        const SceneActionStatus status = loadModel(INSTANCE_FIELD_MODEL_PATH, *request.loadModelAt);
-        if (status.isError) {
-            logError(status.text, "MotionTest");
-        }
-    }
-    if (request.windowSize) {
-        // arrives as SDL_EVENT_WINDOW_RESIZED in a later poll
-        SDL_SetWindowSize(window, request.windowSize->x, request.windowSize->y);
-    }
-}
-
 void Engine::replaceModels(const std::filesystem::path& model, std::string_view subsystem)
 {
     // load before unloading the previous entities: every swap drops the older models while the new one stays
@@ -660,55 +463,32 @@ void Engine::replaceModels(const std::filesystem::path& model, std::string_view 
     }
 }
 
-void Engine::applyGuideCaptureRequest(const EngineGuideCapture::Request& request)
+#if ENGINE_ENABLE_CHECKS
+void Engine::applyCheckRequest(const CheckRequest& request)
 {
-    if (request.model) {
-        replaceModels(*request.model, "GuideCapture");
+    if (request.load) {
+        const SceneActionStatus status = loadModel(request.load->model, request.load->position);
+        if (status.isError) {
+            logError(status.text, request.logSubsystem);
+        }
     }
-    WorldLights::Sun& sun = renderer->getWorldLights().sun;
-    sun.isEnabled = request.sun.has_value();
-    if (request.sun) {
-        sun.azimuthDegrees = request.sun->azimuthDegrees;
-        sun.elevationDegrees = request.sun->elevationDegrees;
+    if (request.replaceModels) {
+        replaceModels(*request.replaceModels, request.logSubsystem);
     }
-    renderer->indirectMode = request.indirectMode;
-    renderer->getRtxdi().isReference = request.isRtxdiReference;
-    renderer->getWorldLights().areTriangleLightsSampled = request.areTriangleLightsSampled;
-    renderer->glass = request.glass;
-    renderer->getRtxdi().frameIndexOverride = request.frameIndex;
-    camera->jitterPhaseOverride = request.jitterPhase;
-    PostProcess::Settings& post = renderer->getPost().settings;
-    post.isAutoExposure = !request.manualEv.has_value();
-    post.manualEv = request.manualEv.value_or(post.manualEv);
-    if (request.shouldCapture) {
-        renderer->requestDisplayCapture();
+    if (request.windowSize) {
+        // arrives as SDL_EVENT_WINDOW_RESIZED in a later poll
+        SDL_SetWindowSize(window, request.windowSize->x, request.windowSize->y);
+    }
+    if (const std::optional<CheckRequest::InstanceField>& field = request.instanceField) {
+        const EntityId firstEntity = scene->objectStorage.size();
+        const SceneActionStatus status = spawnInstanceField(field->center, field->side, field->spacing);
+        if (status.isError) {
+            throw std::runtime_error(status.text);
+        }
+        checks->onInstanceFieldSpawned(firstEntity, scene->objectStorage.size() - firstEntity, status.text);
     }
 }
-
-void Engine::applyLabRequest(const EngineLab::Request& request)
-{
-    if (request.model) {
-        replaceModels(*request.model, "Lab");
-    }
-}
-
-void Engine::applyEngineConfig()
-{
-    const std::optional<LabConfigParse> parse = readEngineConfig(captureLabConfig(*renderer, *camera));
-    if (!parse) {
-        return;
-    }
-    // the checks measure the shipped state; a lab plan sets its own configs (full_testing.md §0)
-    if (motionTest || guideCapture || cullCheck || giCheck || rayCheck || temporalCheck || lab) {
-        logInfo("ENGINE_CONFIG ignored: engine checks and lab plans set their own settings", "Engine");
-        return;
-    }
-    if (!parse->config) {
-        throw std::runtime_error(std::format("ENGINE_CONFIG: {}", parse->error));
-    }
-    applyLabConfig(*parse->config, *renderer, *camera);
-    logInfo(std::format("ENGINE_CONFIG applied: {}", formatLabConfig(*parse->config)), "Engine");
-}
+#endif
 
 void Engine::recreateSwapchain()
 {
@@ -889,6 +669,10 @@ void Engine::cleanup()
 #if ENGINE_ENABLE_IMGUI
     // after waitIdle, before the renderer whose present pass draws it
     ui.reset();
+#endif
+#if ENGINE_ENABLE_CHECKS
+    // unregisters its frame hook and frees the check buffers, before the renderer and the allocator
+    checks.reset();
 #endif
 
     if (scene) {

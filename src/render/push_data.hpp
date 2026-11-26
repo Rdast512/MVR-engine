@@ -165,33 +165,6 @@ struct LightPdfMipsPushData {
 
 static_assert(sizeof(LightPdfMipsPushData) == 16);
 
-// motion_check pass; must match shaders/types.slang MotionCheckPushData
-struct MotionCheckPushData {
-    vk::DeviceAddress frameRoot;
-    // GpuMotionCheckStats
-    vk::DeviceAddress stats;
-};
-
-static_assert(sizeof(MotionCheckPushData) == 16);
-
-// rt_check pass; must match shaders/types.slang RayCheckPushData
-struct RayCheckPushData {
-    vk::DeviceAddress frameRoot;
-    // GpuRayCheckStats
-    vk::DeviceAddress stats;
-};
-
-static_assert(sizeof(RayCheckPushData) == 16);
-
-// rt_ser_check pass; must match shaders/types.slang SerCheckPushData
-struct SerCheckPushData {
-    vk::DeviceAddress frameRoot;
-    // GpuSerCheckStats of the pipeline's reorder mode
-    vk::DeviceAddress stats;
-};
-
-static_assert(sizeof(SerCheckPushData) == 16);
-
 // passes/exposure.slang (both entries); must match shaders/types.slang ExposurePushData
 struct ExposurePushData {
     vk::DeviceAddress frameRoot;
@@ -297,5 +270,4 @@ static_assert(sizeof(HiZViewPushData) == 24);
 inline constexpr size_t kMaxPushDataBytes =
     std::max({sizeof(MeshPushData), sizeof(CullPushData), sizeof(HiZPushData), sizeof(HiZViewPushData),
               sizeof(FramePushData), sizeof(ResolvePushData), sizeof(PresentPushData), sizeof(RtInstancesPushData),
-              sizeof(ExposurePushData), sizeof(LightWorldPushData), sizeof(LightPdfMipsPushData),
-              sizeof(SerCheckPushData)});
+              sizeof(ExposurePushData), sizeof(LightWorldPushData), sizeof(LightPdfMipsPushData)});

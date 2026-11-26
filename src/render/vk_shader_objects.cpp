@@ -16,9 +16,9 @@
     #define ENGINE_SHADER_DIR "./shaders"
 #endif
 
-std::vector<char> readPassSpirv(std::string_view file)
+std::vector<char> readShaderSpirv(const std::filesystem::path& relativePath)
 {
-    const std::string filename = (std::filesystem::path(ENGINE_SHADER_DIR) / "passes" / file).string();
+    const std::string filename = (std::filesystem::path(ENGINE_SHADER_DIR) / relativePath).string();
     std::ifstream stream(filename, std::ios::ate | std::ios::binary);
     if (!stream.is_open()) {
         throw std::runtime_error("failed to open shader: " + filename);
@@ -27,6 +27,11 @@ std::vector<char> readPassSpirv(std::string_view file)
     stream.seekg(0, std::ios::beg);
     stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
     return buffer;
+}
+
+std::vector<char> readPassSpirv(std::string_view file)
+{
+    return readShaderSpirv(std::filesystem::path("passes") / file);
 }
 
 bool isGpuAvResolvePerBinRequested()
@@ -106,8 +111,6 @@ void ShaderObjects::createFrameShaders()
     frameShaders.binArgs =
         createComputeShader("classify.spv", isResolvePerBin ? "binArgsPerBinMain" : "binArgsMain", "BinArgs");
     frameShaders.debugView = createComputeShader("debug_view.spv", "debugViewMain", "DebugView");
-    frameShaders.motionCheck = createComputeShader("motion_check.spv", "motionCheckMain", "MotionCheck");
-    frameShaders.rayCheck = createComputeShader("rt_check.spv", "rayCheckMain", "RayCheck");
     frameShaders.lightWorld = createComputeShader("light_world.spv", "lightWorldMain", "LightWorld");
     frameShaders.lightPdfMips = createComputeShader("light_pdf_mips.spv", "lightPdfMipsMain", "LightPdfMips");
     frameShaders.rtxdiPresample = createComputeShader("rtxdi_presample.spv", "rtxdiPresampleMain", "RtxdiPresample");
@@ -162,7 +165,13 @@ vk::raii::ShaderEXT ShaderObjects::createComputeShader(std::string_view file, co
                                                        std::string_view debugName,
                                                        vk::ShaderCreateFlagsEXT extraFlags) const
 {
-    const auto spirv = readPassSpirv(file);
+    return createComputeShader(readPassSpirv(file), entry, debugName, extraFlags);
+}
+
+vk::raii::ShaderEXT ShaderObjects::createComputeShader(const std::vector<char>& spirv, const char* entry,
+                                                       std::string_view debugName,
+                                                       vk::ShaderCreateFlagsEXT extraFlags) const
+{
     // raytracing/trace.slang [vk::constant_id(1)]; a shader that declares no such constant ignores the entry
     constexpr uint32_t kDebugRaysConstantId = 1;
     const vk::Bool32 debugRays = kDebugRays ? vk::True : vk::False;

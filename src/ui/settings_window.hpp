@@ -2,7 +2,7 @@
 #include "../Constants.h"
 
 #if ENGINE_ENABLE_IMGUI
-    #include "lab/settings_registry.hpp"
+    #include "render/settings_registry.hpp"
     #include "settings_rows.hpp"
 
     #include "imgui.h"
@@ -37,10 +37,11 @@ private:
         NvidiaUnbiased,
         NvidiaUltra,
         NvidiaReference,
+        Tuned,
         Converged,
         Count,
     };
-    // the DI Preset combo (§3): NVIDIA's list, then the engine's sets
+    // the DI Preset combo (§3): NVIDIA's list (Medium ships), then the engine's sets
     enum class DiPreset : uint8_t
     {
         Custom,
@@ -49,7 +50,7 @@ private:
         Unbiased,
         Ultra,
         Reference,
-        Shipped,
+        Tuned,
         Converged,
         Count,
     };

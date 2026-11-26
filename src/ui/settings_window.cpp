@@ -7,6 +7,7 @@
     #include <algorithm>
     #include <array>
     #include <cassert>
+    #include <cfloat>
     #include <cmath>
     #include <cstdio>
     #include <cstring>
@@ -16,13 +17,17 @@
 
 namespace
 {
-    // UserInterface.cpp c_ColorRegularHeader / c_ColorAttentionHeader (ABGR), and the highlight outside both
-    constexpr ImU32 kColorRegularHeader = 0xffff8080;
-    constexpr ImU32 kColorAttentionHeader = 0xff80ffff;
-    constexpr ImU32 kColorDiffering = 0xff40a0ff;
-    // buildUI: window at (10, 10), minimum width 375, item width 100
+    // UserInterface.cpp c_ColorRegularHeader / c_ColorAttentionHeader hues and an orange highlight, at lower intensity
+    // and saturation: NVIDIA's full-intensity blue and yellow glare next to white text under Windows Auto HDR
+    constexpr ImU32 kColorRegularHeader = IM_COL32(150, 165, 215, 255);
+    constexpr ImU32 kColorAttentionHeader = IM_COL32(210, 195, 130, 255);
+    constexpr ImU32 kColorDiffering = IM_COL32(225, 145, 75, 255);
+    // buildUI: window at (10, 10), minimum width 375, item width 100; movable and resizable, first size fills the
+    // height
     constexpr ImVec2 kWindowPos{10.0f, 10.0f};
     constexpr float kWindowMinWidth = 375.0f;
+    constexpr float kWindowMinHeight = 200.0f;
+    constexpr float kWindowFirstWidth = 440.0f;
     constexpr float kWindowMargin = 20.0f;
     constexpr float kItemWidth = 100.0f;
     // NVIDIA's widths for the checkbox + slider pairs, the resampling mode combos and the frame limit
@@ -141,6 +146,10 @@ namespace
 
     using Preset = RtxdiContext::QualityPreset;
 
+    constexpr std::array kCompareLabels{
+        "None",         "Shipped",          "NVIDIA Fast", "NVIDIA Medium", "NVIDIA Unbiased",
+        "NVIDIA Ultra", "NVIDIA Reference", "Tuned",       "Converged"};
+
     // NVIDIA's frame for its presets: no NRC in the sample, native rendering (§5)
     [[nodiscard]] LabConfig nvidiaConfig(Preset preset)
     {
@@ -157,10 +166,11 @@ namespace
 void SettingsWindow::draw()
 {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(kWindowPos, ImGuiCond_Always);
-    ImGui::SetNextWindowSizeConstraints({kWindowMinWidth, 0.0f},
-                                        {viewport->WorkSize.x - kWindowMargin, viewport->WorkSize.y - kWindowMargin});
-    if (ImGui::Begin("Settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::SetNextWindowPos({viewport->WorkPos.x + kWindowPos.x, viewport->WorkPos.y + kWindowPos.y},
+                            ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({kWindowFirstWidth, viewport->WorkSize.y - kWindowMargin}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints({kWindowMinWidth, kWindowMinHeight}, {FLT_MAX, FLT_MAX});
+    if (ImGui::Begin("Settings")) {
         ImGui::PushItemWidth(kItemWidth);
         drawCompareWith();
         drawScene();
@@ -179,18 +189,17 @@ void SettingsWindow::draw()
 
 void SettingsWindow::drawCompareWith()
 {
-    constexpr std::array<const char*, std::to_underlying(CompareEntry::Count)> kLabels{
-        "None",         "Shipped",          "NVIDIA Fast", "NVIDIA Medium", "NVIDIA Unbiased",
-        "NVIDIA Ultra", "NVIDIA Reference", "Converged"};
+    static_assert(kCompareLabels.size() == std::to_underlying(CompareEntry::Count));
     int entry = std::to_underlying(compareEntry);
     ImGui::SetNextItemWidth(kModeComboWidth);
-    if (ImGui::Combo("Compare with", &entry, kLabels.data(), static_cast<int>(kLabels.size()))) {
+    if (ImGui::Combo("Compare with", &entry, kCompareLabels.data(), static_cast<int>(kCompareLabels.size()))) {
         compareEntry = static_cast<CompareEntry>(entry);
     }
     helpMarker("Rows whose setting differs from this configuration are drawn in orange; their (?) starts with the "
                "configuration's value, and a section or node counts its differing rows after its label. NVIDIA's "
                "entries take the RTXDI sample's preset with its ReSTIR GI defaults, ReSTIR GI indirect mode (the "
-               "sample has no NRC) and DLAA (it renders native).");
+               "sample has no NRC) and DLAA (it renders native). Tuned is the engine's m8 DI and GI tuning in NRC + "
+               "ReSTIR GI mode.");
     ImGui::Separator();
 
     switch (compareEntry) {
@@ -213,6 +222,12 @@ void SettingsWindow::drawCompareWith()
         break;
     case CompareEntry::NvidiaReference:
         comparison = nvidiaConfig(Preset::Reference);
+        break;
+    case CompareEntry::Tuned:
+        comparison = LabConfig{};
+        comparison.di = RtxdiContext::tunedSettings();
+        comparison.gi = RtxdiContext::tunedGiSettings();
+        comparison.indirectMode = IndirectMode::NrcRestirGi;
         break;
     case CompareEntry::Converged:
         comparison = LabConfig{};
@@ -311,12 +326,9 @@ void SettingsWindow::endRow(const char* help)
         return;
     }
     ImGui::PopStyleColor();
-    constexpr std::array<const char*, std::to_underlying(CompareEntry::Count)> kNames{
-        "None",         "Shipped",          "NVIDIA Fast", "NVIDIA Medium", "NVIDIA Unbiased",
-        "NVIDIA Ultra", "NVIDIA Reference", "Converged"};
     std::string text;
     for (const LabSwitch* entry : rowDiffering) {
-        text += std::format("{}: {} = {}\n", kNames[std::to_underlying(compareEntry)], entry->name,
+        text += std::format("{}: {} = {}\n", kCompareLabels[std::to_underlying(compareEntry)], entry->name,
                             formatSwitchValue(*entry, entry->get(comparison)));
     }
     if (help != nullptr) {
@@ -333,13 +345,13 @@ SettingsWindow::DiPreset SettingsWindow::currentDiPreset() const
     if (rtxdi.isSpatialOnly || rtxdi.isTemporalOnly) {
         return DiPreset::Custom;
     }
-    // the engine's sets first: an untouched engine shows Shipped
-    if (!rtxdi.isReference && rtxdi.settings == RtxdiContext::defaultSettings()) {
-        return DiPreset::Shipped;
+    if (!rtxdi.isReference && rtxdi.settings == RtxdiContext::tunedSettings()) {
+        return DiPreset::Tuned;
     }
     if (!rtxdi.isReference && rtxdi.settings == RtxdiContext::convergedSettings()) {
         return DiPreset::Converged;
     }
+    // an untouched engine shows Medium, the shipped set
     constexpr std::array kNvidia{std::pair{DiPreset::Fast, Preset::Fast}, std::pair{DiPreset::Medium, Preset::Medium},
                                  std::pair{DiPreset::Unbiased, Preset::Unbiased},
                                  std::pair{DiPreset::Ultra, Preset::Ultra},
@@ -360,8 +372,8 @@ void SettingsWindow::applyDiPreset(DiPreset preset)
     case DiPreset::Custom:
     case DiPreset::Count:
         return;
-    case DiPreset::Shipped:
-        rtxdi.settings = RtxdiContext::defaultSettings();
+    case DiPreset::Tuned:
+        rtxdi.settings = RtxdiContext::tunedSettings();
         break;
     case DiPreset::Converged:
         rtxdi.settings = RtxdiContext::convergedSettings();
@@ -580,14 +592,15 @@ void SettingsWindow::drawDirectLighting()
     helpMarker("Sample the direct lighting using ReSTIR.\n\nEngine: ReSTIR only.");
 
     constexpr std::array<const char*, std::to_underlying(DiPreset::Count)> kPresetLabels{
-        "(Custom)", "Fast", "Medium", "Unbiased", "Ultra", "Reference", "Shipped", "Converged"};
+        "(Custom)", "Fast", "Medium", "Unbiased", "Ultra", "Reference", "Tuned", "Converged"};
     int preset = std::to_underlying(currentDiPreset());
     if (ImGui::Combo("Preset", &preset, kPresetLabels.data(), static_cast<int>(kPresetLabels.size()))) {
         applyDiPreset(static_cast<DiPreset>(preset));
     }
-    helpMarker("NVIDIA's presets over the sample's start state (Medium), then the engine's: Shipped "
-               "(RtxdiContext::defaultSettings) and Converged (the convergence check's set). The combo shows the "
-               "preset the current settings equal, else (Custom). Fast's checkerboard rendering is not in the engine.");
+    helpMarker("NVIDIA's presets over the sample's start state (Medium, which the engine ships), then the engine's: "
+               "Tuned (RtxdiContext::tunedSettings, the m8 tuning for DLSS-RR in NRC + ReSTIR GI mode) and Converged "
+               "(the convergence check's set). The combo shows the preset the current settings equal, else (Custom). "
+               "Fast's checkerboard rendering is not in the engine.");
     ImGui::Checkbox("Show Advanced Settings", &isAdvancedShown);
 
     ImGui::PushItemWidth(kModeComboWidth);
@@ -1050,9 +1063,9 @@ void SettingsWindow::drawIndirectResampling()
         beginRow({"gi.age"});
         sliderU32("Max reservoir age", gi.maxReservoirAge, 1, RtxdiContext::kGiUnlimitedSampleAge);
         endRow(std::format("Engine: range to {} (NVIDIA 1-100), which never discards. Each pixel draws its own limit "
-                           "in [0.5, 1) of this. Shipped {} (m8 I15): reacts to lighting changes and keeps stagnant "
+                           "in [0.5, 1) of this. Tuned {} (m8 I15): reacts to lighting changes and keeps stagnant "
                            "samples from brightening dim areas.",
-                           RtxdiContext::kGiUnlimitedSampleAge, RtxdiContext::defaultGiSettings().maxReservoirAge)
+                           RtxdiContext::kGiUnlimitedSampleAge, RtxdiContext::tunedGiSettings().maxReservoirAge)
                    .c_str());
         beginRow({"gi.history"});
         sliderU32("Max history length", gi.maxHistoryLength, 1, 100);
@@ -1210,15 +1223,16 @@ void SettingsWindow::drawIndirectEngine()
     if (ImGui::Button("Defaults##gi")) {
         gi = RtxdiContext::defaultGiSettings();
     }
-    ImGui::SetItemTooltip("shipped: NVIDIA's with ray-traced spatial bias correction and 1 spatial sample, and ReSTIR "
-                          "PT's DLSS-RR profile (stagnancy decorrelation, firefly replacement with the full-tile test, "
-                          "20 frames of history) with a 30-frame age limit; history reduction and the swap bound stay "
-                          "off (both darken GI); exact directional lights at path vertices");
+    ImGui::SetItemTooltip("shipped: the RTXDI sample's ReSTIR GI settings (the library defaults)");
     ImGui::SameLine();
-    if (ImGui::Button("NVIDIA defaults##gi")) {
-        gi = RtxdiContext::nvidiaGiSettings();
+    if (ImGui::Button("Tuned##gi")) {
+        gi = RtxdiContext::tunedGiSettings();
     }
-    ImGui::SetItemTooltip("the RTXDI sample's ReSTIR GI settings (the library defaults)");
+    ImGui::SetItemTooltip("the m8 tuning, which the GI check gates: NVIDIA's with ray-traced spatial bias correction "
+                          "and 1 spatial sample, and ReSTIR PT's DLSS-RR profile (stagnancy decorrelation, firefly "
+                          "replacement with the full-tile test, 20 frames of history) with a 30-frame age limit; "
+                          "history reduction and the swap bound stay off (both darken GI); exact directional lights at "
+                          "path vertices");
     ImGui::SameLine();
     if (ImGui::Button("Converged##gi")) {
         gi = RtxdiContext::convergedGiSettings();

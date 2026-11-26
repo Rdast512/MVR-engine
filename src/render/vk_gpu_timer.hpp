@@ -57,8 +57,8 @@ enum class GpuTimerScope : uint32_t
     // exposure histogram, adaptation and tonemap; zero with DLSS-RR
     Post,
     DebugView,
-    // ENGINE_MOTION_TEST and ENGINE_RT_CHECK compute passes; zero unless enabled
-    SelfTests,
+    // Renderer::setFrameHook's passes; zero without a hook. Label kept for bench keys
+    FrameHook,
     // GPU idle until the swapchain image is acquired; not GPU work, so not in the total
     AcquireWait,
     Present,
@@ -127,7 +127,7 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "Post";
     case GpuTimerScope::DebugView:
         return "Debug view";
-    case GpuTimerScope::SelfTests:
+    case GpuTimerScope::FrameHook:
         return "Self-tests";
     case GpuTimerScope::AcquireWait:
         return "Acquire wait";

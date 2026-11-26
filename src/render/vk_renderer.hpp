@@ -16,6 +16,7 @@
 #include "vk_indirect.hpp"
 #include "vk_nrc.hpp"
 #include "debug_view.hpp"
+#include "frame_hook.hpp"
 #include "denoiser_mode.hpp"
 #include "glass_settings.hpp"
 #include "indirect_mode.hpp"
@@ -135,34 +136,22 @@ public:
     // the glass pass's counters of the last completed frame that ran it, zero otherwise (m8 I13 §6)
     [[nodiscard]] const GpuGlassCounters& getGlassCounters() const noexcept { return lastGlassCounters; }
 
-    // ENGINE_MOTION_TEST: passes/motion_check.slang runs after the debug view of every later frame
-    void enableMotionCheck();
-    // the frame recorded last; complete only after its fence, e.g. a waitIdle
-    [[nodiscard]] const GpuMotionCheckStats& getLastMotionCheck() const;
-
-    // ENGINE_RT_CHECK: passes/rt_check.slang runs after the debug view of every later frame
-    void enableRayCheck();
-    // the frame recorded last; complete only after its fence, e.g. a waitIdle
-    [[nodiscard]] const GpuRayCheckStats& getLastRayCheck() const;
-
-    // ENGINE_GUIDE_CAPTURE: the next recorded frame copies the presented image (the DLSS-RR output for Lit, else the
-    // display image) to host memory after the debug view
-    void requestDisplayCapture() noexcept { isDisplayCapturePending = true; }
-    struct DisplayCapture
+    // non-owning; set once before the first frame
+    void setFrameHook(FrameHook* hook) noexcept { frameHook = hook; }
+    struct PresentedImage
     {
+        // in eGeneral, RenderTargets::kDisplayFormat
+        vk::Image image;
         vk::Extent2D extent;
-        // RenderTargets::kDisplayFormat texels, linear, row-major without padding
-        std::span<const uint16_t> rgba16f;
     };
-    // the frame recorded last, if it captured; complete only after its fence, e.g. a waitIdle
-    [[nodiscard]] std::optional<DisplayCapture> getLastDisplayCapture() const;
+    // the image present reads: the post target at display extent when the Lit view is shown, else the display image
+    [[nodiscard]] PresentedImage getPresentedImage() const;
 
 private:
     // submitted before the image is acquired: cull, raster, Hi-Z, resolve
     void recordFrameCommands(vk::raii::CommandBuffer& cmd);
     // submitted after the acquire with the present commands, waiting for this frame's TLAS build: the passes that may
-    // trace rays (ReSTIR DI, indirect + NRC), reconstruction, debug view, self-tests, display capture. Records into
-    // raySegments
+    // trace rays (ReSTIR DI, indirect + NRC), reconstruction, debug view, frame hook. Records into raySegments
     void recordRayCommands();
     // resets, begins and binds the heaps of the next ray segment
     [[nodiscard]] const vk::raii::CommandBuffer& beginRaySegment();
@@ -201,18 +190,13 @@ private:
     // noisyColor into the running mean; returns the post input
     [[nodiscard]] uint32_t recordAccumulation(const vk::raii::CommandBuffer& cmd);
     void recordDebugView(const vk::raii::CommandBuffer& cmd);
-    void recordMotionCheck(const vk::raii::CommandBuffer& cmd);
-    void recordRayCheck(const vk::raii::CommandBuffer& cmd);
-    // SER pipeline against traceClosest, reorder off then on
-    // grows this slot's readback buffer; the slot's fence has been waited
-    void recordDisplayCapture(const vk::raii::CommandBuffer& cmd);
     void recordPresent(vk::raii::CommandBuffer& cmd, uint32_t imageIndex);
     // DebugView::HiZPyramid: covers the present pass with the pyramid of the final depth
     void recordHiZView(const vk::raii::CommandBuffer& cmd) const;
     // one thread per render pixel, FramePushData
     // tile: the shader's square workgroup size, kFullscreenTile by default
     void dispatchFullscreen(const vk::raii::CommandBuffer& cmd, const vk::raii::ShaderEXT& shader,
-                            uint32_t tile = 8) const;
+                            uint32_t tile = kFullscreenTile) const;
     [[nodiscard]] uint32_t previousFrameSlot() const noexcept
     {
         return (currentFrame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
@@ -326,10 +310,7 @@ private:
     size_t cpuHistoryHead = 0;
     size_t cpuHistoryCount = 0;
     VkTracyContext* tracyContext = nullptr;
-    // per frame slot; empty unless enableMotionCheck
-    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> motionCheckStats;
-    // per frame slot; empty unless enableRayCheck
-    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> rayCheckStats;
+    FrameHook* frameHook = nullptr;
     // per frame slot, GpuRayDebugCounters; empty unless kDebugRays
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> rayDebugCounters;
     // per frame slot, GpuGlassCounters; reset by the host after the slot's fence
@@ -344,13 +325,6 @@ private:
     std::array<bool, MAX_FRAMES_IN_FLIGHT> isRayDebugRecorded{};
     uint64_t rayDebugFrames = 0;
     uint64_t rayCandidates = 0;
-    uint32_t lastRecordedFrame = 0;
-    // per frame slot; grown on the first capture at a larger extent
-    std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> displayCaptures;
-    std::array<vk::DeviceSize, MAX_FRAMES_IN_FLIGHT> displayCaptureCapacities{};
-    // extent of the capture the slot recorded last; nullopt when it recorded none
-    std::array<std::optional<vk::Extent2D>, MAX_FRAMES_IN_FLIGHT> displayCaptureExtents;
-    bool isDisplayCapturePending = false;
     bool isSwapchainRecreatePending = false;
     bool hasDumpedLightPdfStats = false;
 };
