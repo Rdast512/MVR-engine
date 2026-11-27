@@ -272,6 +272,13 @@ engine_fetch_declare(rtxdi
         GIT_TAG b67f61cd0bfa6792acbf5429bb29a68ee5cdd808 # 3.2
 )
 
+# 16. SHaRC (header-only HLSL spatial hash radiance cache, M8.4)
+engine_fetch_declare(sharc
+        GIT_REPOSITORY https://github.com/NVIDIA-RTX/SHARC.git
+        GIT_TAG 4e21b585c33c83d723ca9a1e11bbb1090d145793 # v1.8.3
+        SOURCE_SUBDIR skip-add-subdirectory
+)
+
 # 17. OMM SDK. Root CMake pulls donut/ShaderMake/its own glm; only omm-lib deps are fetched
 engine_fetch_declare(omm
         GIT_REPOSITORY https://github.com/NVIDIA-RTX/OMM.git
@@ -280,7 +287,7 @@ engine_fetch_declare(omm
         SOURCE_SUBDIR skip-add-subdirectory
 )
 
-set(_tp_rtx_names rtxdi omm)
+set(_tp_rtx_names rtxdi sharc omm)
 
 # 19. bcdec: header-only BC decoder for the OMM bake's BC7 alpha; its CMake builds only a test
 engine_fetch_declare(bcdec
@@ -490,7 +497,7 @@ if (WIN32)
 endif ()
 
 # --- Shader-side headers (HLSL, slangc only) ---
-set(_slangIncludeDirs "${rtxdi_SOURCE_DIR}/Include")
+set(_slangIncludeDirs "${rtxdi_SOURCE_DIR}/Include" "${sharc_SOURCE_DIR}/include")
 if (WIN32)
         list(APPEND _slangIncludeDirs "${nrc_SOURCE_DIR}/Include")
 endif ()

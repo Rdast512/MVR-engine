@@ -1221,8 +1221,11 @@ struct GpuFrameRoot
     // > 0: passes/combine.slang blends the DLSS-RR input into its running average by this weight (settings lab, m8 I16;
     // still camera only: any motion restarts it)
     float inputHistoryWeight = 0.0f;
+    // GpuSharcConstants of this frame slot (M8.4); 0 when SHaRC is inactive
+    vk::DeviceAddress sharcConstants = 0;
 };
-static_assert(sizeof(GpuFrameRoot) == 248);
+static_assert(sizeof(GpuFrameRoot) == 256);
+static_assert(offsetof(GpuFrameRoot, sharcConstants) == 248);
 static_assert(offsetof(GpuFrameRoot, preDenoiserClamp) == 240);
 static_assert(offsetof(GpuFrameRoot, glassFlags) == 224);
 static_assert(offsetof(GpuFrameRoot, glassCounters) == 232);

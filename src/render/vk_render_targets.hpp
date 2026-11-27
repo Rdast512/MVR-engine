@@ -183,6 +183,8 @@ private:
     {
         return ImageRef{.image = *target.image, .view = *target.view, .format = format};
     }
+    // frees the target's heap slots, then its view and image
+    void destroyTarget(Target& target);
     void destroyTargets();
     void createMaterialBins();
 

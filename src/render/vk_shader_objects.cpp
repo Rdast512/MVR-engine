@@ -138,6 +138,8 @@ void ShaderObjects::createFrameShaders()
     frameShaders.indirect = createComputeShader("indirect.spv", "indirectMain", "Indirect");
     frameShaders.nrcUpdate = createComputeShader("nrc_update.spv", "nrcUpdateMain", "NrcUpdate");
     frameShaders.nrcResolve = createComputeShader("nrc_resolve.spv", "nrcResolveMain", "NrcResolve");
+    frameShaders.sharcUpdate = createComputeShader("sharc_update.spv", "sharcUpdateMain", "SharcUpdate");
+    frameShaders.sharcResolve = createComputeShader("sharc_resolve.spv", "sharcResolveMain", "SharcResolve");
     frameShaders.giTemporal = createComputeShader("rtxdi_gi_temporal.spv", "rtxdiGiTemporalMain", "RtxdiGiTemporal");
     frameShaders.giShade = createComputeShader("rtxdi_gi_shade.spv", "rtxdiGiShadeMain", "RtxdiGiShade");
     frameShaders.giDuplication =

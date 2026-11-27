@@ -55,6 +55,16 @@ namespace
         }
         return field + "\"";
     }
+
+    // the run's state outside the measured lighting term: render extent (denoiser, DLSS quality), jitter and glass
+    // shadow transmittance must match between a reference and its compare, else they show up as bias
+    void copyFrameState(const LabConfig& run, LabConfig& reference)
+    {
+        reference.denoiser = run.denoiser;
+        reference.dlss = run.dlss;
+        reference.isJitterEnabled = run.isJitterEnabled;
+        reference.glass = run.glass;
+    }
 } // namespace
 
 std::optional<double> EngineLab::Run::metric(const LabMetricInfo* info) const
@@ -602,10 +612,9 @@ void EngineLab::buildPhases(const Run& run)
         LabConfig referenceConfig;
         referenceConfig.directMode = DirectMode::RestirDi;
         referenceConfig.directResampling = DirectResamplingMode::Reference;
-        referenceConfig.dlss = run.config.dlss;
-        referenceConfig.isJitterEnabled = run.config.isJitterEnabled;
-        const std::string key = std::format("di|{}|{}|{}|{}", labCase.name, std::to_underlying(run.config.dlss.quality),
-                                            run.config.isJitterEnabled, run.seedIndex);
+        copyFrameState(run.config, referenceConfig);
+        const std::string key =
+            std::format("di|{}|{}|{}", labCase.name, formatLabConfig(referenceConfig), run.seedIndex);
         if (!references.contains(key)) {
             phases.push_back({.type = PhaseType::DiReference, .view = DebugView::DirectLighting,
                               .config = referenceConfig, .warmup = kStabilityWarmup, .frames = kDiReferenceFrames,
@@ -624,20 +633,18 @@ void EngineLab::buildPhases(const Run& run)
             config.gi = RtxdiContext::convergedGiSettings();
             config.indirectBounce = bounce;
             config.radianceCache = cache;
-            config.isJitterEnabled = false;
-            config.dlss = run.config.dlss;
+            copyFrameState(run.config, config);
             return config;
         };
-        const std::string oneKey =
-            std::format("gi1|{}|{}|{}", labCase.name, std::to_underlying(run.config.dlss.quality), run.seedIndex);
+        const LabConfig oneConfig = truthConfig(IndirectBounceMode::RestirGi, RadianceCacheMode::Off);
+        const LabConfig eightConfig = truthConfig(IndirectBounceMode::RestirGi, RadianceCacheMode::Nrc);
+        const std::string oneKey = std::format("gi1|{}|{}|{}", labCase.name, formatLabConfig(oneConfig), run.seedIndex);
         const std::string eightKey =
-            std::format("gi8|{}|{}|{}", labCase.name, std::to_underlying(run.config.dlss.quality), run.seedIndex);
-        const Phase oneBounce{.type = PhaseType::GiTruth, .view = DebugView::IndirectRadiance,
-                              .config = truthConfig(IndirectBounceMode::RestirGi, RadianceCacheMode::Off),
+            std::format("gi8|{}|{}|{}", labCase.name, formatLabConfig(eightConfig), run.seedIndex);
+        const Phase oneBounce{.type = PhaseType::GiTruth, .view = DebugView::IndirectRadiance, .config = oneConfig,
                               .isGiReference = true, .giReferenceBounces = 0, .warmup = kGiTruthWarmup,
                               .frames = kGiTruthFrames, .seed = seedOf(oneKey), .referenceKey = oneKey};
-        const Phase eightBounces{.type = PhaseType::GiTruth, .view = DebugView::IndirectRadiance,
-                                 .config = truthConfig(IndirectBounceMode::RestirGi, RadianceCacheMode::Nrc),
+        const Phase eightBounces{.type = PhaseType::GiTruth, .view = DebugView::IndirectRadiance, .config = eightConfig,
                                  .isGiReference = true, .giReferenceBounces = RtxdiContext::kGiGroundTruthBounces,
                                  .warmup = kGiTruthWarmup, .frames = kGiTruthFrames, .seed = seedOf(eightKey),
                                  .referenceKey = eightKey};

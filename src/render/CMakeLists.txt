@@ -12,6 +12,7 @@ set(RENDER_SOURCES
     vk_renderer.cpp
     vk_rt_scene.cpp
     vk_rtxdi.cpp
+    vk_sharc.cpp
     vk_world_lights.cpp
     vk_shader_objects.cpp
     settings_registry.cpp

@@ -294,25 +294,6 @@ PipelinePreset SettingsWindow::currentPipelinePreset() const
     return PipelinePreset::Custom;
 }
 
-void SettingsWindow::applyPipelinePreset(PipelinePreset preset)
-{
-    if (preset == PipelinePreset::Custom || preset == PipelinePreset::Count) {
-        return;
-    }
-    const LabConfig target = pipelinePresetConfig(preset);
-    RtxdiContext& rtxdi = renderer.getRtxdi();
-    rtxdi.directMode = target.directMode;
-    rtxdi.directResampling = target.directResampling;
-    rtxdi.settings = target.di;
-    rtxdi.giSettings = target.gi;
-    rtxdi.isGiReference = false;
-    rtxdi.giReferenceBounces = 0;
-    renderer.indirectBounce = target.indirectBounce;
-    renderer.radianceCache = target.radianceCache;
-    renderer.denoiser = target.denoiser;
-    renderer.getDlss().settings.quality = target.dlss.quality;
-}
-
 void SettingsWindow::drawPipeline()
 {
     using namespace settingsRows;
@@ -328,7 +309,10 @@ void SettingsWindow::drawPipeline()
             const bool isCustom = preset == PipelinePreset::Custom;
             ImGui::BeginDisabled(isCustom);
             if (ImGui::Selectable(pipelinePresetLabel(preset), preset == activePreset) && !isCustom) {
-                applyPipelinePreset(preset);
+                // same preset-owned fields as ENGINE_CONFIG pipeline=<preset>
+                LabConfig config = captureLabConfig(renderer, camera);
+                applyPipelinePreset(config, preset);
+                applyLabConfig(config, renderer, camera);
             }
             ImGui::EndDisabled();
         }
@@ -379,8 +363,9 @@ void SettingsWindow::drawPipeline()
         }
         ImGui::EndCombo();
     }
-    endRow("Multi-bounce tail behind bounce 1: Off runs 1-bounce indirect only (pauses NRC). NRC terminates paths in "
-           "NVIDIA Neural Radiance Cache 0.16. SHaRC lands in M8.4. Inactive when Indirect (Bounce 1) is Off.");
+    endRow("Multi-bounce tail behind bounce 1: Off runs 1-bounce indirect only (pauses NRC/SHaRC). NRC terminates paths "
+           "in NVIDIA Neural Radiance Cache 0.16. SHaRC terminates eligible paths in NVIDIA SHaRC v1.8.3 pure Vulkan "
+           "BDA cache. Inactive when Indirect (Bounce 1) is Off.");
     ImGui::EndDisabled();
     ImGui::PopItemWidth();
     endNode();
@@ -1070,10 +1055,10 @@ void SettingsWindow::drawDirectEngine()
 void SettingsWindow::drawIndirectLighting()
 {
     using namespace settingsRows;
-    if (!beginNode(
-            "Indirect Lighting", kIndirect,
-            {kIndirectReuse, kIndirectNrc, kIndirectTemporal, kIndirectSpatial, kIndirectEngine, kIndirectPtProfile},
-            kColorAttentionHeader, ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (!beginNode("Indirect Lighting", kIndirect,
+                   {kIndirectReuse, kIndirectNrc, kIndirectSharc, kIndirectTemporal, kIndirectSpatial, kIndirectEngine,
+                    kIndirectPtProfile},
+                   kColorAttentionHeader, ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Separator();
         return;
     }
@@ -1137,6 +1122,7 @@ void SettingsWindow::drawIndirectLighting()
         endNode();
     }
     drawIndirectNrc();
+    drawIndirectSharc();
     drawIndirectResampling();
     ImGui::BeginDisabled(!isGiReuse);
     beginRow({"gi.finalVisibility"});
@@ -1197,6 +1183,97 @@ void SettingsWindow::drawIndirectNrc()
                             training.width, training.height);
     } else {
         ImGui::TextDisabled("active, training paths %ux%u", training.width, training.height);
+    }
+    endNode();
+}
+
+void SettingsWindow::drawIndirectSharc()
+{
+    using namespace settingsRows;
+    if (!beginNode("SHaRC", kIndirectSharc)) {
+        return;
+    }
+    SharcCache& sharcCache = renderer.getSharc();
+    SharcCache::Settings& sharc = sharcCache.settings;
+    const bool isInactive = !renderer.isSharcActive();
+    ImGui::BeginDisabled(isInactive);
+    beginRow({"sharc.update"});
+    ImGui::Checkbox("Update cache", &sharc.isUpdateEnabled);
+    endRow("Sparse update pass (1/(downscale^2) pixels); off freezes new samples.");
+    beginRow({"sharc.resolve"});
+    ImGui::Checkbox("Resolve cache", &sharc.isResolveEnabled);
+    endRow("Temporal merge, fade acceleration, adjacent-level blend and stale eviction.");
+    beginRow({"sharc.updateCamera"});
+    ImGui::Checkbox("Update view camera", &sharc.isUpdateViewCamera);
+    endRow("Moves the logarithmic hash-grid anchor with the camera; off freezes grid levels.");
+    beginRow({"sharc.downscale"});
+    sliderU32("Update downscale", sharc.downscaleFactor, SharcCache::kMinDownscaleFactor,
+              SharcCache::kMaxDownscaleFactor);
+    endRow("Sparse update grid step N (1/(N*N) pixels per frame); default 4 (6.25%).");
+    beginRow({"sharc.capacityShift"});
+    sliderU32("Capacity shift (2^k)", sharc.capacityShift, SharcCache::kMinCapacityShift,
+              SharcCache::kMaxCapacityShift);
+    endRow("Hash table entries = 2^k (20=1M/40 MiB, 21=2M/80 MiB, 22=4M/160 MiB, 23=8M/320 MiB).");
+    beginRow({"sharc.sceneScale"});
+    sliderFloat("Scene scale", sharc.sceneScale, SharcCache::kMinSceneScale, SharcCache::kMaxSceneScale, "%.1f");
+    endRow("World-space voxel density (higher = smaller voxels); auto-clears cache on change.");
+    beginRow({"sharc.accumulationFrames"});
+    sliderU32("Accumulation frames", sharc.accumulationFrameNum, SharcCache::kMinAccumulationFrames,
+              SharcCache::kMaxAccumulationFrames);
+    endRow("Max temporal accumulation window per voxel.");
+    beginRow({"sharc.staleFrames"});
+    sliderU32("Stale eviction frames", sharc.staleFrameNumMax, SharcCache::kMinStaleFrames,
+              SharcCache::kMaxStaleFrames);
+    endRow("Frames without new samples before a voxel is evicted.");
+    beginRow({"sharc.updateBounces"});
+    sliderU32("Update bounces", sharc.maxUpdateBounces, SharcCache::kMinUpdateBounces, SharcCache::kMaxUpdateBounces);
+    endRow("Max path vertices traced per sparse update thread.");
+    beginRow({"sharc.queryBounces"});
+    sliderU32("Query continuation bounces", sharc.maxQueryBounces, SharcCache::kMinQueryBounces,
+              SharcCache::kMaxQueryBounces);
+    endRow("Max indirect bounces traced on a SHaRC miss or ineligible X2 hit.");
+    beginRow({"sharc.minRoughness"});
+    sliderFloat("Update min roughness", sharc.minRoughnessOverride, 0.0f, 1.0f, "%.2f");
+    endRow("Update-only roughness floor to reduce glossy variance in cached radiance.");
+    beginRow({"sharc.fireflyClamp"});
+    sliderFloat("Update firefly clamp", sharc.fireflyClamp, 0.0f, 1000.0f, "%.1f");
+    endRow("Optional scene-unit direct-light luminance clamp in sharc_update (0 = off; matches gi.fireflyClamp).");
+    beginRow({"sharc.materialDemodulation"});
+    ImGui::Checkbox("Material demodulation", &sharc.isMaterialDemodulationEnabled);
+    endRow("Divides out diffuse/specular reflectance during cache storage; auto-clears on flip.");
+    beginRow({"sharc.debugMode"});
+    if (ImGui::BeginCombo("Debug mode", sharcDebugModeLabel(sharc.debugMode))) {
+        for (size_t i = 0; i < kSharcDebugModeCount; ++i) {
+            const auto mode = static_cast<SharcDebugMode>(i);
+            if (ImGui::Selectable(sharcDebugModeLabel(mode), mode == sharc.debugMode)) {
+                sharc.debugMode = mode;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    endRow("Visualization shown when Debug view is set to SHaRC cache.");
+    if (ImGui::Button("Clear cache")) {
+        sharcCache.requestClear();
+    }
+    ImGui::EndDisabled();
+    const double vramMiB = static_cast<double>(sharcCache.getAllocatedBytes()) / (1024.0 * 1024.0);
+    if (isInactive) {
+        ImGui::TextDisabled("inactive (%.0f MiB allocated)", vramMiB);
+    } else {
+        const vk::Extent2D launch = sharcCache.getUpdateLaunchExtent();
+        const uint32_t capacity = sharcCache.getAllocatedCapacity();
+        const GpuSharcCounters stats = sharcCache.getLastCounters();
+        const double occupancyPct =
+            capacity > 0 ? 100.0 * static_cast<double>(stats.occupied) / static_cast<double>(capacity) : 0.0;
+        ImGui::TextDisabled("active, %.0f MiB (%u entries), update %ux%u", vramMiB, capacity, launch.width,
+                            launch.height);
+        if (stats.insertFailures > 0) {
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColorAttentionHeader),
+                               "occupied: %u / %u (%.2f%%), overflow: %u", stats.occupied, capacity, occupancyPct,
+                               stats.insertFailures);
+        } else {
+            ImGui::TextDisabled("occupied: %u / %u (%.2f%%), overflow: 0", stats.occupied, capacity, occupancyPct);
+        }
     }
     endNode();
 }

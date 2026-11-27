@@ -205,46 +205,47 @@ void RenderTargets::createTarget(Target& target, vk::Format format, vk::ImageUsa
     }
 }
 
+void RenderTargets::destroyTarget(Target& target)
+{
+    for (uint32_t* index : {&target.storageIndex, &target.sampledIndex}) {
+        if (*index != kNoneIndex) {
+            descriptorManager.freeImageDescriptor(*index);
+            *index = kNoneIndex;
+        }
+    }
+    target.view = nullptr;
+    destroyVmaImage(allocator.allocator, target.image, target.memory);
+}
+
 void RenderTargets::destroyTargets()
 {
     const VmaAllocator vma = allocator.allocator;
-    const auto destroy = [&](Target& target)
-    {
-        for (uint32_t* index : {&target.storageIndex, &target.sampledIndex}) {
-            if (*index != kNoneIndex) {
-                descriptorManager.freeImageDescriptor(*index);
-                *index = kNoneIndex;
-            }
-        }
-        target.view = nullptr;
-        destroyVmaImage(vma, target.image, target.memory);
-    };
     visBufferView = nullptr;
-    destroy(visBuffer);
-    destroy(display);
-    destroy(directRadiance);
-    destroy(indirectRadiance);
-    destroy(noisyColorTarget);
-    destroy(glassDiffuseAlbedo);
-    destroy(glassSpecAlbedo);
-    destroy(upscaledTarget);
-    destroy(postTarget);
-    destroy(exposureTarget);
-    destroy(binIds);
+    destroyTarget(visBuffer);
+    destroyTarget(display);
+    destroyTarget(directRadiance);
+    destroyTarget(indirectRadiance);
+    destroyTarget(noisyColorTarget);
+    destroyTarget(glassDiffuseAlbedo);
+    destroyTarget(glassSpecAlbedo);
+    destroyTarget(upscaledTarget);
+    destroyTarget(postTarget);
+    destroyTarget(exposureTarget);
+    destroyTarget(binIds);
     for (auto& guides : guideSets) {
         for (Target& guide : guides) {
-            destroy(guide);
+            destroyTarget(guide);
         }
     }
     for (Target& stagnancy : giStagnancy) {
-        destroy(stagnancy);
+        destroyTarget(stagnancy);
     }
-    destroy(giSampleIds);
-    destroy(giDuplication);
-    destroy(specularHitDistanceTarget);
-    destroy(dlssInputAccumulation);
-    destroy(accumulatedTarget);
-    destroy(rawIndirectWeight);
+    destroyTarget(giSampleIds);
+    destroyTarget(giDuplication);
+    destroyTarget(specularHitDistanceTarget);
+    destroyTarget(dlssInputAccumulation);
+    destroyTarget(accumulatedTarget);
+    destroyTarget(rawIndirectWeight);
     isDlssInputAccumulationInitialized = false;
     isDlssInputAccumulationClearPending = false;
     isAccumulatedLayoutPending = false;
@@ -381,14 +382,7 @@ void RenderTargets::ensureAccumulated()
 
 void RenderTargets::releaseAccumulated()
 {
-    for (uint32_t* index : {&accumulatedTarget.storageIndex, &accumulatedTarget.sampledIndex}) {
-        if (*index != kNoneIndex) {
-            descriptorManager.freeImageDescriptor(*index);
-            *index = kNoneIndex;
-        }
-    }
-    accumulatedTarget.view = nullptr;
-    destroyVmaImage(allocator.allocator, accumulatedTarget.image, accumulatedTarget.memory);
+    destroyTarget(accumulatedTarget);
     isAccumulatedLayoutPending = false;
 }
 
@@ -410,14 +404,7 @@ void RenderTargets::releaseGiStagnancy()
         return;
     }
     for (Target& stagnancy : giStagnancy) {
-        for (uint32_t* index : {&stagnancy.storageIndex, &stagnancy.sampledIndex}) {
-            if (*index != kNoneIndex) {
-                descriptorManager.freeImageDescriptor(*index);
-                *index = kNoneIndex;
-            }
-        }
-        stagnancy.view = nullptr;
-        destroyVmaImage(allocator.allocator, stagnancy.image, stagnancy.memory);
+        destroyTarget(stagnancy);
     }
     isGiStagnancyLayoutPending = false;
 }
@@ -438,16 +425,8 @@ void RenderTargets::releaseGiDuplication()
     if (!hasGiDuplication()) {
         return;
     }
-    for (Target* target : {&giSampleIds, &giDuplication}) {
-        for (uint32_t* index : {&target->storageIndex, &target->sampledIndex}) {
-            if (*index != kNoneIndex) {
-                descriptorManager.freeImageDescriptor(*index);
-                *index = kNoneIndex;
-            }
-        }
-        target->view = nullptr;
-        destroyVmaImage(allocator.allocator, target->image, target->memory);
-    }
+    destroyTarget(giSampleIds);
+    destroyTarget(giDuplication);
     isGiDuplicationLayoutPending = false;
 }
 
@@ -466,12 +445,7 @@ void RenderTargets::releaseRawIndirectWeight()
     if (!hasRawIndirectWeight()) {
         return;
     }
-    if (rawIndirectWeight.storageIndex != kNoneIndex) {
-        descriptorManager.freeImageDescriptor(rawIndirectWeight.storageIndex);
-        rawIndirectWeight.storageIndex = kNoneIndex;
-    }
-    rawIndirectWeight.view = nullptr;
-    destroyVmaImage(allocator.allocator, rawIndirectWeight.image, rawIndirectWeight.memory);
+    destroyTarget(rawIndirectWeight);
     isRawIndirectWeightLayoutPending = false;
 }
 

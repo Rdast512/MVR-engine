@@ -15,6 +15,7 @@
 #include "vk_hiz.hpp"
 #include "vk_indirect.hpp"
 #include "vk_nrc.hpp"
+#include "vk_sharc.hpp"
 #include "debug_view.hpp"
 #include "frame_hook.hpp"
 #include "denoiser_mode.hpp"
@@ -85,6 +86,12 @@ public:
         return indirectBounce == IndirectBounceMode::Off || radianceCache != RadianceCacheMode::Nrc ||
             rtxdi.giReferenceBounces != 0;
     }
+    // SHaRC runs when Indirect is on, Cache == Sharc, and ground-truth reference paths are off
+    [[nodiscard]] bool isSharcActive() const noexcept
+    {
+        return indirectBounce != IndirectBounceMode::Off && radianceCache == RadianceCacheMode::Sharc &&
+            rtxdi.giReferenceBounces == 0;
+    }
     // async-compute light preparation is skipped when no pass reads world lights or RIS buffers
     [[nodiscard]] bool isLightPreparationNeeded() const noexcept
     {
@@ -98,6 +105,7 @@ public:
     [[nodiscard]] MeshletCulling& getCulling() noexcept { return culling; }
     [[nodiscard]] RtxdiContext& getRtxdi() noexcept { return rtxdi; }
     [[nodiscard]] NrcCache& getNrc() noexcept { return nrc; }
+    [[nodiscard]] SharcCache& getSharc() noexcept { return sharc; }
     [[nodiscard]] WorldLights& getWorldLights() noexcept { return worldLights; }
     [[nodiscard]] RayTracingScene& getRayTracingScene() noexcept { return rtScene; }
     [[nodiscard]] Dlss& getDlss() noexcept { return dlss; }
@@ -238,6 +246,10 @@ private:
     NrcCache nrc;
     // NRC commands went into this frame's ray segments: EndFrame follows their submit
     bool isNrcRecorded = false;
+    // pure Vulkan BDA spatial hash radiance cache (M8.4)
+    SharcCache sharc;
+    bool isSharcRecorded = false;
+    uint32_t lastSharcLayoutGeneration = kNoneIndex;
     // what decides the meaning of the indirect samples; a change between frames resets their history
     struct IndirectState
     {

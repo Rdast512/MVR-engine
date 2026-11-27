@@ -12,6 +12,7 @@
 #include "render/push_data.hpp"
 #include "render/vk_nrc.hpp"
 #include "render/vk_rtxdi.hpp"
+#include "render/vk_sharc.hpp"
 #include "test_support.hpp"
 
 #include <slang-com-ptr.h>
@@ -619,6 +620,7 @@ namespace
             LAYOUT_FIELD(GpuFrameRoot, glassCounters),
             LAYOUT_FIELD(GpuFrameRoot, preDenoiserClamp),
             LAYOUT_FIELD(GpuFrameRoot, inputHistoryWeight),
+            LAYOUT_FIELD(GpuFrameRoot, sharcConstants),
         }},
     };
 
@@ -684,6 +686,30 @@ namespace
         LAYOUT_FIELD(GpuNrcHealth, diverged),
         LAYOUT_FIELD(GpuNrcHealth, maxRatioBits),
         LAYOUT_FIELD(GpuNrcHealth, pad0),
+    }};
+    const StructLayout kSharcCounters = {"GpuSharcCounters", sizeof(GpuSharcCounters), {
+        LAYOUT_FIELD(GpuSharcCounters, occupied),
+        LAYOUT_FIELD(GpuSharcCounters, insertFailures),
+    }};
+    const StructLayout kSharcConstants = {"GpuSharcConstants", sizeof(GpuSharcConstants), {
+        LAYOUT_FIELD(GpuSharcConstants, hashEntries),
+        LAYOUT_FIELD(GpuSharcConstants, accumulation),
+        LAYOUT_FIELD(GpuSharcConstants, resolved),
+        LAYOUT_FIELD(GpuSharcConstants, cameraPos),
+        LAYOUT_FIELD(GpuSharcConstants, sceneScale),
+        LAYOUT_FIELD(GpuSharcConstants, prevCameraPos),
+        LAYOUT_FIELD(GpuSharcConstants, radianceScale),
+        LAYOUT_FIELD(GpuSharcConstants, capacity),
+        LAYOUT_FIELD(GpuSharcConstants, downscaleFactor),
+        LAYOUT_FIELD(GpuSharcConstants, accumulationFrameNum),
+        LAYOUT_FIELD(GpuSharcConstants, staleFrameNumMax),
+        LAYOUT_FIELD(GpuSharcConstants, maxUpdateBounces),
+        LAYOUT_FIELD(GpuSharcConstants, maxQueryBounces),
+        LAYOUT_FIELD(GpuSharcConstants, minRoughnessOverride),
+        LAYOUT_FIELD(GpuSharcConstants, fireflyClamp),
+        LAYOUT_FIELD(GpuSharcConstants, flags),
+        LAYOUT_FIELD(GpuSharcConstants, updateLaunch),
+        LAYOUT_FIELD(GpuSharcConstants, counters),
     }};
     // clang-format on
 
@@ -903,6 +929,15 @@ int main(int argc, char** argv)
         for (const StructLayout* mirror : {&kNrcConstants, &kNrcHealth}) {
             const auto type = std::ranges::find(nrcTypes, mirror->name, &Reflected::name);
             if (check(type != nrcTypes.end(), std::format("nrc_constants.slang declares {}", mirror->name).c_str())) {
+                verify(*type, *mirror);
+            }
+        }
+    }
+    if (slang::IModule* sharcModule = slang.loadText("sharc_constants_layout", "gi/sharc_constants.slang")) {
+        const std::vector<Reflected> sharcTypes = reflectTypes(*sharcModule);
+        for (const StructLayout* mirror : {&kSharcConstants, &kSharcCounters}) {
+            const auto type = std::ranges::find(sharcTypes, mirror->name, &Reflected::name);
+            if (check(type != sharcTypes.end(), std::format("sharc_constants.slang declares {}", mirror->name).c_str())) {
                 verify(*type, *mirror);
             }
         }

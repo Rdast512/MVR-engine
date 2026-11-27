@@ -113,6 +113,7 @@ void FrameData::writeFrameRoot(uint32_t frameSlot, const FrameRootInputs& inputs
         .glassCounters = inputs.glassCounters,
         .preDenoiserClamp = inputs.preDenoiserClamp,
         .inputHistoryWeight = inputs.inputHistoryWeight,
+        .sharcConstants = inputs.sharcConstants,
     };
 }
 

@@ -39,10 +39,11 @@ public:
                         float cellSize) noexcept;
     // advances moving field instances before drawFrame when isFieldMoving is set
     void stepField(ObjectStorage& storage);
-    // once per frame; true once the results are logged. The cull and glass counters logged are the last frame's
+    // once per frame; true once the results are logged. The cull, glass and SHaRC counters logged are the last frame's
     [[nodiscard]] bool onFrame(const GpuTimer& timer, const MeshletCullStats& cullStats,
                                const RayTracingScene::Stats& rtStats, const RtxdiContext::LightPrepStats& lightPrep,
-                               const Renderer::CpuStats& cpuStats, const GpuGlassCounters& glassCounters);
+                               const Renderer::CpuStats& cpuStats, const GpuGlassCounters& glassCounters,
+                               uint32_t sharcCapacity = 0, const GpuSharcCounters& sharcCounters = {});
 
 private:
     // shader object warm-up and GPU clock ramp
@@ -50,7 +51,8 @@ private:
 
     void logResults(const GpuTimer& timer, const MeshletCullStats& cullStats, const RayTracingScene::Stats& rtStats,
                     const RtxdiContext::LightPrepStats& lightPrep, const Renderer::CpuStats& cpuStats,
-                    const GpuGlassCounters& glassCounters) const;
+                    const GpuGlassCounters& glassCounters, uint32_t sharcCapacity,
+                    const GpuSharcCounters& sharcCounters) const;
 
     Config config;
     EntityId fieldFirstEntity = 0;
@@ -58,7 +60,8 @@ private:
     uint32_t fieldSide = 0;
     float fieldCenterX = 0.0f;
     float fieldCellSize = 0.0f;
-    uint32_t frame = 0;
+    // the timer's collected frame that closed the last window
+    uint64_t windowEnd = 0;
     uint32_t windowCount = 0;
     std::array<double, kGpuTimerScopeCount> sums{};
     std::array<float, kGpuTimerScopeCount> minimums = [] {

@@ -57,6 +57,20 @@ namespace settingsRows
         {{"gi.roughnessFloor"}, {"gi.finalVisibility"}, {"gi.finalMis"}}};
     inline constexpr std::array<SettingsRow, 1> kIndirectReuse{{{"gi.secondaryResampling"}}};
     inline constexpr std::array<SettingsRow, 2> kIndirectNrc{{{"nrc.training"}, {"nrc.resolveMode"}}};
+    inline constexpr std::array<SettingsRow, 14> kIndirectSharc{{{"sharc.update"},
+                                                                 {"sharc.resolve"},
+                                                                 {"sharc.updateCamera"},
+                                                                 {"sharc.downscale"},
+                                                                 {"sharc.capacityShift"},
+                                                                 {"sharc.sceneScale"},
+                                                                 {"sharc.accumulationFrames"},
+                                                                 {"sharc.staleFrames"},
+                                                                 {"sharc.updateBounces"},
+                                                                 {"sharc.queryBounces"},
+                                                                 {"sharc.minRoughness"},
+                                                                 {"sharc.fireflyClamp"},
+                                                                 {"sharc.materialDemodulation"},
+                                                                 {"sharc.debugMode"}}};
     inline constexpr std::array<SettingsRow, 9> kIndirectTemporal{{{"gi.depthThreshold"},
                                                                    {"gi.normalThreshold"},
                                                                    {"gi.age"},
@@ -91,11 +105,11 @@ namespace settingsRows
     // Post-Processing
     inline constexpr std::array<SettingsRow, 2> kPost{{{"frame.aa"}, {"frame.accumulationFrames"}}};
 
-    inline constexpr std::array<SettingsRows, 21> kAll{
+    inline constexpr std::array<SettingsRows, 22> kAll{
         kPipeline,       kScene,             kSceneEngine,   kGeneral,          kDirect,        kDirectLocalLights,
         kDirectInitial,  kDirectTemporal,    kDirectSpatial, kDirectFinal,      kDirectEngine,  kIndirect,
-        kIndirectReuse,  kIndirectNrc,       kIndirectTemporal, kIndirectSpatial, kIndirectEngine, kIndirectPtProfile,
-        kDenoising,      kDenoisingDlss,     kPost};
+        kIndirectReuse,  kIndirectNrc,       kIndirectSharc, kIndirectTemporal, kIndirectSpatial, kIndirectEngine,
+        kIndirectPtProfile, kDenoising,      kDenoisingDlss, kPost};
 
     // the switch has a row in the window
     [[nodiscard]] inline bool hasRow(std::string_view switchName)

@@ -340,8 +340,11 @@ bool CheckHarness::endFrame()
         quit = r.rayCheck->endFrame(r.passes->getLastRayCheck(), r.isRayCheckStandalone()) || quit;
     }
     if (r.bench) {
+        const SharcCache& sharc = renderer.getSharc();
         quit = r.bench->onFrame(renderer.getGpuTimer(), renderer.getCulling().getStats(), renderer.getRayTracingStats(),
-                                renderer.getLightPrepStats(), renderer.getCpuStats(), renderer.getGlassCounters()) ||
+                                renderer.getLightPrepStats(), renderer.getCpuStats(), renderer.getGlassCounters(),
+                                sharc.isActiveThisFrame() ? sharc.getAllocatedCapacity() : 0u,
+                                sharc.getLastCounters()) ||
             quit;
     }
     return quit;
@@ -391,7 +394,7 @@ void CheckHarness::Runners::applyEngineConfig()
     Camera& camera = host->camera;
     const LabConfigParse parse = parseLabConfig(text, captureLabConfig(renderer, camera));
     // the checks measure the shipped state; a lab plan sets its own configs (full_testing.md §0)
-    if (motionTest || guideCapture || cullCheck || giCheck || rayCheck || temporalCheck || lab) {
+    if (motionTest || guideCapture || cullCheck || giCheck || dlssCheck || rayCheck || temporalCheck || lab) {
         logInfo("ENGINE_CONFIG ignored: engine checks and lab plans set their own settings", "Engine");
         return;
     }

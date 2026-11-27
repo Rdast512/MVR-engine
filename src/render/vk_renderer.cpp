@@ -36,7 +36,7 @@ Renderer::Renderer(Device& device, SwapChain& swapChain, const VkAllocator& allo
     targets(device, allocator, frameSync, descriptorManager),
     rtScene(device, allocator, frameSync, scene, assets, frameData, shaderObjects),
     worldLights(device, allocator, frameSync, assets, frameData, rtScene, shaderObjects), rtxdi(device, allocator, frameSync, descriptorManager, shaderObjects, worldLights),
-    nrc(device, allocator, nrcLibrary), dlss(device, frameSync),
+    nrc(device, allocator, nrcLibrary), sharc(device, allocator), dlss(device, frameSync),
     post(device, allocator, shaderObjects), gpuTimer(device), tracyContext(tracyContext)
 {
     const vk::DeviceSize maxPushData = device.capabilities.descriptorHeap.maxPushDataSize;
@@ -285,6 +285,16 @@ void Renderer::drawFrame()
         isDlssHistoryValid = false;
     }
     nrc.prepareFrame(currentFrame, rtScene.getSceneBounds(), isNrcPaused(), isNrcSceneChanged);
+    const bool isSharcLayoutChanged =
+        lastSharcLayoutGeneration != kNoneIndex && frameData.layoutGeneration() != lastSharcLayoutGeneration;
+    lastSharcLayoutGeneration = frameData.layoutGeneration();
+    const bool isSharcDirty =
+        sharc.prepareFrame(currentFrame, frameNumber, isSharcActive(), targets.getExtent(),
+                           camera.cameraData.cameraPos, isSharcLayoutChanged || isLightSetChanged);
+    if (isSharcDirty) {
+        isIndirectHistoryReset = true;
+        isDlssHistoryValid = false;
+    }
     const bool areDiInfiniteExact = rtxdi.areDiInfiniteLightsExact();
     const bool willDiReuseTemporally = rtxdi.directMode == DirectMode::RestirDi &&
         (rtxdi.directResampling == DirectResamplingMode::Temporal ||
@@ -332,7 +342,7 @@ void Renderer::drawFrame()
     const bool isGlassChanged = glass != appliedGlass && rtScene.glassRowCount() > 0;
     const bool isNrcResolveChanged = nrc.settings.resolveMode != appliedNrcResolveMode;
     prepareAccumulation(isDiModeChanged || isDiSettingsChanged || isJitterChanged || isGlassChanged ||
-                        isNrcResolveChanged);
+                        isNrcResolveChanged || isSharcDirty);
     gpuTimer.collect(currentFrame);
     post.readBack(currentFrame);
     if (isGlassRecorded[currentFrame]) {
@@ -409,6 +419,7 @@ void Renderer::drawFrame()
                             .prevWorldLights = isHistoryReset ? 0 : worldLights.address(previousFrameSlot()),
                             .rtxdiConstants = rtxdi.constantsAddress(currentFrame),
                             .cacheConstants = nrc.constantsAddress(currentFrame),
+                            .sharcConstants = sharc.constantsAddress(currentFrame),
                             .lateVisibleBase = culling.lateVisibleBase(currentFrame),
                             .triangleCullFlags = culling.triangleCullFlags(currentFrame),
                             .subpixelSnap = culling.getSubpixelSnap(),
@@ -1158,7 +1169,10 @@ const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandB
     const vk::raii::CommandBuffer* cmd = &firstCmd;
     if (indirectBounce == IndirectBounceMode::Off) {
         isNrcRecorded = false;
+        isSharcRecorded = false;
         gpuTimer.end(*cmd, GpuTimerScope::NrcUpdate);
+        gpuTimer.end(*cmd, GpuTimerScope::SharcUpdate);
+        gpuTimer.end(*cmd, GpuTimerScope::SharcResolve);
         gpuTimer.end(*cmd, GpuTimerScope::Indirect);
         gpuTimer.end(*cmd, GpuTimerScope::NrcTrain);
         gpuTimer.end(*cmd, GpuTimerScope::NrcResolve);
@@ -1173,6 +1187,7 @@ const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandB
     const vk::DeviceAddress frameRoot = frameData.frameRootAddress(currentFrame);
     // a paused cache keeps its weights; prepareFrame zeroed the slot's constants, so the query pass makes no queries
     isNrcRecorded = nrc.isActive() && !isNrcPaused();
+    isSharcRecorded = sharc.isActiveThisFrame();
     // M8.1 BUG-E3: DirectCacheView queries primary vertex 0, matching DebugView::NrcCache
     const bool isCacheView =
         debugView.view == DebugView::NrcCache || nrc.settings.resolveMode == NrcResolveMode::DirectCacheView;
@@ -1190,6 +1205,22 @@ const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandB
         nrc.recordUpdate(*cmd, frameRoot, shaderObjects.frameShaders.nrcUpdate);
     }
     gpuTimer.end(*cmd, GpuTimerScope::NrcUpdate);
+    if (isSharcRecorded) {
+        ZoneScopedN("SharcUpdate");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneSharcUpdate, **cmd, "GPU_SharcUpdate", gpuTrace);
+#endif
+        sharc.recordUpdate(*cmd, currentFrame, frameRoot, shaderObjects.frameShaders.sharcUpdate);
+    }
+    gpuTimer.end(*cmd, GpuTimerScope::SharcUpdate);
+    if (isSharcRecorded) {
+        ZoneScopedN("SharcResolve");
+#ifdef TRACY_ENABLE
+        TracyVkNamedZone(gpuCtx, gpuZoneSharcResolve, **cmd, "GPU_SharcResolve", gpuTrace);
+#endif
+        sharc.recordResolve(*cmd, currentFrame, frameRoot, shaderObjects.frameShaders.sharcResolve);
+    }
+    gpuTimer.end(*cmd, GpuTimerScope::SharcResolve);
     {
         ZoneScopedN("IndirectQuery");
 #ifdef TRACY_ENABLE

@@ -13,6 +13,7 @@ import lighting.lights;
 #include "Rtxdi/DI/ReservoirStorage.hlsli"
 #include "Rtxdi/GI/Reservoir.hlsli"
 #include "gi/nrc_bridge.slang"
+#include "gi/sharc_bridge.slang"
 
 // the display image until lighting (M3): the albedo guide, or the selected debug view (src/render/debug_view.hpp)
 
@@ -334,6 +335,54 @@ float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCamer
         const GpuNrcConstants nrc = loadNrcConstants(root);
         // the query pass queried at the primary this frame (kNrcFlagCacheView)
         return nrc.queryRadiance != 0 ? nrcQueryResult(nrc, pixel) : float3(0.0, 0.0, 0.0);
+    }
+    case kDebugViewSharcCache:
+    {
+        if ((root.frameFlags & kFrameFlagIndirectDisabled) != 0 || root.sharcConstants == 0)
+        {
+            return float3(0.0, 0.0, 0.0);
+        }
+        const GpuSharcConstants sharc = loadSharcConstants(root);
+        const SharcSdkParams sharcParams = sharcSdkParamsFrom(sharc);
+        const uint sharcMode = (sharc.flags & kSharcFlagDebugModeMask) >> kSharcFlagDebugModeShift;
+        if (sharcMode == kSharcDebugOccupancy)
+        {
+            return sharcDebugOccupancy(pixel, targets.renderSize, sharcParams);
+        }
+        rtxdiBridgeInit(root);
+        const RAB_Surface primary = RAB_GetGBufferSurface(int2(pixel), false);
+        if (!RAB_IsSurfaceValid(primary))
+        {
+            return float3(0.0, 0.0, 0.0);
+        }
+        switch (sharcMode)
+        {
+        case kSharcDebugCachedRadiance:
+        {
+            const SharcSdkHit hitData = sharcMakeHitData(sharc, primary.position, primary.geoNormal,
+                                                         primary.diffuseAlbedo, primary.specularF0,
+                                                         float3(0.0, 0.0, 0.0));
+            float3 cached = float3(0.0, 0.0, 0.0);
+            if (sharcQueryCachedRadiance(sharcParams, hitData, cached) && sharcIsFiniteFloat3(cached))
+            {
+                return max(cached, 0.0);
+            }
+            return float3(0.0, 0.0, 0.0);
+        }
+        case kSharcDebugColoredHash:
+            return sharcDebugColoredHash(primary.position, primary.geoNormal, sharcParams);
+        case kSharcDebugHashCollisions:
+            return sharcDebugHashCollisions(primary.position, primary.geoNormal, sharcParams);
+        case kSharcDebugVoxelSize:
+        {
+            const float voxelSize = sharcGetVoxelSize(primary.position, sharcParams);
+            return (voxelSize / (voxelSize + 1.0)).xxx;
+        }
+        case kSharcDebugGridLevel:
+            return idColor(sharcGetGridLevel(primary.position, sharcParams));
+        default:
+            return float3(0.0, 0.0, 0.0);
+        }
     }
     case kDebugViewDirectLighting:
     {

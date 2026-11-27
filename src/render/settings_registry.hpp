@@ -6,6 +6,7 @@
 #include "render/vk_dlss.hpp"
 #include "render/vk_nrc.hpp"
 #include "render/vk_rtxdi.hpp"
+#include "render/vk_sharc.hpp"
 
 #include <optional>
 #include <span>
@@ -42,6 +43,7 @@ struct LabConfig
     Dlss::Settings dlss{};
     Dlss::Guides dlssGuides{};
     NrcCache::Settings nrc{};
+    SharcCache::Settings sharc{};
     bool isJitterEnabled = true;
     GlassSettings glass{};
     // attribution only (m8 I16): the DLSS-RR color input's scale and lighting terms

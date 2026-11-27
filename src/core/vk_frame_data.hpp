@@ -31,6 +31,8 @@ struct FrameRootInputs {
     vk::DeviceAddress rtxdiConstants;
     // NrcCache constants of this slot, written while its ray commands are recorded
     vk::DeviceAddress cacheConstants;
+    // SharcCache constants of this slot (M8.4); 0 when SHaRC is inactive
+    vk::DeviceAddress sharcConstants = 0;
     uint32_t lateVisibleBase;
     uint32_t triangleCullFlags;
     float subpixelSnap;

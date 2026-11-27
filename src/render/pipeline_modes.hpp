@@ -55,7 +55,7 @@ enum class RadianceCacheMode : uint8_t
     Off = 0,
     // NVIDIA NRC 0.16
     Nrc,
-    // placeholder in M8.3 (disabled in UI, refused as isPlanned="M8.4" in LabConfig); built in M8.4
+    // NVIDIA SHaRC v1.8.3 pure Vulkan BDA spatial hash radiance cache (M8.4)
     Sharc,
     Count,
 };
@@ -69,7 +69,7 @@ enum class PipelinePreset : uint8_t
     EngineTargetRis,
     // ReSTIR DI Temporal (Basic, History 6, Spatial OFF) + Raw 1-Bounce PT + NRC + DLSS-RR
     EngineTargetTemporal,
-    // reference/RTXPT-main IntroSample analog (Uniform 8 local / 1 inf / 0 BRDF, RawPt, Cache Off until M8.4 SHaRC)
+    // reference/RTXPT-main IntroSample analog (Uniform 8 local / 1 inf / 0 BRDF, RawPt, SHaRC)
     RtxptAnalog,
     // reference/RTXDI/Samples/FullSample analog (ReSTIR DI Medium, ReSTIR GI, Cache Off)
     RtxdiAnalog,
@@ -85,9 +85,9 @@ inline constexpr DirectResamplingMode kDefaultDirectResamplingMode = DirectResam
 inline constexpr IndirectBounceMode kDefaultIndirectBounceMode = IndirectBounceMode::RawPt;
 inline constexpr RadianceCacheMode kDefaultRadianceCacheMode = RadianceCacheMode::Nrc;
 
-[[nodiscard]] constexpr bool isRadianceCacheBuilt(RadianceCacheMode mode) noexcept
+[[nodiscard]] constexpr bool isRadianceCacheBuilt(RadianceCacheMode /*mode*/) noexcept
 {
-    return mode != RadianceCacheMode::Sharc;
+    return true;
 }
 
 [[nodiscard]] constexpr const char* directModeLabel(DirectMode mode) noexcept
@@ -145,7 +145,7 @@ inline constexpr RadianceCacheMode kDefaultRadianceCacheMode = RadianceCacheMode
     case RadianceCacheMode::Nrc:
         return "NRC";
     case RadianceCacheMode::Sharc:
-        return "SHaRC (M8.4)";
+        return "SHaRC";
     case RadianceCacheMode::Count:
         return "";
     }

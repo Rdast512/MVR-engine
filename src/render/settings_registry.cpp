@@ -17,6 +17,8 @@
 static_assert(sizeof(RtxdiContext::Settings) == 84, "a new RtxdiContext::Settings field needs a lab switch");
 static_assert(sizeof(RtxdiContext::GiSettings) == 92, "a new RtxdiContext::GiSettings field needs a lab switch");
 static_assert(sizeof(NrcCache::Settings) == 16, "a new NrcCache::Settings field needs a lab switch");
+// SharcCache::Settings::isContinuousClearEnabled is a debug-only continuous-clear flag not registered in labSwitches
+static_assert(sizeof(SharcCache::Settings) == 48, "a new SharcCache::Settings field needs a lab switch");
 static_assert(sizeof(Dlss::Settings) == 2, "a new Dlss::Settings field needs a lab switch");
 static_assert(sizeof(Dlss::Guides) == 1, "a new Dlss::Guides field needs a lab switch");
 
@@ -84,6 +86,18 @@ namespace
         config.glass.*Field = fromDouble<T>(value);
     }
 
+    template <auto Field>
+    double getSharc(const LabConfig& config)
+    {
+        return toDouble(config.sharc.*Field);
+    }
+    template <auto Field>
+    void setSharc(LabConfig& config, double value)
+    {
+        using T = std::remove_cvref_t<decltype(config.sharc.*Field)>;
+        config.sharc.*Field = fromDouble<T>(value);
+    }
+
     constexpr std::array<const char* const, 3> kDiSamplingNames{"uniform", "power_ris", "regir"};
     // RTXDI_BIAS_CORRECTION_* values: off 0, basic 1, pairwise 2, raytraced 3; empty slots are never valid input
     constexpr std::array<const char* const, 4> kDiTemporalCorrectionNames{"off", "basic", "", "raytraced"};
@@ -95,7 +109,8 @@ namespace
         "temporalAndSpatial", "temporal", "spatial", "reference"};
     constexpr std::array<const char* const, kIndirectBounceModeCount> kIndirectBounceNames{"off", "rawPt", "restirGi"};
     constexpr std::array<const char* const, kRadianceCacheModeCount> kRadianceCacheNames{"off", "nrc", "sharc"};
-    constexpr std::array<const char* const, kRadianceCacheModeCount> kRadianceCachePlanned{nullptr, nullptr, "M8.4"};
+    constexpr std::array<const char* const, kSharcDebugModeCount> kSharcDebugModeNames{
+        "radiance", "hash", "occupancy", "collisions", "voxelSize", "level"};
     constexpr std::array<const char* const, std::to_underlying(DlssInputTerms::Count)> kDlssInputTermNames{
         "all", "direct", "indirect"};
     constexpr std::array<const char* const, std::to_underlying(DenoiserMode::Count)> kDenoiserNames{"dlssRr", "off"};
@@ -430,7 +445,7 @@ namespace
             {"frame.radianceCache", LabSwitchType::Enum, kRadianceCacheNames,
              [](const LabConfig& config) { return toDouble(config.radianceCache); },
              [](LabConfig& config, double value) { config.radianceCache = fromDouble<RadianceCacheMode>(value); },
-             "RTXGI NRC / RTXPT SHaRC", nullptr, kRadianceCachePlanned},
+             "RTXGI NRC / RTXPT SHaRC"},
             {"frame.jitter",
              LabSwitchType::Bool,
              {},
@@ -501,6 +516,88 @@ namespace
             {"nrc.resolveMode", LabSwitchType::Enum, kNrcResolveNames, [](const LabConfig& config)
              { return toDouble(config.nrc.resolveMode); }, [](LabConfig& config, double value)
              { config.nrc.resolveMode = fromDouble<NrcResolveMode>(value); }, "NrcGuide.md §Debugging"},
+
+            // SHaRC v1.8.3 pure Vulkan BDA radiance cache (spec/m8/m8_4_sharc_cache.md §6.2)
+            {"sharc.update",
+             LabSwitchType::Bool,
+             {},
+             getSharc<&SharcCache::Settings::isUpdateEnabled>,
+             setSharc<&SharcCache::Settings::isUpdateEnabled>,
+             "RTXPT SharcIntegration"},
+            {"sharc.resolve",
+             LabSwitchType::Bool,
+             {},
+             getSharc<&SharcCache::Settings::isResolveEnabled>,
+             setSharc<&SharcCache::Settings::isResolveEnabled>,
+             "RTXPT SharcIntegration"},
+            {"sharc.updateCamera",
+             LabSwitchType::Bool,
+             {},
+             getSharc<&SharcCache::Settings::isUpdateViewCamera>,
+             setSharc<&SharcCache::Settings::isUpdateViewCamera>,
+             "RTXPT SharcIntegration"},
+            {"sharc.downscale",
+             LabSwitchType::Uint,
+             {},
+             getSharc<&SharcCache::Settings::downscaleFactor>,
+             setSharc<&SharcCache::Settings::downscaleFactor>,
+             "RTXPT SharcIntegration (downscaleFactor 4)"},
+            {"sharc.capacityShift",
+             LabSwitchType::Uint,
+             {},
+             getSharc<&SharcCache::Settings::capacityShift>,
+             setSharc<&SharcCache::Settings::capacityShift>,
+             "SHaRC capacity = 1 << shift (22 = 4M entries, 160 MiB)"},
+            {"sharc.sceneScale",
+             LabSwitchType::Float,
+             {},
+             getSharc<&SharcCache::Settings::sceneScale>,
+             setSharc<&SharcCache::Settings::sceneScale>,
+             "SHaRC HashGridParameters::sceneScale"},
+            {"sharc.accumulationFrames",
+             LabSwitchType::Uint,
+             {},
+             getSharc<&SharcCache::Settings::accumulationFrameNum>,
+             setSharc<&SharcCache::Settings::accumulationFrameNum>,
+             "SHaRC SharcResolveParameters::accumulationFrameNum"},
+            {"sharc.staleFrames",
+             LabSwitchType::Uint,
+             {},
+             getSharc<&SharcCache::Settings::staleFrameNumMax>,
+             setSharc<&SharcCache::Settings::staleFrameNumMax>,
+             "SHaRC SharcResolveParameters::staleFrameNumMax"},
+            {"sharc.updateBounces",
+             LabSwitchType::Uint,
+             {},
+             getSharc<&SharcCache::Settings::maxUpdateBounces>,
+             setSharc<&SharcCache::Settings::maxUpdateBounces>,
+             "RTXPT SharcIntegration"},
+            {"sharc.queryBounces",
+             LabSwitchType::Uint,
+             {},
+             getSharc<&SharcCache::Settings::maxQueryBounces>,
+             setSharc<&SharcCache::Settings::maxQueryBounces>,
+             "RTXPT / RTXGI SHaRC fallback continuation"},
+            {"sharc.minRoughness",
+             LabSwitchType::Float,
+             {},
+             getSharc<&SharcCache::Settings::minRoughnessOverride>,
+             setSharc<&SharcCache::Settings::minRoughnessOverride>,
+             "RTXPT SharcIntegration"},
+            {"sharc.fireflyClamp",
+             LabSwitchType::Float,
+             {},
+             getSharc<&SharcCache::Settings::fireflyClamp>,
+             setSharc<&SharcCache::Settings::fireflyClamp>,
+             "Engine scene-unit clamp (0 = off; RTXPT scales by exposure in Sample.cpp:2202)"},
+            {"sharc.materialDemodulation",
+             LabSwitchType::Bool,
+             {},
+             getSharc<&SharcCache::Settings::isMaterialDemodulationEnabled>,
+             setSharc<&SharcCache::Settings::isMaterialDemodulationEnabled>,
+             "SHaRC SHARC_MATERIAL_DEMODULATION"},
+            {"sharc.debugMode", LabSwitchType::Enum, kSharcDebugModeNames, getSharc<&SharcCache::Settings::debugMode>,
+             setSharc<&SharcCache::Settings::debugMode>, "SHaRC DebugView::SharcCache"},
 
             // thin-walled glass (m8 I13)
             {"glass.pass",
@@ -700,6 +797,7 @@ namespace
             config.dlss = shipped.dlss;
             config.dlssGuides = shipped.dlssGuides;
             config.nrc = shipped.nrc;
+            config.sharc = shipped.sharc;
             config.isJitterEnabled = shipped.isJitterEnabled;
             config.dlssInputScale = shipped.dlssInputScale;
             config.dlssInputTerms = shipped.dlssInputTerms;
@@ -816,8 +914,7 @@ LabConfig pipelinePresetConfig(PipelinePreset preset)
         config.directResampling = DirectResamplingMode::TemporalAndSpatial;
         config.di = RtxdiContext::analogUniformRisSettings();
         config.indirectBounce = IndirectBounceMode::RawPt;
-        // 1-bounce PT (IntroSample ENABLE_SHARC 0) until M8.4 switches this to RadianceCacheMode::Sharc
-        config.radianceCache = RadianceCacheMode::Off;
+        config.radianceCache = RadianceCacheMode::Sharc;
         break;
     case PipelinePreset::RtxdiAnalog:
         config.directMode = DirectMode::RestirDi;
@@ -1055,6 +1152,7 @@ void applyLabConfig(const LabConfig& config, Renderer& renderer, Camera& camera)
     renderer.getDlss().settings = config.dlss;
     renderer.getDlss().guides = config.dlssGuides;
     renderer.getNrc().settings = config.nrc;
+    renderer.getSharc().settings = config.sharc;
     camera.isJitterEnabled = config.isJitterEnabled;
     renderer.glass = config.glass;
     renderer.dlssInputScale = config.dlssInputScale;
@@ -1082,6 +1180,7 @@ LabConfig captureLabConfig(Renderer& renderer, const Camera& camera)
     config.dlss = renderer.getDlss().settings;
     config.dlssGuides = renderer.getDlss().guides;
     config.nrc = renderer.getNrc().settings;
+    config.sharc = renderer.getSharc().settings;
     config.isJitterEnabled = camera.isJitterEnabled;
     config.glass = renderer.glass;
     config.dlssInputScale = renderer.dlssInputScale;

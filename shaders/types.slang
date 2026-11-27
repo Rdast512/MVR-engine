@@ -135,6 +135,8 @@ public static const uint kDebugViewMaterialBin = 30u;
 public static const uint kDebugViewGlass = 31u;
 // DLSS-RR's specular hit distance guide (m8 I16 phase 3a): gray d / (d + 1), blue for a sky miss, black without one
 public static const uint kDebugViewSpecularHitDistance = 32u;
+// SHaRC spatial hash radiance cache debug visualization (M8.4)
+public static const uint kDebugViewSharcCache = 33u;
 // R16F finite max: sky-miss sentinel and clamp ceiling for pInSpecularHitDistance (reference/vk_denoise_dlssrr)
 public static const float kMaxSpecularHitDistance = 65504.0;
 public static const uint kDebugViewModeMask = 0xffu;
@@ -846,6 +848,7 @@ public struct GpuFrameRoot
     public uint64_t glassCounters;     // GpuGlassCounters of this frame slot
     public float preDenoiserClamp;     // > 0: combine clamps the DLSS-RR input to this multiple of a reference (T11)
     public float inputHistoryWeight;   // > 0: combine blends the DLSS-RR input into its running average (lab, m8 I16)
+    public uint64_t sharcConstants;    // GpuSharcConstants of this frame slot (M8.4); 0 when SHaRC is inactive
 };
 
 // GpuFrameRoot.glassFlags, matches GlassFlag in src/core/types.hpp

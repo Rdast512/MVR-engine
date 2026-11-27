@@ -237,12 +237,14 @@ bool EngineGiCheck::finishPhase()
     if (++poseIndex < poses().size()) {
         return false;
     }
-    const std::string summary = std::format("ReSTIR GI convergence: {} of {} passed", passedCount, checkCount);
-    if (passedCount == checkCount) {
+    isFinished = true;
+    const std::string summary = checkCount > 0
+        ? std::format("ReSTIR GI convergence: {} of {} passed", passedCount, checkCount)
+        : std::string("ReSTIR GI convergence: measured, not gated (limits are Sponza's)");
+    if (isPassed()) {
         logInfo(summary, "GiCheck");
     } else {
         logError(summary, "GiCheck");
     }
-    isFinished = true;
     return true;
 }

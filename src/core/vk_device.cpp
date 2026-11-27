@@ -107,7 +107,11 @@ constexpr std::array kRequiredFeatures = {
     ENGINE_CORE_FEATURE(shaderInt16),
     // raster without DGC: DrawIndex in the indirect mesh entries, vkCmdDrawMeshTasksIndirectCountEXT
     ENGINE_FEATURE(PhysicalDeviceVulkan11Features, shaderDrawParameters),
+    // SHaRC v1.8.3 SharcPackedData uses float16_t4 through PhysicalStorageBuffer (M8.4)
+    ENGINE_FEATURE(PhysicalDeviceVulkan11Features, storageBuffer16BitAccess),
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, drawIndirectCount),
+    // SHaRC v1.8.3 HashGridCommon.h uses native 64-bit atomics on hashEntries (M8.4)
+    ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderBufferInt64Atomics),
     // mesh.slang: uint8_t* meshletTriangles via PhysicalStorageBuffer
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, storageBuffer8BitAccess),
     ENGINE_FEATURE(PhysicalDeviceVulkan12Features, shaderInt8),

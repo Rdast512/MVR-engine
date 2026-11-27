@@ -92,12 +92,15 @@ void EngineBench::stepField(ObjectStorage& storage)
 
 bool EngineBench::onFrame(const GpuTimer& timer, const MeshletCullStats& cullStats,
                           const RayTracingScene::Stats& rtStats, const RtxdiContext::LightPrepStats& lightPrep,
-                          const Renderer::CpuStats& cpuStats, const GpuGlassCounters& glassCounters)
+                          const Renderer::CpuStats& cpuStats, const GpuGlassCounters& glassCounters,
+                          uint32_t sharcCapacity, const GpuSharcCounters& sharcCounters)
 {
-    ++frame;
-    if (frame <= kWarmupFrames || (frame - kWarmupFrames) % GpuTimer::kHistorySize != 0) {
+    // windows count collected timer frames: a frame whose results were lost leaves no stale sample in a window
+    const uint64_t collected = timer.collectedFrameCount();
+    if (collected <= kWarmupFrames || collected == windowEnd || (collected - kWarmupFrames) % GpuTimer::kHistorySize != 0) {
         return false;
     }
+    windowEnd = collected;
     // one sample per full history window, so windows never overlap
     for (size_t i = 0; i < kGpuTimerScopeCount; ++i) {
         const float ms = timer.averageMs(static_cast<GpuTimerScope>(i));
@@ -108,31 +111,44 @@ bool EngineBench::onFrame(const GpuTimer& timer, const MeshletCullStats& cullSta
     if (windowCount * GpuTimer::kHistorySize < config.measuredFrames) {
         return false;
     }
-    logResults(timer, cullStats, rtStats, lightPrep, cpuStats, glassCounters);
+    logResults(timer, cullStats, rtStats, lightPrep, cpuStats, glassCounters, sharcCapacity, sharcCounters);
     return true;
 }
 
 void EngineBench::logResults(const GpuTimer& timer, const MeshletCullStats& cullStats,
                              const RayTracingScene::Stats& rtStats, const RtxdiContext::LightPrepStats& lightPrep,
-                             const Renderer::CpuStats& cpuStats, const GpuGlassCounters& glassCounters) const
+                             const Renderer::CpuStats& cpuStats, const GpuGlassCounters& glassCounters,
+                             uint32_t sharcCapacity, const GpuSharcCounters& sharcCounters) const
 {
     logInfo(std::format("Bench: field side {}{}, {} windows of {} frames after {} warm-up frames", config.fieldSide,
                         config.isFieldMoving ? " (moving)" : "", windowCount, GpuTimer::kHistorySize, kWarmupFrames),
             "Bench");
     logInfo(std::format("  command path: {}", isDgcRequested() ? "DGC (ENGINE_DGC=1)" : "plain indirect"), "Bench");
+    if (timer.missedFrameCount() > 0) {
+        logError(std::format("  GPU timer: {} frames without results, left out of the windows",
+                             timer.missedFrameCount()),
+                 "Bench");
+    }
     double total = 0.0;
+    double rayStartWait = 0.0;
     for (size_t i = 0; i < kGpuTimerScopeCount; ++i) {
         const auto scope = static_cast<GpuTimerScope>(i);
         const double mean = sums[i] / windowCount;
-        // GPU idle, not GPU work
-        if (scope != GpuTimerScope::AcquireWait) {
+        // GPU idle (acquire, ray submit and compute wait) and the checks' own passes are not the frame's work
+        if (scope == GpuTimerScope::RayStartWait) {
+            rayStartWait = mean;
+        } else if (scope != GpuTimerScope::AcquireWait && scope != GpuTimerScope::FrameHook) {
             total += mean;
         }
         logInfo(std::format("  {:<22} mean {:8.4f} ms   best window {:8.4f} ms", gpuTimerScopeName(scope), mean,
                             minimums[i]),
                 "Bench");
     }
-    logInfo(std::format("  {:<22} mean {:8.4f} ms", "GPU total", total), "Bench");
+    logInfo(std::format("  {:<22} mean {:8.4f} ms (no ray start wait, acquire wait or self-tests)", "GPU total", total),
+            "Bench");
+    // the total logged before 2026-11-27 (it also held the self-tests' passes, zero without a check)
+    logInfo(std::format("  {:<22} mean {:8.4f} ms (GPU total + ray start wait)", "GPU span", total + rayStartWait),
+            "Bench");
     // async compute overlaps the frame: last rolling window, not in the total
     logInfo(std::format("  async compute: light prep {:.4f} ms (world {:.4f}, mips {:.4f}, presample {:.4f}), "
                         "RT instances {:.4f} ms, PTLAS build {:.4f} ms, {} instances, {} partitions, {} written",
@@ -179,6 +195,13 @@ void EngineBench::logResults(const GpuTimer& timer, const MeshletCullStats& cull
         logInfo(std::format("  glass: {} px, by layers 1..{}: {}, early stop {} px, cap reached {} px",
                             glassCounters.pixels, glassCounters.layerPixels.size(), layers, glassCounters.earlyStops,
                             glassCounters.capped),
+                "Bench");
+    }
+    if (sharcCapacity > 0) {
+        const double occupancyPct =
+            100.0 * static_cast<double>(sharcCounters.occupied) / static_cast<double>(sharcCapacity);
+        logInfo(std::format("  SHaRC: {} / {} occupied ({:.2f}%), {} insert overflows", sharcCounters.occupied,
+                            sharcCapacity, occupancyPct, sharcCounters.insertFailures),
                 "Bench");
     }
 }

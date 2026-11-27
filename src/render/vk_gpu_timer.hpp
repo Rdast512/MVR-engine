@@ -37,6 +37,9 @@ enum class GpuTimerScope : uint32_t
     RtxdiShade,
     // NRC begin frame + training paths (spec/m4/g3_nrc.md)
     NrcUpdate,
+    // SHaRC sparse update paths and temporal resolve (spec/m8/m8_4_sharc_cache.md)
+    SharcUpdate,
+    SharcResolve,
     // SER bounce ray into the initial ReSTIR GI reservoirs (spec/m4/g2_indirect_pass.md), NRC's query paths
     Indirect,
     // NRC QueryAndTrain: inference at the queries, one training step
@@ -105,6 +108,10 @@ inline constexpr size_t kGpuTimerScopeCount = std::to_underlying(GpuTimerScope::
         return "ReSTIR DI shade";
     case GpuTimerScope::NrcUpdate:
         return "NRC update";
+    case GpuTimerScope::SharcUpdate:
+        return "SHaRC update";
+    case GpuTimerScope::SharcResolve:
+        return "SHaRC resolve";
     case GpuTimerScope::Indirect:
         return "Indirect";
     case GpuTimerScope::NrcTrain:
@@ -171,6 +178,9 @@ public:
         return histories[std::to_underlying(scope)];
     }
     [[nodiscard]] int historyOffset() const noexcept { return static_cast<int>(historyHead); }
+    // frames whose results reached the history, and written frames whose results were lost
+    [[nodiscard]] uint64_t collectedFrameCount() const noexcept { return collectedFrames; }
+    [[nodiscard]] uint64_t missedFrameCount() const noexcept { return missedFrames; }
 
 private:
     static constexpr uint32_t kQueriesPerFrame = kGpuTimerScopeCount + 1;
@@ -183,4 +193,6 @@ private:
     std::array<uint64_t, kQueriesPerFrame> lastTicks{};
     size_t historyHead = 0;
     size_t historyCount = 0;
+    uint64_t collectedFrames = 0;
+    uint64_t missedFrames = 0;
 };

@@ -12,22 +12,24 @@ import raytracing.trace;
 #include "lighting/path_shading.slang"
 #include "Rtxdi/GI/Reservoir.hlsli"
 #include "Rtxdi/Utils/RandomSamplerPerPassSeeds.hlsli"
-// NRC_QUERY=1 (CMakeLists.txt)
+// NRC_QUERY=1, SHARC_QUERY=1 (CMakeLists.txt); mutually exclusive at runtime
 #include "gi/nrc_bridge.slang"
+#include "gi/sharc_bridge.slang"
 
 // indirect pass (spec/m4/g2_indirect_pass.md): one BRDF-sampled ray query per pixel from the primary guide surface,
 // shaded at its hit X2 with emission and one RIS-sampled light, stored as the pixel's initial ReSTIR GI reservoir. It
 // is also NRC's query pass (spec/m4/g3_nrc.md): X2 is the path's first cache vertex, and passes/nrc_resolve.slang adds
-// the cache's bounces 2..inf to the reservoir. With giReferenceBounces the pass traces those bounces itself instead
-// and NRC is paused (the engine spec §14 ground truth, spec/m4/g5_restir_gi.md). Compute with traceClosest while SER
-// is shelved (considerations C-G1-3)
+// the cache's bounces 2..inf to the reservoir. With SHaRC active (M8.4), eligible X2 hits query cached total outgoing
+// radiance inline and skip secondaryDirectLight + its shadow ray. With giReferenceBounces the pass traces those bounces
+// itself instead and both caches are paused (engine spec §14 ground truth).
 
 static const uint kIndirectTile = 8; // matches src/render/vk_renderer.cpp kFullscreenTile
 
 [[vk::push_constant]] ConstantBuffer<FramePushData> push;
 
-// RTXDI's per-pass seeds stop at 31; NRC's update pass takes 41 and 42
+// RTXDI's per-pass seeds stop at 31; NRC update takes 41..42, SHaRC update takes 44..45
 static const uint kReferencePathSeed = 43;
+static const uint kSharcQueryPathSeed = 46;
 
 // the primary surface's BRDF ray. isSampled: a lit primary drew a direction; isActive: it is traced (pdf > 0)
 struct PrimaryBounce
@@ -35,6 +37,7 @@ struct PrimaryBounce
     RayDesc ray;
     float3 weight;
     float pdf;
+    float primaryRoughness;
     bool isSampled;
     bool isActive;
     bool isSpecularLobe;
@@ -45,6 +48,7 @@ PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
     PrimaryBounce bounce;
     bounce.weight = float3(0.0, 0.0, 0.0);
     bounce.pdf = 0.0;
+    bounce.primaryRoughness = 0.0;
     bounce.ray.Origin = float3(0.0, 0.0, 0.0);
     bounce.ray.Direction = float3(0.0, 0.0, 1.0);
     bounce.ray.TMin = 0.0;
@@ -64,6 +68,7 @@ PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
                                            primary.roughness, primary.viewDir, u);
         bounce.weight = brdf.weight;
         bounce.pdf = brdf.pdf;
+        bounce.primaryRoughness = primary.roughness;
         // normal maps can tilt n so a sample lies below the triangle's geometric plane (RTXDI BrdfRayTracing.hlsl)
         bounce.isActive = brdf.pdf > 0.0 && dot(primary.geoNormal, brdf.l) > 0.0;
         // f0 == 0 surfaces write zero SpecAlbedo (envBrdfApprox), so report no specular hit distance
@@ -189,15 +194,110 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
         {
             shadedSecondary.roughness = max(shadedSecondary.roughness, kMinSecondaryRoughness);
         }
-        float3 radiance =
-            secondary.emissive + secondaryDirectLight(root, shadedSecondary, origin, constants, rng, coherentRng);
-        if (constants.giReferenceBounces > 0)
+        float3 radiance = float3(0.0, 0.0, 0.0);
+        const bool isSharcActive = root.sharcConstants != 0 && constants.giReferenceBounces == 0;
+        if (isSharcActive)
         {
-            RTXDI_RandomSamplerState pathRng =
-                RTXDI_InitRandomSampler(pixel, constants.runtime.frameIndex, kReferencePathSeed);
-            radiance += referencePathRadiance(root, shadedSecondary, origin, constants.giReferenceBounces,
-                                              length(ray.Origin - gRtxdiBridge.cameraPos) + hit.t, constants, pathRng,
-                                              rng, coherentRng);
+            const GpuSharcConstants sharc = loadSharcConstants(root);
+            const SharcSdkParams sharcParams = sharcSdkParamsFrom(sharc);
+            bool isSharcCacheHit = false;
+            if (secondary.surface.isLit &&
+                sharcCanQueryVoxel(sharcParams, secondary.surface.position, hit.t, bounce.isSpecularLobe,
+                                   bounce.primaryRoughness))
+            {
+                const SharcSdkHit hitData = sharcMakeHitData(sharc, secondary.surface.position,
+                                                             secondary.surface.geoNormal,
+                                                             secondary.surface.diffuseAlbedo,
+                                                             secondary.surface.specularF0, secondary.emissive);
+                float3 cachedRadiance = float3(0.0, 0.0, 0.0);
+                if (sharcQueryCachedRadiance(sharcParams, hitData, cachedRadiance) &&
+                    sharcIsFiniteFloat3(cachedRadiance))
+                {
+                    // SHaRC stores total outgoing radiance (direct + multi-bounce): skips secondaryDirectLight shadow ray
+                    radiance = max(cachedRadiance, 0.0);
+                    isSharcCacheHit = true;
+                }
+            }
+            if (!isSharcCacheHit)
+            {
+                radiance = secondary.emissive +
+                           secondaryDirectLight(root, shadedSecondary, origin, constants, rng, coherentRng);
+                if (secondary.surface.isLit && sharc.maxQueryBounces > 1u)
+                {
+                    RTXDI_RandomSamplerState pathRng =
+                        RTXDI_InitRandomSampler(pixel, constants.runtime.frameIndex, kSharcQueryPathSeed);
+                    RAB_Surface curSurface = shadedSecondary;
+                    HitOrigin curOrigin = origin;
+                    float curPathLength = length(ray.Origin - gRtxdiBridge.cameraPos) + hit.t;
+                    float3 throughput = float3(1.0, 1.0, 1.0);
+                    RayDesc nextRay;
+                    nextRay.Origin = float3(0.0, 0.0, 0.0);
+                    nextRay.Direction = float3(0.0, 0.0, 1.0);
+                    nextRay.TMin = 0.0;
+                    nextRay.TMax = kMissDistance;
+                    for (uint bounceIdx = 2u; bounceIdx <= sharc.maxQueryBounces; ++bounceIdx)
+                    {
+                        if (!curSurface.isLit)
+                        {
+                            break;
+                        }
+                        const float3 u = float3(RTXDI_GetNextRandom(pathRng), RTXDI_GetNextRandom(pathRng),
+                                                RTXDI_GetNextRandom(pathRng));
+                        const BrdfSample brdf =
+                            sampleBrdf(curSurface.normal, curSurface.diffuseAlbedo, curSurface.specularF0,
+                                       curSurface.roughness, curSurface.viewDir, u);
+                        if (brdf.pdf <= 0.0 || dot(curSurface.geoNormal, brdf.l) <= 0.0)
+                        {
+                            break;
+                        }
+                        throughput *= brdf.weight;
+                        nextRay.Origin = curOrigin.spawn();
+                        nextRay.Direction = brdf.l;
+                        RayHit nextHit;
+                        if (!traceClosest(root, nextRay, nextHit))
+                        {
+                            break;
+                        }
+                        const PathHit nextShaded = shadeRayHit(root, nextHit, nextRay, curPathLength);
+                        curPathLength += nextHit.t;
+                        const bool isNextSpecular = brdf.isSpecularLobe && any(curSurface.specularF0 > 0.0);
+                        if (nextShaded.surface.isLit &&
+                            sharcCanQueryVoxel(sharcParams, nextShaded.surface.position, nextHit.t, isNextSpecular,
+                                               curSurface.roughness))
+                        {
+                            const SharcSdkHit nextHitData = sharcMakeHitData(
+                                sharc, nextShaded.surface.position, nextShaded.surface.geoNormal,
+                                nextShaded.surface.diffuseAlbedo, nextShaded.surface.specularF0, nextShaded.emissive);
+                            float3 nextCached = float3(0.0, 0.0, 0.0);
+                            if (sharcQueryCachedRadiance(sharcParams, nextHitData, nextCached) &&
+                                sharcIsFiniteFloat3(nextCached))
+                            {
+                                radiance += throughput * max(nextCached, 0.0);
+                                break;
+                            }
+                        }
+                        curOrigin.hit = nextHit;
+                        curOrigin.geoNormal = nextShaded.surface.geoNormal;
+                        radiance += throughput *
+                                    (nextShaded.emissive +
+                                     directLightAt(root, nextShaded.surface, curOrigin, constants, rng, coherentRng));
+                        curSurface = nextShaded.surface;
+                    }
+                }
+            }
+        }
+        else
+        {
+            radiance =
+                secondary.emissive + secondaryDirectLight(root, shadedSecondary, origin, constants, rng, coherentRng);
+            if (constants.giReferenceBounces > 0)
+            {
+                RTXDI_RandomSamplerState pathRng =
+                    RTXDI_InitRandomSampler(pixel, constants.runtime.frameIndex, kReferencePathSeed);
+                radiance += referencePathRadiance(root, shadedSecondary, origin, constants.giReferenceBounces,
+                                                  length(ray.Origin - gRtxdiBridge.cameraPos) + hit.t, constants,
+                                                  pathRng, rng, coherentRng);
+            }
         }
         // scene-unit firefly suppression (m8 O6)
         if ((constants.giFlags & kGiFlagFireflyClamp) != 0)

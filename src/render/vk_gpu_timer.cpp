@@ -28,6 +28,7 @@ void GpuTimer::collect(uint32_t frameSlot)
                                                            kQueriesPerFrame * sizeof(uint64_t), sizeof(uint64_t),
                                                            vk::QueryResultFlagBits::e64);
     if (result != vk::Result::eSuccess) {
+        ++missedFrames;
         return;
     }
     for (size_t i = 0; i < kQueriesPerFrame; ++i) {
@@ -40,6 +41,7 @@ void GpuTimer::collect(uint32_t frameSlot)
     }
     historyHead = (historyHead + 1) % kHistorySize;
     historyCount = std::min(historyCount + 1, kHistorySize);
+    ++collectedFrames;
 }
 
 void GpuTimer::begin(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot)

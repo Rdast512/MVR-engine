@@ -125,6 +125,9 @@ public:
         vk::raii::ShaderEXT nrcUpdate = nullptr;
         // passes/nrc_resolve.slang: NRC's cache term into the GI reservoirs
         vk::raii::ShaderEXT nrcResolve = nullptr;
+        // passes/sharc_update.slang and passes/sharc_resolve.slang: SHaRC radiance cache (M8.4)
+        vk::raii::ShaderEXT sharcUpdate = nullptr;
+        vk::raii::ShaderEXT sharcResolve = nullptr;
         // passes/rtxdi_gi_temporal.slang and rtxdi_gi_shade.slang: ReSTIR GI into indirectRadiance
         vk::raii::ShaderEXT giTemporal = nullptr;
         vk::raii::ShaderEXT giShade = nullptr;

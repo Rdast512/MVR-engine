@@ -37,7 +37,11 @@ public:
                                      RadianceCacheMode& radianceCache, DebugViewSettings& debugView);
     // after the frame's fence; true once every pose is compared and the summary is logged
     [[nodiscard]] bool endFrame(const std::optional<DisplayCapture>& capture);
-    [[nodiscard]] bool isPassed() const noexcept { return isFinished && checkCount > 0 && passedCount == checkCount; }
+    // another check scene is measured only: nothing gated is no failure there
+    [[nodiscard]] bool isPassed() const noexcept
+    {
+        return isFinished && passedCount == checkCount && (checkCount > 0 || scene != CheckScene::Sponza);
+    }
 
 private:
     enum class Phase : uint8_t

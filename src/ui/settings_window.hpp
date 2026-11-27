@@ -73,6 +73,7 @@ private:
     void drawDirectEngine();
     void drawIndirectLighting();
     void drawIndirectNrc();
+    void drawIndirectSharc();
     void drawIndirectResampling();
     void drawIndirectEngine();
     void drawDenoising();
@@ -81,7 +82,6 @@ private:
 
     // the pipeline preset matching the current toggles/settings, else Custom
     [[nodiscard]] PipelinePreset currentPipelinePreset() const;
-    void applyPipelinePreset(PipelinePreset preset);
     // the preset whose DI state equals the current one, else Custom
     [[nodiscard]] DiPreset currentDiPreset() const;
     void applyDiPreset(DiPreset preset);

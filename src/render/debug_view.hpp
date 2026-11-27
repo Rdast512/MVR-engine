@@ -62,6 +62,8 @@ enum class DebugView : uint32_t
     Glass,
     // DLSS-RR's specular hit distance guide (m8 I16 phase 3a)
     SpecularHitDistance,
+    // SHaRC spatial hash radiance cache debug visualization (M8.4)
+    SharcCache,
     Count,
 };
 
@@ -83,6 +85,8 @@ static_assert(std::to_underlying(DebugView::MaterialBin) == 30);
 static_assert(std::to_underlying(DebugView::Glass) == 31);
 // shaders/types.slang kDebugViewSpecularHitDistance
 static_assert(std::to_underlying(DebugView::SpecularHitDistance) == 32);
+// shaders/types.slang kDebugViewSharcCache
+static_assert(std::to_underlying(DebugView::SharcCache) == 33);
 
 enum class DebugViewCategory : uint8_t
 {
@@ -158,6 +162,7 @@ inline constexpr std::array<DebugViewInfo, std::to_underlying(DebugView::Count)>
     {"Material bin", DebugViewCategory::Geometry, true},
     {"Glass", DebugViewCategory::RayTracing, true},
     {"Specular hit distance", DebugViewCategory::Upscaling, true},
+    {"SHaRC cache", DebugViewCategory::Lighting, true},
 }};
 
 [[nodiscard]] constexpr const DebugViewInfo& debugViewInfo(DebugView view)

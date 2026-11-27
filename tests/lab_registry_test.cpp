@@ -122,15 +122,17 @@ int main()
           "gi=nvidia frame.indirectMode=nrc", "di=fast", "di=medium", "di=unbiased", "di=ultra",
           "frame.denoiser=off frame.aa=accumulation frame.accumulationFrames=64", "di.temporalOnly=1", "di=tuned gi=tuned",
           "pipeline=targetRis", "pipeline=targetTemporal", "pipeline=target", "pipeline=rtxpt", "pipeline=rtxdi",
-          "pipeline=rtxgi", "frame.directMode=off frame.indirectBounce=off frame.radianceCache=off"}) {
+          "pipeline=rtxgi", "frame.directMode=off frame.indirectBounce=off frame.radianceCache=off",
+          "frame.radianceCache=sharc", "frame.radianceCache=sharc sharc.capacityShift=20 sharc.debugMode=occupancy"}) {
         const LabConfigParse parse = parseLabConfig(text);
         test::check(parse.config.has_value() && roundTrips(*parse.config),
                     std::format("'{}' round-trips", text).c_str());
     }
-    // M8.3: per-enumerator planned refusal for SHaRC until M8.4
+    // M8.4: SHaRC is built and pipeline=rtxpt uses RadianceCacheMode::Sharc
     {
         const LabConfigParse parse = parseLabConfig("frame.radianceCache=sharc");
-        test::check(!parse.config && parse.isPlanned, "frame.radianceCache=sharc is refused as planned (M8.4)");
+        test::check(parse.config && !parse.isPlanned && parse.config->radianceCache == RadianceCacheMode::Sharc,
+                    "frame.radianceCache=sharc parses cleanly (M8.4)");
     }
     // M8.3: legacy alias semantics (di.reference=off must not clobber di.temporalOnly=on) and pipeline= precedence
     {
@@ -169,7 +171,7 @@ int main()
             customBase.isJitterEnabled = false;
             const LabConfigParse preserved = parseLabConfig("pipeline=rtxpt", customBase);
             test::check(preserved.config && preserved.config->directMode == DirectMode::StreamingRis &&
-                            preserved.config->radianceCache == RadianceCacheMode::Off &&
+                            preserved.config->radianceCache == RadianceCacheMode::Sharc &&
                             preserved.config->glass.maxLayers == 8 &&
                             preserved.config->nrc.trainingIterations == 3 && !preserved.config->isJitterEnabled,
                         "pipeline= preserves non-preset base fields (matches SettingsWindow::applyPipelinePreset)");
@@ -319,8 +321,9 @@ int main()
         };
         using namespace settingsRows;
         test::check(countSection(mediumDiff, {kPipeline}, false) == 2 &&
-                        countSection(mediumDiff, {kIndirect, kIndirectReuse, kIndirectNrc, kIndirectTemporal,
-                                                  kIndirectSpatial, kIndirectEngine, kIndirectPtProfile},
+                        countSection(mediumDiff, {kIndirect, kIndirectReuse, kIndirectNrc, kIndirectSharc,
+                                                  kIndirectTemporal, kIndirectSpatial, kIndirectEngine,
+                                                  kIndirectPtProfile},
                                      false) == 0 &&
                         countSection(mediumDiff, {kDenoising, kDenoisingDlss}, false) == 1 &&
                         countSection(mediumDiff, {kDirect, kDirectLocalLights, kDirectInitial, kDirectTemporal,

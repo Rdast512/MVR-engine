@@ -166,9 +166,10 @@ set(ENGINE_SLANG_CAPABILITIES
     SPIRV_1_6
     vk_mem_model
 
-    # Vulkan 1.2 core: buffer device address / SSBO-as-pointer (BDA push / ObjectUB)
+    # Vulkan 1.2 core: buffer device address / SSBO-as-pointer (BDA push / ObjectUB) + 64-bit atomics (SHaRC, M8.4)
     SPV_EXT_physical_storage_buffer
     GL_EXT_buffer_reference
+    spvInt64Atomics
 
     # Vulkan 1.2 core: descriptor indexing (non-uniform resource indexing)
     SPV_EXT_descriptor_indexing
@@ -297,6 +298,10 @@ engine_add_slang_pass(passes/indirect.slang ENTRIES indirectMain
 engine_add_slang_pass(passes/nrc_update.slang ENTRIES nrcUpdateMain
     FLAGS ${RTXDI_SLANG_FLAGS} -DNRC_UPDATE=1)
 engine_add_slang_pass(passes/nrc_resolve.slang ENTRIES nrcResolveMain FLAGS ${RTXDI_SLANG_FLAGS})
+# SHaRC spatial hash radiance cache (M8.4); vendor SharcCommon.h is wrapped in import-free gi/sharc*_sdk.slang modules
+engine_add_slang_pass(passes/sharc_update.slang ENTRIES sharcUpdateMain
+    FLAGS ${RTXDI_SLANG_FLAGS} -DSHARC_UPDATE=1)
+engine_add_slang_pass(passes/sharc_resolve.slang ENTRIES sharcResolveMain)
 engine_add_slang_pass(passes/light_world.slang ENTRIES lightWorldMain FLAGS ${RTXDI_SLANG_FLAGS})
 engine_add_slang_pass(passes/light_pdf_mips.slang ENTRIES lightPdfMipsMain)
 engine_add_slang_pass(passes/rtxdi_presample.slang ENTRIES rtxdiPresampleMain rtxdiPresampleRegirMain

@@ -618,8 +618,10 @@ void EngineUi::drawDebugViewPanel()
                 ImGui::SeparatorText(debugViewCategoryName(info.category));
             }
             const bool isSelected = view == settings.view;
-            // a paused cache answers no queries
-            const bool isPausedCache = view == DebugView::NrcCache && context.renderer.isNrcPaused();
+            // a paused/inactive cache answers no queries
+            const bool isPausedNrc = view == DebugView::NrcCache && context.renderer.isNrcPaused();
+            const bool isInactiveSharc = view == DebugView::SharcCache && !context.renderer.isSharcActive();
+            const bool isPausedCache = isPausedNrc || isInactiveSharc;
             ImGui::BeginDisabled(!info.isImplemented || isPausedCache);
             if (ImGui::Selectable(info.name, isSelected)) {
                 settings.view = view;
@@ -627,8 +629,10 @@ void EngineUi::drawDebugViewPanel()
             ImGui::EndDisabled();
             if (!info.isImplemented) {
                 ImGui::SetItemTooltip("reserved, not implemented yet");
-            } else if (isPausedCache) {
-                ImGui::SetItemTooltip("NRC is paused: ReSTIR GI mode or ground-truth paths");
+            } else if (isPausedNrc) {
+                ImGui::SetItemTooltip("NRC is paused: Indirect off, Cache != NRC, or ground-truth paths");
+            } else if (isInactiveSharc) {
+                ImGui::SetItemTooltip("SHaRC is inactive: Indirect off, Cache != SHaRC, or ground-truth paths");
             }
             if (isSelected) {
                 ImGui::SetItemDefaultFocus();
@@ -694,6 +698,21 @@ void EngineUi::drawDebugViewPanel()
             ImGui::TextDisabled("converges to Shadowed lights");
         } else if (settings.view == DebugView::NrcCache && context.renderer.isNrcPaused()) {
             ImGui::TextDisabled("NRC is paused: black, not the cache");
+        } else if (settings.view == DebugView::SharcCache) {
+            if (!context.renderer.isSharcActive()) {
+                ImGui::TextDisabled("SHaRC is inactive: black, not the cache");
+            } else {
+                SharcCache::Settings& sharc = context.renderer.getSharc().settings;
+                if (ImGui::BeginCombo("SHaRC mode", sharcDebugModeLabel(sharc.debugMode))) {
+                    for (size_t i = 0; i < kSharcDebugModeCount; ++i) {
+                        const auto mode = static_cast<SharcDebugMode>(i);
+                        if (ImGui::Selectable(sharcDebugModeLabel(mode), mode == sharc.debugMode)) {
+                            sharc.debugMode = mode;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+            }
         }
         break;
     case DebugViewCategory::Upscaling:
