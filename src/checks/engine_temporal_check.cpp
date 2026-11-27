@@ -183,7 +183,7 @@ std::vector<EngineTemporalCheck::Step> EngineTemporalCheck::buildSteps(Kind kind
     std::vector<Step> steps;
     const auto add = [&steps](Step step) { steps.push_back(step); };
     const auto stability = [&add](uint8_t pose, GiSettingsSet set, DebugView view, DiSet di = DiSet::Shipped,
-                                  IndirectMode mode = IndirectMode::RestirGi) {
+                                  LegacyIndirect mode = LegacyIndirect::RestirGi) {
         add({StepType::Stability, pose, set, view, SunState::Default, SunState::Default, Motion::Pan, false, 300,
              di == DiSet::Reference ? kDirectReferenceFrames : 480, kNoChange, di, mode});
     };
@@ -198,7 +198,7 @@ std::vector<EngineTemporalCheck::Step> EngineTemporalCheck::buildSteps(Kind kind
                     for (const DebugView view : {DebugView::Lit, DebugView::DirectLighting}) {
                         add({StepType::Stability, pose, GiSettingsSet::Shipped, view, SunState::Default,
                              SunState::Default, Motion::Pan, false, 300, 480, kNoChange, DiSet::Shipped,
-                             IndirectMode::RestirGi, glass});
+                             LegacyIndirect::RestirGi, glass});
                     }
                 }
                 break;
@@ -213,10 +213,10 @@ std::vector<EngineTemporalCheck::Step> EngineTemporalCheck::buildSteps(Kind kind
                     }
                     for (const GlassState glass : kGlassStates) {
                         add({StepType::EdgeReference, pose, GiSettingsSet::Shipped, DebugView::Lit, SunState::Default,
-                             SunState::Default, motion, true, 256, 256, 128, DiSet::Shipped, IndirectMode::RestirGi,
+                             SunState::Default, motion, true, 256, 256, 128, DiSet::Shipped, LegacyIndirect::RestirGi,
                              glass});
                         add({StepType::EdgeMove, pose, GiSettingsSet::Shipped, DebugView::Lit, SunState::Default,
-                             SunState::Default, motion, false, 256, 256, 0, DiSet::Shipped, IndirectMode::RestirGi,
+                             SunState::Default, motion, false, 256, 256, 0, DiSet::Shipped, LegacyIndirect::RestirGi,
                              glass});
                     }
                 }
@@ -243,7 +243,7 @@ std::vector<EngineTemporalCheck::Step> EngineTemporalCheck::buildSteps(Kind kind
                         stability(pose, set, view);
                     }
                 }
-                for (const IndirectMode mode : {IndirectMode::NrcRestirGi, IndirectMode::Nrc}) {
+                for (const LegacyIndirect mode : {LegacyIndirect::NrcRestirGi, LegacyIndirect::Nrc}) {
                     for (const DebugView view : {DebugView::Lit, DebugView::IndirectRadiance}) {
                         stability(pose, GiSettingsSet::Shipped, view, DiSet::Shipped, mode);
                     }
@@ -293,10 +293,10 @@ std::vector<EngineTemporalCheck::Step> EngineTemporalCheck::buildSteps(Kind kind
             // independent exact textured-emission reference (BRDF-only, areTriangleLightsSampled=false, glass off):
             // DlssInput = 0 + exact_BRDF_direct + primary_emissive, matching DirectLighting = Power_RIS_direct + primary_emissive
             add({StepType::EmissiveReference, pose, GiSettingsSet::Converged, DebugView::DlssInput, SunState::Off,
-                 SunState::Off, Motion::Pan, false, 16, 2048, kNoChange, DiSet::Reference, IndirectMode::RestirGi,
+                 SunState::Off, Motion::Pan, false, 16, 2048, kNoChange, DiSet::Reference, LegacyIndirect::RestirGi,
                  GlassState::PassOff});
             add({StepType::EmissiveCompare, pose, GiSettingsSet::Converged, DebugView::DirectLighting, SunState::Off,
-                 SunState::Off, Motion::Pan, false, 16, 1024, kNoChange, DiSet::Reference, IndirectMode::RestirGi,
+                 SunState::Off, Motion::Pan, false, 16, 1024, kNoChange, DiSet::Reference, LegacyIndirect::RestirGi,
                  GlassState::PassOff});
             break;
         }
@@ -315,7 +315,7 @@ uint32_t EngineTemporalCheck::stepSeed(const Step& step)
         key = key * 64 + field;
     }
     // only when set: the steps before the DI sets and modes keep their seeds
-    if (step.di != DiSet::Shipped || step.mode != IndirectMode::RestirGi) {
+    if (step.di != DiSet::Shipped || step.mode != LegacyIndirect::RestirGi) {
         key = (key * 64 + std::to_underlying(step.di)) * 64 + std::to_underlying(step.mode);
     }
     // murmur3 finalizer
@@ -366,9 +366,9 @@ std::string EngineTemporalCheck::stepLabel(const Step& step) const
     switch (step.type) {
     case StepType::Stability: {
         const std::string di = step.di == DiSet::Shipped ? std::string() : std::format(", DI {}", diSetName(step.di));
-        const std::string mode = step.mode == IndirectMode::RestirGi
+        const std::string mode = step.mode == LegacyIndirect::RestirGi
             ? std::string()
-            : std::format(", {}", indirectModeInfo(step.mode).label);
+            : std::format(", {}", kLegacyIndirectModes[std::to_underlying(step.mode)].label);
         return std::format("stability, {}, {}{}{}{}, {}", pose, giSettingsSetName(step.set), di, mode, glass,
                            view);
     }
@@ -397,8 +397,12 @@ void EngineTemporalCheck::startStep(Camera& camera, Renderer& renderer)
     if (!startupDiSettings) {
         startupDiSettings = rtxdi.settings;
     }
-    renderer.indirectMode = step.mode;
-    rtxdi.isReference = step.di == DiSet::Reference;
+    const IndirectStagePair stages = kLegacyIndirectModes[std::to_underlying(step.mode)].stages;
+    renderer.indirectBounce = stages.bounce;
+    renderer.radianceCache = stages.cache;
+    rtxdi.directMode = DirectMode::RestirDi;
+    rtxdi.directResampling =
+        step.di == DiSet::Reference ? DirectResamplingMode::Reference : DirectResamplingMode::TemporalAndSpatial;
     rtxdi.settings = diSettingsFor(step.di, *startupDiSettings);
     rtxdi.isGiReference = step.type == StepType::EmissiveReference;
     rtxdi.giReferenceBounces = 0;

@@ -684,10 +684,11 @@ void EngineUi::drawDebugViewPanel()
     case DebugViewCategory::Lighting:
         if (settings.view == DebugView::DirectLighting) {
             RtxdiContext& rtxdi = context.renderer.getRtxdi();
-            // M8.2 BUG-UI-6: keep DI resampling flags mutually exclusive with SettingsWindow
-            if (ImGui::Checkbox("ReSTIR DI reference", &rtxdi.isReference) && rtxdi.isReference) {
-                rtxdi.isSpatialOnly = false;
-                rtxdi.isTemporalOnly = false;
+            bool isReference = rtxdi.isDirectReference();
+            if (ImGui::Checkbox("ReSTIR DI reference", &isReference)) {
+                rtxdi.directMode = DirectMode::RestirDi;
+                rtxdi.directResampling =
+                    isReference ? DirectResamplingMode::Reference : DirectResamplingMode::TemporalAndSpatial;
             }
             ImGui::SetItemTooltip("no reuse, more initial candidates: the unbiased ground truth of the reuse passes");
             ImGui::TextDisabled("converges to Shadowed lights");

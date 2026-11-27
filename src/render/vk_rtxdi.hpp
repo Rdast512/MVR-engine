@@ -5,6 +5,7 @@
 #include "core/vk_device.hpp"
 #include "core/vk_frame_sync.hpp"
 #include "util/vk_utils.hpp"
+#include "pipeline_modes.hpp"
 #include "vk_shader_objects.hpp"
 #include "vk_world_lights.hpp"
 
@@ -309,6 +310,10 @@ public:
     // the configuration the guide capture's convergence check holds to its bounds (§6.1): reuse that stays unbiased
     // on a static camera, no neighbors past the disocclusion boost
     [[nodiscard]] static Settings convergedSettings();
+    // M8.3 demo-analog & Engine Target DI settings presets (spec/m8/m8_3_pipeline_toggles.md §6.1)
+    [[nodiscard]] static Settings targetRisSettings();
+    [[nodiscard]] static Settings targetTemporalSettings();
+    [[nodiscard]] static Settings analogUniformRisSettings();
     // UIData::ApplyDenoiserCompatDefaults: the GI fields that depend on the denoiser. Off takes ReSTIR PT's non-DLSS-RR
     // profile, DLSS-RR the shipped values, which are the engine's DLSS-RR profile (I5, I15)
     static void applyDenoiserCompatDefaults(GiSettings& settings, bool isDlssRr);
@@ -343,10 +348,11 @@ public:
     // first frame after it must reset history (resize arrives as a camera cut)
     void recreate(vk::Extent2D renderExtent);
     // the slot is not in flight, after WorldLights::prepareFrame: advances the context to frameIndex, applies
-    // isReference, centers ReGIR on cameraPosition, grows the light PDF to the local light count and writes the slot's
-    // constants. isGiReuseAllowed: false in the NRC indirect mode, which shades the initial samples as isGiReference.
-    // lastSubmittedFrame: the frame number submitted last, whose ray passes read the PDF; growing waits for them
-    void prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool isGiReuseAllowed, const glm::vec3& cameraPosition,
+    // directMode/directResampling, lazily allocates/retires DI and GI reservoirs, centers ReGIR on cameraPosition,
+    // grows the light PDF to the local light count and writes the slot's constants. isGiActive: true only when
+    // IndirectBounceMode::RestirGi runs (RawPt and Off retire GI reservoirs). lastSubmittedFrame: the frame number
+    // submitted last, whose ray passes read the PDF; growing waits for them
+    void prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool isGiActive, const glm::vec3& cameraPosition,
                       uint64_t lastSubmittedFrame);
     // async compute, heaps bound, the slot's frame root written: light_world (world rows, PDF mip 0), then the PDF
     // mips and the presampling passes the applied local light sampling mode reads. The ray passes see every write
@@ -364,32 +370,55 @@ public:
     };
 
     void recordLightPreparation(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot, vk::DeviceAddress frameRoot);
+    // called when no lighting consumer runs this frame: avoids collecting stale query-pool timestamps and records 0 ms
+    void skipLightPreparation(uint32_t frameSlot) noexcept;
     [[nodiscard]] LightPrepStats getLightPrepStats() const noexcept;
-    // ReSTIR DI reference mode as applied by the last prepareFrame
-    [[nodiscard]] bool isReferenceEnabled() const noexcept { return isReferenceApplied; }
-    // ReSTIR DI spatial-only mode as applied by the last prepareFrame
-    [[nodiscard]] bool isSpatialOnlyEnabled() const noexcept { return isSpatialOnlyApplied; }
-    // ReSTIR DI temporal-only mode as applied by the last prepareFrame
-    [[nodiscard]] bool isTemporalOnlyEnabled() const noexcept { return isTemporalOnlyApplied; }
+    [[nodiscard]] DirectMode getAppliedDirectMode() const noexcept { return appliedDirectMode; }
+    [[nodiscard]] DirectResamplingMode getAppliedDirectResampling() const noexcept { return appliedDirectResampling; }
+    [[nodiscard]] bool isDirectReference() const noexcept
+    {
+        return directMode == DirectMode::RestirDi && directResampling == DirectResamplingMode::Reference;
+    }
+    [[nodiscard]] bool isDirectReferenceApplied() const noexcept
+    {
+        return appliedDirectMode == DirectMode::RestirDi &&
+            appliedDirectResampling == DirectResamplingMode::Reference;
+    }
     // true while settings has edits not yet applied by prepareFrame (M8.2 BUG-UI-6)
     [[nodiscard]] bool isSettingsDirty() const noexcept { return settings != appliedSettings; }
-    // ReSTIR DI temporal resampling pass runs in Temporal and TemporalAndSpatial modes
-    [[nodiscard]] bool isTemporalReuseEnabled() const noexcept { return !isReferenceApplied && !isSpatialOnlyApplied; }
+    // ReSTIR DI temporal resampling pass runs in RestirDi Temporal and TemporalAndSpatial modes
+    [[nodiscard]] bool isTemporalReuseEnabled() const noexcept
+    {
+        return appliedDirectMode == DirectMode::RestirDi &&
+            (appliedDirectResampling == DirectResamplingMode::Temporal ||
+             appliedDirectResampling == DirectResamplingMode::TemporalAndSpatial);
+    }
     // primary DI shades directional lights outside RIS; off in reference mode so kReferenceInfiniteLightSamples runs
     [[nodiscard]] bool areDiInfiniteLightsExact() const noexcept
     {
-        return !isReference && settings.areInfiniteLightsShadedExactly;
+        return !isDirectReference() && settings.areInfiniteLightsShadedExactly;
+    }
+    // secondary DI resampling (O2) reads DI reservoirs and is forced off when DI reservoirs are absent
+    [[nodiscard]] bool isSecondaryResamplingEffective() const noexcept
+    {
+        return directMode == DirectMode::RestirDi && giSettings.isSecondaryResamplingEnabled;
     }
     // path vertices shade directional lights outside RIS; secondary resampling follows primary DI (C-I16-4)
     [[nodiscard]] bool arePathInfiniteLightsExact() const noexcept
     {
-        return giSettings.isSecondaryResamplingEnabled ? areDiInfiniteLightsExact()
-                                                       : giSettings.areInfiniteLightsShadedExactly;
+        return isSecondaryResamplingEffective() ? areDiInfiniteLightsExact() : giSettings.areInfiniteLightsShadedExactly;
     }
     // ReSTIR GI temporal and spatial reuse as applied by the last prepareFrame
     [[nodiscard]] bool isGiReuseEnabled() const noexcept { return isGiReuseApplied; }
+    // rtxdi_gi_shade reads and writes giStagnancy only while ReSTIR GI reuse runs in Stagnancy decorrelation mode
+    [[nodiscard]] bool isGiStagnancyEnabled() const noexcept
+    {
+        return isGiReuseApplied && giSettings.decorrelationMode == RTXDI_PTDecorrelationMode::Stagnancy;
+    }
     // rtxdi_gi_duplication runs after the GI shade pass, as written by the last prepareFrame
     [[nodiscard]] bool isGiDuplicationMapEnabled() const noexcept { return isGiDuplicationMapApplied; }
+    [[nodiscard]] bool hasDiReservoirs() const noexcept { return reservoirs != nullptr; }
+    [[nodiscard]] bool hasGiReservoirs() const noexcept { return giReservoirs != nullptr; }
 
     // GpuRtxdiConstants of the slot
     [[nodiscard]] vk::DeviceAddress constantsAddress(uint32_t frameSlot) const noexcept
@@ -397,13 +426,10 @@ public:
         return constants[frameSlot].address;
     }
 
-    // plan F3 ground truth: resampling None with kReference* initial candidates instead of temporal and spatial
-    // reuse with the library's counts; read by the next prepareFrame
-    bool isReference = false;
-    // settings lab (m8 I16): spatial reuse without temporal reuse; read by the next prepareFrame
-    bool isSpatialOnly = false;
-    // temporal reuse without spatial reuse (RTXDI ResamplingMode::Temporal); isReference and isSpatialOnly win
-    bool isTemporalOnly = false;
+    // Stage 10 direct lighting mode and ReSTIR DI resampling mode (spec/m8/m8_3_pipeline_toggles.md §2); read by the
+    // next prepareFrame
+    DirectMode directMode = kDefaultDirectMode;
+    DirectResamplingMode directResampling = kDefaultDirectResamplingMode;
     Settings settings = defaultSettings();
     // ReSTIR GI without reuse: the pixel's initial sample is shaded alone, the unbiased 1-sample estimate
     bool isGiReference = false;
@@ -426,12 +452,15 @@ private:
     // the ReSTIR DI and GI contexts importanceSampling owns
     [[nodiscard]] rtxdi::ReSTIRDIContext& restirDi() const;
     [[nodiscard]] rtxdi::ReSTIRGIContext& restirGi() const;
-    // resampling mode of isReference and every parameter block of settings
+    // resampling mode of directMode/directResampling and every parameter block of settings
     void configure();
     // resampling mode and every parameter block of giSettings
     void configureGi(bool isGiReuse);
     void destroyReservoirs();
-    void createGiReservoirs();
+    void ensureDiReservoirs();
+    void releaseDiReservoirs();
+    void ensureGiReservoirs();
+    void releaseGiReservoirs();
     // the segment allocator's total, once: it does not depend on the render size
     void createRisBuffers();
     // the square power of two rtxdi::ComputePdfTextureSize gives for localLightCount, full mip chain, a storage view
@@ -446,21 +475,22 @@ private:
     const ShaderObjects& shaderObjects;
     const WorldLights& worldLights;
     std::unique_ptr<rtxdi::ImportanceSamplingContext> importanceSampling;
-    bool isReferenceApplied = false;
-    bool isSpatialOnlyApplied = false;
-    bool isTemporalOnlyApplied = false;
+    DirectMode appliedDirectMode = kDefaultDirectMode;
+    DirectResamplingMode appliedDirectResampling = kDefaultDirectResamplingMode;
     Settings appliedSettings;
-    bool isGiReuseApplied = true;
+    bool isGiReuseApplied = false;
     bool isGiDuplicationMapApplied = false;
     GiSettings appliedGiSettings;
     vk::raii::Buffer reservoirs = nullptr;
     VmaAllocation reservoirMemory = nullptr;
     vk::DeviceAddress reservoirAddress = 0;
     uint32_t reservoirCount = 0;
+    uint32_t lastDiReservoirsFrame = 0;
     vk::raii::Buffer giReservoirs = nullptr;
     VmaAllocation giReservoirMemory = nullptr;
     vk::DeviceAddress giReservoirAddress = 0;
     uint32_t giReservoirCount = 0;
+    uint32_t lastGiReservoirsFrame = 0;
     HostBuffer neighborOffsets;
     HostBuffer diNeighborOffsets;
     std::array<HostBuffer, MAX_FRAMES_IN_FLIGHT> constants;

@@ -130,6 +130,8 @@ void ShaderObjects::createFrameShaders()
     frameShaders.rtxdiPresample = createComputeShader("rtxdi_presample.spv", "rtxdiPresampleMain", "RtxdiPresample");
     frameShaders.rtxdiPresampleRegir =
         createComputeShader("rtxdi_presample.spv", "rtxdiPresampleRegirMain", "RtxdiPresampleRegir");
+    frameShaders.rtxdiStreamingRis =
+        createComputeShader("rtxdi_streaming_ris.spv", "rtxdiStreamingRisMain", "RtxdiStreamingRis");
     frameShaders.rtxdiInitial = createComputeShader("rtxdi_initial.spv", "rtxdiInitialMain", "RtxdiInitial");
     frameShaders.rtxdiTemporal = createComputeShader("rtxdi_temporal.spv", "rtxdiTemporalMain", "RtxdiTemporal");
     frameShaders.rtxdiShade = createComputeShader("rtxdi_shade.spv", "rtxdiShadeMain", "RtxdiShade");

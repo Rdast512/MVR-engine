@@ -13,7 +13,7 @@ float lum(float3 color)
 }
 
 // the 3x3 neighbors' mean luminance of this frame's noisy input, the center excluded
-float neighborLuminance(GpuTargets targets, int2 pixel)
+float neighborLuminance(GpuTargets targets, int2 pixel, bool isDirectEnabled, bool isIndirectEnabled)
 {
     float total = 0.0;
     float count = 0.0;
@@ -26,8 +26,12 @@ float neighborLuminance(GpuTargets targets, int2 pixel)
             {
                 continue;
             }
-            const float3 direct = tex2D(targets.directRadianceSampled).Load(int3(neighbor, 0)).rgb;
-            const float3 indirect = tex2D(targets.indirectRadianceSampled).Load(int3(neighbor, 0)).rgb;
+            const float3 direct = isDirectEnabled
+                ? tex2D(targets.directRadianceSampled).Load(int3(neighbor, 0)).rgb
+                : float3(0.0, 0.0, 0.0);
+            const float3 indirect = isIndirectEnabled
+                ? tex2D(targets.indirectRadianceSampled).Load(int3(neighbor, 0)).rgb
+                : float3(0.0, 0.0, 0.0);
             const float3 neighborLighting = direct + indirect;
             if (all(isfinite(neighborLighting)))
             {
@@ -77,10 +81,11 @@ float historyLuminance(GpuFrameRoot root, GpuTargets targets, int2 pixel)
 }
 
 // full_testing T11: the lighting's luminance held to root.preDenoiserClamp times the reference, emission untouched
-float3 clampLighting(GpuFrameRoot root, GpuTargets targets, int2 pixel, float3 lighting)
+float3 clampLighting(GpuFrameRoot root, GpuTargets targets, int2 pixel, float3 lighting, bool isDirectEnabled,
+                     bool isIndirectEnabled)
 {
     const float reference = (root.frameFlags & kFrameFlagPreDenoiserClampNeighbors) != 0
-        ? neighborLuminance(targets, pixel)
+        ? neighborLuminance(targets, pixel, isDirectEnabled, isIndirectEnabled)
         : historyLuminance(root, targets, pixel);
     const float luminance = lum(lighting);
     const float bound = root.preDenoiserClamp * reference;
@@ -116,16 +121,20 @@ void combineMain(uint3 id : SV_DispatchThreadID)
     }
     else
     {
-        const float3 direct = (root.frameFlags & kFrameFlagDlssInputIndirectOnly) != 0
-            ? float3(0.0, 0.0, 0.0)
-            : tex2D(targets.directRadianceSampled).Load(int3(id.xy, 0)).rgb;
-        const float3 indirect = (root.frameFlags & kFrameFlagDlssInputDirectOnly) != 0
-            ? float3(0.0, 0.0, 0.0)
-            : tex2D(targets.indirectRadianceSampled).Load(int3(id.xy, 0)).rgb;
+        const bool isDirectEnabled =
+            (root.frameFlags & (kFrameFlagDirectDisabled | kFrameFlagDlssInputIndirectOnly)) == 0;
+        const bool isIndirectEnabled =
+            (root.frameFlags & (kFrameFlagIndirectDisabled | kFrameFlagDlssInputDirectOnly)) == 0;
+        const float3 direct = isDirectEnabled
+            ? tex2D(targets.directRadianceSampled).Load(int3(id.xy, 0)).rgb
+            : float3(0.0, 0.0, 0.0);
+        const float3 indirect = isIndirectEnabled
+            ? tex2D(targets.indirectRadianceSampled).Load(int3(id.xy, 0)).rgb
+            : float3(0.0, 0.0, 0.0);
         float3 lighting = direct + indirect;
         if (root.preDenoiserClamp > 0.0)
         {
-            lighting = clampLighting(root, targets, int2(id.xy), lighting);
+            lighting = clampLighting(root, targets, int2(id.xy), lighting, isDirectEnabled, isIndirectEnabled);
         }
         // the exposure after DLSS-RR meters its output, so a scale here changes only what the network sees
         color = lighting + emissive;

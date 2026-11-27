@@ -69,6 +69,43 @@ void nrcResolveMain(uint3 id : SV_DispatchThreadID)
     const bool isAnswerFinite = isNrcAnswerFinite(answer);
     const float3 cached = isQueried && isAnswerFinite ? nrcPathRadiance(answer) : float3(0.0, 0.0, 0.0);
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
+    // M8.3 PERF-D1: Raw 1-Bounce PT fast path writes indirectRadiance directly without GI reservoir round-trip
+    if ((root.frameFlags & kFrameFlagRawIndirect) != 0)
+    {
+        const GpuTargets targets = loadTargets(root);
+        const float4 weightAndLum = (isInBounds && targets.rawIndirectWeightStorage != kNoneIndex)
+            ? storageTex2D<float4, kImageFormatRgba16f>(targets.rawIndirectWeightStorage)[id.xy]
+            : float4(0.0, 0.0, 0.0, 0.0);
+        const bool isValid = isInBounds && any(weightAndLum.rgb > 0.0);
+        // before any early return: wave ops require uniform control flow across the tile
+        countNrcHealth(nrcConstants, isQueried, isAnswerFinite, luminance(cached), isQueried ? weightAndLum.a : 0.0);
+        if (!isValid || !any(cached > 0.0))
+        {
+            return;
+        }
+        // Material AO applies to the NRC cache term only (engine spec §11.6, M8.1 BUG-E2)
+        const float ao = tex2D(gRtxdiBridge.current.sampled[kGuideDiffuseAlbedo]).Load(int3(int2(id.xy), 0)).a;
+        const float3 added = cached * ao;
+        if (any(added > 0.0) && isFiniteFloat3(added))
+        {
+            const float3 tracedOut = storageTex2D<float4, kImageFormatRgba16f>(targets.indirectRadianceStorage)[id.xy].rgb;
+            float3 total = tracedOut + added * weightAndLum.rgb;
+            // M8.1 BUG-E6: firefly clamp on X2 radiance (traced + ao * cached) before multiplying by primary weight
+            if ((constants.giFlags & kGiFlagFireflyClamp) != 0)
+            {
+                const float totalX2Lum = weightAndLum.a + luminance(added);
+                if (totalX2Lum > kMaxIndirectRadiance)
+                {
+                    total *= kMaxIndirectRadiance / totalX2Lum;
+                }
+            }
+            if (isFiniteFloat3(total))
+            {
+                storageTex2D<float4, kImageFormatRgba16f>(targets.indirectRadianceStorage)[id.xy] = float4(total, 1.0);
+            }
+        }
+        return;
+    }
     uint2 reservoirPos = uint2(0, 0);
     RTXDI_GIReservoir reservoir = RTXDI_EmptyGIReservoir();
     if (isInBounds)

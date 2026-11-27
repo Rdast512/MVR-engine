@@ -32,9 +32,9 @@ public:
         bool shouldCapture = false;
     };
 
-    // rtxdi's GI fields, the indirect mode and the camera are the check's for the whole run
-    [[nodiscard]] Request beginFrame(Camera& camera, RtxdiContext& rtxdi, IndirectMode& indirectMode,
-                                     DebugViewSettings& debugView);
+    // rtxdi's GI fields, the indirect stages and the camera are the check's for the whole run
+    [[nodiscard]] Request beginFrame(Camera& camera, RtxdiContext& rtxdi, IndirectBounceMode& indirectBounce,
+                                     RadianceCacheMode& radianceCache, DebugViewSettings& debugView);
     // after the frame's fence; true once every pose is compared and the summary is logged
     [[nodiscard]] bool endFrame(const std::optional<DisplayCapture>& capture);
     [[nodiscard]] bool isPassed() const noexcept { return isFinished && checkCount > 0 && passedCount == checkCount; }
@@ -86,7 +86,7 @@ private:
     {
         const char* name;
         Role role;
-        IndirectMode mode;
+        IndirectStagePair stages;
         // RtxdiContext::giReferenceBounces: > 0 traces the bounces after X2 and pauses NRC
         uint32_t referenceBounces;
         bool isGiReference;
@@ -115,45 +115,48 @@ private:
     // limits: spec/m4/g5_restir_gi.md §3; ReSTIR GI mode: spec/m4/g7_indirect_modes.md §3. The one-bounce ground truth
     // is noisier per tile (sun fireflies in the gallery's dim tiles): its own floor sets the tile limit
     static constexpr uint32_t kTraced = RtxdiContext::kGiGroundTruthBounces;
+    static constexpr IndirectStagePair kNrcRestirGi{IndirectBounceMode::RestirGi, RadianceCacheMode::Nrc};
+    static constexpr IndirectStagePair kRawPtNrc{IndirectBounceMode::RawPt, RadianceCacheMode::Nrc};
+    static constexpr IndirectStagePair kRestirGiOnly{IndirectBounceMode::RestirGi, RadianceCacheMode::Off};
     static constexpr std::array<PhaseInfo, static_cast<size_t>(Phase::Count)> kPhases = {{
-        {"ground truth", Role::GroundTruth, IndirectMode::NrcRestirGi, kTraced, true, GiSettingsSet::Converged, 4,
+        {"ground truth", Role::GroundTruth, kNrcRestirGi, kTraced, true, GiSettingsSet::Converged, 4,
          2048, {0.0, 0.0}, 0.0},
         // gallery: a firefly in either 2048- or 512-frame multi-bounce estimate moves the pair by up to 2% (I1 seeds)
-        {"ground truth again (noise floor)", Role::NoiseFloor, IndirectMode::NrcRestirGi, kTraced, true,
+        {"ground truth again (noise floor)", Role::NoiseFloor, kNrcRestirGi, kTraced, true,
          GiSettingsSet::Converged, 4, 512, {0.03, 0.01}, 0.06},
-        {"ReSTIR GI (converged settings, traced paths)", Role::Compared, IndirectMode::NrcRestirGi, kTraced, false,
+        {"ReSTIR GI (converged settings, traced paths)", Role::Compared, kNrcRestirGi, kTraced, false,
          GiSettingsSet::Converged, 64, 512, {0.02, 0.015}, 0.08},
         // NRC retrains after the pause; gated from five-seed spread after M8 I7's sentinel zero-continuation fix
         // (gallery -3.93..-1.74% / p90 11.6..17.9%, courtyard +0.74..+1.07% / p90 7.6..12.5%; NRC non-deterministic C-T-5)
-        {"NRC + ReSTIR GI (converged settings)", Role::Compared, IndirectMode::NrcRestirGi, 0, false,
+        {"NRC + ReSTIR GI (converged settings)", Role::Compared, kNrcRestirGi, 0, false,
          GiSettingsSet::Converged, 512, 512, {0.05, 0.02}, 0.22},
-        {"NRC + ReSTIR GI (NVIDIA defaults)", Role::Compared, IndirectMode::NrcRestirGi, 0, false,
+        {"NRC + ReSTIR GI (NVIDIA defaults)", Role::Compared, kNrcRestirGi, 0, false,
          GiSettingsSet::Nvidia, 64, 512, {0.0, 0.0}, 0.0},
         // five-seed spread: gallery -3.63..-0.98% / p90 6.1..13.1%, courtyard -0.44..-0.06% / p90 3.3..9.0%
-        {"NRC mode", Role::Compared, IndirectMode::Nrc, 0, false, GiSettingsSet::Converged, 64, 512, {0.05, 0.015},
+        {"NRC mode", Role::Compared, kRawPtNrc, 0, false, GiSettingsSet::Converged, 64, 512, {0.05, 0.015},
          0.18},
-        {"one-bounce ground truth (ReSTIR GI mode, no reuse)", Role::GroundTruth, IndirectMode::RestirGi, 0, true,
+        {"one-bounce ground truth (ReSTIR GI mode, no reuse)", Role::GroundTruth, kRestirGiOnly, 0, true,
          GiSettingsSet::Converged, 4, 2048, {0.0, 0.0}, 0.0},
-        {"one-bounce ground truth again (noise floor)", Role::NoiseFloor, IndirectMode::RestirGi, 0, true,
+        {"one-bounce ground truth again (noise floor)", Role::NoiseFloor, kRestirGiOnly, 0, true,
          GiSettingsSet::Converged, 4, 512, {0.01, 0.01}, 0.0},
-        {"ReSTIR GI mode (converged settings) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
+        {"ReSTIR GI mode (converged settings) against one bounce", Role::Compared, kRestirGiOnly, 0, false,
          GiSettingsSet::Converged, 64, 512, {0.015, 0.015}, 0.08},
         // what ships, and what it replaced (spec/fixesM1-6/m8_optimization_and_fixes.md O1, I5): gated from five-seed
         // spread (+0.67..+1.09% gallery / -1.36..-0.90% courtyard, tile p90 22.0..28.8% vs NVIDIA's 52..70%)
-        {"ReSTIR GI mode (shipped defaults) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
+        {"ReSTIR GI mode (shipped defaults) against one bounce", Role::Compared, kRestirGiOnly, 0, false,
          GiSettingsSet::Shipped, 64, 512, {0.02, 0.02}, 0.35},
-        {"ReSTIR GI mode (NVIDIA defaults) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
+        {"ReSTIR GI mode (NVIDIA defaults) against one bounce", Role::Compared, kRestirGiOnly, 0, false,
          GiSettingsSet::Nvidia, 64, 512, {0.0, 0.0}, 0.0},
         {"ReSTIR GI mode (shipped + secondary DI resampling) against one bounce", Role::Compared,
-         IndirectMode::RestirGi, 0, false, GiSettingsSet::ShippedSecondary, 64, 512, {0.0, 0.0}, 0.0},
-        {"ReSTIR GI mode (shipped + firefly clamp) against one bounce", Role::Compared, IndirectMode::RestirGi, 0,
+         kRestirGiOnly, 0, false, GiSettingsSet::ShippedSecondary, 64, 512, {0.0, 0.0}, 0.0},
+        {"ReSTIR GI mode (shipped + firefly clamp) against one bounce", Role::Compared, kRestirGiOnly, 0,
          false, GiSettingsSet::ShippedClamp, 64, 512, {0.0, 0.0}, 0.0},
-        {"ReSTIR GI mode (shipped + both) against one bounce", Role::Compared, IndirectMode::RestirGi, 0, false,
+        {"ReSTIR GI mode (shipped + both) against one bounce", Role::Compared, kRestirGiOnly, 0, false,
          GiSettingsSet::ShippedSecondaryClamp, 64, 512, {0.0, 0.0}, 0.0},
         {"ReSTIR GI mode (shipped without secondary roughness floor) against one bounce", Role::Compared,
-         IndirectMode::RestirGi, 0, false, GiSettingsSet::ShippedNoFloor, 64, 512, {0.0, 0.0}, 0.0},
+         kRestirGiOnly, 0, false, GiSettingsSet::ShippedNoFloor, 64, 512, {0.0, 0.0}, 0.0},
         {"ReSTIR GI mode (shipped without DLSS-RR profile) against one bounce", Role::Compared,
-         IndirectMode::RestirGi, 0, false, GiSettingsSet::ShippedNoRrProfile, 64, 512, {0.0, 0.0}, 0.0},
+         kRestirGiOnly, 0, false, GiSettingsSet::ShippedNoRrProfile, 64, 512, {0.0, 0.0}, 0.0},
     }};
     static_assert(kSponzaCheckPoses.size() == std::tuple_size_v<decltype(PhaseInfo::maxBias)>);
     static_assert(kBistroCafeCheckPoses.size() == kSponzaCheckPoses.size());
@@ -161,7 +164,7 @@ private:
     static constexpr uint32_t kRunSeedStride = kPoseSeedStride * static_cast<uint32_t>(kSponzaCheckPoses.size());
 
     [[nodiscard]] static uint32_t readRunSeed();
-    void applyPhase(RtxdiContext& rtxdi, IndirectMode& indirectMode) const;
+    void applyPhase(RtxdiContext& rtxdi, IndirectBounceMode& indirectBounce, RadianceCacheMode& radianceCache) const;
     // the limits are Sponza's; another check scene is measured, not gated
     [[nodiscard]] double maxBias() const noexcept
     {

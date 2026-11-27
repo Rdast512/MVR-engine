@@ -94,6 +94,7 @@ RenderTargets::~RenderTargets()
     destroy(specularHitDistanceTarget);
     destroy(dlssInputAccumulation);
     destroy(accumulatedTarget);
+    destroy(rawIndirectWeight);
     destroyVmaBuffer(vma, materialBins, materialBinsMemory);
     for (HostBuffer& buffer : frameTargets) {
         destroyHostBuffer(vma, buffer, nullptr);
@@ -180,6 +181,7 @@ void RenderTargets::checkFormatSupport() const
     check(kBinIdsFormat, kStorageFeatures);
     check(kSpecularHitDistanceFormat, kStorageFeatures);
     check(kAccumulatedFormat, kStorageFeatures);
+    check(kRawIndirectWeightFormat, kStorageFeatures);
     check(kDlssInputAccumulationFormat,
           vk::FormatFeatureFlagBits2::eStorageImage | vk::FormatFeatureFlagBits2::eTransferDst);
     check(kVisBufferFormat, vk::FormatFeatureFlagBits2::eColorAttachment | vk::FormatFeatureFlagBits2::eSampledImage);
@@ -242,9 +244,13 @@ void RenderTargets::destroyTargets()
     destroy(specularHitDistanceTarget);
     destroy(dlssInputAccumulation);
     destroy(accumulatedTarget);
+    destroy(rawIndirectWeight);
     isDlssInputAccumulationInitialized = false;
     isDlssInputAccumulationClearPending = false;
     isAccumulatedLayoutPending = false;
+    isGiStagnancyLayoutPending = false;
+    isGiDuplicationLayoutPending = false;
+    isRawIndirectWeightLayoutPending = false;
     destroyVmaBuffer(vma, materialBins, materialBinsMemory);
     materialBinsDeviceAddress = 0;
     if (depthIndex != kNoneIndex) {
@@ -287,20 +293,15 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
     createTarget(exposureTarget, kExposureFormat, kStorageUsage | vk::ImageUsageFlagBits::eTransferDst,
                  vk::ImageLayout::eGeneral, "Exposure", vk::Extent2D{1, 1});
     createTarget(binIds, kBinIdsFormat, kStorageUsage, vk::ImageLayout::eGeneral, "MaterialBinIds", extent);
-    createTarget(giSampleIds, kGiSampleIdsFormat, kStorageUsage, vk::ImageLayout::eGeneral, "GiSampleIds", extent);
     // eSampled stays on the image for NGX; engine passes read and write through storageTex2D
     createTarget(specularHitDistanceTarget, kSpecularHitDistanceFormat, kStorageUsage, vk::ImageLayout::eGeneral,
                  "SpecularHitDistance", extent, false);
-    createTarget(giDuplication, kGiDuplicationFormat, kStorageUsage, vk::ImageLayout::eGeneral, "GiDuplication",
-                 extent);
     createMaterialBins();
     for (uint32_t set = 0; set < kGuideSetCount; ++set) {
         for (size_t guide = 0; guide < kGuideImageCount; ++guide) {
             createTarget(guideSets[set][guide], kGuideFormats[guide], kStorageUsage, vk::ImageLayout::eGeneral,
                          std::format("Guide{}_{}", kGuideNames[guide], set).c_str(), extent);
         }
-        createTarget(giStagnancy[set], kGiStagnancyFormat, kStorageUsage, vk::ImageLayout::eGeneral,
-                     std::format("GiStagnancy_{}", set).c_str(), extent);
     }
     depthIndex = descriptorManager.writeImageDescriptor(
         vk::ImageViewCreateInfo{.image = *depthAttachment.image,
@@ -351,12 +352,6 @@ void RenderTargets::recreate(vk::Extent2D renderExtent, vk::Extent2D displaySize
             initialize(*guide.image, vk::ImageLayout::eGeneral, kStorageAccess);
         }
     }
-    // read only with ReSTIR GI history, which a recreate resets
-    for (Target& stagnancy : giStagnancy) {
-        initialize(*stagnancy.image, vk::ImageLayout::eGeneral, kStorageAccess);
-    }
-    initialize(*giSampleIds.image, vk::ImageLayout::eGeneral, kStorageAccess);
-    initialize(*giDuplication.image, vk::ImageLayout::eGeneral, kStorageAccess);
     initialize(*specularHitDistanceTarget.image, vk::ImageLayout::eGeneral, kStorageAccess);
     submitAndWait(cmd, device.graphicsQueue);
 }
@@ -397,12 +392,118 @@ void RenderTargets::releaseAccumulated()
     isAccumulatedLayoutPending = false;
 }
 
+void RenderTargets::ensureGiStagnancy()
+{
+    if (hasGiStagnancy()) {
+        return;
+    }
+    for (uint32_t set = 0; set < kGuideSetCount; ++set) {
+        createTarget(giStagnancy[set], kGiStagnancyFormat, kStorageUsage, vk::ImageLayout::eGeneral,
+                     std::format("GiStagnancy_{}", set).c_str(), extent);
+    }
+    isGiStagnancyLayoutPending = true;
+}
+
+void RenderTargets::releaseGiStagnancy()
+{
+    if (!hasGiStagnancy()) {
+        return;
+    }
+    for (Target& stagnancy : giStagnancy) {
+        for (uint32_t* index : {&stagnancy.storageIndex, &stagnancy.sampledIndex}) {
+            if (*index != kNoneIndex) {
+                descriptorManager.freeImageDescriptor(*index);
+                *index = kNoneIndex;
+            }
+        }
+        stagnancy.view = nullptr;
+        destroyVmaImage(allocator.allocator, stagnancy.image, stagnancy.memory);
+    }
+    isGiStagnancyLayoutPending = false;
+}
+
+void RenderTargets::ensureGiDuplication()
+{
+    if (hasGiDuplication()) {
+        return;
+    }
+    createTarget(giSampleIds, kGiSampleIdsFormat, kStorageUsage, vk::ImageLayout::eGeneral, "GiSampleIds", extent);
+    createTarget(giDuplication, kGiDuplicationFormat, kStorageUsage, vk::ImageLayout::eGeneral, "GiDuplication",
+                 extent);
+    isGiDuplicationLayoutPending = true;
+}
+
+void RenderTargets::releaseGiDuplication()
+{
+    if (!hasGiDuplication()) {
+        return;
+    }
+    for (Target* target : {&giSampleIds, &giDuplication}) {
+        for (uint32_t* index : {&target->storageIndex, &target->sampledIndex}) {
+            if (*index != kNoneIndex) {
+                descriptorManager.freeImageDescriptor(*index);
+                *index = kNoneIndex;
+            }
+        }
+        target->view = nullptr;
+        destroyVmaImage(allocator.allocator, target->image, target->memory);
+    }
+    isGiDuplicationLayoutPending = false;
+}
+
+void RenderTargets::ensureRawIndirectWeight()
+{
+    if (hasRawIndirectWeight()) {
+        return;
+    }
+    createTarget(rawIndirectWeight, kRawIndirectWeightFormat, vk::ImageUsageFlagBits::eStorage,
+                 vk::ImageLayout::eGeneral, "RawIndirectWeight", extent, false);
+    isRawIndirectWeightLayoutPending = true;
+}
+
+void RenderTargets::releaseRawIndirectWeight()
+{
+    if (!hasRawIndirectWeight()) {
+        return;
+    }
+    if (rawIndirectWeight.storageIndex != kNoneIndex) {
+        descriptorManager.freeImageDescriptor(rawIndirectWeight.storageIndex);
+        rawIndirectWeight.storageIndex = kNoneIndex;
+    }
+    rawIndirectWeight.view = nullptr;
+    destroyVmaImage(allocator.allocator, rawIndirectWeight.image, rawIndirectWeight.memory);
+    isRawIndirectWeightLayoutPending = false;
+}
+
 void RenderTargets::recordPendingInit(vk::raii::CommandBuffer& cmd)
 {
+    static constexpr vk::ImageSubresourceRange kColorRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    static constexpr vk::AccessFlags2 kComputeStorageAccess = vk::AccessFlagBits2::eShaderStorageRead |
+        vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eShaderSampledRead;
+    const auto transitionLazy = [&cmd](vk::Image image) {
+        transitionImageLayout(&cmd, image, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, kColorRange,
+                              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, vk::PipelineStageFlagBits2::eNone,
+                              vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eNone,
+                              kComputeStorageAccess);
+    };
+    if (isGiStagnancyLayoutPending && hasGiStagnancy()) {
+        for (const Target& stagnancy : giStagnancy) {
+            transitionLazy(*stagnancy.image);
+        }
+        isGiStagnancyLayoutPending = false;
+    }
+    if (isGiDuplicationLayoutPending && hasGiDuplication()) {
+        transitionLazy(*giSampleIds.image);
+        transitionLazy(*giDuplication.image);
+        isGiDuplicationLayoutPending = false;
+    }
+    if (isRawIndirectWeightLayoutPending && hasRawIndirectWeight()) {
+        transitionLazy(*rawIndirectWeight.image);
+        isRawIndirectWeightLayoutPending = false;
+    }
     if (!isDlssInputAccumulationClearPending || dlssInputAccumulation.image == nullptr) {
         return;
     }
-    constexpr vk::ImageSubresourceRange kColorRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
     const vk::PipelineStageFlags2 srcStage = isDlssInputAccumulationInitialized
         ? vk::PipelineStageFlagBits2::eComputeShader
         : vk::PipelineStageFlagBits2::eNone;
@@ -470,7 +571,8 @@ RenderTargets::ImageRef RenderTargets::glassAlbedo(GuideImage image) const
 }
 
 void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool isPostPresented,
-                                 bool isSpecularHitDistanceWritten, bool isDlssInputAccumulated)
+                                 bool isSpecularHitDistanceWritten, bool isDlssInputAccumulated,
+                                 bool isRawIndirectWeightWritten)
 {
     const auto guideSet = [this](uint32_t set)
     {
@@ -515,5 +617,6 @@ void RenderTargets::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool 
         .specularHitDistanceStorage =
             isSpecularHitDistanceWritten ? specularHitDistanceTarget.storageIndex : kNoneIndex,
         .dlssInputAccumulationStorage = isDlssInputAccumulated ? dlssInputAccumulation.storageIndex : kNoneIndex,
+        .rawIndirectWeightStorage = isRawIndirectWeightWritten ? rawIndirectWeight.storageIndex : kNoneIndex,
     };
 }

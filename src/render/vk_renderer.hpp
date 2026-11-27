@@ -19,7 +19,7 @@
 #include "frame_hook.hpp"
 #include "denoiser_mode.hpp"
 #include "glass_settings.hpp"
-#include "indirect_mode.hpp"
+#include "pipeline_modes.hpp"
 #include "vk_meshlet_culling.hpp"
 #include "vk_render_targets.hpp"
 #include "vk_rt_scene.hpp"
@@ -66,8 +66,9 @@ public:
     DebugViewSettings debugView;
     // thin-walled glass (m8 I13); read once per recorded frame
     GlassSettings glass;
-    // read once per recorded frame; a change resets ReSTIR GI and DLSS-RR history for one frame
-    IndirectMode indirectMode = kDefaultIndirectMode;
+    // read once per recorded frame; changes reset indirect & DLSS-RR history for one frame
+    IndirectBounceMode indirectBounce = kDefaultIndirectBounceMode;
+    RadianceCacheMode radianceCache = kDefaultRadianceCacheMode;
     // read at a frame boundary (spec/features/planned/nvidia_settings_layout.md §4.1): a change rebuilds the targets
     // like a DLSS mode change, since Off renders at the display extent
     DenoiserMode denoiser = DenoiserMode::DlssRr;
@@ -78,10 +79,20 @@ public:
     // set by the check runners: exposure adaptation and DLSS-RR advance by this instead of the wall clock, so a run
     // repeats frame for frame (spec/fixesM1-6/i1_check_runners.md)
     std::optional<float> fixedFrameDeltaMs;
-    // no NRC work this frame: ReSTIR GI mode, or ground-truth paths tracing the bounces the cache would answer
+    // no NRC work this frame: Indirect off, Cache != NRC, or ground-truth paths tracing the bounces the cache would answer
     [[nodiscard]] bool isNrcPaused() const noexcept
     {
-        return indirectMode == IndirectMode::RestirGi || rtxdi.giReferenceBounces != 0;
+        return indirectBounce == IndirectBounceMode::Off || radianceCache != RadianceCacheMode::Nrc ||
+            rtxdi.giReferenceBounces != 0;
+    }
+    // async-compute light preparation is skipped when no pass reads world lights or RIS buffers
+    [[nodiscard]] bool isLightPreparationNeeded() const noexcept
+    {
+        const bool isGlassActive = rtScene.glassRowCount() > 0 && glass.isPassEnabled;
+        const bool isDebugLights =
+            debugView.view == DebugView::UnshadowedLights || debugView.view == DebugView::ShadowedLights;
+        return rtxdi.directMode != DirectMode::Off || indirectBounce != IndirectBounceMode::Off || isGlassActive ||
+            isDebugLights;
     }
 
     [[nodiscard]] MeshletCulling& getCulling() noexcept { return culling; }
@@ -230,17 +241,24 @@ private:
     // what decides the meaning of the indirect samples; a change between frames resets their history
     struct IndirectState
     {
-        IndirectMode mode = kDefaultIndirectMode;
+        IndirectBounceMode bounce = kDefaultIndirectBounceMode;
+        RadianceCacheMode cache = kDefaultRadianceCacheMode;
         bool isGiReference = false;
         // M8.2 BUG-UI-7: track exact bounce count so dragging "Bounces after X2" resets indirect/DLSS/Accumulation
         uint32_t giReferenceBounces = 0;
         bool arePathInfiniteLightsExact = RtxdiContext::defaultGiSettings().areInfiniteLightsShadedExactly;
+        bool isSecondaryResamplingEffective = false;
         RtxdiContext::GiSettings giSettings = RtxdiContext::defaultGiSettings();
 
         bool operator==(const IndirectState&) const = default;
     };
     IndirectState appliedIndirect;
     bool isIndirectHistoryReset = false;
+    // M8.3 PERF-D2: last frame each lazy lighting target was recorded; retired after MAX_FRAMES_IN_FLIGHT
+    uint32_t lastGiStagnancyFrame = 0;
+    uint32_t lastGiDuplicationFrame = 0;
+    uint32_t lastRawIndirectWeightFrame = 0;
+    bool appliedSpecularHitDistanceWritten = false;
     // this frame's ray command buffers; the first raySegmentCount are recorded, in submission order
     std::span<vk::raii::CommandBuffer> raySegments;
     uint32_t raySegmentCount = 0;

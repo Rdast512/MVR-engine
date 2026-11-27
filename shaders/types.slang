@@ -735,6 +735,7 @@ public struct GpuTargets
     public uint glassSpecAlbedoStorage;
     public uint specularHitDistanceStorage; // R16F DLSS-RR specular hit distance (kNoneIndex when unused, m8 I16)
     public uint dlssInputAccumulationStorage; // RGBA32F DLSS-RR input sum and count, combine (settings lab, m8 I16)
+    public uint rawIndirectWeightStorage;     // RGBA16F primary weight + x2 traced luminance (m8.3 RawPt + NRC)
 };
 
 // exposure histogram: bin 0 includes black, bin 255 is the ceiling
@@ -798,6 +799,9 @@ public static const uint kFrameFlagDlssInputAccumulate = 1u << 8;
 public static const uint kFrameFlagDlssInputFrozen = 1u << 9;
 public static const uint kFrameFlagPreDenoiserClampNeighbors = 1u << 10;
 public static const uint kFrameFlagDlssHistoryValid = 1u << 11;
+public static const uint kFrameFlagDirectDisabled = 1u << 12;
+public static const uint kFrameFlagIndirectDisabled = 1u << 13;
+public static const uint kFrameFlagRawIndirect = 1u << 14;
 
 // per-frame root, matches GpuFrameRoot in src/core/types.hpp
 public struct GpuFrameRoot

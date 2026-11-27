@@ -216,16 +216,43 @@ rtxdi::ReSTIRGIContext& RtxdiContext::restirGi() const { return importanceSampli
 
 void RtxdiContext::destroyReservoirs()
 {
+    releaseDiReservoirs();
+    releaseGiReservoirs();
+}
+
+void RtxdiContext::ensureDiReservoirs()
+{
+    if (reservoirs != nullptr) {
+        return;
+    }
+    const RTXDI_ReservoirBufferParameters params = restirDi().GetReservoirBufferParameters();
+    reservoirCount = params.reservoirArrayPitch * rtxdi::c_NumReSTIRDIReservoirBuffers;
+    const vk::DeviceSize bytes = static_cast<vk::DeviceSize>(reservoirCount) * sizeof(RTXDI_PackedDIReservoir);
+    createBuffer(bytes, vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
+                 vk::MemoryPropertyFlagBits::eDeviceLocal, reservoirs, reservoirMemory, allocator.allocator,
+                 device.vkdevice, device.queueFamilyIndices, "RtxdiReservoirs");
+    reservoirAddress = device.vkdevice.getBufferAddress({.buffer = *reservoirs});
+    logInfo(std::format("ReSTIR DI reservoirs: {} buffers of {} ({:.1f} MiB)", rtxdi::c_NumReSTIRDIReservoirBuffers,
+                        params.reservoirArrayPitch, static_cast<double>(bytes) / (1024.0 * 1024.0)),
+            "Rtxdi");
+}
+
+void RtxdiContext::releaseDiReservoirs()
+{
+    if (reservoirs == nullptr) {
+        return;
+    }
     destroyVmaBuffer(allocator.allocator, reservoirs, reservoirMemory);
     reservoirAddress = 0;
     reservoirCount = 0;
-    destroyVmaBuffer(allocator.allocator, giReservoirs, giReservoirMemory);
-    giReservoirAddress = 0;
-    giReservoirCount = 0;
+    logInfo("ReSTIR DI reservoirs retired", "Rtxdi");
 }
 
-void RtxdiContext::createGiReservoirs()
+void RtxdiContext::ensureGiReservoirs()
 {
+    if (giReservoirs != nullptr) {
+        return;
+    }
     const RTXDI_ReservoirBufferParameters params = restirGi().GetReservoirBufferParameters();
     giReservoirCount = params.reservoirArrayPitch * kGiReservoirArrays;
     const vk::DeviceSize bytes = static_cast<vk::DeviceSize>(giReservoirCount) * sizeof(RTXDI_PackedGIReservoir);
@@ -233,10 +260,21 @@ void RtxdiContext::createGiReservoirs()
                  vk::MemoryPropertyFlagBits::eDeviceLocal, giReservoirs, giReservoirMemory, allocator.allocator,
                  device.vkdevice, device.queueFamilyIndices, "RtxdiGiReservoirs");
     giReservoirAddress = device.vkdevice.getBufferAddress({.buffer = *giReservoirs});
-    logInfo(std::format("ReSTIR GI: {} reservoir buffers of {} ({:.1f} MiB), {}", kGiReservoirArrays,
+    logInfo(std::format("ReSTIR GI reservoirs: {} buffers of {} ({:.1f} MiB), {}", kGiReservoirArrays,
                         params.reservoirArrayPitch, static_cast<double>(bytes) / (1024.0 * 1024.0),
                         isGiReuseApplied ? "temporal and spatial" : "no reuse"),
             "Rtxdi");
+}
+
+void RtxdiContext::releaseGiReservoirs()
+{
+    if (giReservoirs == nullptr) {
+        return;
+    }
+    destroyVmaBuffer(allocator.allocator, giReservoirs, giReservoirMemory);
+    giReservoirAddress = 0;
+    giReservoirCount = 0;
+    logInfo("ReSTIR GI reservoirs retired", "Rtxdi");
 }
 
 void RtxdiContext::createRisBuffers()
@@ -346,27 +384,17 @@ void RtxdiContext::recreate(vk::Extent2D renderExtent)
     regirConstants = makeRegirConstants(importanceSampling->GetReGIRContext());
     configure();
 
+    // M8.3 PERF-D2: DI and GI reservoirs are allocated lazily in prepareFrame only while RestirDi / RestirGi runs
     destroyReservoirs();
-    const RTXDI_ReservoirBufferParameters reservoirParams = restirDi().GetReservoirBufferParameters();
-    reservoirCount = reservoirParams.reservoirArrayPitch * rtxdi::c_NumReSTIRDIReservoirBuffers;
-    const vk::DeviceSize reservoirBytes = static_cast<vk::DeviceSize>(reservoirCount) * sizeof(RTXDI_PackedDIReservoir);
-    createBuffer(reservoirBytes, vk::BufferUsageFlagBits2::eStorageBuffer | vk::BufferUsageFlagBits2::eShaderDeviceAddress,
-                 vk::MemoryPropertyFlagBits::eDeviceLocal, reservoirs, reservoirMemory, allocator.allocator,
-                 device.vkdevice, device.queueFamilyIndices, "RtxdiReservoirs");
-    reservoirAddress = device.vkdevice.getBufferAddress({.buffer = *reservoirs});
+    lastDiReservoirsFrame = 0;
+    lastGiReservoirsFrame = 0;
 
     configureGi(isGiReuseApplied);
-    createGiReservoirs();
     createRisBuffers();
 
-    logInfo(std::format("ReSTIR DI {}x{}: {} reservoir buffers of {} ({:.1f} MiB), {}, {} local light sampling, {} "
-                        "neighbor offsets",
-                        renderExtent.width, renderExtent.height, rtxdi::c_NumReSTIRDIReservoirBuffers,
-                        reservoirParams.reservoirArrayPitch, static_cast<double>(reservoirBytes) / (1024.0 * 1024.0),
-                        isReference          ? "reference (no reuse)"
-                            : isSpatialOnly  ? "spatial"
-                            : isTemporalOnly ? "temporal"
-                                             : "temporal and spatial",
+    logInfo(std::format("RTXDI {}x{}: {} ({}), {} local light sampling, {} neighbor offsets (reservoirs lazy)",
+                        renderExtent.width, renderExtent.height, directModeLabel(directMode),
+                        directResamplingModeLabel(directResampling),
                         localLightSamplingName(restirDi().GetInitialSamplingParameters().localLightSamplingMode),
                         kNeighborOffsetCount),
             "Rtxdi");
@@ -549,6 +577,48 @@ RtxdiContext::Settings RtxdiContext::convergedSettings()
     return converged;
 }
 
+RtxdiContext::Settings RtxdiContext::targetRisSettings()
+{
+    Settings s = nvidiaSettings();
+    s.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Power_RIS;
+    s.localLightSamples.fill(16);
+    s.infiniteLightSamples = 1;
+    s.brdfSamples = 0;
+    s.isInitialVisibilityEnabled = false;
+    s.areInfiniteLightsShadedExactly = true;
+    s.areLightTilesPerPixel = true;
+    return s;
+}
+
+RtxdiContext::Settings RtxdiContext::targetTemporalSettings()
+{
+    Settings s = nvidiaSettings();
+    s.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Power_RIS;
+    s.localLightSamples.fill(8);
+    s.infiniteLightSamples = 1;
+    s.brdfSamples = 0;
+    s.maxHistoryLength = 6;
+    s.temporalBiasCorrection = ReSTIRDI_TemporalBiasCorrectionMode::Basic;
+    s.areInfiniteLightsShadedExactly = true;
+    s.areLightTilesPerPixel = true;
+    s.isFinalVisibilityReused = false;
+    return s;
+}
+
+RtxdiContext::Settings RtxdiContext::analogUniformRisSettings()
+{
+    // Matches RTXPT IntroSample (IntroRTXDIBridge.hlsli:76-96) and RTXGI IndirectDiffuse (Pathtracer.hlsl:35)
+    Settings s = nvidiaSettings();
+    s.localLightSamplingMode = ReSTIRDI_LocalLightSamplingMode::Uniform;
+    s.localLightSamples.fill(8);
+    s.infiniteLightSamples = 1;
+    s.brdfSamples = 0;
+    s.isInitialVisibilityEnabled = false;
+    s.areInfiniteLightsShadedExactly = false;
+    s.areLightTilesPerPixel = false;
+    return s;
+}
+
 RtxdiContext::GiSettings RtxdiContext::nvidiaGiSettings()
 {
     const RTXDI_GITemporalResamplingParameters temporal = rtxdi::GetDefaultReSTIRGITemporalResamplingParams();
@@ -683,23 +753,27 @@ bool RtxdiContext::isReferenceRequested()
 void RtxdiContext::configure()
 {
     rtxdi::ReSTIRDIContext& context = restirDi();
-    context.SetResamplingMode(isReference      ? rtxdi::ReSTIRDI_ResamplingMode::None
-                              : isSpatialOnly  ? rtxdi::ReSTIRDI_ResamplingMode::Spatial
-                              : isTemporalOnly ? rtxdi::ReSTIRDI_ResamplingMode::Temporal
-                                               : rtxdi::ReSTIRDI_ResamplingMode::TemporalAndSpatial);
+    const bool isRef = isDirectReference();
+    const bool isSpatialOnly =
+        directMode == DirectMode::RestirDi && directResampling == DirectResamplingMode::Spatial;
+    const bool isTemporalOnly =
+        directMode == DirectMode::RestirDi && directResampling == DirectResamplingMode::Temporal;
+    context.SetResamplingMode(directMode != DirectMode::RestirDi || isRef ? rtxdi::ReSTIRDI_ResamplingMode::None
+                              : isSpatialOnly                             ? rtxdi::ReSTIRDI_ResamplingMode::Spatial
+                              : isTemporalOnly                            ? rtxdi::ReSTIRDI_ResamplingMode::Temporal
+                                                                          : rtxdi::ReSTIRDI_ResamplingMode::TemporalAndSpatial);
     RTXDI_DIInitialSamplingParameters initialSampling = rtxdi::GetDefaultReSTIRDIInitialSamplingParams();
     // Power_RIS: unbiased, and its 32 candidates converge the lamp's 5,985 bulb triangles in 1,024 frames, which
     // uniform selection does not (+0.3% residual at 8,192 frames)
     initialSampling.localLightSamplingMode =
-        isReference ? ReSTIRDI_LocalLightSamplingMode::Power_RIS : settings.localLightSamplingMode;
-    initialSampling.numBrdfSamples = isReference ? 0u : settings.brdfSamples;
-    initialSampling.numLocalLightSamples =
-        isReference ? kReferenceLocalLightSamples : settings.activeLocalLightSamples();
+        isRef ? ReSTIRDI_LocalLightSamplingMode::Power_RIS : settings.localLightSamplingMode;
+    initialSampling.numBrdfSamples = isRef ? 0u : settings.brdfSamples;
+    initialSampling.numLocalLightSamples = isRef ? kReferenceLocalLightSamples : settings.activeLocalLightSamples();
     initialSampling.numInfiniteLightSamples =
-        isReference ? kReferenceInfiniteLightSamples : settings.infiniteLightSamples;
-    // M8.1 BUG-C1: ResamplingMode::None shades directly without reuse, so initial visibility would trace a duplicate
-    // shadow ray (rtxdi_shade traces final visibility because age == 0 skips reuse)
-    initialSampling.enableInitialVisibility = (!isReference && settings.isInitialVisibilityEnabled) ? 1u : 0u;
+        isRef ? kReferenceInfiniteLightSamples : settings.infiniteLightSamples;
+    // M8.1 BUG-C1 / M8.3: StreamingRis and Reference shade directly without reuse, so initial visibility stays off
+    initialSampling.enableInitialVisibility =
+        (directMode == DirectMode::RestirDi && !isRef && settings.isInitialVisibilityEnabled) ? 1u : 0u;
     // RAB_TraceRayForLocalLight traces from the offset brdfRayOrigin stashed in RAB_SurfaceImportanceSampleBrdf (I14)
     initialSampling.brdfRayMinT = 0.0f;
     context.SetInitialSamplingParameters(initialSampling);
@@ -743,9 +817,8 @@ void RtxdiContext::configure()
     RTXDI_ShadingParameters shading = context.GetShadingParameters();
     shading.reuseFinalVisibility = settings.isFinalVisibilityReused ? 1u : 0u;
     context.SetShadingParameters(shading);
-    isReferenceApplied = isReference;
-    isSpatialOnlyApplied = isSpatialOnly;
-    isTemporalOnlyApplied = isTemporalOnly;
+    appliedDirectMode = directMode;
+    appliedDirectResampling = directResampling;
     appliedSettings = settings;
 }
 
@@ -788,7 +861,7 @@ void RtxdiContext::configureGi(bool isGiReuse)
     appliedGiSettings = giSettings;
 }
 
-void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool isGiReuseAllowed,
+void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool isGiActive,
                                 const glm::vec3& cameraPosition, uint64_t lastSubmittedFrame)
 {
     collectLightPrepResults(frameSlot);
@@ -798,23 +871,35 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
     const uint32_t rtxdiFrame = frameIndexOverride.value_or(frameIndex);
     context.SetFrameIndex(rtxdiFrame);
     giContext.SetFrameIndex(rtxdiFrame);
-    if (isReference != isReferenceApplied || isSpatialOnly != isSpatialOnlyApplied ||
-        isTemporalOnly != isTemporalOnlyApplied) {
+    if (directMode != appliedDirectMode || directResampling != appliedDirectResampling) {
         configure();
-        logInfo(std::format("ReSTIR DI: {}", isReference ? "reference (no reuse)"
-                                                 : isSpatialOnly  ? "spatial"
-                                                 : isTemporalOnly ? "temporal"
-                                                                  : "temporal and spatial"),
+        logInfo(std::format("Direct lighting: {} ({})", directModeLabel(directMode),
+                            directResamplingModeLabel(directResampling)),
                 "Rtxdi");
     } else if (settings != appliedSettings) {
         configure();
     }
-    const bool isGiReuse = isGiReuseAllowed && !isGiReference;
+    const bool isGiReuse = isGiActive && !isGiReference;
     if (isGiReuse != isGiReuseApplied) {
         configureGi(isGiReuse);
         logInfo(std::format("ReSTIR GI: {}", isGiReuse ? "temporal and spatial" : "no reuse"), "Rtxdi");
     } else if (giSettings != appliedGiSettings) {
         configureGi(isGiReuse);
+    }
+    // M8.3 PERF-D2: lazily allocate DI/GI reservoirs only while RestirDi / RestirGi runs; retire once no in-flight
+    // frame can reference them (zero waitIdle)
+    const bool needsDiReservoirs = directMode == DirectMode::RestirDi;
+    if (needsDiReservoirs) {
+        ensureDiReservoirs();
+        lastDiReservoirsFrame = frameIndex;
+    } else if (reservoirs != nullptr && frameIndex >= lastDiReservoirsFrame + MAX_FRAMES_IN_FLIGHT) {
+        releaseDiReservoirs();
+    }
+    if (isGiActive) {
+        ensureGiReservoirs();
+        lastGiReservoirsFrame = frameIndex;
+    } else if (giReservoirs != nullptr && frameIndex >= lastGiReservoirsFrame + MAX_FRAMES_IN_FLIGHT) {
+        releaseGiReservoirs();
     }
     // a settings change resets ReSTIR GI history, so the temporal pass never reads a map this flag did not write
     isGiDuplicationMapApplied = isGiReuseApplied && giSettings.isDuplicationHistoryReductionEnabled;
@@ -880,21 +965,21 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
         .boilingFilter = context.GetBoilingFilterParameters(),
         .spatialResampling = context.GetSpatialResamplingParameters(),
         .shading = context.GetShadingParameters(),
-        .reservoirs = reservoirAddress,
+        .reservoirs = needsDiReservoirs ? reservoirAddress : 0,
         .neighborOffsets = neighborOffsets.address,
         .resamplingMode = std::to_underlying(context.GetResamplingMode()),
-        .reservoirCount = reservoirCount,
+        .reservoirCount = needsDiReservoirs ? reservoirCount : 0,
         .giReservoirBuffer = giContext.GetReservoirBufferParameters(),
         .giBufferIndices = giBufferIndices,
-        .giReservoirs = giReservoirAddress,
-        .giReservoirCount = giReservoirCount,
+        .giReservoirs = isGiActive ? giReservoirAddress : 0,
+        .giReservoirCount = isGiActive ? giReservoirCount : 0,
         .giResamplingMode = std::to_underlying(giContext.GetResamplingMode()),
         .giTemporalResampling = giContext.GetTemporalResamplingParameters(),
         .giBoilingFilter = giContext.GetBoilingFilterParameters(),
         .giSpatialResampling = giContext.GetSpatialResamplingParameters(),
         .giFinalShading = giContext.GetFinalShadingParameters(),
         .giReferenceBounces = giReferenceBounces,
-        .giFlags = (giSettings.isSecondaryResamplingEnabled ? GiFlag::SecondaryResampling : 0u) |
+        .giFlags = (isSecondaryResamplingEffective() ? GiFlag::SecondaryResampling : 0u) |
                    (giSettings.isFireflyClampEnabled ? GiFlag::FireflyClamp : 0u) |
                    // without reuse the 1-sample estimate stays unbiased
                    (giSettings.isSecondaryRoughnessFloorEnabled && isGiReuseApplied ? GiFlag::SecondaryRoughnessFloor
@@ -1009,6 +1094,18 @@ void RtxdiContext::recordLightPreparation(const vk::raii::CommandBuffer& cmd, ui
     if (isTimed) {
         cmd.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, *lightPrepTimestamps, firstQuery + 3);
     }
+}
+
+void RtxdiContext::skipLightPreparation(uint32_t frameSlot) noexcept
+{
+    isLightPrepTimed[frameSlot] = false;
+    lastLightPrepStartTick = 0;
+    lastLightPrepEndTick = 0;
+    lightPrepHistories[0][lightPrepHistoryHead] = 0.0f;
+    lightPrepHistories[1][lightPrepHistoryHead] = 0.0f;
+    lightPrepHistories[2][lightPrepHistoryHead] = 0.0f;
+    lightPrepHistoryHead = (lightPrepHistoryHead + 1) % kLightPrepHistorySize;
+    lightPrepHistoryCount = std::min(lightPrepHistoryCount + 1, kLightPrepHistorySize);
 }
 
 void RtxdiContext::collectLightPrepResults(uint32_t frameSlot)

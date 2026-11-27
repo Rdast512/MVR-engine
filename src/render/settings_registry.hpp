@@ -2,7 +2,7 @@
 
 #include "render/denoiser_mode.hpp"
 #include "render/glass_settings.hpp"
-#include "render/indirect_mode.hpp"
+#include "render/pipeline_modes.hpp"
 #include "render/vk_dlss.hpp"
 #include "render/vk_nrc.hpp"
 #include "render/vk_rtxdi.hpp"
@@ -30,13 +30,11 @@ struct LabConfig
 {
     RtxdiContext::Settings di = RtxdiContext::defaultSettings();
     RtxdiContext::GiSettings gi = RtxdiContext::defaultGiSettings();
-    // RTXDI without reuse over di (RtxdiContext::isReference)
-    bool isDiReference = false;
-    // RTXDI ResamplingMode::Spatial over di (RtxdiContext::isSpatialOnly)
-    bool isDiSpatialOnly = false;
-    // RTXDI ResamplingMode::Temporal over di (RtxdiContext::isTemporalOnly)
-    bool isDiTemporalOnly = false;
-    IndirectMode indirectMode = kDefaultIndirectMode;
+    // Composable pipeline stage toggles (spec/m8/m8_3_pipeline_toggles.md §2)
+    DirectMode directMode = kDefaultDirectMode;
+    DirectResamplingMode directResampling = kDefaultDirectResamplingMode;
+    IndirectBounceMode indirectBounce = kDefaultIndirectBounceMode;
+    RadianceCacheMode radianceCache = kDefaultRadianceCacheMode;
     // spec/features/planned/nvidia_settings_layout.md §4.2: Renderer::denoiser, aaMode, accumulationFrameLimit
     DenoiserMode denoiser = DenoiserMode::DlssRr;
     AaMode aaMode = AaMode::None;
@@ -78,7 +76,14 @@ struct LabSwitch
     const char* nvidiaSource;
     // non-null: the switch is planned but its engine feature is not built; names the step (spec §7)
     const char* notBuilt = nullptr;
+    // Enum only: optional span parallel to valueNames; non-null entries mark unbuilt enumerators (e.g. "M8.4")
+    std::span<const char* const> plannedValues{};
 };
+
+// Fixed demo-analog and Engine Target pipeline presets (spec/m8/m8_3_pipeline_toggles.md §6.1)
+[[nodiscard]] LabConfig pipelinePresetConfig(PipelinePreset preset);
+// Applies only the preset-owned fields (stage toggles, DI/GI sets, denoiser, DLSS quality), preserving glass/NRC/etc.
+void applyPipelinePreset(LabConfig& config, PipelinePreset preset);
 
 [[nodiscard]] std::span<const LabSwitch> labSwitches();
 [[nodiscard]] const LabSwitch* findLabSwitch(std::string_view name);

@@ -17,6 +17,9 @@ using SettingsRows = std::span<const SettingsRow>;
 
 namespace settingsRows
 {
+    // Pipeline toggles (spec/m8/m8_3_pipeline_toggles.md §6.2)
+    inline constexpr std::array<SettingsRow, 3> kPipeline{
+        {{"frame.directMode"}, {"frame.indirectBounce"}, {"frame.radianceCache"}}};
     // Scene
     inline constexpr std::array<SettingsRow, 1> kScene{{{"glass.pass"}}};
     inline constexpr std::array<SettingsRow, 6> kSceneEngine{{{"glass.maxLayers"},
@@ -27,8 +30,8 @@ namespace settingsRows
                                                               {"glass.blendGuides"}}};
     // General Rendering
     inline constexpr std::array<SettingsRow, 1> kGeneral{{{"frame.jitter"}}};
-    // Direct Lighting: the Resampling Mode row edits three switches
-    inline constexpr std::array<SettingsRow, 3> kDirect{{{"di.reference"}, {"di.temporalOnly"}, {"di.spatialOnly"}}};
+    // Direct Lighting: Resampling Mode edits frame.directResampling
+    inline constexpr std::array<SettingsRow, 1> kDirect{{{"frame.directResampling"}}};
     inline constexpr std::array<SettingsRow, 2> kDirectLocalLights{{{"di.sampling"}, {"di.localSamples"}}};
     inline constexpr std::array<SettingsRow, 3> kDirectInitial{
         {{"di.brdfSamples"}, {"di.infiniteSamples"}, {"di.initialVisibility"}}};
@@ -50,8 +53,8 @@ namespace settingsRows
     inline constexpr std::array<SettingsRow, 4> kDirectEngine{
         {{"di.exactInfinite"}, {"di.boostHistory"}, {"di.materialTest"}, {"di.perPixelLightTiles"}}};
     // Indirect Lighting
-    inline constexpr std::array<SettingsRow, 4> kIndirect{
-        {{"frame.indirectMode"}, {"gi.roughnessFloor"}, {"gi.finalVisibility"}, {"gi.finalMis"}}};
+    inline constexpr std::array<SettingsRow, 3> kIndirect{
+        {{"gi.roughnessFloor"}, {"gi.finalVisibility"}, {"gi.finalMis"}}};
     inline constexpr std::array<SettingsRow, 1> kIndirectReuse{{{"gi.secondaryResampling"}}};
     inline constexpr std::array<SettingsRow, 2> kIndirectNrc{{{"nrc.training"}, {"nrc.resolveMode"}}};
     inline constexpr std::array<SettingsRow, 9> kIndirectTemporal{{{"gi.depthThreshold"},
@@ -88,11 +91,11 @@ namespace settingsRows
     // Post-Processing
     inline constexpr std::array<SettingsRow, 2> kPost{{{"frame.aa"}, {"frame.accumulationFrames"}}};
 
-    inline constexpr std::array<SettingsRows, 20> kAll{
-        kScene,          kSceneEngine,       kGeneral,       kDirect,           kDirectLocalLights,
-        kDirectInitial,  kDirectTemporal,    kDirectSpatial, kDirectFinal,      kDirectEngine,
-        kIndirect,       kIndirectReuse,     kIndirectNrc,   kIndirectTemporal, kIndirectSpatial,
-        kIndirectEngine, kIndirectPtProfile, kDenoising,     kDenoisingDlss,    kPost};
+    inline constexpr std::array<SettingsRows, 21> kAll{
+        kPipeline,       kScene,             kSceneEngine,   kGeneral,          kDirect,        kDirectLocalLights,
+        kDirectInitial,  kDirectTemporal,    kDirectSpatial, kDirectFinal,      kDirectEngine,  kIndirect,
+        kIndirectReuse,  kIndirectNrc,       kIndirectTemporal, kIndirectSpatial, kIndirectEngine, kIndirectPtProfile,
+        kDenoising,      kDenoisingDlss,     kPost};
 
     // the switch has a row in the window
     [[nodiscard]] inline bool hasRow(std::string_view switchName)

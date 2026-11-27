@@ -90,8 +90,12 @@ namespace
     constexpr std::array<const char* const, 4> kDiSpatialCorrectionNames{"off", "basic", "pairwise", "raytraced"};
     constexpr std::array<const char* const, 4> kGiCorrectionNames{"off", "basic", "", "raytraced"};
     constexpr std::array<const char* const, 3> kDecorrelationNames{"none", "uniform", "stagnancy"};
-    constexpr std::array<const char* const, std::to_underlying(IndirectMode::Count)> kIndirectModeNames{
-        "nrcRestirGi", "nrc", "restirGi"};
+    constexpr std::array<const char* const, kDirectModeCount> kDirectModeNames{"off", "streamingRis", "restirDi"};
+    constexpr std::array<const char* const, kDirectResamplingModeCount> kDirectResamplingNames{
+        "temporalAndSpatial", "temporal", "spatial", "reference"};
+    constexpr std::array<const char* const, kIndirectBounceModeCount> kIndirectBounceNames{"off", "rawPt", "restirGi"};
+    constexpr std::array<const char* const, kRadianceCacheModeCount> kRadianceCacheNames{"off", "nrc", "sharc"};
+    constexpr std::array<const char* const, kRadianceCacheModeCount> kRadianceCachePlanned{nullptr, nullptr, "M8.4"};
     constexpr std::array<const char* const, std::to_underlying(DlssInputTerms::Count)> kDlssInputTermNames{
         "all", "direct", "indirect"};
     constexpr std::array<const char* const, std::to_underlying(DenoiserMode::Count)> kDenoiserNames{"dlssRr", "off"};
@@ -246,24 +250,6 @@ namespace
              getDi<&DiSettings::areLightTilesPerPixel>,
              setDi<&DiSettings::areLightTilesPerPixel>,
              "RTXDI_TILE_SIZE_IN_PIXELS 16"},
-            {"di.spatialOnly",
-             LabSwitchType::Bool,
-             {},
-             [](const LabConfig& config) { return toDouble(config.isDiSpatialOnly); },
-             [](LabConfig& config, double value) { config.isDiSpatialOnly = value != 0.0; },
-             "RTXDI ResamplingMode::Spatial"},
-            {"di.temporalOnly",
-             LabSwitchType::Bool,
-             {},
-             [](const LabConfig& config) { return toDouble(config.isDiTemporalOnly); },
-             [](LabConfig& config, double value) { config.isDiTemporalOnly = value != 0.0; },
-             "RTXDI ResamplingMode::Temporal"},
-            {"di.reference",
-             LabSwitchType::Bool,
-             {},
-             [](const LabConfig& config) { return toDouble(config.isDiReference); },
-             [](LabConfig& config, double value) { config.isDiReference = value != 0.0; },
-             "RTXDI ResamplingMode::None"},
 
             // ReSTIR GI and the DLSS-RR profile (spec §3.2)
             {"gi.history",
@@ -429,10 +415,22 @@ namespace
              setGi<&GiSettings::historyReductionStrength>,
              kPtProfile},
 
-            // indirect mode, NRC, frame (spec §3.3)
-            {"frame.indirectMode", LabSwitchType::Enum, kIndirectModeNames,
-             [](const LabConfig& config) { return toDouble(config.indirectMode); }, [](LabConfig& config, double value)
-             { config.indirectMode = fromDouble<IndirectMode>(value); }, kEngineOnly},
+            // composable pipeline stages, NRC, frame (spec/m8/m8_3_pipeline_toggles.md §6.3)
+            {"frame.directMode", LabSwitchType::Enum, kDirectModeNames,
+             [](const LabConfig& config) { return toDouble(config.directMode); }, [](LabConfig& config, double value)
+             { config.directMode = fromDouble<DirectMode>(value); }, "RTXPT Streaming RIS / RTXDI ReSTIR DI"},
+            {"frame.directResampling", LabSwitchType::Enum, kDirectResamplingNames,
+             [](const LabConfig& config) { return toDouble(config.directResampling); },
+             [](LabConfig& config, double value)
+             { config.directResampling = fromDouble<DirectResamplingMode>(value); }, "RTXDI ReSTIRDI_ResamplingMode"},
+            {"frame.indirectBounce", LabSwitchType::Enum, kIndirectBounceNames,
+             [](const LabConfig& config) { return toDouble(config.indirectBounce); },
+             [](LabConfig& config, double value) { config.indirectBounce = fromDouble<IndirectBounceMode>(value); },
+             "RTXPT Raw 1-Bounce PT / RTXDI ReSTIR GI"},
+            {"frame.radianceCache", LabSwitchType::Enum, kRadianceCacheNames,
+             [](const LabConfig& config) { return toDouble(config.radianceCache); },
+             [](LabConfig& config, double value) { config.radianceCache = fromDouble<RadianceCacheMode>(value); },
+             "RTXGI NRC / RTXPT SHaRC", nullptr, kRadianceCachePlanned},
             {"frame.jitter",
              LabSwitchType::Bool,
              {},
@@ -635,23 +633,50 @@ namespace
     }
 
     // false: not a set name
+    bool applyPipelinePresetByName(LabConfig& config, std::string_view name)
+    {
+        if (equalsIgnoreCase(name, "targetRis")) {
+            applyPipelinePreset(config, PipelinePreset::EngineTargetRis);
+            return true;
+        }
+        if (equalsIgnoreCase(name, "targetTemporal") || equalsIgnoreCase(name, "target")) {
+            applyPipelinePreset(config, PipelinePreset::EngineTargetTemporal);
+            return true;
+        }
+        if (equalsIgnoreCase(name, "rtxpt")) {
+            applyPipelinePreset(config, PipelinePreset::RtxptAnalog);
+            return true;
+        }
+        if (equalsIgnoreCase(name, "rtxdi")) {
+            applyPipelinePreset(config, PipelinePreset::RtxdiAnalog);
+            return true;
+        }
+        if (equalsIgnoreCase(name, "rtxgi")) {
+            applyPipelinePreset(config, PipelinePreset::RtxgiAnalog);
+            return true;
+        }
+        return false;
+    }
+
+    // false: not a set name
     bool applySet(LabConfig& config, std::string_view domain, std::string_view name)
     {
+        if (equalsIgnoreCase(domain, "pipeline")) {
+            return applyPipelinePresetByName(config, name);
+        }
         if (equalsIgnoreCase(domain, "di")) {
             if (equalsIgnoreCase(name, "reference")) {
                 // the lab's DI references since FT: unchanged when the shipped set became NVIDIA's
                 config.di = RtxdiContext::tunedSettings();
-                config.isDiReference = true;
-                config.isDiSpatialOnly = false;
-                config.isDiTemporalOnly = false;
+                config.directMode = DirectMode::RestirDi;
+                config.directResampling = DirectResamplingMode::Reference;
                 return true;
             }
             for (const NamedSet& set : diSets()) {
                 if (equalsIgnoreCase(name, set.name)) {
                     config.di = *set.di;
-                    config.isDiReference = false;
-                    config.isDiSpatialOnly = false;
-                    config.isDiTemporalOnly = false;
+                    config.directMode = DirectMode::RestirDi;
+                    config.directResampling = DirectResamplingMode::TemporalAndSpatial;
                     return true;
                 }
             }
@@ -668,7 +693,10 @@ namespace
         }
         if (equalsIgnoreCase(domain, "frame") && equalsIgnoreCase(name, "shipped")) {
             const LabConfig shipped;
-            config.indirectMode = shipped.indirectMode;
+            config.directMode = shipped.directMode;
+            config.directResampling = shipped.directResampling;
+            config.indirectBounce = shipped.indirectBounce;
+            config.radianceCache = shipped.radianceCache;
             config.dlss = shipped.dlss;
             config.dlssGuides = shipped.dlssGuides;
             config.nrc = shipped.nrc;
@@ -687,12 +715,144 @@ namespace
         return false;
     }
 
+    // Legacy M8.3 parser aliases so all 57 tests/lab/*.lab files + 5 built-in plans parse without modification
+    enum class LegacyAliasResult : uint8_t
+    {
+        NotAlias,
+        Applied,
+        BadValue,
+    };
+
+    std::optional<bool> parseBoolValue(std::string_view text)
+    {
+        text = trim(text);
+        if (equalsIgnoreCase(text, "on") || equalsIgnoreCase(text, "true") || text == "1") {
+            return true;
+        }
+        if (equalsIgnoreCase(text, "off") || equalsIgnoreCase(text, "false") || text == "0") {
+            return false;
+        }
+        return std::nullopt;
+    }
+
+    LegacyAliasResult applyLegacyAlias(LabConfig& config, std::string_view key, std::string_view value)
+    {
+        if (equalsIgnoreCase(key, "frame.indirectMode")) {
+            const std::string_view trimmed = trim(value);
+            if (equalsIgnoreCase(trimmed, "nrcRestirGi")) {
+                config.indirectBounce = IndirectBounceMode::RestirGi;
+                config.radianceCache = RadianceCacheMode::Nrc;
+                return LegacyAliasResult::Applied;
+            }
+            if (equalsIgnoreCase(trimmed, "nrc")) {
+                config.indirectBounce = IndirectBounceMode::RawPt;
+                config.radianceCache = RadianceCacheMode::Nrc;
+                return LegacyAliasResult::Applied;
+            }
+            if (equalsIgnoreCase(trimmed, "restirGi")) {
+                config.indirectBounce = IndirectBounceMode::RestirGi;
+                config.radianceCache = RadianceCacheMode::Off;
+                return LegacyAliasResult::Applied;
+            }
+            return LegacyAliasResult::BadValue;
+        }
+        const auto applyResamplingFlag = [&](DirectResamplingMode target) -> LegacyAliasResult {
+            const std::optional<bool> enabled = parseBoolValue(value);
+            if (!enabled) {
+                return LegacyAliasResult::BadValue;
+            }
+            if (*enabled) {
+                config.directMode = DirectMode::RestirDi;
+                config.directResampling = target;
+            } else if (config.directResampling == target) {
+                config.directResampling = DirectResamplingMode::TemporalAndSpatial;
+            }
+            return LegacyAliasResult::Applied;
+        };
+        if (equalsIgnoreCase(key, "di.reference")) {
+            return applyResamplingFlag(DirectResamplingMode::Reference);
+        }
+        if (equalsIgnoreCase(key, "di.spatialOnly")) {
+            return applyResamplingFlag(DirectResamplingMode::Spatial);
+        }
+        if (equalsIgnoreCase(key, "di.temporalOnly")) {
+            return applyResamplingFlag(DirectResamplingMode::Temporal);
+        }
+        return LegacyAliasResult::NotAlias;
+    }
+
     bool isDomain(const LabSwitch& entry, std::string_view domain)
     {
         const std::string_view name(entry.name);
         return name.starts_with(domain) && name.size() > domain.size() && name[domain.size()] == '.';
     }
 } // namespace
+
+LabConfig pipelinePresetConfig(PipelinePreset preset)
+{
+    LabConfig config;
+    config.denoiser = DenoiserMode::DlssRr;
+    config.dlss.quality = Dlss::Quality::Quality;
+    switch (preset) {
+    case PipelinePreset::Custom:
+    case PipelinePreset::Count:
+        break;
+    case PipelinePreset::EngineTargetRis:
+        config.directMode = DirectMode::StreamingRis;
+        config.directResampling = DirectResamplingMode::TemporalAndSpatial;
+        config.di = RtxdiContext::targetRisSettings();
+        config.indirectBounce = IndirectBounceMode::RawPt;
+        config.radianceCache = RadianceCacheMode::Nrc;
+        break;
+    case PipelinePreset::EngineTargetTemporal:
+        config.directMode = DirectMode::RestirDi;
+        config.directResampling = DirectResamplingMode::Temporal;
+        config.di = RtxdiContext::targetTemporalSettings();
+        config.indirectBounce = IndirectBounceMode::RawPt;
+        config.radianceCache = RadianceCacheMode::Nrc;
+        break;
+    case PipelinePreset::RtxptAnalog:
+        config.directMode = DirectMode::StreamingRis;
+        config.directResampling = DirectResamplingMode::TemporalAndSpatial;
+        config.di = RtxdiContext::analogUniformRisSettings();
+        config.indirectBounce = IndirectBounceMode::RawPt;
+        // 1-bounce PT (IntroSample ENABLE_SHARC 0) until M8.4 switches this to RadianceCacheMode::Sharc
+        config.radianceCache = RadianceCacheMode::Off;
+        break;
+    case PipelinePreset::RtxdiAnalog:
+        config.directMode = DirectMode::RestirDi;
+        config.directResampling = DirectResamplingMode::TemporalAndSpatial;
+        config.di = RtxdiContext::nvidiaSettings();
+        config.gi = RtxdiContext::nvidiaGiSettings();
+        config.indirectBounce = IndirectBounceMode::RestirGi;
+        config.radianceCache = RadianceCacheMode::Off;
+        break;
+    case PipelinePreset::RtxgiAnalog:
+        config.directMode = DirectMode::StreamingRis;
+        config.directResampling = DirectResamplingMode::TemporalAndSpatial;
+        config.di = RtxdiContext::analogUniformRisSettings();
+        config.indirectBounce = IndirectBounceMode::RawPt;
+        config.radianceCache = RadianceCacheMode::Nrc;
+        break;
+    }
+    return config;
+}
+
+void applyPipelinePreset(LabConfig& config, PipelinePreset preset)
+{
+    if (preset == PipelinePreset::Custom || preset == PipelinePreset::Count) {
+        return;
+    }
+    const LabConfig target = pipelinePresetConfig(preset);
+    config.directMode = target.directMode;
+    config.directResampling = target.directResampling;
+    config.di = target.di;
+    config.gi = target.gi;
+    config.indirectBounce = target.indirectBounce;
+    config.radianceCache = target.radianceCache;
+    config.denoiser = target.denoiser;
+    config.dlss.quality = target.dlss.quality;
+}
 
 std::span<const LabSwitch> labSwitches() { return registry(); }
 
@@ -728,11 +888,8 @@ std::optional<double> parseSwitchValue(const LabSwitch& entry, std::string_view 
     text = trim(text);
     switch (entry.type) {
     case LabSwitchType::Bool:
-        if (equalsIgnoreCase(text, "on") || equalsIgnoreCase(text, "true") || text == "1") {
-            return 1.0;
-        }
-        if (equalsIgnoreCase(text, "off") || equalsIgnoreCase(text, "false") || text == "0") {
-            return 0.0;
+        if (const std::optional<bool> parsed = parseBoolValue(text)) {
+            return *parsed ? 1.0 : 0.0;
         }
         return std::nullopt;
     case LabSwitchType::Uint: {
@@ -765,8 +922,8 @@ std::optional<double> parseSwitchValue(const LabSwitch& entry, std::string_view 
 LabConfigParse parseLabConfig(std::string_view text, const LabConfig& base)
 {
     LabConfig config = base;
-    // sets first, then overrides left to right: "di.spatialSamples=2 di=nvidia" is NVIDIA's set with 2 samples
-    for (const bool isSetPass : {true, false}) {
+    // Pass 0: pipeline=<preset>, Pass 1: domain=<set> (di=, gi=, frame=), Pass 2: domain.switch=value left to right
+    for (int pass = 0; pass < 3; ++pass) {
         for (const auto part : std::views::split(text, ' ')) {
             const std::string_view item = trim(std::string_view(part.begin(), part.end()));
             if (item.empty()) {
@@ -779,15 +936,25 @@ LabConfigParse parseLabConfig(std::string_view text, const LabConfig& base)
             const std::string_view key = item.substr(0, equals);
             const std::string_view value = item.substr(equals + 1);
             const bool isSet = key.find('.') == std::string_view::npos;
-            if (isSet != isSetPass) {
+            const bool isPipelineSet = isSet && equalsIgnoreCase(key, "pipeline");
+            const int itemPass = isPipelineSet ? 0 : (isSet ? 1 : 2);
+            if (itemPass != pass) {
                 continue;
             }
             if (isSet) {
                 if (!applySet(config, key, value)) {
-                    return {std::nullopt, std::format("'{}' is not a set (di=shipped|nvidia|converged|reference|fast|"
-                                                      "medium|unbiased|ultra|tuned, gi=shipped|nvidia|converged|tuned, "
-                                                      "frame=shipped)",
-                                                      item)};
+                    return {std::nullopt,
+                            std::format("'{}' is not a set (pipeline=targetRis|targetTemporal|target|rtxpt|rtxdi|rtxgi, "
+                                        "di=shipped|nvidia|converged|reference|fast|medium|unbiased|ultra|tuned, "
+                                        "gi=shipped|nvidia|converged|tuned, frame=shipped)",
+                                        item)};
+                }
+                continue;
+            }
+            if (const LegacyAliasResult alias = applyLegacyAlias(config, key, value);
+                alias != LegacyAliasResult::NotAlias) {
+                if (alias == LegacyAliasResult::BadValue) {
+                    return {std::nullopt, std::format("'{}' is not a value of {}", value, key)};
                 }
                 continue;
             }
@@ -803,6 +970,15 @@ LabConfigParse parseLabConfig(std::string_view text, const LabConfig& base)
             const std::optional<double> parsed = parseSwitchValue(*entry, value);
             if (!parsed) {
                 return {std::nullopt, std::format("'{}' is not a value of {}", value, entry->name)};
+            }
+            if (entry->type == LabSwitchType::Enum && !entry->plannedValues.empty()) {
+                const auto index = static_cast<size_t>(std::llround(*parsed));
+                if (index < entry->plannedValues.size() && entry->plannedValues[index] != nullptr) {
+                    return {std::nullopt,
+                            std::format("'{}={}' is planned, its engine feature is not built ({})", entry->name, value,
+                                        entry->plannedValues[index]),
+                            true};
+                }
             }
             entry->set(config, *parsed);
         }
@@ -866,13 +1042,13 @@ void applyLabConfig(const LabConfig& config, Renderer& renderer, Camera& camera)
     RtxdiContext& rtxdi = renderer.getRtxdi();
     rtxdi.settings = config.di;
     rtxdi.giSettings = config.gi;
-    rtxdi.isReference = config.isDiReference;
-    rtxdi.isSpatialOnly = config.isDiSpatialOnly;
-    rtxdi.isTemporalOnly = config.isDiTemporalOnly;
+    rtxdi.directMode = config.directMode;
+    rtxdi.directResampling = config.directResampling;
     // the GI references belong to the engine checks, never to a lab config
     rtxdi.isGiReference = false;
     rtxdi.giReferenceBounces = 0;
-    renderer.indirectMode = config.indirectMode;
+    renderer.indirectBounce = config.indirectBounce;
+    renderer.radianceCache = config.radianceCache;
     renderer.denoiser = config.denoiser;
     renderer.aaMode = config.aaMode;
     renderer.accumulationFrameLimit = config.accumulationFrameLimit;
@@ -896,10 +1072,10 @@ LabConfig captureLabConfig(Renderer& renderer, const Camera& camera)
     LabConfig config;
     config.di = rtxdi.settings;
     config.gi = rtxdi.giSettings;
-    config.isDiReference = rtxdi.isReference;
-    config.isDiSpatialOnly = rtxdi.isSpatialOnly;
-    config.isDiTemporalOnly = rtxdi.isTemporalOnly;
-    config.indirectMode = renderer.indirectMode;
+    config.directMode = rtxdi.directMode;
+    config.directResampling = rtxdi.directResampling;
+    config.indirectBounce = renderer.indirectBounce;
+    config.radianceCache = renderer.radianceCache;
     config.denoiser = renderer.denoiser;
     config.aaMode = renderer.aaMode;
     config.accumulationFrameLimit = renderer.accumulationFrameLimit;

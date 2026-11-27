@@ -34,16 +34,19 @@ uint32_t EngineGiCheck::readRunSeed()
     return seed;
 }
 
-void EngineGiCheck::applyPhase(RtxdiContext& rtxdi, IndirectMode& indirectMode) const
+void EngineGiCheck::applyPhase(RtxdiContext& rtxdi, IndirectBounceMode& indirectBounce,
+                               RadianceCacheMode& radianceCache) const
 {
     const PhaseInfo& info = kPhases[std::to_underlying(phase)];
-    indirectMode = info.mode;
+    indirectBounce = info.stages.bounce;
+    radianceCache = info.stages.cache;
     rtxdi.giReferenceBounces = info.referenceBounces;
     rtxdi.isGiReference = info.isGiReference;
     rtxdi.giSettings = giSettingsFor(info.settings);
 }
 
-EngineGiCheck::Request EngineGiCheck::beginFrame(Camera& camera, RtxdiContext& rtxdi, IndirectMode& indirectMode,
+EngineGiCheck::Request EngineGiCheck::beginFrame(Camera& camera, RtxdiContext& rtxdi,
+                                                 IndirectBounceMode& indirectBounce, RadianceCacheMode& radianceCache,
                                                  DebugViewSettings& debugView)
 {
     Request request;
@@ -60,7 +63,7 @@ EngineGiCheck::Request EngineGiCheck::beginFrame(Camera& camera, RtxdiContext& r
         if (phase == Phase::GroundTruth && !pose.isStartup) {
             camera.lookAt(pose.position, pose.target);
         }
-        applyPhase(rtxdi, indirectMode);
+        applyPhase(rtxdi, indirectBounce, radianceCache);
     }
     rtxdi.frameIndexOverride = runSeedBase + static_cast<uint32_t>(poseIndex) * kPoseSeedStride +
         static_cast<uint32_t>(std::to_underlying(phase)) * kPhaseSeedStride + phaseFrame;

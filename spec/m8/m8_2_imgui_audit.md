@@ -1,6 +1,6 @@
 # M8.2 · ImGui & Settings Wiring Audit
 
-**Date:** 2026-11-26 · **Status:** audited (ready for M8.2 fix pass & `C-NS-1` GPU gates) · **Milestone:** [M8](./README.md)
+**Date:** 2026-11-26 · **Status:** complete (audit + all 12 fixes + `C-NS-1` GPU gates verified; ready for M8.3) · **Milestone:** [M8](./README.md)
 **Baseline:** post-M8.1 Wave 1 & Wave 2 (`14/14` GI check, `8,890/8,890` RT check, `7/7` + `8/8` ctest, clean validation)
 **Links:** [M8 README](./README.md) · [M8.1 Audit](./m8_1_pipeline_audit.md) · [NVIDIA Settings Layout](../features/planned/nvidia_settings_layout.md) · [Settings Guide](../../docs/settings.md) · [Considerations](../considerations.md)
 
@@ -89,6 +89,24 @@ Audit every widget in `SettingsWindow` (`src/ui/settings_window.{hpp,cpp}`) and 
 
 ---
 
-## 5. Verification Results
+## 5. Verification Results (2026-11-26, RTX 5070)
 
-*(Filled after M8.2 fix pass and GPU gates complete.)*
+- **Builds & CTest:** `windows-clang-release` (`7/7` passed) and `windows-clang-release-checks` (`8/8` passed, including S5 `Compare with` verification in `tests/lab_registry_test.cpp`: `Shipped` highlights `0`, `NVIDIA Medium` highlights exact `{frame.indirectMode, frame.dlssQuality}`, closed-section deduplicated counts `Indirect=1, Denoising=1, Direct=0`, shared advanced threshold deduplicated).
+- **S3 · Denoiser `Off` clean bench (`ENGINE_BENCH_FRAMES=1500`, `ENGINE_CONFIG="frame.denoiser=off"`, 1280×720 native, no layers):**
+  - Sponza gallery: `DLSS-RR = 0.0003 ms`, `Accumulation = 0.0003 ms`, `GPU total = 4.1096 ms`, `CPU drawFrame = 4.0002 ms`.
+  - Sponza courtyard: `DLSS-RR = 0.0003 ms`, `Accumulation = 0.0003 ms`, `GPU total = 5.1485 ms`, `CPU drawFrame = 5.0899 ms`.
+- **S4 · `Accumulation` convergence (`ENGINE_LAB` `sponza.courtyard`, `Lit`, `ReSTIR GI` mode, 300 warm-up + 480 captured frames, live transitions `DLSS-RR → Off (No AA) → Off (Accumulation)`):**
+  - `DLSS-RR` baseline: `mean 0.1729`, `std 1.322%`, `flicker 5.882%`, `f2f 0.136%`, `swing 0.1434%`.
+  - `Denoiser Off + No AA`: `mean 0.1971`, `std 33.52%`, `flicker 87.21%`, `f2f 26.22%`, `swing 0.3604%`.
+  - `Denoiser Off + Accumulation`: `mean 0.1795`, `std 0.8974%`, `flicker 6.458%`, **`f2f 0.0499%`**, **`swing 0.1415%`** (`0 failed`, `0 nonFinite`).
+- **S3/S4 Vulkan Validation (`VK_LAYER_KHRONOS_validation`, `VALIDATE_SYNC=true`, `VALIDATE_BEST_PRACTICES=true`, `VALIDATE_BEST_PRACTICES_NVIDIA=true`, `GPUAV=false`, `ENGINE_BENCH_FRAMES=24`):**
+  - `frame.denoiser=off`: exit `0`, zero engine errors/warnings (only `C-H1-2` NGX `WorkgroupSize` at feature creation and `C-G3-3` NRC shutdown leaks).
+  - `frame.denoiser=off frame.aa=accumulation frame.accumulationFrames=16`: exit `0`, zero engine errors/warnings.
+- **Regression (`ENGINE_DLSS_CHECK=1`, Sponza):** exit `0`, **11 steps, 0 failed** (`static shipped` `std 0.335%`, `flicker 0.024%`; `jitter inverted` `std 3.690%`).
+- **`C-NS-1` closed** in [considerations.md](../considerations.md).
+
+## 6. Done Criteria for M8.2
+
+- [x] Every `SettingsWindow` and `EngineUi` control audited end-to-end to GPU consumers.
+- [x] All verified UI/settings/history-reset bugs (`BUG-UI-1`–`BUG-UI-11`) and `BUG-E5` fixed.
+- [x] `C-NS-1` GPU gates (S3 denoiser `Off`, S4 `Accumulation`, S5 `Compare with`) verified clean on RTX 5070.

@@ -1016,8 +1016,12 @@ struct GpuTargets
     uint32_t specularHitDistanceStorage = kNoneIndex;
     // RGBA32F sum and count of the DLSS-RR color input, written by passes/combine.slang (settings lab, m8 I16)
     uint32_t dlssInputAccumulationStorage = kNoneIndex;
+    // RGBA16F (rgb: primaryWeight = brdf.weight * transmittance, a: luminance(x2Traced)) for Raw 1-Bounce PT + NRC
+    // (m8.3 PERF-D1; kNoneIndex outside RawPt + Nrc)
+    uint32_t rawIndirectWeightStorage = kNoneIndex;
 };
-static_assert(sizeof(GpuTargets) == 216);
+static_assert(sizeof(GpuTargets) == 220);
+static_assert(offsetof(GpuTargets, rawIndirectWeightStorage) == 216);
 static_assert(offsetof(GpuTargets, specularHitDistanceStorage) == 208);
 static_assert(offsetof(GpuTargets, glassDiffuseAlbedoStorage) == 200);
 static_assert(offsetof(GpuTargets, giStagnancyStorage) == 184);
@@ -1083,6 +1087,10 @@ namespace FrameFlag
     inline constexpr uint32_t PreDenoiserClampNeighbors = 1u << 10;
     // last frame evaluated DLSS-RR into upscaledTarget and history was not reset
     inline constexpr uint32_t DlssHistoryValid = 1u << 11;
+    // M8.3 pipeline toggles: skip direct/indirect loads in combine & debug views; write raw 1-bounce PT directly
+    inline constexpr uint32_t DirectDisabled = 1u << 12;
+    inline constexpr uint32_t IndirectDisabled = 1u << 13;
+    inline constexpr uint32_t RawIndirect = 1u << 14;
 } // namespace FrameFlag
 
 // [InstanceIndex()] of a TLAS instance; written by the CPU per scene layout (RayTracingScene)

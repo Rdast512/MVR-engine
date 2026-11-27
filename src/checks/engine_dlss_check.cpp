@@ -71,7 +71,8 @@ void EngineDlssCheck::startStep(Camera& camera, Renderer& renderer)
         camera.lookAt(pose.position, pose.target);
     }
     renderer.debugView.view = DebugView::Lit;
-    renderer.indirectMode = IndirectMode::RestirGi;
+    renderer.indirectBounce = IndirectBounceMode::RestirGi;
+    renderer.radianceCache = RadianceCacheMode::Off;
     // keep glass off during clean synthetic radiance check so only DLSS-RR and its guides are exercised
     renderer.glass.isPassEnabled = false;
     renderer.getWorldLights().sun.isEnabled = scene != CheckScene::BistroCafe;

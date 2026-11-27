@@ -147,17 +147,33 @@ namespace
     using Preset = RtxdiContext::QualityPreset;
 
     constexpr std::array kCompareLabels{
-        "None",         "Shipped",          "NVIDIA Fast", "NVIDIA Medium", "NVIDIA Unbiased",
-        "NVIDIA Ultra", "NVIDIA Reference", "Tuned",       "Converged"};
+        "None",
+        "Shipped",
+        "Engine Target (RIS)",
+        "Engine Target (Temporal)",
+        "RTXPT Analog",
+        "RTXDI Analog",
+        "RTXGI Analog",
+        "NVIDIA Fast",
+        "NVIDIA Medium",
+        "NVIDIA Unbiased",
+        "NVIDIA Ultra",
+        "NVIDIA Reference",
+        "Tuned",
+        "Converged",
+    };
 
     // NVIDIA's frame for its presets: no NRC in the sample, native rendering (§5)
     [[nodiscard]] LabConfig nvidiaConfig(Preset preset)
     {
         LabConfig config;
         config.di = RtxdiContext::nvidiaPreset(preset);
-        config.isDiReference = preset == Preset::Reference;
+        config.directMode = DirectMode::RestirDi;
+        config.directResampling =
+            preset == Preset::Reference ? DirectResamplingMode::Reference : DirectResamplingMode::TemporalAndSpatial;
         config.gi = RtxdiContext::nvidiaGiSettings();
-        config.indirectMode = IndirectMode::RestirGi;
+        config.indirectBounce = IndirectBounceMode::RestirGi;
+        config.radianceCache = RadianceCacheMode::Off;
         config.dlss.quality = Dlss::Quality::Dlaa;
         return config;
     }
@@ -173,6 +189,7 @@ void SettingsWindow::draw()
     if (ImGui::Begin("Settings")) {
         ImGui::PushItemWidth(kItemWidth);
         drawCompareWith();
+        drawPipeline();
         drawScene();
         drawGeneralRendering();
         drawStaticContext();
@@ -208,6 +225,21 @@ void SettingsWindow::drawCompareWith()
     case CompareEntry::Count:
         comparison = LabConfig{};
         break;
+    case CompareEntry::EngineTargetRis:
+        comparison = pipelinePresetConfig(PipelinePreset::EngineTargetRis);
+        break;
+    case CompareEntry::EngineTargetTemporal:
+        comparison = pipelinePresetConfig(PipelinePreset::EngineTargetTemporal);
+        break;
+    case CompareEntry::RtxptAnalog:
+        comparison = pipelinePresetConfig(PipelinePreset::RtxptAnalog);
+        break;
+    case CompareEntry::RtxdiAnalog:
+        comparison = pipelinePresetConfig(PipelinePreset::RtxdiAnalog);
+        break;
+    case CompareEntry::RtxgiAnalog:
+        comparison = pipelinePresetConfig(PipelinePreset::RtxgiAnalog);
+        break;
     case CompareEntry::NvidiaFast:
         comparison = nvidiaConfig(Preset::Fast);
         break;
@@ -227,7 +259,8 @@ void SettingsWindow::drawCompareWith()
         comparison = LabConfig{};
         comparison.di = RtxdiContext::tunedSettings();
         comparison.gi = RtxdiContext::tunedGiSettings();
-        comparison.indirectMode = IndirectMode::NrcRestirGi;
+        comparison.indirectBounce = IndirectBounceMode::RestirGi;
+        comparison.radianceCache = RadianceCacheMode::Nrc;
         break;
     case CompareEntry::Converged:
         comparison = LabConfig{};
@@ -241,6 +274,117 @@ void SettingsWindow::drawCompareWith()
             differing.push_back(difference.entry);
         }
     }
+}
+
+PipelinePreset SettingsWindow::currentPipelinePreset() const
+{
+    const LabConfig current = captureLabConfig(renderer, camera);
+    for (const PipelinePreset preset : {PipelinePreset::EngineTargetRis, PipelinePreset::EngineTargetTemporal,
+                                        PipelinePreset::RtxptAnalog, PipelinePreset::RtxdiAnalog,
+                                        PipelinePreset::RtxgiAnalog}) {
+        const LabConfig target = pipelinePresetConfig(preset);
+        if (current.directMode == target.directMode && current.directResampling == target.directResampling &&
+            current.di == target.di && current.indirectBounce == target.indirectBounce &&
+            current.radianceCache == target.radianceCache && current.denoiser == target.denoiser &&
+            current.dlss.quality == target.dlss.quality &&
+            (target.indirectBounce != IndirectBounceMode::RestirGi || current.gi == target.gi)) {
+            return preset;
+        }
+    }
+    return PipelinePreset::Custom;
+}
+
+void SettingsWindow::applyPipelinePreset(PipelinePreset preset)
+{
+    if (preset == PipelinePreset::Custom || preset == PipelinePreset::Count) {
+        return;
+    }
+    const LabConfig target = pipelinePresetConfig(preset);
+    RtxdiContext& rtxdi = renderer.getRtxdi();
+    rtxdi.directMode = target.directMode;
+    rtxdi.directResampling = target.directResampling;
+    rtxdi.settings = target.di;
+    rtxdi.giSettings = target.gi;
+    rtxdi.isGiReference = false;
+    rtxdi.giReferenceBounces = 0;
+    renderer.indirectBounce = target.indirectBounce;
+    renderer.radianceCache = target.radianceCache;
+    renderer.denoiser = target.denoiser;
+    renderer.getDlss().settings.quality = target.dlss.quality;
+}
+
+void SettingsWindow::drawPipeline()
+{
+    using namespace settingsRows;
+    if (!beginNode("Pipeline", kPipeline, {}, kColorAttentionHeader, ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Separator();
+        return;
+    }
+    ImGui::PushItemWidth(kModeComboWidth);
+    const PipelinePreset activePreset = currentPipelinePreset();
+    if (ImGui::BeginCombo("Pipeline Preset", pipelinePresetLabel(activePreset))) {
+        for (size_t i = 0; i < kPipelinePresetCount; ++i) {
+            const auto preset = static_cast<PipelinePreset>(i);
+            const bool isCustom = preset == PipelinePreset::Custom;
+            ImGui::BeginDisabled(isCustom);
+            if (ImGui::Selectable(pipelinePresetLabel(preset), preset == activePreset) && !isCustom) {
+                applyPipelinePreset(preset);
+            }
+            ImGui::EndDisabled();
+        }
+        ImGui::EndCombo();
+    }
+    helpMarker("One-click demo-analog and Engine Target toggle bundles (no separate renderer paths). Editing any "
+               "stage toggle or lighting parameter switches this display to (Custom).");
+
+    RtxdiContext& rtxdi = renderer.getRtxdi();
+    beginRow({"frame.directMode"});
+    if (ImGui::BeginCombo("Direct Lighting", directModeLabel(rtxdi.directMode))) {
+        for (size_t i = 0; i < kDirectModeCount; ++i) {
+            const auto mode = static_cast<DirectMode>(i);
+            if (ImGui::Selectable(directModeLabel(mode), mode == rtxdi.directMode)) {
+                rtxdi.directMode = mode;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    endRow("Stage 10: Off skips all direct passes and retires DI reservoirs. Streaming RIS runs a single fused pass "
+           "with user candidate counts and zero DI reservoirs. ReSTIR DI runs multi-pass temporal/spatial reuse.");
+
+    beginRow({"frame.indirectBounce"});
+    if (ImGui::BeginCombo("Indirect (Bounce 1)", indirectBounceModeLabel(renderer.indirectBounce))) {
+        for (size_t i = 0; i < kIndirectBounceModeCount; ++i) {
+            const auto mode = static_cast<IndirectBounceMode>(i);
+            if (ImGui::Selectable(indirectBounceModeLabel(mode), mode == renderer.indirectBounce)) {
+                renderer.indirectBounce = mode;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    endRow("Stage 11-12: Off skips bounce 1, cache and ReSTIR GI. Raw 1-Bounce PT writes indirectRadiance directly "
+           "without GI reservoirs or rtxdi_gi_shade. ReSTIR GI resamples bounce-1 samples temporally and spatially.");
+
+    const bool isIndirectOff = renderer.indirectBounce == IndirectBounceMode::Off;
+    ImGui::BeginDisabled(isIndirectOff);
+    beginRow({"frame.radianceCache"});
+    if (ImGui::BeginCombo("Radiance Cache", radianceCacheModeLabel(renderer.radianceCache))) {
+        for (size_t i = 0; i < kRadianceCacheModeCount; ++i) {
+            const auto mode = static_cast<RadianceCacheMode>(i);
+            const bool isBuilt = isRadianceCacheBuilt(mode);
+            ImGui::BeginDisabled(!isBuilt);
+            if (ImGui::Selectable(radianceCacheModeLabel(mode), mode == renderer.radianceCache) && isBuilt) {
+                renderer.radianceCache = mode;
+            }
+            ImGui::EndDisabled();
+        }
+        ImGui::EndCombo();
+    }
+    endRow("Multi-bounce tail behind bounce 1: Off runs 1-bounce indirect only (pauses NRC). NRC terminates paths in "
+           "NVIDIA Neural Radiance Cache 0.16. SHaRC lands in M8.4. Inactive when Indirect (Bounce 1) is Off.");
+    ImGui::EndDisabled();
+    ImGui::PopItemWidth();
+    endNode();
+    ImGui::Separator();
 }
 
 const LabSwitch* SettingsWindow::differingSwitch(const char* name) const
@@ -342,13 +486,16 @@ void SettingsWindow::endRow(const char* help)
 SettingsWindow::DiPreset SettingsWindow::currentDiPreset() const
 {
     const RtxdiContext& rtxdi = renderer.getRtxdi();
-    if (rtxdi.isSpatialOnly || rtxdi.isTemporalOnly) {
+    if (rtxdi.directMode != DirectMode::RestirDi ||
+        rtxdi.directResampling == DirectResamplingMode::Spatial ||
+        rtxdi.directResampling == DirectResamplingMode::Temporal) {
         return DiPreset::Custom;
     }
-    if (!rtxdi.isReference && rtxdi.settings == RtxdiContext::tunedSettings()) {
+    const bool isRef = rtxdi.isDirectReference();
+    if (!isRef && rtxdi.settings == RtxdiContext::tunedSettings()) {
         return DiPreset::Tuned;
     }
-    if (!rtxdi.isReference && rtxdi.settings == RtxdiContext::convergedSettings()) {
+    if (!isRef && rtxdi.settings == RtxdiContext::convergedSettings()) {
         return DiPreset::Converged;
     }
     // an untouched engine shows Medium, the shipped set
@@ -357,8 +504,7 @@ SettingsWindow::DiPreset SettingsWindow::currentDiPreset() const
                                  std::pair{DiPreset::Ultra, Preset::Ultra},
                                  std::pair{DiPreset::Reference, Preset::Reference}};
     for (const auto& [diPreset, preset] : kNvidia) {
-        if (rtxdi.isReference == (preset == Preset::Reference) &&
-            rtxdi.settings == RtxdiContext::nvidiaPreset(preset)) {
+        if (isRef == (preset == Preset::Reference) && rtxdi.settings == RtxdiContext::nvidiaPreset(preset)) {
             return diPreset;
         }
     }
@@ -394,9 +540,9 @@ void SettingsWindow::applyDiPreset(DiPreset preset)
         rtxdi.settings = RtxdiContext::nvidiaPreset(Preset::Reference);
         break;
     }
-    rtxdi.isReference = preset == DiPreset::Reference;
-    rtxdi.isSpatialOnly = false;
-    rtxdi.isTemporalOnly = false;
+    rtxdi.directMode = DirectMode::RestirDi;
+    rtxdi.directResampling =
+        preset == DiPreset::Reference ? DirectResamplingMode::Reference : DirectResamplingMode::TemporalAndSpatial;
     // NVIDIA re-applies the DLSS-RR preset after a quality preset so its overrides survive
     if (isCompatPresetAutoApplied && renderer.denoiser == DenoiserMode::DlssRr) {
         RtxdiContext::applyDenoiserCompatDefaults(rtxdi.giSettings, true);
@@ -593,10 +739,19 @@ void SettingsWindow::drawDirectLighting()
 
     constexpr std::array<const char*, std::to_underlying(DiPreset::Count)> kPresetLabels{
         "(Custom)", "Fast", "Medium", "Unbiased", "Ultra", "Reference", "Tuned", "Converged"};
+    const bool isDirectOff = rtxdi.directMode == DirectMode::Off;
+    const bool isStreamingRis = rtxdi.directMode == DirectMode::StreamingRis;
+    const bool isRestirDi = rtxdi.directMode == DirectMode::RestirDi;
+    if (isDirectOff) {
+        ImGui::TextDisabled("Direct lighting is Off (Stage 10 skipped, DI reservoirs retired).");
+    }
+    ImGui::BeginDisabled(isDirectOff);
+    ImGui::BeginDisabled(!isRestirDi);
     int preset = std::to_underlying(currentDiPreset());
     if (ImGui::Combo("Preset", &preset, kPresetLabels.data(), static_cast<int>(kPresetLabels.size()))) {
         applyDiPreset(static_cast<DiPreset>(preset));
     }
+    ImGui::EndDisabled();
     helpMarker("NVIDIA's presets over the sample's start state (Medium, which the engine ships), then the engine's: "
                "Tuned (RtxdiContext::tunedSettings, the m8 tuning for DLSS-RR in NRC + ReSTIR GI mode) and Converged "
                "(the convergence check's set). The combo shows the preset the current settings equal, else (Custom). "
@@ -604,25 +759,15 @@ void SettingsWindow::drawDirectLighting()
     ImGui::Checkbox("Show Advanced Settings", &isAdvancedShown);
 
     ImGui::PushItemWidth(kModeComboWidth);
-    enum ResamplingMode : int
-    {
-        None,
-        Temporal,
-        Spatial,
-        TemporalAndSpatial,
-    };
-    int mode = rtxdi.isReference ? None
-        : rtxdi.isSpatialOnly    ? Spatial
-        : rtxdi.isTemporalOnly   ? Temporal
-                                 : TemporalAndSpatial;
-    beginRow({"di.reference", "di.temporalOnly", "di.spatialOnly"});
-    if (ImGui::Combo("Resampling Mode", &mode, "None\0Temporal\0Spatial\0Temporal + Spatial\0")) {
-        rtxdi.isReference = mode == None;
-        rtxdi.isTemporalOnly = mode == Temporal;
-        rtxdi.isSpatialOnly = mode == Spatial;
+    ImGui::BeginDisabled(!isRestirDi);
+    int mode = std::to_underlying(rtxdi.directResampling);
+    beginRow({"frame.directResampling"});
+    if (ImGui::Combo("Resampling Mode", &mode, "Temporal + Spatial\0Temporal\0Spatial\0Reference (None)\0")) {
+        rtxdi.directResampling = static_cast<DirectResamplingMode>(mode);
     }
-    endRow("Engine: None is the reference, which also takes 32 Power_RIS local and 8 infinite candidates and no BRDF "
-           "candidates: the unbiased ground truth of the reuse passes.");
+    endRow("Engine: active when Direct Lighting is ReSTIR DI. Reference (None) takes 32 Power_RIS local and 8 infinite "
+           "candidates with no BRDF candidates on the two-pass ground-truth path.");
+    ImGui::EndDisabled();
     ImGui::PopItemWidth();
     ImGui::Separator();
 
@@ -642,15 +787,21 @@ void SettingsWindow::drawDirectLighting()
         ImGui::TreePop();
     }
     drawDirectInitialSampling();
-    // M8.2 BUG-UI-3: disable Temporal in Spatial-only mode and Spatial in Temporal-only mode
-    ImGui::BeginDisabled(rtxdi.isReference || rtxdi.isSpatialOnly);
+    const bool isRef = rtxdi.isDirectReference();
+    const bool isSpatialOnly = isRestirDi && rtxdi.directResampling == DirectResamplingMode::Spatial;
+    const bool isTemporalOnly = isRestirDi && rtxdi.directResampling == DirectResamplingMode::Temporal;
+    // M8.2 BUG-UI-3 / M8.3: disable Temporal/Spatial/Final Visibility Reuse outside their active modes
+    ImGui::BeginDisabled(!isRestirDi || isRef || isSpatialOnly);
     drawDirectTemporal();
     ImGui::EndDisabled();
-    ImGui::BeginDisabled(rtxdi.isReference || rtxdi.isTemporalOnly);
+    ImGui::BeginDisabled(!isRestirDi || isRef || isTemporalOnly);
     drawDirectSpatial();
     ImGui::EndDisabled();
+    ImGui::BeginDisabled(isStreamingRis);
     drawDirectFinalShading();
+    ImGui::EndDisabled();
     drawDirectEngine();
+    ImGui::EndDisabled();
     endNode();
     ImGui::Separator();
 }
@@ -663,8 +814,9 @@ void SettingsWindow::drawDirectInitialSampling()
     }
     RtxdiContext& rtxdi = renderer.getRtxdi();
     RtxdiContext::Settings& di = rtxdi.settings;
-    // the reference overrides the candidate counts
-    ImGui::BeginDisabled(rtxdi.isReference);
+    // the reference overrides the candidate counts; Streaming RIS uses the user's counts directly
+    const bool isRef = rtxdi.isDirectReference();
+    ImGui::BeginDisabled(isRef);
     if (beginNode("Local Light Sampling", kDirectLocalLights, {}, std::nullopt, ImGuiTreeNodeFlags_DefaultOpen)) {
         struct LocalMode
         {
@@ -726,15 +878,19 @@ void SettingsWindow::drawDirectInitialSampling()
     notInEngine("Initial Environment Samples",
                 "Number of samples drawn from the environment map when it is "
                 "importance sampled.");
-    // M8.2 BUG-UI-2: Resampling Mode None forces enableInitialVisibility = 0 (BUG-C1)
+    // M8.2 BUG-UI-2 / M8.3: Streaming RIS and Reference force enableInitialVisibility = 0 (BUG-C1)
+    const bool isInitialVisForcedOff = rtxdi.directMode != DirectMode::RestirDi || isRef;
+    ImGui::BeginDisabled(isInitialVisForcedOff);
     beginRow({"di.initialVisibility"});
     const RTXDI_DIInitialSamplingParameters initial = renderer.getRtxdi().getAppliedParameters().initialSampling;
-    bool initialVisibility = rtxdi.isReference ? (initial.enableInitialVisibility != 0) : di.isInitialVisibilityEnabled;
-    if (ImGui::Checkbox("Enable Initial Visibility", &initialVisibility) && !rtxdi.isReference) {
+    bool initialVisibility =
+        isInitialVisForcedOff ? (initial.enableInitialVisibility != 0) : di.isInitialVisibilityEnabled;
+    if (ImGui::Checkbox("Enable Initial Visibility", &initialVisibility) && !isInitialVisForcedOff) {
         di.isInitialVisibilityEnabled = initialVisibility;
     }
     endRow("Engine: one shadow ray per pixel in the initial pass; occluded samples are dropped before reuse. Forced "
-           "off in Resampling Mode None (final shading traces visibility once).");
+           "off in Streaming RIS and Reference (final shading traces visibility once).");
+    ImGui::EndDisabled();
     ImGui::EndDisabled();
     fixedText("BRDF Sample Cutoff", std::format("{:.4f}", initial.brdfCutoff),
               "Determine how much to shorten BRDF rays. 0 to disable shortening");
@@ -823,7 +979,8 @@ void SettingsWindow::drawDirectSpatial()
     editSpatialSampleCount("Spatial Samples", di.spatialSamples, kMaxDiSpatialSamples);
     endRow(kSpatialSampleHelp);
     // NVIDIA hides it outside Temporal + Spatial; disabled keeps the closed node's count matching what opens
-    ImGui::BeginDisabled(rtxdi.isReference || rtxdi.isSpatialOnly || rtxdi.isTemporalOnly);
+    ImGui::BeginDisabled(rtxdi.directMode != DirectMode::RestirDi ||
+                         rtxdi.directResampling != DirectResamplingMode::TemporalAndSpatial);
     beginRow({"di.boostSamples"});
     editSpatialSampleCount("Disocclusion Boost Samples", di.disocclusionBoostSamples, kMaxDiSpatialSamples);
     endRow("The number of spatial samples to take on surfaces which don't have sufficient accumulated history length. "
@@ -922,26 +1079,13 @@ void SettingsWindow::drawIndirectLighting()
     }
     RtxdiContext& rtxdi = renderer.getRtxdi();
     RtxdiContext::GiSettings& gi = rtxdi.giSettings;
-    IndirectMode& indirectMode = renderer.indirectMode;
-    beginRow({"frame.indirectMode"});
-    if (ImGui::BeginCombo("Indirect Lighting Mode", indirectModeInfo(indirectMode).label)) {
-        for (size_t i = 0; i < kIndirectModes.size(); ++i) {
-            const auto mode = static_cast<IndirectMode>(i);
-            if (ImGui::Selectable(kIndirectModes[i].label, mode == indirectMode)) {
-                indirectMode = mode;
-            }
-        }
-        ImGui::EndCombo();
+    const bool isIndirectOff = renderer.indirectBounce == IndirectBounceMode::Off;
+    if (isIndirectOff) {
+        ImGui::TextDisabled("Indirect lighting is Off (Stage 11-12 skipped, GI buffers retired, NRC paused).");
     }
-    endRow(std::format("Trace diffuse and specular BRDF rays and resample results with ReSTIR GI. Shade the surfaces "
-                       "found with BRDF rays using direct light sampling.\n\nEngine: ReSTIR GI is NVIDIA's ReSTIR GI "
-                       "(one bounce, NRC paused). NRC and NRC + ReSTIR GI terminate the path in the RTXGI "
-                       "IndirectDiffuse sample's radiance cache, NRC without reuse. {} ships and is the tuning "
-                       "target. A switch resets ReSTIR GI and DLSS-RR history.",
-                       indirectModeInfo(kDefaultIndirectMode).label)
-               .c_str());
-
-    const bool isGiReuse = indirectMode != IndirectMode::Nrc && !rtxdi.isGiReference;
+    ImGui::BeginDisabled(isIndirectOff);
+    const bool isRestirGi = renderer.indirectBounce == IndirectBounceMode::RestirGi;
+    const bool isGiReuse = isRestirGi && !rtxdi.isGiReference;
     // M8.2 BUG-UI-4: GiFlag::SecondaryRoughnessFloor is forced off whenever GI reuse is inactive (vk_rtxdi.cpp)
     ImGui::BeginDisabled(!isGiReuse);
     beginRow({"gi.roughnessFloor"});
@@ -972,10 +1116,17 @@ void SettingsWindow::drawIndirectLighting()
         ImGui::TreePop();
     }
     if (beginNode("Reuse Primary Samples", kIndirectReuse)) {
+        const bool hasDiReservoirs = rtxdi.directMode == DirectMode::RestirDi;
+        ImGui::BeginDisabled(!hasDiReservoirs);
         beginRow({"gi.secondaryResampling"});
-        ImGui::Checkbox("Reuse RTXDI samples for secondary surface", &gi.isSecondaryResamplingEnabled);
+        bool isSecondaryResampling = hasDiReservoirs && gi.isSecondaryResamplingEnabled;
+        if (ImGui::Checkbox("Reuse RTXDI samples for secondary surface", &isSecondaryResampling) && hasDiReservoirs) {
+            gi.isSecondaryResamplingEnabled = isSecondaryResampling;
+        }
         endRow("When shading a secondary surface, try to find a matching surface in screen space and reuse its light "
-               "reservoir. This feature uses the Spatial Resampling function and has similar controls.");
+               "reservoir. This feature uses the Spatial Resampling function and has similar controls.\n\n"
+               "Engine: requires ReSTIR DI reservoirs (disabled when Direct Lighting is Off or Streaming RIS).");
+        ImGui::EndDisabled();
         const std::string fixedHelp =
             "Engine: the sample's Ultra values (path_shading.slang secondaryResamplingParams)";
         fixedText("Secondary Bias Correction", kSecondaryBiasCorrection, fixedHelp.c_str());
@@ -997,6 +1148,7 @@ void SettingsWindow::drawIndirectLighting()
     endRow("Engine: blend in the pixel's own initial sample where its BRDF lobe is glossy. Inactive without GI reuse.");
     ImGui::EndDisabled();
     drawIndirectEngine();
+    ImGui::EndDisabled();
     endNode();
     ImGui::Separator();
 }
@@ -1030,8 +1182,8 @@ void SettingsWindow::drawIndirectNrc()
     if (ImGui::Combo("Resolve Mode", &resolveMode, nrcCache.resolveModeComboString())) {
         nrc.resolveMode = static_cast<NrcResolveMode>(resolveMode);
     }
-    endRow("Engine: AddQueryResultToOutput runs the custom GI reservoir resolve; any other mode runs NRC's SDK debug "
-           "resolve into Indirect radiance (Debug view > Indirect radiance).");
+    endRow("Engine: AddQueryResultToOutput runs the custom resolve (direct write in Raw 1-Bounce PT, GI reservoir "
+           "resolve in ReSTIR GI); any other mode runs NRC's SDK debug resolve into Indirect radiance.");
     ImGui::EndDisabled();
     const vk::Extent2D training = nrcCache.getTrainingExtent();
     if (!nrcCache.isActive()) {
@@ -1054,16 +1206,16 @@ void SettingsWindow::drawIndirectResampling()
     using namespace settingsRows;
     RtxdiContext& rtxdi = renderer.getRtxdi();
     RtxdiContext::GiSettings& gi = rtxdi.giSettings;
-    // M8.2 BUG-UI-4: IndirectMode::Nrc forces giResamplingMode == None regardless of isGiReference
-    const bool isNrcOnly = renderer.indirectMode == IndirectMode::Nrc;
-    const bool isGiReuse = !isNrcOnly && !rtxdi.isGiReference;
+    // M8.2 BUG-UI-4 / M8.3: Raw 1-Bounce PT and Off do not run ReSTIR GI resampling
+    const bool isRestirGi = renderer.indirectBounce == IndirectBounceMode::RestirGi;
+    const bool isGiReuse = isRestirGi && !rtxdi.isGiReference;
     // isGiReference is the GI check's, not a lab switch: no highlight
     ImGui::PushItemWidth(kModeComboWidth);
     constexpr std::array kModes{"None", "Temporal", "Spatial", "Temporal + Spatial", "Fused Spatiotemporal"};
     constexpr size_t kNone = 0;
     constexpr size_t kTemporalAndSpatial = 3;
     const size_t current = isGiReuse ? kTemporalAndSpatial : kNone;
-    ImGui::BeginDisabled(isNrcOnly);
+    ImGui::BeginDisabled(!isRestirGi);
     if (ImGui::BeginCombo("Resampling Mode", kModes[current])) {
         for (size_t i = 0; i < kModes.size(); ++i) {
             ImGui::BeginDisabled(i != kNone && i != kTemporalAndSpatial);
@@ -1075,8 +1227,8 @@ void SettingsWindow::drawIndirectResampling()
         ImGui::EndCombo();
     }
     ImGui::EndDisabled();
-    helpMarker("Engine: None shades each pixel's initial sample alone, the unbiased estimate the reuse converges to; "
-               "otherwise Temporal + Spatial. The NRC mode shades without reuse (forced None).");
+    helpMarker("Engine: active when Indirect (Bounce 1) is ReSTIR GI. None shades each pixel's initial GI reservoir "
+               "alone; Temporal + Spatial runs full ReSTIR GI reuse.");
     ImGui::PopItemWidth();
     ImGui::Separator();
 
@@ -1153,7 +1305,7 @@ void SettingsWindow::drawIndirectEngine()
     RtxdiContext& rtxdi = renderer.getRtxdi();
     RtxdiContext::GiSettings& gi = rtxdi.giSettings;
     // spec m8 O11: ReSTIR PT's DLSS-RR profile ported to ReSTIR GI, under NVIDIA's ReSTIR PT labels
-    const bool isGiReuse = renderer.indirectMode != IndirectMode::Nrc && !rtxdi.isGiReference;
+    const bool isGiReuse = renderer.indirectBounce == IndirectBounceMode::RestirGi && !rtxdi.isGiReference;
     ImGui::BeginDisabled(!isGiReuse);
     if (beginNode("ReSTIR PT DLSS-RR profile", kIndirectPtProfile)) {
         beginRow({"gi.decorrelation"});

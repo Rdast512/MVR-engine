@@ -43,8 +43,9 @@ public:
         // the engine sun at its default illuminance; off when nullopt
         std::optional<SunAngles> sun;
         bool shouldCapture = false;
-        IndirectMode indirectMode = IndirectMode::NrcRestirGi;
-        // RtxdiContext::isReference: RTXDI without reuse, the convergence reference of emissive shots
+        IndirectBounceMode indirectBounce = IndirectBounceMode::RestirGi;
+        RadianceCacheMode radianceCache = RadianceCacheMode::Nrc;
+        // DirectResamplingMode::Reference: RTXDI without reuse, the convergence reference of emissive shots
         bool isRtxdiReference = false;
         // WorldLights::areTriangleLightsSampled
         bool areTriangleLightsSampled = true;
@@ -182,35 +183,39 @@ private:
     struct ShotView
     {
         DebugView view;
-        IndirectMode mode;
+        // index into kLegacyIndirectModes (0: nrc-restir-gi, 1: nrc, 2: restir-gi)
+        uint8_t modeIndex;
     };
+    static constexpr uint8_t kNrcRestirGiIndex = 0;
+    static constexpr uint8_t kNrcIndex = 1;
+    static constexpr uint8_t kRestirGiIndex = 2;
     static constexpr std::array<ShotView, 23> kViews = {{
-        {DebugView::DiffuseAlbedo, IndirectMode::NrcRestirGi},
-        {DebugView::SpecularF0, IndirectMode::NrcRestirGi},
-        {DebugView::Roughness, IndirectMode::NrcRestirGi},
-        {DebugView::ShadingNormal, IndirectMode::NrcRestirGi},
-        {DebugView::GeometricNormal, IndirectMode::NrcRestirGi},
-        {DebugView::Emissive, IndirectMode::NrcRestirGi},
-        {DebugView::AmbientOcclusion, IndirectMode::NrcRestirGi},
+        {DebugView::DiffuseAlbedo, kNrcRestirGiIndex},
+        {DebugView::SpecularF0, kNrcRestirGiIndex},
+        {DebugView::Roughness, kNrcRestirGiIndex},
+        {DebugView::ShadingNormal, kNrcRestirGiIndex},
+        {DebugView::GeometricNormal, kNrcRestirGiIndex},
+        {DebugView::Emissive, kNrcRestirGiIndex},
+        {DebugView::AmbientOcclusion, kNrcRestirGiIndex},
         // classify's resolve bins (spec/m7/e1_material_binning.md)
-        {DebugView::MaterialBin, IndirectMode::NrcRestirGi},
-        {DebugView::UnshadowedLights, IndirectMode::NrcRestirGi},
-        {DebugView::ShadowedLights, IndirectMode::NrcRestirGi},
-        {DebugView::DirectLighting, IndirectMode::NrcRestirGi},
-        {DebugView::RtxdiReservoirs, IndirectMode::NrcRestirGi},
-        {DebugView::IndirectSamples, IndirectMode::NrcRestirGi},
-        {DebugView::NrcCache, IndirectMode::NrcRestirGi},
-        {DebugView::IndirectRadiance, IndirectMode::NrcRestirGi},
-        {DebugView::DlssInput, IndirectMode::NrcRestirGi},
+        {DebugView::MaterialBin, kNrcRestirGiIndex},
+        {DebugView::UnshadowedLights, kNrcRestirGiIndex},
+        {DebugView::ShadowedLights, kNrcRestirGiIndex},
+        {DebugView::DirectLighting, kNrcRestirGiIndex},
+        {DebugView::RtxdiReservoirs, kNrcRestirGiIndex},
+        {DebugView::IndirectSamples, kNrcRestirGiIndex},
+        {DebugView::NrcCache, kNrcRestirGiIndex},
+        {DebugView::IndirectRadiance, kNrcRestirGiIndex},
+        {DebugView::DlssInput, kNrcRestirGiIndex},
         // the glass pass's throughput, white without glass (m8 I13)
-        {DebugView::Glass, IndirectMode::NrcRestirGi},
-        {DebugView::IndirectSamples, IndirectMode::Nrc},
-        {DebugView::IndirectRadiance, IndirectMode::Nrc},
-        {DebugView::DlssInput, IndirectMode::Nrc},
+        {DebugView::Glass, kNrcRestirGiIndex},
+        {DebugView::IndirectSamples, kNrcIndex},
+        {DebugView::IndirectRadiance, kNrcIndex},
+        {DebugView::DlssInput, kNrcIndex},
         // no NRC cache view: the cache is paused in this mode
-        {DebugView::IndirectSamples, IndirectMode::RestirGi},
-        {DebugView::IndirectRadiance, IndirectMode::RestirGi},
-        {DebugView::DlssInput, IndirectMode::RestirGi},
+        {DebugView::IndirectSamples, kRestirGiIndex},
+        {DebugView::IndirectRadiance, kRestirGiIndex},
+        {DebugView::DlssInput, kRestirGiIndex},
     }};
     // what ReSTIR DI's mean is held against
     enum class ConvergenceReference : uint8_t

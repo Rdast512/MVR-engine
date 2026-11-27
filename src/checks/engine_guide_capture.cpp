@@ -190,7 +190,8 @@ EngineGuideCapture::Request EngineGuideCapture::beginFrame(Camera& camera, Debug
         request.jitterPhase = throughput->frame;
         request.manualEv = kThroughputManualEv;
         // NRC trains asynchronously to the frame; ReSTIR GI alone repeats
-        request.indirectMode = IndirectMode::RestirGi;
+        request.indirectBounce = IndirectBounceMode::RestirGi;
+        request.radianceCache = RadianceCacheMode::Off;
         debugView.view = throughput->phase == ThroughputPhase::Throughput ? DebugView::Glass : DebugView::DlssInput;
         debugView.showGlassReflection = false;
         request.shouldCapture = throughput->frame + 1 == kThroughputFrames && modelBounds.has_value();
@@ -199,7 +200,9 @@ EngineGuideCapture::Request EngineGuideCapture::beginFrame(Camera& camera, Debug
     request.isRtxdiReference = isConvergenceRunning && convergence->isReferencePhase;
     request.areTriangleLightsSampled = !isConvergenceRunning || findConvergenceShot(shotIndex)->areTriangleLightsSampled;
     debugView.view = isConvergenceRunning ? DebugView::DirectLighting : kViews[viewIndex].view;
-    request.indirectMode = isConvergenceRunning ? IndirectMode::NrcRestirGi : kViews[viewIndex].mode;
+    const IndirectStagePair stages = kLegacyIndirectModes[isConvergenceRunning ? kNrcRestirGiIndex : kViews[viewIndex].modeIndex].stages;
+    request.indirectBounce = stages.bounce;
+    request.radianceCache = stages.cache;
     request.shouldCapture = shotFrame >= kSettleFrames && modelBounds.has_value() &&
         (!isConvergenceRunning || convergence->frame >= kConvergenceWarmupFrames);
     return request;
@@ -427,7 +430,7 @@ bool EngineGuideCapture::finishShot()
 
 void EngineGuideCapture::keepNormals(const DisplayCapture& capture)
 {
-    if (kViews[viewIndex].mode != IndirectMode::NrcRestirGi) {
+    if (kViews[viewIndex].modeIndex != kNrcRestirGiIndex) {
         return;
     }
     const std::pair<size_t, DebugView> key{shotIndex, kViews[viewIndex].view};
@@ -641,9 +644,9 @@ bool EngineGuideCapture::writePng(const DisplayCapture& capture) const
     std::filesystem::create_directories(directory, errorCode);
     const ShotView& shotView = kViews[viewIndex];
     // NRC + ReSTIR GI keeps the file names of the runs before G7
-    const std::string modeSuffix = shotView.mode == IndirectMode::NrcRestirGi
+    const std::string modeSuffix = shotView.modeIndex == kNrcRestirGiIndex
         ? std::string()
-        : std::format("_{}", indirectModeInfo(shotView.mode).id);
+        : std::format("_{}", kLegacyIndirectModes[shotView.modeIndex].id);
     const std::filesystem::path file =
         directory / std::format("{}_{}{}.png", shot.name, fileStem(debugViewInfo(shotView.view).name), modeSuffix);
     const int stride = static_cast<int>(capture.extent.width) * 4;

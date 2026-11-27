@@ -103,7 +103,9 @@ namespace
             return value * 0.5 + 0.25;
         case LabSwitchType::Enum:
             for (size_t index = 0; index < entry.valueNames.size(); ++index) {
-                if (static_cast<double>(index) != value && *entry.valueNames[index] != '\0') {
+                const bool isPlanned =
+                    index < entry.plannedValues.size() && entry.plannedValues[index] != nullptr;
+                if (static_cast<double>(index) != value && *entry.valueNames[index] != '\0' && !isPlanned) {
                     return static_cast<double>(index);
                 }
             }
@@ -118,10 +120,64 @@ int main()
     for (const char* text :
          {"di=shipped gi=shipped frame=shipped", "di=nvidia gi=nvidia", "di=converged gi=converged", "di=reference",
           "gi=nvidia frame.indirectMode=nrc", "di=fast", "di=medium", "di=unbiased", "di=ultra",
-          "frame.denoiser=off frame.aa=accumulation frame.accumulationFrames=64", "di.temporalOnly=1", "di=tuned gi=tuned"}) {
+          "frame.denoiser=off frame.aa=accumulation frame.accumulationFrames=64", "di.temporalOnly=1", "di=tuned gi=tuned",
+          "pipeline=targetRis", "pipeline=targetTemporal", "pipeline=target", "pipeline=rtxpt", "pipeline=rtxdi",
+          "pipeline=rtxgi", "frame.directMode=off frame.indirectBounce=off frame.radianceCache=off"}) {
         const LabConfigParse parse = parseLabConfig(text);
         test::check(parse.config.has_value() && roundTrips(*parse.config),
                     std::format("'{}' round-trips", text).c_str());
+    }
+    // M8.3: per-enumerator planned refusal for SHaRC until M8.4
+    {
+        const LabConfigParse parse = parseLabConfig("frame.radianceCache=sharc");
+        test::check(!parse.config && parse.isPlanned, "frame.radianceCache=sharc is refused as planned (M8.4)");
+    }
+    // M8.3: legacy alias semantics (di.reference=off must not clobber di.temporalOnly=on) and pipeline= precedence
+    {
+        const LabConfigParse temporalKeep = parseLabConfig("di.temporalOnly=on di.reference=off");
+        test::check(temporalKeep.config &&
+                        temporalKeep.config->directMode == DirectMode::RestirDi &&
+                        temporalKeep.config->directResampling == DirectResamplingMode::Temporal,
+                    "di.reference=off preserves di.temporalOnly=on");
+        const LabConfigParse overridePipeline = parseLabConfig("di=medium pipeline=rtxpt");
+        test::check(overridePipeline.config &&
+                        overridePipeline.config->directMode == DirectMode::RestirDi &&
+                        overridePipeline.config->di == RtxdiContext::nvidiaSettings() &&
+                        overridePipeline.config->indirectBounce == IndirectBounceMode::RawPt,
+                    "pipeline= applies before di= domain sets");
+        const std::array kPresets{
+            std::pair{"targetRis", PipelinePreset::EngineTargetRis},
+            std::pair{"targetTemporal", PipelinePreset::EngineTargetTemporal},
+            std::pair{"rtxpt", PipelinePreset::RtxptAnalog},
+            std::pair{"rtxdi", PipelinePreset::RtxdiAnalog},
+            std::pair{"rtxgi", PipelinePreset::RtxgiAnalog},
+        };
+        for (size_t i = 0; i < kPresets.size(); ++i) {
+            const auto& [name, preset] = kPresets[i];
+            const LabConfigParse parse = parseLabConfig(std::format("pipeline={}", name));
+            test::check(parse.config && isSameConfig(*parse.config, pipelinePresetConfig(preset)),
+                        std::format("pipeline={} matches pipelinePresetConfig", name).c_str());
+            for (size_t j = i + 1; j < kPresets.size(); ++j) {
+                test::check(!isSameConfig(pipelinePresetConfig(preset), pipelinePresetConfig(kPresets[j].second)),
+                            std::format("pipeline presets {} and {} are distinct", name, kPresets[j].first).c_str());
+            }
+        }
+        {
+            LabConfig customBase;
+            customBase.glass.maxLayers = 8;
+            customBase.nrc.trainingIterations = 3;
+            customBase.isJitterEnabled = false;
+            const LabConfigParse preserved = parseLabConfig("pipeline=rtxpt", customBase);
+            test::check(preserved.config && preserved.config->directMode == DirectMode::StreamingRis &&
+                            preserved.config->radianceCache == RadianceCacheMode::Off &&
+                            preserved.config->glass.maxLayers == 8 &&
+                            preserved.config->nrc.trainingIterations == 3 && !preserved.config->isJitterEnabled,
+                        "pipeline= preserves non-preset base fields (matches SettingsWindow::applyPipelinePreset)");
+        }
+        test::check(std::string_view(kLegacyIndirectModes[0].id) == "nrc-restir-gi" &&
+                        std::string_view(kLegacyIndirectModes[1].id) == "nrc" &&
+                        std::string_view(kLegacyIndirectModes[2].id) == "restir-gi",
+                    "ENGINE_INDIRECT_MODE legacy ids stay hyphenated");
     }
 
     std::set<std::string_view> names;
@@ -161,8 +217,11 @@ int main()
                 "the NVIDIA defaults are the Medium preset");
     test::check(RtxdiContext::defaultSettings() == RtxdiContext::nvidiaSettings() &&
                     RtxdiContext::defaultGiSettings() == RtxdiContext::nvidiaGiSettings() &&
-                    LabConfig{}.indirectMode == IndirectMode::Nrc,
-                "the shipped settings are NVIDIA's, in NRC mode");
+                    LabConfig{}.directMode == DirectMode::RestirDi &&
+                    LabConfig{}.directResampling == DirectResamplingMode::TemporalAndSpatial &&
+                    LabConfig{}.indirectBounce == IndirectBounceMode::RawPt &&
+                    LabConfig{}.radianceCache == RadianceCacheMode::Nrc,
+                "the shipped settings are NVIDIA's, in Raw 1-Bounce PT + NRC mode");
     {
         const RtxdiContext::Settings fast = RtxdiContext::nvidiaPreset(Preset::Fast);
         test::check(fast.localLightSamplingMode == ReSTIRDI_LocalLightSamplingMode::Power_RIS &&
@@ -183,8 +242,8 @@ int main()
                     "di=ultra is the Ultra preset");
     }
 
-    // the settings window: every row edits a registered switch, and every switch an NVIDIA preset or the converged
-    // set changes has a row to highlight (nvidia_settings_layout.md §5)
+    // the settings window: every row edits a registered switch, and every switch an NVIDIA preset, pipeline preset
+    // or the converged set changes has a row to highlight (nvidia_settings_layout.md §5)
     for (const SettingsRows rows : settingsRows::kAll) {
         for (const SettingsRow& row : rows) {
             test::check(findLabSwitch(row.switchName) != nullptr,
@@ -195,16 +254,25 @@ int main()
     for (const Preset preset : {Preset::Fast, Preset::Medium, Preset::Unbiased, Preset::Ultra, Preset::Reference}) {
         LabConfig config;
         config.di = RtxdiContext::nvidiaPreset(preset);
-        config.isDiReference = preset == Preset::Reference;
+        config.directMode = DirectMode::RestirDi;
+        config.directResampling =
+            preset == Preset::Reference ? DirectResamplingMode::Reference : DirectResamplingMode::TemporalAndSpatial;
         config.gi = RtxdiContext::nvidiaGiSettings();
-        config.indirectMode = IndirectMode::RestirGi;
+        config.indirectBounce = IndirectBounceMode::RestirGi;
+        config.radianceCache = RadianceCacheMode::Off;
         config.dlss.quality = Dlss::Quality::Dlaa;
         comparisons.push_back(config);
+    }
+    for (const PipelinePreset preset : {PipelinePreset::EngineTargetRis, PipelinePreset::EngineTargetTemporal,
+                                        PipelinePreset::RtxptAnalog, PipelinePreset::RtxdiAnalog,
+                                        PipelinePreset::RtxgiAnalog}) {
+        comparisons.push_back(pipelinePresetConfig(preset));
     }
     comparisons.emplace_back();
     comparisons.back().di = RtxdiContext::tunedSettings();
     comparisons.back().gi = RtxdiContext::tunedGiSettings();
-    comparisons.back().indirectMode = IndirectMode::NrcRestirGi;
+    comparisons.back().indirectBounce = IndirectBounceMode::RestirGi;
+    comparisons.back().radianceCache = RadianceCacheMode::Nrc;
     comparisons.emplace_back();
     comparisons.back().di = RtxdiContext::convergedSettings();
     comparisons.back().gi = RtxdiContext::convergedGiSettings();
@@ -214,8 +282,9 @@ int main()
                         std::format("{} has a settings row", difference.entry->name).c_str());
         }
     }
-    // M8.2 S5 (C-NS-1): Compare with Shipped highlights nothing; Compare with NVIDIA Medium highlights exactly
-    // {frame.indirectMode, frame.dlssQuality} and closed-section counts match deduplicated settingsRows
+    // M8.2 S5 (C-NS-1) + M8.3: Compare with Shipped highlights nothing; Compare with NVIDIA Medium highlights exactly
+    // {frame.indirectBounce, frame.radianceCache, frame.dlssQuality} and closed-section counts match deduplicated
+    // settingsRows
     {
         const LabConfig shipped{};
         test::check(differingSwitches(shipped, shipped).empty(), "Compare with Shipped highlights 0 rows");
@@ -225,9 +294,11 @@ int main()
         for (const LabSwitchValue& diff : mediumDiff) {
             mediumDiffNames.insert(diff.entry->name);
         }
-        const std::set<std::string_view> expectedMediumDiff{"frame.indirectMode", "frame.dlssQuality"};
+        const std::set<std::string_view> expectedMediumDiff{"frame.indirectBounce", "frame.radianceCache",
+                                                            "frame.dlssQuality"};
         test::check(mediumDiffNames == expectedMediumDiff,
-                    "Compare with NVIDIA Medium highlights exact {frame.indirectMode, frame.dlssQuality}");
+                    "Compare with NVIDIA Medium highlights exact {frame.indirectBounce, frame.radianceCache, "
+                    "frame.dlssQuality}");
         // closed section distinct counts (with Show Advanced Settings on/off): shared DI/GI thresholds count once
         const auto countSection = [](const std::vector<LabSwitchValue>& diffs,
                                      std::initializer_list<SettingsRows> lists, bool showAdvanced) -> uint32_t {
@@ -247,14 +318,15 @@ int main()
             return static_cast<uint32_t>(seen.size());
         };
         using namespace settingsRows;
-        test::check(countSection(mediumDiff, {kIndirect, kIndirectReuse, kIndirectNrc, kIndirectTemporal,
-                                              kIndirectSpatial, kIndirectEngine, kIndirectPtProfile},
-                                 false) == 1 &&
+        test::check(countSection(mediumDiff, {kPipeline}, false) == 2 &&
+                        countSection(mediumDiff, {kIndirect, kIndirectReuse, kIndirectNrc, kIndirectTemporal,
+                                                  kIndirectSpatial, kIndirectEngine, kIndirectPtProfile},
+                                     false) == 0 &&
                         countSection(mediumDiff, {kDenoising, kDenoisingDlss}, false) == 1 &&
                         countSection(mediumDiff, {kDirect, kDirectLocalLights, kDirectInitial, kDirectTemporal,
                                                   kDirectSpatial, kDirectFinal, kDirectEngine},
                                      true) == 0,
-                    "Compare with NVIDIA Medium closed-section counts (Indirect=1, Denoising=1, Direct=0)");
+                    "Compare with NVIDIA Medium closed-section counts (Pipeline=2, Indirect=0, Denoising=1, Direct=0)");
         // shared threshold deduplication: editing di.depthThreshold appears in both kDirectTemporal and kDirectSpatial
         LabConfig thresholdEdit{};
         thresholdEdit.di.depthThreshold = shipped.di.depthThreshold + 0.1f;

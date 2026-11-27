@@ -279,8 +279,9 @@ void Dlss::evaluate(const vk::raii::CommandBuffer& cmd, const Frame& frame) cons
     NVSDK_NGX_Resource_VK diffuseAlbedo = ngxResource(frame.diffuseAlbedo, renderExtent, false);
     NVSDK_NGX_Resource_VK specularAlbedo = ngxResource(frame.specularAlbedo, renderExtent, false);
     NVSDK_NGX_Resource_VK normalRoughness = ngxResource(frame.normalRoughness, renderExtent, false);
+    const bool useSpecularHitDistance = guides.isSpecularHitDistanceUsed && frame.specularHitDistance.image != nullptr;
     NVSDK_NGX_Resource_VK specularHitDistance{};
-    if (guides.isSpecularHitDistanceUsed) {
+    if (useSpecularHitDistance) {
         specularHitDistance = ngxResource(frame.specularHitDistance, renderExtent, false);
     }
     NVSDK_NGX_Resource_VK output = ngxResource(frame.output, displayExtent, true);
@@ -303,7 +304,7 @@ void Dlss::evaluate(const vk::raii::CommandBuffer& cmd, const Frame& frame) cons
     eval.pInNormals = &normalRoughness;
     eval.pInRoughness = &normalRoughness;
     // optional: NGX takes nullptr for an absent guide (reference/vk_gltf_renderer/src/dlss_wrapper.cpp)
-    eval.pInSpecularHitDistance = guides.isSpecularHitDistanceUsed ? &specularHitDistance : nullptr;
+    eval.pInSpecularHitDistance = useSpecularHitDistance ? &specularHitDistance : nullptr;
     // keep the post exposure feedback outside ray reconstruction
     eval.pInExposureTexture = nullptr;
     eval.InPreExposure = debug.preExposure;

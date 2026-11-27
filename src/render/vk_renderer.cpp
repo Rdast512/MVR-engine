@@ -186,7 +186,12 @@ void Renderer::drawFrame()
     rtScene.prepareFrame(currentFrame, frameNumber - 1);
     const bool isLitDlss = isDlssEvaluated();
     const bool isSpecularHitDistanceWritten =
-        (isLitDlss && dlss.guides.isSpecularHitDistanceUsed) || debugView.view == DebugView::SpecularHitDistance;
+        ((isLitDlss && dlss.guides.isSpecularHitDistanceUsed) || debugView.view == DebugView::SpecularHitDistance) &&
+        indirectBounce != IndirectBounceMode::Off;
+    if (isLitDlss && isSpecularHitDistanceWritten != appliedSpecularHitDistanceWritten) {
+        isDlssHistoryValid = false;
+    }
+    appliedSpecularHitDistanceWritten = isSpecularHitDistanceWritten;
     const bool isCleanDlssInput = (extraFrameFlags & FrameFlag::CleanDlssInput) != 0;
     const DlssInputAccumulationMode accumulationMode = isCleanDlssInput ? DlssInputAccumulationMode::None
         : (extraFrameFlags & FrameFlag::DlssInputAccumulate) != 0       ? DlssInputAccumulationMode::Accumulate
@@ -229,19 +234,20 @@ void Renderer::drawFrame()
     }
     // the accumulated mean resolves the jitter as DLSS-RR does; No AA without a denoiser has nothing to resolve it
     camera.updateCameraData(currentFrame, frameNumber, isLitDlss || isAccumulationActive());
-    targets.prepareFrame(currentFrame, frameNumber, isLitPresented(), isSpecularHitDistanceWritten,
-                         accumulationMode != DlssInputAccumulationMode::None);
     {
-        const IndirectState indirect{.mode = indirectMode,
+        const IndirectState indirect{.bounce = indirectBounce,
+                                     .cache = radianceCache,
                                      .isGiReference = rtxdi.isGiReference,
                                      .giReferenceBounces = rtxdi.giReferenceBounces,
                                      .arePathInfiniteLightsExact = rtxdi.arePathInfiniteLightsExact(),
+                                     .isSecondaryResamplingEffective = rtxdi.isSecondaryResamplingEffective(),
                                      .giSettings = rtxdi.giSettings};
-        // the samples change meaning (spec/m4/g7_indirect_modes.md): ReSTIR GI and DLSS-RR start over, ReSTIR DI keeps
+        // the samples change meaning (spec/m8/m8_3_pipeline_toggles.md): ReSTIR GI and DLSS-RR start over, ReSTIR DI keeps
         isIndirectHistoryReset = indirect != appliedIndirect;
         if (isIndirectHistoryReset) {
             TracyMessageL("Indirect history reset");
-            logInfo(std::format("indirect: {}{}{}", indirectModeInfo(indirect.mode).label,
+            logInfo(std::format("indirect: {} + {}{}{}", indirectBounceModeLabel(indirect.bounce),
+                                radianceCacheModeLabel(indirect.cache),
                                 indirect.isGiReference ? ", no reuse" : "",
                                 indirect.giReferenceBounces != 0 ? ", ground-truth paths" : ""),
                     "Renderer");
@@ -256,7 +262,7 @@ void Renderer::drawFrame()
     lastLightCount = worldLights.lightCount();
     wereTriangleLightsSampled = worldLights.areTriangleLightsSampled;
     // NP2: camera, sun, light set, scene layout or dynamic transforms invalidate the cache; switching between
-    // NRC+ReSTIR GI and NRC (or changing GI reuse settings) does not alter NRC's training target (unpausing NRC
+    // RawPt+NRC and RestirGi+NRC (or changing GI reuse settings) does not alter NRC's training target (unpausing NRC
     // already reloads the countdown via NrcCache::wasPaused)
     const bool isNrcSceneChanged = !hasNrcChangeBaseline || camera.isCut() ||
         camera.cameraData.viewProj != lastNrcViewProj || camera.cameraData.cameraPos != lastNrcCameraPos ||
@@ -280,11 +286,14 @@ void Renderer::drawFrame()
     }
     nrc.prepareFrame(currentFrame, rtScene.getSceneBounds(), isNrcPaused(), isNrcSceneChanged);
     const bool areDiInfiniteExact = rtxdi.areDiInfiniteLightsExact();
-    const bool willDiReuseTemporally = !rtxdi.isReference && !rtxdi.isSpatialOnly;
-    const bool isDiModeChanged = rtxdi.isReference != rtxdi.isReferenceEnabled() ||
-        rtxdi.isSpatialOnly != rtxdi.isSpatialOnlyEnabled() || rtxdi.isTemporalOnly != rtxdi.isTemporalOnlyEnabled();
+    const bool willDiReuseTemporally = rtxdi.directMode == DirectMode::RestirDi &&
+        (rtxdi.directResampling == DirectResamplingMode::Temporal ||
+         rtxdi.directResampling == DirectResamplingMode::TemporalAndSpatial);
+    const bool isDiModeChanged = rtxdi.directMode != rtxdi.getAppliedDirectMode() ||
+        rtxdi.directResampling != rtxdi.getAppliedDirectResampling();
     const bool isDiSettingsChanged = rtxdi.isSettingsDirty();
-    // re-entering temporal DI reuse after None or Spatial must not read stale reservoirs from an unupdated buffer
+    // re-entering temporal DI reuse after Off, StreamingRis, Reference or Spatial must not read stale/uninitialized
+    // reservoirs (FrameFlag::HistoryReset is global and also resets motion/GI/DLSS)
     isDiHistoryReset =
         areDiInfiniteExact != wereDiInfiniteLightsExact || (!rtxdi.isTemporalReuseEnabled() && willDiReuseTemporally);
     wereDiInfiniteLightsExact = areDiInfiniteExact;
@@ -292,8 +301,34 @@ void Renderer::drawFrame()
         // direct-light noise profile, preset or reservoir light set changed
         isDlssHistoryValid = false;
     }
-    rtxdi.prepareFrame(currentFrame, frameNumber, indirectMode != IndirectMode::Nrc, camera.cameraData.cameraPos,
-                       frameNumber - 1);
+    rtxdi.prepareFrame(currentFrame, frameNumber, indirectBounce == IndirectBounceMode::RestirGi,
+                       camera.cameraData.cameraPos, frameNumber - 1);
+    // M8.3 PERF-D2: lazily allocate/retire optional lighting targets before targets.prepareFrame writes GpuTargets
+    const bool needsGiStagnancy = indirectBounce == IndirectBounceMode::RestirGi && rtxdi.isGiStagnancyEnabled();
+    if (needsGiStagnancy) {
+        targets.ensureGiStagnancy();
+        lastGiStagnancyFrame = frameNumber;
+    } else if (targets.hasGiStagnancy() && frameNumber >= lastGiStagnancyFrame + MAX_FRAMES_IN_FLIGHT) {
+        targets.releaseGiStagnancy();
+    }
+    const bool needsGiDuplication =
+        indirectBounce == IndirectBounceMode::RestirGi && rtxdi.isGiDuplicationMapEnabled();
+    if (needsGiDuplication) {
+        targets.ensureGiDuplication();
+        lastGiDuplicationFrame = frameNumber;
+    } else if (targets.hasGiDuplication() && frameNumber >= lastGiDuplicationFrame + MAX_FRAMES_IN_FLIGHT) {
+        targets.releaseGiDuplication();
+    }
+    const bool needsRawIndirectWeight =
+        indirectBounce == IndirectBounceMode::RawPt && !isNrcPaused() && nrc.isActive();
+    if (needsRawIndirectWeight) {
+        targets.ensureRawIndirectWeight();
+        lastRawIndirectWeightFrame = frameNumber;
+    } else if (targets.hasRawIndirectWeight() && frameNumber >= lastRawIndirectWeightFrame + MAX_FRAMES_IN_FLIGHT) {
+        targets.releaseRawIndirectWeight();
+    }
+    targets.prepareFrame(currentFrame, frameNumber, isLitPresented(), isSpecularHitDistanceWritten,
+                         accumulationMode != DlssInputAccumulationMode::None, needsRawIndirectWeight);
     const bool isGlassChanged = glass != appliedGlass && rtScene.glassRowCount() > 0;
     const bool isNrcResolveChanged = nrc.settings.resolveMode != appliedNrcResolveMode;
     prepareAccumulation(isDiModeChanged || isDiSettingsChanged || isJitterChanged || isGlassChanged ||
@@ -382,6 +417,9 @@ void Renderer::drawFrame()
                                 (isIndirectHistoryReset ? FrameFlag::IndirectHistoryReset : 0u) |
                                 (worldLights.areTriangleLightsSampled ? 0u : FrameFlag::TriangleLightsUnsampled) |
                                 ((hadDlssOutput && !isHistoryReset) ? FrameFlag::DlssHistoryValid : 0u) |
+                                (rtxdi.getAppliedDirectMode() == DirectMode::Off ? FrameFlag::DirectDisabled : 0u) |
+                                (indirectBounce == IndirectBounceMode::Off ? FrameFlag::IndirectDisabled : 0u) |
+                                (indirectBounce == IndirectBounceMode::RawPt ? FrameFlag::RawIndirect : 0u) |
                                 extraFrameFlags,
                             .frameIndex = frameNumber,
                             .lightCount = worldLights.lightCount(),
@@ -677,6 +715,18 @@ void Renderer::recordRayCommands()
     frameGlassMaxLayers = glass.clampedMaxLayers();
     // moves on when an SDK call opens a new segment
     const vk::raii::CommandBuffer* cmd = &beginRaySegment();
+    // this frame's guide writes and last frame's reservoir writes -> ray/combine passes; emitted here so Direct == Off
+    // still orders resolve -> indirect/combine/debug and keeps RayStartWait valid (spec/m8/m8_3_pipeline_toggles.md)
+    const vk::MemoryBarrier2 rayStartBarrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageRead |
+            vk::AccessFlagBits2::eShaderStorageWrite,
+    };
+    cmd->pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &rayStartBarrier});
+    // first ray pass: the span since resolve covers the ray submit gap and the computeTimeline wait (F4)
+    gpuTimer.end(*cmd, GpuTimerScope::RayStartWait);
     {
         ZoneScopedN("DirectLight");
 #ifdef TRACY_ENABLE
@@ -798,8 +848,12 @@ void Renderer::submitComputeCommands()
     // and light preparation's compute dispatches can overlap buildPartitionedAccelerationStructuresNV. Defensive heap
     // rebind: whether the PTLAS build keeps the heap bindings is not verified
     rtScene.recordBuild(cmd, currentFrame);
-    bindHeaps(cmd);
-    rtxdi.recordLightPreparation(cmd, currentFrame, frameData.frameRootAddress(currentFrame));
+    if (isLightPreparationNeeded()) {
+        bindHeaps(cmd);
+        rtxdi.recordLightPreparation(cmd, currentFrame, frameData.frameRootAddress(currentFrame));
+    } else {
+        rtxdi.skipLightPreparation(currentFrame);
+    }
     cmd.end();
 
     // frame numbers only grow, so every signal is larger than the last
@@ -1053,22 +1107,31 @@ void Renderer::recordResolve(const vk::raii::CommandBuffer& cmd)
     gpuTimer.end(cmd, GpuTimerScope::Resolve);
 }
 
-// ReSTIR DI: initial reservoirs, temporal resampling, then spatial resampling + shading into directRadiance
+// Direct lighting (Off, single-pass Streaming RIS, or multi-pass ReSTIR DI into directRadiance)
 void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
 {
-    // this frame's guide writes and last frame's reservoir writes -> reads and writes of every pass. Reads of
-    // directRadiance by earlier frames are ordered before this frame's resolve (recordResolve)
+    const DirectMode mode = rtxdi.getAppliedDirectMode();
+    if (mode == DirectMode::Off) {
+        gpuTimer.end(cmd, GpuTimerScope::RtxdiInitial);
+        gpuTimer.end(cmd, GpuTimerScope::RtxdiTemporal);
+        gpuTimer.end(cmd, GpuTimerScope::RtxdiShade);
+        return;
+    }
+    if (mode == DirectMode::StreamingRis) {
+        gpuTimer.end(cmd, GpuTimerScope::RtxdiInitial);
+        gpuTimer.end(cmd, GpuTimerScope::RtxdiTemporal);
+        dispatchFullscreen(cmd, shaderObjects.frameShaders.rtxdiStreamingRis);
+        gpuTimer.end(cmd, GpuTimerScope::RtxdiShade);
+        return;
+    }
     const vk::MemoryBarrier2 resamplingBarrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
         .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageRead |
-                         vk::AccessFlagBits2::eShaderStorageWrite,
+            vk::AccessFlagBits2::eShaderStorageWrite,
     };
     const vk::DependencyInfo dependency{.memoryBarrierCount = 1, .pMemoryBarriers = &resamplingBarrier};
-    cmd.pipelineBarrier2(dependency);
-    // first ray pass: the span since resolve covers the ray submit gap and the computeTimeline wait (F4)
-    gpuTimer.end(cmd, GpuTimerScope::RayStartWait);
     // RIS has candidates unless every light is directional and shaded exactly (hasRisLightCandidates in
     // rtxdi_constants.slang; no environment light). Without them rtxdi_shade only writes black or the exact sun and
     // stores empty reservoirs, so the reservoirs skipped meanwhile are never reused
@@ -1093,6 +1156,16 @@ void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
 const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandBuffer& firstCmd)
 {
     const vk::raii::CommandBuffer* cmd = &firstCmd;
+    if (indirectBounce == IndirectBounceMode::Off) {
+        isNrcRecorded = false;
+        gpuTimer.end(*cmd, GpuTimerScope::NrcUpdate);
+        gpuTimer.end(*cmd, GpuTimerScope::Indirect);
+        gpuTimer.end(*cmd, GpuTimerScope::NrcTrain);
+        gpuTimer.end(*cmd, GpuTimerScope::NrcResolve);
+        gpuTimer.end(*cmd, GpuTimerScope::GiTemporal);
+        gpuTimer.end(*cmd, GpuTimerScope::GiShade);
+        return *cmd;
+    }
 #ifdef TRACY_ENABLE
     const bool gpuTrace = tracyContext != nullptr && tracyContext->isActive();
     TracyVkCtx const gpuCtx = gpuTrace ? tracyContext->getHandle() : nullptr;
@@ -1136,7 +1209,8 @@ const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandB
     }
     gpuTimer.end(*cmd, GpuTimerScope::NrcTrain);
     const bool isNrcDebugResolve = isNrcRecorded && nrc.isDebugResolveActive();
-    // the cache view shows the query at the primary instead; debug resolve overwrites indirectRadiance directly
+    // the cache view shows the query at the primary instead; debug resolve overwrites indirectRadiance directly.
+    // nrcBoundary at the end of recordTrain already orders indirect -> nrcResolve
     if (isNrcRecorded && !isCacheView && !isNrcDebugResolve) {
         ZoneScopedN("NrcResolve");
 #ifdef TRACY_ENABLE
@@ -1153,6 +1227,10 @@ const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandB
         cmd = &recordIsolated(*cmd, [&](const vk::raii::CommandBuffer& sdkCmd) {
             nrc.recordDebugResolve(sdkCmd, targets.getIndirectRadianceImage(), targets.getExtent());
         });
+    } else if (indirectBounce == IndirectBounceMode::RawPt) {
+        // M8.3 PERF-D1: indirect.slang (+ nrc_resolve.slang) wrote indirectRadiance directly; combineBarrier orders it
+        gpuTimer.end(*cmd, GpuTimerScope::GiTemporal);
+        gpuTimer.end(*cmd, GpuTimerScope::GiShade);
     } else {
         recordIndirectResampling(*cmd);
     }
@@ -1272,7 +1350,7 @@ const vk::raii::CommandBuffer& Renderer::recordReconstruction(const vk::raii::Co
         .specularAlbedo = toDlss(isGlassGuideBlended ? targets.glassAlbedo(GuideImage::SpecAlbedo)
                                                      : targets.guide(frameNumber, GuideImage::SpecAlbedo)),
         .normalRoughness = toDlss(targets.guide(frameNumber, GuideImage::NormalRoughness)),
-        .specularHitDistance = toDlss(targets.specularHitDistance()),
+        .specularHitDistance = appliedSpecularHitDistanceWritten ? toDlss(targets.specularHitDistance()) : Dlss::Image{},
         .output = toDlss(targets.upscaled()),
         // NDC units, y down like pixels
         .jitterPixels = cameraData.jitterOffset * 0.5f * glm::vec2(renderExtent.width, renderExtent.height),

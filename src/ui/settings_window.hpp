@@ -32,6 +32,11 @@ private:
     {
         None,
         Shipped,
+        EngineTargetRis,
+        EngineTargetTemporal,
+        RtxptAnalog,
+        RtxdiAnalog,
+        RtxgiAnalog,
         NvidiaFast,
         NvidiaMedium,
         NvidiaUnbiased,
@@ -56,6 +61,7 @@ private:
     };
 
     void drawCompareWith();
+    void drawPipeline();
     void drawScene();
     void drawGeneralRendering();
     void drawStaticContext();
@@ -73,6 +79,9 @@ private:
     void drawPostProcessing();
     void drawConfig();
 
+    // the pipeline preset matching the current toggles/settings, else Custom
+    [[nodiscard]] PipelinePreset currentPipelinePreset() const;
+    void applyPipelinePreset(PipelinePreset preset);
     // the preset whose DI state equals the current one, else Custom
     [[nodiscard]] DiPreset currentDiPreset() const;
     void applyDiPreset(DiPreset preset);

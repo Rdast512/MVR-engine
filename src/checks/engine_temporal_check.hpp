@@ -111,6 +111,14 @@ private:
         BlendGuides,
     };
 
+    // preserves legacy 0/1/2 enum ordinals in stepSeed so temporal check RNG seeds stay identical across M8.3
+    enum class LegacyIndirect : uint8_t
+    {
+        NrcRestirGi = 0,
+        Nrc = 1,
+        RestirGi = 2,
+    };
+
     struct Step
     {
         StepType type;
@@ -129,7 +137,7 @@ private:
         // the captured frame that first shows the change; kNoChange: none
         uint32_t changeAt;
         DiSet di = DiSet::Shipped;
-        IndirectMode mode = IndirectMode::RestirGi;
+        LegacyIndirect mode = LegacyIndirect::RestirGi;
         GlassState glass = GlassState::Shipped;
     };
 

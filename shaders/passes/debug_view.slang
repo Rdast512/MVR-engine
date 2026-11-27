@@ -210,6 +210,10 @@ float3 rtxdiReservoir(GpuFrameRoot root, uint2 pixel)
     }
     rtxdiBridgeInit(root);
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
+    if (constants.reservoirs == 0 || constants.reservoirCount == 0)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
     const RTXDI_DIReservoir reservoir = RTXDI_LoadDIReservoir(
         constants.reservoirBuffer, RTXDI_PixelPosToReservoirPos(pixel, constants.runtime.activeCheckerboardField),
         constants.bufferIndices.shadingInputBufferIndex);
@@ -226,8 +230,12 @@ float3 rtxdiReservoir(GpuFrameRoot root, uint2 pixel)
 float3 indirectSample(GpuFrameRoot root, uint2 pixel)
 {
     rtxdiBridgeInit(root);
-    const RAB_Surface surface = RAB_GetGBufferSurface(int2(pixel), false);
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
+    if (constants.giReservoirs == 0 || constants.giReservoirCount == 0)
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    const RAB_Surface surface = RAB_GetGBufferSurface(int2(pixel), false);
     const RTXDI_GIReservoir reservoir = RTXDI_LoadGIReservoir(
         constants.giReservoirBuffer, RTXDI_PixelPosToReservoirPos(pixel, constants.runtime.activeCheckerboardField),
         kGiInitialReservoirArray);
@@ -300,7 +308,9 @@ float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCamer
     case kDebugViewIndirectSamples:
         return indirectSample(root, pixel);
     case kDebugViewIndirectRadiance:
-        return tex2D(targets.indirectRadianceSampled).Load(int3(pixel, 0)).rgb;
+        return (root.frameFlags & kFrameFlagIndirectDisabled) != 0
+            ? float3(0.0, 0.0, 0.0)
+            : tex2D(targets.indirectRadianceSampled).Load(int3(pixel, 0)).rgb;
     case kDebugViewSpecularHitDistance:
     {
         if (targets.specularHitDistanceStorage == kNoneIndex)
@@ -316,11 +326,23 @@ float3 guideViewColor(uint mode, GpuFrameRoot root, GpuTargets targets, GpuCamer
         return clamped >= kMaxSpecularHitDistance ? float3(0.0, 0.0, 1.0) : (clamped / (clamped + 1.0)).xxx;
     }
     case kDebugViewNrcCache:
+    {
+        if ((root.frameFlags & kFrameFlagIndirectDisabled) != 0)
+        {
+            return float3(0.0, 0.0, 0.0);
+        }
+        const GpuNrcConstants nrc = loadNrcConstants(root);
         // the query pass queried at the primary this frame (kNrcFlagCacheView)
-        return nrcQueryResult(loadNrcConstants(root), pixel);
+        return nrc.queryRadiance != 0 ? nrcQueryResult(nrc, pixel) : float3(0.0, 0.0, 0.0);
+    }
     case kDebugViewDirectLighting:
+    {
         // the combine's terms without indirect; converges to Shadowed lights
-        return tex2D(targets.directRadianceSampled).Load(int3(pixel, 0)).rgb + loadGuide(set, kGuideEmissive, pixel).rgb;
+        const float3 direct = (root.frameFlags & kFrameFlagDirectDisabled) != 0
+            ? float3(0.0, 0.0, 0.0)
+            : tex2D(targets.directRadianceSampled).Load(int3(pixel, 0)).rgb;
+        return direct + loadGuide(set, kGuideEmissive, pixel).rgb;
+    }
     case kDebugViewMotionVectors:
     {
         // direction as hue-like red/green, 16 px of motion saturates

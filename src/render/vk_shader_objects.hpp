@@ -113,6 +113,8 @@ public:
         vk::raii::ShaderEXT lightPdfMips = nullptr;
         vk::raii::ShaderEXT rtxdiPresample = nullptr;
         vk::raii::ShaderEXT rtxdiPresampleRegir = nullptr;
+        // passes/rtxdi_streaming_ris.slang: single-pass fused Streaming RIS (m8.3 PERF-C1)
+        vk::raii::ShaderEXT rtxdiStreamingRis = nullptr;
         // passes/rtxdi_initial.slang, rtxdi_temporal.slang and rtxdi_shade.slang: ReSTIR DI, after the TLAS wait
         vk::raii::ShaderEXT rtxdiInitial = nullptr;
         vk::raii::ShaderEXT rtxdiTemporal = nullptr;

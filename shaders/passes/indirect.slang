@@ -33,6 +33,7 @@ static const uint kReferencePathSeed = 43;
 struct PrimaryBounce
 {
     RayDesc ray;
+    float3 weight;
     float pdf;
     bool isSampled;
     bool isActive;
@@ -42,6 +43,7 @@ struct PrimaryBounce
 PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
 {
     PrimaryBounce bounce;
+    bounce.weight = float3(0.0, 0.0, 0.0);
     bounce.pdf = 0.0;
     bounce.ray.Origin = float3(0.0, 0.0, 0.0);
     bounce.ray.Direction = float3(0.0, 0.0, 1.0);
@@ -60,6 +62,7 @@ PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
         const float3 u = float3(RTXDI_GetNextRandom(rng), RTXDI_GetNextRandom(rng), RTXDI_GetNextRandom(rng));
         const BrdfSample brdf = sampleBrdf(primary.normal, primary.diffuseAlbedo, primary.specularF0,
                                            primary.roughness, primary.viewDir, u);
+        bounce.weight = brdf.weight;
         bounce.pdf = brdf.pdf;
         // normal maps can tilt n so a sample lies below the triangle's geometric plane (RTXDI BrdfRayTracing.hlsl)
         bounce.isActive = brdf.pdf > 0.0 && dot(primary.geoNormal, brdf.l) > 0.0;
@@ -69,6 +72,18 @@ PrimaryBounce samplePrimaryBounce(GpuFrameRoot root, uint2 pixel)
         bounce.ray.Direction = brdf.l;
     }
     return bounce;
+}
+
+// m8 I13 §3: glass transmittance on the primary-to-X2 segment, matching rtxdi_gi_shade.slang
+float3 rawReconnectionTransmittance(GpuFrameRoot root, float3 origin, float3 samplePosition)
+{
+    float3 l;
+    float tMax;
+    if (!visibilitySegment(origin, samplePosition, true, l, tMax))
+    {
+        return float3(1.0, 1.0, 1.0);
+    }
+    return glassTransmittance(root, origin, l, tMax);
 }
 
 // RTXDI sample c_MaxIndirectRadiance (10) as displayed luminance: scene luminance times last frame's exposure
@@ -97,7 +112,9 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
     {
         return;
     }
+    const GpuTargets targets = loadTargets(root);
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
+    const bool isRawIndirect = (root.frameFlags & kFrameFlagRawIndirect) != 0;
     const NrcContext nrc = nrcQueryContext(root, pixel);
     const bool isCacheView = (loadNrcConstants(root).flags & kNrcFlagCacheView) != 0;
     NrcPathState nrcPath = NrcCreatePathState(nrc.constants, 0.0);
@@ -119,9 +136,22 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
         {
             NrcUpdateOnMiss(nrcPath);
         }
-        RTXDI_StoreGIReservoir(RTXDI_EmptyGIReservoir(), constants.giReservoirBuffer,
-                               RTXDI_PixelPosToReservoirPos(pixel, constants.runtime.activeCheckerboardField),
-                               kGiInitialReservoirArray);
+        if (isRawIndirect)
+        {
+            storageTex2D<float4, kImageFormatRgba16f>(targets.indirectRadianceStorage)[pixel] =
+                float4(0.0, 0.0, 0.0, 1.0);
+            if (targets.rawIndirectWeightStorage != kNoneIndex)
+            {
+                storageTex2D<float4, kImageFormatRgba16f>(targets.rawIndirectWeightStorage)[pixel] =
+                    float4(0.0, 0.0, 0.0, 0.0);
+            }
+        }
+        else
+        {
+            RTXDI_StoreGIReservoir(RTXDI_EmptyGIReservoir(), constants.giReservoirBuffer,
+                                   RTXDI_PixelPosToReservoirPos(pixel, constants.runtime.activeCheckerboardField),
+                                   kGiInitialReservoirArray);
+        }
         NrcWriteFinalPathInfo(nrc, nrcPath, nrcThroughput, nrcRadiance);
         if (gRtxdiBridge.specularHitDistanceStorage != kNoneIndex)
         {
@@ -139,6 +169,8 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
     const bool isHit = isActive && traceClosest(root, ray, hit);
 
     RTXDI_GIReservoir reservoir = RTXDI_EmptyGIReservoir();
+    float3 rawRadiance = float3(0.0, 0.0, 0.0);
+    float4 rawWeightAndLum = float4(0.0, 0.0, 0.0, 0.0);
     if (isHit)
     {
         const PathHit secondary = shadeRayHit(root, hit, ray, length(ray.Origin - gRtxdiBridge.cameraPos));
@@ -178,13 +210,32 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
         }
         // an unlit X2 reflects no light, so the cache has nothing to add
         const bool hasNrcQuery = secondary.surface.isLit && gNrcBridge.isActive;
-        // m8 I2 F13 + M8.1 BUG-D6: zero-radiance hits (matching RTXDI_EncodeRGBToLogLuv's 1e-6 floor) with no pending
-        // NRC cache term store the far miss placeholder so their Jacobian stays ~1 during reuse
-        const bool isZeroPlaceholder = luminance(radiance) < 1.0e-6 && !hasNrcQuery;
-        const float3 samplePos =
-            isZeroPlaceholder ? ray.Origin + ray.Direction * kMissDistance : secondary.surface.position;
-        const float3 sampleNormal = isZeroPlaceholder ? -ray.Direction : secondary.surface.geoNormal;
-        reservoir = RTXDI_MakeGIReservoir(samplePos, sampleNormal, radiance, pdf);
+        if (isRawIndirect)
+        {
+            // M8.3 PERF-D1: write indirectRadiance directly without GI reservoir LogLuv round-trip; AO applies to the
+            // NRC cache term only inside nrc_resolve.slang, never to the traced bounce
+            float3 primaryWeight = bounce.weight;
+            if ((root.glassFlags & kGlassFlagShadowTransmittance) != 0 && (any(radiance > 0.0) || hasNrcQuery))
+            {
+                primaryWeight *= rawReconnectionTransmittance(root, ray.Origin, secondary.surface.position);
+            }
+            rawRadiance = radiance * primaryWeight;
+            if (hasNrcQuery)
+            {
+                rawWeightAndLum = float4(min(primaryWeight, float3(65504.0, 65504.0, 65504.0)),
+                                         min(luminance(radiance), 65504.0));
+            }
+        }
+        else
+        {
+            // m8 I2 F13 + M8.1 BUG-D6: zero-radiance hits (matching RTXDI_EncodeRGBToLogLuv's 1e-6 floor) with no
+            // pending NRC cache term store the far miss placeholder so their Jacobian stays ~1 during reuse
+            const bool isZeroPlaceholder = luminance(radiance) < 1.0e-6 && !hasNrcQuery;
+            const float3 samplePos =
+                isZeroPlaceholder ? ray.Origin + ray.Direction * kMissDistance : secondary.surface.position;
+            const float3 sampleNormal = isZeroPlaceholder ? -ray.Direction : secondary.surface.geoNormal;
+            reservoir = RTXDI_MakeGIReservoir(samplePos, sampleNormal, radiance, pdf);
+        }
         if (hasNrcQuery)
         {
             const RAB_Surface s = secondary.surface;
@@ -196,21 +247,35 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
     }
     else if (bounce.isSampled)
     {
-        // a miss, or a direction the BRDF cannot reflect into: still a sample, of zero radiance. M counts it, else
-        // temporal reuse keeps an older sample at full weight where the 1-sample estimate reads 0 (+15% on the
-        // gallery, spec/m4/g5_restir_gi.md §3; the RTXDI sample stores an empty reservoir here)
-        reservoir = RTXDI_MakeGIReservoir(ray.Origin + ray.Direction * kMissDistance, -ray.Direction,
-                                          float3(0.0, 0.0, 0.0), pdf);
+        if (!isRawIndirect)
+        {
+            // a miss, or a direction the BRDF cannot reflect into: still a sample, of zero radiance. M counts it, else
+            // temporal reuse keeps an older sample at full weight where the 1-sample estimate reads 0 (+15% on the
+            // gallery, spec/m4/g5_restir_gi.md §3; the RTXDI sample stores an empty reservoir here)
+            reservoir = RTXDI_MakeGIReservoir(ray.Origin + ray.Direction * kMissDistance, -ray.Direction,
+                                              float3(0.0, 0.0, 0.0), pdf);
+        }
         if (isActive)
         {
             NrcUpdateOnMiss(nrcPath);
         }
     }
-    // every pixel: the GI passes and the debug view load each pixel's reservoir, the NRC resolve each pixel's query
-    // path
-    RTXDI_StoreGIReservoir(reservoir, constants.giReservoirBuffer,
-                           RTXDI_PixelPosToReservoirPos(pixel, constants.runtime.activeCheckerboardField),
-                           kGiInitialReservoirArray);
+    if (isRawIndirect)
+    {
+        storageTex2D<float4, kImageFormatRgba16f>(targets.indirectRadianceStorage)[pixel] = float4(rawRadiance, 1.0);
+        if (targets.rawIndirectWeightStorage != kNoneIndex)
+        {
+            storageTex2D<float4, kImageFormatRgba16f>(targets.rawIndirectWeightStorage)[pixel] = rawWeightAndLum;
+        }
+    }
+    else
+    {
+        // every pixel: the GI passes and the debug view load each pixel's reservoir, the NRC resolve each pixel's query
+        // path
+        RTXDI_StoreGIReservoir(reservoir, constants.giReservoirBuffer,
+                               RTXDI_PixelPosToReservoirPos(pixel, constants.runtime.activeCheckerboardField),
+                               kGiInitialReservoirArray);
+    }
     NrcWriteFinalPathInfo(nrc, nrcPath, nrcThroughput, nrcRadiance);
     // DLSS-RR's initial specular hit distance (m8 I16 phase 3): clamped to R16F max so hits in (65504, kMissDistance]
     // never overflow to +Inf; rtxdi_gi_shade and glass refine it when reuse or glass reflections take over

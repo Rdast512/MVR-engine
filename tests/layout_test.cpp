@@ -557,6 +557,7 @@ namespace
             LAYOUT_FIELD(GpuTargets, glassSpecAlbedoStorage),
             LAYOUT_FIELD(GpuTargets, specularHitDistanceStorage),
             LAYOUT_FIELD(GpuTargets, dlssInputAccumulationStorage),
+            LAYOUT_FIELD(GpuTargets, rawIndirectWeightStorage),
         }},
         {"GpuExposureReadback", sizeof(GpuExposureReadback), {
             LAYOUT_FIELD(GpuExposureReadback, exposure),

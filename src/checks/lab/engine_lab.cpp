@@ -600,7 +600,8 @@ void EngineLab::buildPhases(const Run& run)
         break;
     case LabKind::DiBias: {
         LabConfig referenceConfig;
-        referenceConfig.isDiReference = true;
+        referenceConfig.directMode = DirectMode::RestirDi;
+        referenceConfig.directResampling = DirectResamplingMode::Reference;
         referenceConfig.dlss = run.config.dlss;
         referenceConfig.isJitterEnabled = run.config.isJitterEnabled;
         const std::string key = std::format("di|{}|{}|{}|{}", labCase.name, std::to_underlying(run.config.dlss.quality),
@@ -618,10 +619,11 @@ void EngineLab::buildPhases(const Run& run)
     }
     case LabKind::GiBias: {
         // the GI check's truths: one bounce (ReSTIR GI mode's paths without reuse) and kGiGroundTruthBounces
-        const auto truthConfig = [&](IndirectMode mode) {
+        const auto truthConfig = [&](IndirectBounceMode bounce, RadianceCacheMode cache) {
             LabConfig config;
             config.gi = RtxdiContext::convergedGiSettings();
-            config.indirectMode = mode;
+            config.indirectBounce = bounce;
+            config.radianceCache = cache;
             config.isJitterEnabled = false;
             config.dlss = run.config.dlss;
             return config;
@@ -631,13 +633,14 @@ void EngineLab::buildPhases(const Run& run)
         const std::string eightKey =
             std::format("gi8|{}|{}|{}", labCase.name, std::to_underlying(run.config.dlss.quality), run.seedIndex);
         const Phase oneBounce{.type = PhaseType::GiTruth, .view = DebugView::IndirectRadiance,
-                              .config = truthConfig(IndirectMode::RestirGi), .isGiReference = true,
-                              .giReferenceBounces = 0, .warmup = kGiTruthWarmup, .frames = kGiTruthFrames,
-                              .seed = seedOf(oneKey), .referenceKey = oneKey};
+                              .config = truthConfig(IndirectBounceMode::RestirGi, RadianceCacheMode::Off),
+                              .isGiReference = true, .giReferenceBounces = 0, .warmup = kGiTruthWarmup,
+                              .frames = kGiTruthFrames, .seed = seedOf(oneKey), .referenceKey = oneKey};
         const Phase eightBounces{.type = PhaseType::GiTruth, .view = DebugView::IndirectRadiance,
-                                 .config = truthConfig(IndirectMode::NrcRestirGi), .isGiReference = true,
-                                 .giReferenceBounces = RtxdiContext::kGiGroundTruthBounces, .warmup = kGiTruthWarmup,
-                                 .frames = kGiTruthFrames, .seed = seedOf(eightKey), .referenceKey = eightKey};
+                                 .config = truthConfig(IndirectBounceMode::RestirGi, RadianceCacheMode::Nrc),
+                                 .isGiReference = true, .giReferenceBounces = RtxdiContext::kGiGroundTruthBounces,
+                                 .warmup = kGiTruthWarmup, .frames = kGiTruthFrames, .seed = seedOf(eightKey),
+                                 .referenceKey = eightKey};
         if (!references.contains(oneKey)) {
             phases.push_back(oneBounce);
         }
@@ -654,7 +657,8 @@ void EngineLab::buildPhases(const Run& run)
             }
             break;
         }
-        const bool isNrc = run.config.indirectMode != IndirectMode::RestirGi;
+        const bool isNrc =
+            run.config.indirectBounce != IndirectBounceMode::Off && run.config.radianceCache == RadianceCacheMode::Nrc;
         phases.push_back({.type = PhaseType::GiCompare, .view = DebugView::IndirectRadiance, .config = run.config,
                           .warmup = isNrc ? kGiNrcWarmup : kGiWarmup, .frames = kGiFrames, .seed = phaseSeed("gi"),
                           .referenceKey = oneKey, .secondReferenceKey = eightKey});

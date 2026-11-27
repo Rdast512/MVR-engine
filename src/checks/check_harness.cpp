@@ -279,7 +279,9 @@ CheckRequest CheckHarness::beginFrame()
         requestCapture();
     }
     if (r.giCheck &&
-        r.giCheck->beginFrame(camera, renderer.getRtxdi(), renderer.indirectMode, renderer.debugView).shouldCapture) {
+        r.giCheck->beginFrame(camera, renderer.getRtxdi(), renderer.indirectBounce, renderer.radianceCache,
+                              renderer.debugView)
+            .shouldCapture) {
         requestCapture();
     }
     if (r.dlssCheck && r.dlssCheck->beginFrame(camera, renderer).shouldCapture) {
@@ -413,8 +415,11 @@ void CheckHarness::Runners::applyGuideCaptureRequest(const EngineGuideCapture::R
         sun.azimuthDegrees = guide.sun->azimuthDegrees;
         sun.elevationDegrees = guide.sun->elevationDegrees;
     }
-    renderer.indirectMode = guide.indirectMode;
-    renderer.getRtxdi().isReference = guide.isRtxdiReference;
+    renderer.indirectBounce = guide.indirectBounce;
+    renderer.radianceCache = guide.radianceCache;
+    renderer.getRtxdi().directMode = DirectMode::RestirDi;
+    renderer.getRtxdi().directResampling =
+        guide.isRtxdiReference ? DirectResamplingMode::Reference : DirectResamplingMode::TemporalAndSpatial;
     renderer.getWorldLights().areTriangleLightsSampled = guide.areTriangleLightsSampled;
     renderer.glass = guide.glass;
     renderer.getRtxdi().frameIndexOverride = guide.frameIndex;

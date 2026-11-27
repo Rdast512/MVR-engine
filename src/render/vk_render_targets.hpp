@@ -44,6 +44,8 @@ public:
     static constexpr vk::Format kDlssInputAccumulationFormat = vk::Format::eR32G32B32A32Sfloat;
     // the Accumulation AA mode's running mean: 32-bit floats keep the low bits of a 1,024-frame mean
     static constexpr vk::Format kAccumulatedFormat = vk::Format::eR32G32B32A32Sfloat;
+    // M8.3 Raw 1-Bounce PT + NRC primary-weight + x2 traced luminance scratch (8 B/px, lazy)
+    static constexpr vk::Format kRawIndirectWeightFormat = vk::Format::eR16G16B16A16Sfloat;
 
     // an image with the view NGX needs; the descriptor heap does not keep views
     struct ImageRef
@@ -72,7 +74,8 @@ public:
     // writes the slot's GpuTargets with the guide set of frameNumber's parity; isUpscaledPresented: present reads the
     // DLSS-RR output instead of the display image; optional lab/guide storage views stay kNoneIndex when unused
     void prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool isUpscaledPresented,
-                      bool isSpecularHitDistanceWritten = false, bool isDlssInputAccumulated = false);
+                      bool isSpecularHitDistanceWritten = false, bool isDlssInputAccumulated = false,
+                      bool isRawIndirectWeightWritten = false);
 
     // depth, vis buffer, guides and every culling size: the DLSS render resolution
     [[nodiscard]] vk::Extent2D getExtent() const noexcept { return extent; }
@@ -109,6 +112,18 @@ public:
     [[nodiscard]] vk::Image getAccumulatedImage() const noexcept { return *accumulatedTarget.image; }
     [[nodiscard]] uint32_t accumulatedStorageIndex() const noexcept { return accumulatedTarget.storageIndex; }
     [[nodiscard]] uint32_t accumulatedSampledIndex() const noexcept { return accumulatedTarget.sampledIndex; }
+
+    // M8.3 PERF-D2 lazy lighting targets: created on demand between frames, transitioned in recordPendingInit, and
+    // retired once MAX_FRAMES_IN_FLIGHT frames have elapsed since their last use (zero waitIdle)
+    void ensureGiStagnancy();
+    void releaseGiStagnancy();
+    [[nodiscard]] bool hasGiStagnancy() const noexcept { return giStagnancy[0].image != nullptr; }
+    void ensureGiDuplication();
+    void releaseGiDuplication();
+    [[nodiscard]] bool hasGiDuplication() const noexcept { return giSampleIds.image != nullptr; }
+    void ensureRawIndirectWeight();
+    void releaseRawIndirectWeight();
+    [[nodiscard]] bool hasRawIndirectWeight() const noexcept { return rawIndirectWeight.image != nullptr; }
     // display resolution, eGeneral: tonemapped, what Lit presents
     [[nodiscard]] ImageRef post() const { return imageRef(postTarget, kPostFormat); }
     // the slot's GpuTargets, for the frame root
@@ -205,7 +220,11 @@ private:
     Target specularHitDistanceTarget;
     Target dlssInputAccumulation;
     Target accumulatedTarget;
+    Target rawIndirectWeight;
     bool isAccumulatedLayoutPending = false;
+    bool isGiStagnancyLayoutPending = false;
+    bool isGiDuplicationLayoutPending = false;
+    bool isRawIndirectWeightLayoutPending = false;
     bool isDlssInputAccumulationInitialized = false;
     bool isDlssInputAccumulationClearPending = false;
     // sampled depth for the resolve and debug views

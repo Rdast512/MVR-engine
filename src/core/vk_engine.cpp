@@ -21,8 +21,7 @@
 namespace
 {
     // ENGINE_INDIRECT_MODE=cycle: the scripted mode switch of spec/m4/g7_indirect_modes.md
-    constexpr uint32_t kIndirectModeCycleFrames = 64;
-    constexpr std::string_view kIndirectModeCycle = "cycle";
+    constexpr uint32_t kEngineIndirectCycleFrames = 64;
 
     // ENGINE_WINDOW_SIZE=WxH (e.g. 2560x1369 for C-G3-6 stress runs)
     [[nodiscard]] std::pair<int, int> requestedWindowSize()
@@ -167,15 +166,19 @@ void Engine::initialize()
     renderer = std::make_unique<Renderer>(*device, *swapChain, *allocator, *frameSync, *scene, *assetBuffers,
                                           *frameData, *descriptorManager, *shaderObjects,
                                           *camera, *nrcLibrary, tracyContext.get());
-    renderer->getRtxdi().isReference = RtxdiContext::isReferenceRequested();
-    // ENGINE_INDIRECT_MODE: a kIndirectModes id pins the mode, cycle switches it every kIndirectModeCycleFrames
+    if (RtxdiContext::isReferenceRequested()) {
+        renderer->getRtxdi().directMode = DirectMode::RestirDi;
+        renderer->getRtxdi().directResampling = DirectResamplingMode::Reference;
+    }
+    // ENGINE_INDIRECT_MODE: a kLegacyIndirectModes id pins (bounce, cache), cycle switches it every 64 frames
     if (const char* text = std::getenv("ENGINE_INDIRECT_MODE")) {
         const std::string_view request(text);
         isIndirectModeCycling = request == kIndirectModeCycle;
         const auto mode = std::ranges::find_if(
-            kIndirectModes, [request](const IndirectModeInfo& info) { return request == info.id; });
-        if (mode != kIndirectModes.end()) {
-            renderer->indirectMode = static_cast<IndirectMode>(std::distance(kIndirectModes.begin(), mode));
+            kLegacyIndirectModes, [request](const LegacyIndirectModeInfo& info) { return request == info.id; });
+        if (mode != kLegacyIndirectModes.end()) {
+            renderer->indirectBounce = mode->stages.bounce;
+            renderer->radianceCache = mode->stages.cache;
         } else if (!isIndirectModeCycling) {
             logError(std::format("ENGINE_INDIRECT_MODE='{}' is not a mode; ignored", request), "Engine");
         }
@@ -368,8 +371,10 @@ bool Engine::run()
             }
 #endif
             if (isIndirectModeCycling) {
-                renderer->indirectMode = static_cast<IndirectMode>(renderer->frameNumber / kIndirectModeCycleFrames %
-                                                                   std::to_underlying(IndirectMode::Count));
+                const auto& mode =
+                    kLegacyIndirectModes[renderer->frameNumber / kEngineIndirectCycleFrames % kLegacyIndirectModes.size()];
+                renderer->indirectBounce = mode.stages.bounce;
+                renderer->radianceCache = mode.stages.cache;
             }
             if (renderer->denoiser == DenoiserMode::Off && renderer->aaMode == AaMode::Accumulation) {
                 // any lab switch edit starts a new mean, as the RTXDI sample's resetAccumulation on every UI edit
