@@ -140,33 +140,49 @@ OmmAlphaTexture extractAlpha(std::span<const uint8_t> rgba, uint32_t width, uint
     return alpha;
 }
 
-OmmAlphaTexture decodeBc7Alpha(std::span<const uint8_t> blocks, uint32_t width, uint32_t height)
+namespace
 {
-    ZoneScopedN("decodeBc7Alpha");
-    const uint32_t blocksX = (width + kBcBlockExtent - 1) / kBcBlockExtent;
-    const uint32_t blocksY = (height + kBcBlockExtent - 1) / kBcBlockExtent;
-    if (blocks.size() < size_t{blocksX} * blocksY * BCDEC_BC7_BLOCK_SIZE) {
-        throw std::runtime_error(std::format("BC7 data too small for {}x{}", width, height));
-    }
+    template <size_t BlockBytes, typename DecodeFn>
+    OmmAlphaTexture decodeBcAlpha(std::span<const uint8_t> blocks, uint32_t width, uint32_t height,
+                                  const char* formatName, DecodeFn&& decodeBlock)
+    {
+        const uint32_t blocksX = (width + kBcBlockExtent - 1) / kBcBlockExtent;
+        const uint32_t blocksY = (height + kBcBlockExtent - 1) / kBcBlockExtent;
+        if (blocks.size() < size_t{blocksX} * blocksY * BlockBytes) {
+            throw std::runtime_error(std::format("{} data too small for {}x{}", formatName, width, height));
+        }
 
-    OmmAlphaTexture alpha{.texels = std::vector<uint8_t>(size_t{width} * height), .width = width, .height = height};
-    std::array<uint8_t, kBcBlockExtent * kBcBlockExtent * kRgbaBytes> block{};
-    for (uint32_t by = 0; by < blocksY; ++by) {
-        for (uint32_t bx = 0; bx < blocksX; ++bx) {
-            bcdec_bc7(blocks.data() + (size_t{by} * blocksX + bx) * BCDEC_BC7_BLOCK_SIZE, block.data(),
-                      kBcBlockExtent * kRgbaBytes);
-            // edge blocks overhang a size that is not a multiple of 4
-            const uint32_t rows = std::min(kBcBlockExtent, height - by * kBcBlockExtent);
-            const uint32_t columns = std::min(kBcBlockExtent, width - bx * kBcBlockExtent);
-            for (uint32_t y = 0; y < rows; ++y) {
-                const size_t row = size_t{by * kBcBlockExtent + y} * width + bx * kBcBlockExtent;
-                for (uint32_t x = 0; x < columns; ++x) {
-                    alpha.texels[row + x] = block[(y * kBcBlockExtent + x) * kRgbaBytes + kAlphaChannel];
+        OmmAlphaTexture alpha{.texels = std::vector<uint8_t>(size_t{width} * height), .width = width, .height = height};
+        std::array<uint8_t, kBcBlockExtent * kBcBlockExtent * kRgbaBytes> block{};
+        for (uint32_t by = 0; by < blocksY; ++by) {
+            for (uint32_t bx = 0; bx < blocksX; ++bx) {
+                decodeBlock(blocks.data() + (size_t{by} * blocksX + bx) * BlockBytes, block.data(),
+                            kBcBlockExtent * kRgbaBytes);
+                // edge blocks overhang a size that is not a multiple of 4
+                const uint32_t rows = std::min(kBcBlockExtent, height - by * kBcBlockExtent);
+                const uint32_t columns = std::min(kBcBlockExtent, width - bx * kBcBlockExtent);
+                for (uint32_t y = 0; y < rows; ++y) {
+                    const size_t row = size_t{by * kBcBlockExtent + y} * width + bx * kBcBlockExtent;
+                    for (uint32_t x = 0; x < columns; ++x) {
+                        alpha.texels[row + x] = block[(y * kBcBlockExtent + x) * kRgbaBytes + kAlphaChannel];
+                    }
                 }
             }
         }
+        return alpha;
     }
-    return alpha;
+} // namespace
+
+OmmAlphaTexture decodeBc7Alpha(std::span<const uint8_t> blocks, uint32_t width, uint32_t height)
+{
+    ZoneScopedN("decodeBc7Alpha");
+    return decodeBcAlpha<BCDEC_BC7_BLOCK_SIZE>(blocks, width, height, "BC7", bcdec_bc7);
+}
+
+OmmAlphaTexture decodeBc3Alpha(std::span<const uint8_t> blocks, uint32_t width, uint32_t height)
+{
+    ZoneScopedN("decodeBc3Alpha");
+    return decodeBcAlpha<BCDEC_BC3_BLOCK_SIZE>(blocks, width, height, "BC3", bcdec_bc3);
 }
 
 OmmAlphaTexture extractMaxRgb(std::span<const uint8_t> rgba, uint32_t width, uint32_t height)
@@ -277,8 +293,11 @@ OmmBake OmmBaker::bake(const OmmBakeInput& input) const
     check(ommCpuCreateTexture(baker.get(), &textureDesc, &rawTexture), "ommCpuCreateTexture", input.name);
     const TextureHandle texture(rawTexture, TextureDeleter{baker.get()});
 
+    const OmmBakeSettings& settings = input.settings;
     ommCpuBakeInputDesc bakeDesc = ommCpuBakeInputDescDefault();
-    bakeDesc.bakeFlags = kBakeFlags;
+    bakeDesc.bakeFlags = static_cast<ommCpuBakeFlags>(
+        kBakeFlags | (settings.isSpecialIndicesEnabled ? 0u : ommCpuBakeFlags_DisableSpecialIndices) |
+        (settings.isNearDuplicateDetectionEnabled ? ommCpuBakeFlags_EnableNearDuplicateDetection : 0u));
     bakeDesc.texture = texture.get();
     bakeDesc.runtimeSamplerDesc.addressingMode = input.addressMode;
     bakeDesc.runtimeSamplerDesc.filter = input.filter;
@@ -289,11 +308,12 @@ OmmBake OmmBaker::bake(const OmmBakeInput& input) const
     bakeDesc.indexFormat = ommIndexFormat_UINT_32;
     bakeDesc.indexBuffer = input.indices.data();
     bakeDesc.indexCount = static_cast<uint32_t>(input.indices.size());
-    bakeDesc.dynamicSubdivisionScale = input.dynamicSubdivisionScale;
+    // <= 0: every triangle at maxSubdivisionLevel
+    bakeDesc.dynamicSubdivisionScale = settings.isDynamicSubdivisionEnabled ? settings.dynamicSubdivisionScale : 0.0f;
     bakeDesc.alphaCutoff = ommCutoff;
-    bakeDesc.format = ommFormat_OC1_4_State;
-    bakeDesc.unknownStatePromotion = ommUnknownStatePromotion_ForceOpaque;
-    bakeDesc.maxSubdivisionLevel = input.maxSubdivisionLevel;
+    bakeDesc.format = settings.format;
+    bakeDesc.unknownStatePromotion = settings.unknownStatePromotion;
+    bakeDesc.maxSubdivisionLevel = static_cast<uint8_t>(std::min(settings.maxSubdivisionLevel, kOmmMaxSubdivisionLevel));
 
     ommCpuBakeResult rawResult = nullptr;
     check(ommCpuBake(baker.get(), &bakeDesc, &rawResult), "ommCpuBake", input.name);
@@ -315,6 +335,8 @@ OmmBake OmmBaker::bake(const OmmBakeInput& input) const
                                       size_t{resultDesc->indexCount} * indexBytes(resultDesc->indexFormat, input.name)),
         .indexType = resultDesc->indexFormat == ommIndexFormat_UINT_16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32,
         .triangleCount = triangleCount,
+        .buildFlags = settings.isFastBuildPreferred ? VkBuildMicromapFlagsEXT{VK_BUILD_MICROMAP_PREFER_FAST_BUILD_BIT_EXT}
+                                                    : VkBuildMicromapFlagsEXT{VK_BUILD_MICROMAP_PREFER_FAST_TRACE_BIT_EXT},
         .stats = {},
     };
     // 8-byte SDK rows, 12-byte Vulkan rows

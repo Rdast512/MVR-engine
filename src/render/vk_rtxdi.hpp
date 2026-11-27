@@ -93,6 +93,9 @@ struct GpuRtxdiConstants {
     uint32_t diFlags;
     // float2[neighborOffsetCount], RTXDI_DI_NEIGHBOR_OFFSETS_BUFFER (StratifiedLowDiscrepancy for DI; m8 I2 F16)
     vk::DeviceAddress diNeighborOffsets;
+    // local light candidates at path vertices (RtxdiContext::pathLocalLightSamples)
+    uint32_t pathLocalLightSamples;
+    uint32_t pad0;
 };
 // GpuRtxdiConstants::giFlags; mirrored in shaders/lighting/rtxdi_constants.slang
 namespace GiFlag
@@ -122,9 +125,10 @@ namespace DiFlag
 } // namespace DiFlag
 static_assert(sizeof(ReGIR_Parameters) == 1296);
 static_assert(sizeof(RTXDI_PTDecorrelationParameters) == 32);
-static_assert(sizeof(GpuRtxdiConstants) == 1904);
+static_assert(sizeof(GpuRtxdiConstants) == 1912);
 static_assert(offsetof(GpuRtxdiConstants, giDecorrelation) == 1856);
 static_assert(offsetof(GpuRtxdiConstants, diNeighborOffsets) == 1896);
+static_assert(offsetof(GpuRtxdiConstants, pathLocalLightSamples) == 1904);
 static_assert(offsetof(GpuRtxdiConstants, reservoirs) == 304);
 static_assert(offsetof(GpuRtxdiConstants, giReservoirBuffer) == 328);
 static_assert(offsetof(GpuRtxdiConstants, giReservoirs) == 376);
@@ -271,6 +275,10 @@ public:
         // keeps fewer frames of history, down to 1; strength shapes how fast the cap falls with the shared share
         bool isDuplicationHistoryReductionEnabled = false;
         float historyReductionStrength = 0.0f;
+        // cap on local light candidates at path vertices (X2, NRC training, glass); 0: the primary surface's count,
+        // as the RTXDI sample's neeLocalLightSampling. Reference paths and secondary resampling ignore it: their X2
+        // candidates must match the primary's (M8.5 P3)
+        uint32_t pathLocalLightSamples = 0;
 
         bool operator==(const GiSettings&) const = default;
     };
@@ -408,6 +416,8 @@ public:
     {
         return isSecondaryResamplingEffective() ? areDiInfiniteLightsExact() : giSettings.areInfiniteLightsShadedExactly;
     }
+    // local light candidates path vertices take: the applied primary count, capped by GiSettings::pathLocalLightSamples
+    [[nodiscard]] uint32_t pathLocalLightSamples() const;
     // ReSTIR GI temporal and spatial reuse as applied by the last prepareFrame
     [[nodiscard]] bool isGiReuseEnabled() const noexcept { return isGiReuseApplied; }
     // rtxdi_gi_shade reads and writes giStagnancy only while ReSTIR GI reuse runs in Stagnancy decorrelation mode

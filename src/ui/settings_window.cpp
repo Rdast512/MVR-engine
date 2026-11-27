@@ -1093,11 +1093,18 @@ void SettingsWindow::drawIndirectLighting()
         const RTXDI_DIInitialSamplingParameters appliedInitial = rtxdi.getAppliedParameters().initialSampling;
         const uint32_t infiniteSamples =
             rtxdi.arePathInfiniteLightsExact() ? 0u : appliedInitial.numInfiniteLightSamples;
-        fixedText("Indirect Local Light Samples", std::format("{}", appliedInitial.numLocalLightSamples));
+        beginRow({"gi.pathLocalLightSamples"});
+        sliderU32("Path Local Light Cap", gi.pathLocalLightSamples, 0u, 32u);
+        endRow("Engine: local light candidates at path vertices (X2, NRC training, glass), at most the primary "
+               "surface's count. 0 = the primary's count, as the RTXDI sample. Ignored on reference paths and with "
+               "secondary resampling.");
+        fixedText("Indirect Local Light Samples", std::format("{} (primary {})", rtxdi.pathLocalLightSamples(),
+                                                              appliedInitial.numLocalLightSamples));
         fixedText("Indirect Infinite Light Samples", std::format("{}", infiniteSamples));
         notInEngine("Indirect Environment Samples");
-        helpMarker("Engine: path vertices sample lights with the applied primary surface settings (sampleLightsAt); "
-                   "infinite samples are 0 when exact directional lights shade them outside RIS.");
+        helpMarker("Engine: path vertices sample lights in the applied primary surface's mode (sampleLightsAt) with "
+                   "the capped local count; infinite samples are 0 when exact directional lights shade them outside "
+                   "RIS.");
         ImGui::TreePop();
     }
     if (beginNode("Reuse Primary Samples", kIndirectReuse)) {
@@ -1232,6 +1239,9 @@ void SettingsWindow::drawIndirectSharc()
     sliderU32("Query continuation bounces", sharc.maxQueryBounces, SharcCache::kMinQueryBounces,
               SharcCache::kMaxQueryBounces);
     endRow("Max indirect bounces traced on a SHaRC miss or ineligible X2 hit.");
+    beginRow({"sharc.updateLightSamples"});
+    sliderU32("Update local light cap", sharc.updateLocalLightSamples, 0u, 32u);
+    endRow("Local light candidates per update vertex, at most the path vertex count; 0 = the path vertex count.");
     beginRow({"sharc.minRoughness"});
     sliderFloat("Update min roughness", sharc.minRoughnessOverride, 0.0f, 1.0f, "%.2f");
     endRow("Update-only roughness floor to reduce glossy variance in cached radiance.");

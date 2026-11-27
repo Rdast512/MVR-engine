@@ -92,9 +92,10 @@ void sharcUpdateMain(uint3 id : SV_DispatchThreadID)
         primary.roughness = max(primary.roughness, sharc.minRoughnessOverride);
         RasterOrigin primaryOrigin;
         primaryOrigin.surface = primary;
-        const float3 direct0 =
-            clampSharcDirect(directLightAt(root, primary, primaryOrigin, rtxdiConstants, lightRng, coherentRng),
-                             sharc.fireflyClamp);
+        const float3 direct0 = clampSharcDirect(
+            directLightAt(root, primary, primaryOrigin, rtxdiConstants, lightRng, coherentRng,
+                          sharc.updateLocalLightSamples),
+            sharc.fireflyClamp);
 
         // Vertex 0 has no predecessor in sharcState, so separate emissive has nothing to back-propagate to
         const SharcUpdateHitData hitData0 = sharcMakeUpdateHitData(
@@ -140,9 +141,10 @@ void sharcUpdateMain(uint3 id : SV_DispatchThreadID)
         HitOrigin origin;
         origin.hit = hit;
         origin.geoNormal = vertex.surface.geoNormal;
-        const float3 direct =
-            clampSharcDirect(directLightAt(root, vertex.surface, origin, rtxdiConstants, lightRng, coherentRng),
-                             sharc.fireflyClamp);
+        const float3 direct = clampSharcDirect(
+            directLightAt(root, vertex.surface, origin, rtxdiConstants, lightRng, coherentRng,
+                          sharc.updateLocalLightSamples),
+            sharc.fireflyClamp);
 
         const SharcUpdateHitData hitData = sharcMakeUpdateHitData(
             sharc, vertex.surface.position, vertex.surface.geoNormal, vertex.surface.diffuseAlbedo,

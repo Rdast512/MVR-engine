@@ -451,6 +451,15 @@ void Engine::applyUiRequests(const UiRequests& requests)
         run("Spawn instance field",
             [&] { return std::optional(spawnInstanceField(field->center, field->side, field->spacing)); });
     }
+    if (const std::optional<OmmBakeSettings>& settings = requests.rebakeOmms) {
+        run("OMM re-bake", [&] {
+            const SceneActionStatus status = rebakeOmms(*settings);
+            if (!status.isError) {
+                ui->setAppliedOmmSettings(*settings);
+            }
+            return std::optional(status);
+        });
+    }
 }
 #endif
 
@@ -628,6 +637,63 @@ std::optional<Engine::SceneActionStatus> Engine::clearInstanceField()
     }
     frameData->syncScene();
     return SceneActionStatus{.text = std::format("Cleared {} instances", erased)};
+}
+
+Engine::SceneActionStatus Engine::rebakeOmms(const OmmBakeSettings& settings)
+{
+    ZoneScopedN("Engine::rebakeOmms");
+    const auto start = std::chrono::steady_clock::now();
+    assetsLoader->ommSettings = settings;
+    ObjectStorage& storage = scene->objectStorage;
+    // model files in first-entity order, each with its entities' transforms
+    std::vector<std::pair<std::string, std::vector<Transform>>> placements;
+    for (EntityId id = 0; id < storage.size(); ++id) {
+        if (storage.modelIds[id] == kInvalidModelId) {
+            continue;
+        }
+        const std::string& key = assetBuffers->models()[storage.modelIds[id]].key;
+        auto it = std::ranges::find(placements, key, &std::pair<std::string, std::vector<Transform>>::first);
+        if (it == placements.end()) {
+            it = placements.insert(placements.end(), {key, {}});
+        }
+        it->second.push_back(storage.transforms[id]);
+    }
+    if (placements.empty()) {
+        return {.text = "OMM settings apply to the next load"};
+    }
+
+    // a shared model keeps its old bake (findModel), so every entity goes first
+    device->vkdevice.waitIdle();
+    for (EntityId id = storage.size(); id-- > 0;) {
+        textureManager->release(assetBuffers->eraseEntity(id));
+    }
+    uint32_t failedCount = 0;
+    for (const auto& [key, transforms] : placements) {
+        std::optional<EntityId> loaded;
+        try {
+            loaded = assetsLoader->loadModel(key, transforms.front().position);
+        } catch (const std::exception& error) {
+            logError(std::format("OMM re-bake load {} failed: {}", key, error.what()), "Engine");
+        }
+        assetBuffers->flush();
+        if (!loaded) {
+            ++failedCount;
+            continue;
+        }
+        storage.transforms[*loaded] = transforms.front();
+        // placement, not motion
+        storage.prevModelMatrices[*loaded] = computeModelMatrix(transforms.front());
+        if (transforms.size() > 1) {
+            assetBuffers->instantiateModel(storage.modelIds[*loaded], std::span(transforms).subspan(1));
+        }
+    }
+    frameData->syncScene();
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    if (failedCount > 0) {
+        return {.text = std::format("OMM re-bake: {} of {} models failed to reload", failedCount, placements.size()),
+                .isError = true};
+    }
+    return {.text = std::format("Re-baked OMMs of {} models in {:.2f} s", placements.size(), seconds)};
 }
 
 std::optional<Engine::SceneActionStatus> Engine::unloadModel(EntityId id)

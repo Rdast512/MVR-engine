@@ -216,6 +216,7 @@ bool SharcCache::prepareFrame(uint32_t frameSlot, uint32_t frameNumber, bool isA
         .flags = flags,
         .updateLaunch = (updateLaunchExtent.width & 0xFFFFu) | (updateLaunchExtent.height << 16u),
         .counters = counters[frameSlot].address,
+        .updateLocalLightSamples = settings.updateLocalLightSamples,
     };
 
     activeBuffers.lastUsedFrame = frameNumber;

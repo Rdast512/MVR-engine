@@ -33,6 +33,7 @@ enum class AssetBuffer : uint8_t {
     Normals,
     Tangents,
     Uv1,
+    UvFloat,          // glm::vec2[] compact per-primitive FP32 UV fallback
     Indices,
     Materials,        // shared rows, MaterialStore ids; not sliced per model
     PbrExt,           // parallel to Materials

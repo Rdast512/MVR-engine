@@ -3,6 +3,7 @@
 
 #if ENGINE_ENABLE_IMGUI
     #include "core/object_storage.hpp"
+    #include "core/omm_baker.hpp"
     #include "settings_window.hpp"
 
     #include <SDL3/SDL.h>
@@ -58,6 +59,8 @@ struct UiRequests
     std::optional<EntityId> unload;
     std::optional<InstanceField> spawnInstanceField;
     bool shouldClearInstanceField = false;
+    // reload every loaded model with these OMM bake settings; later loads use them too
+    std::optional<OmmBakeSettings> rebakeOmms;
 };
 
 struct FrameStats
@@ -89,6 +92,7 @@ public:
     void buildFrame(const FrameStats& stats);
     [[nodiscard]] UiRequests takeRequests();
     void setLoadStatus(std::string_view text, bool isError);
+    void setAppliedOmmSettings(const OmmBakeSettings& settings) noexcept { appliedOmmSettings = settings; }
     void onSwapchainRecreated();
 
 private:
@@ -106,6 +110,7 @@ private:
     void drawCameraPanel();
     void drawCullingPanel();
     void drawInstanceFieldPanel();
+    void drawOmmPanel();
 
     UiContext context;
     UiRequests requests;
@@ -131,5 +136,8 @@ private:
     int instanceFieldSide = 16;
     // cell size in model bounding diameters
     float instanceFieldSpacing = 1.5f;
+    // edited vs last sent to the loader; both start at the loader default
+    OmmBakeSettings ommSettings;
+    OmmBakeSettings appliedOmmSettings;
 };
 #endif

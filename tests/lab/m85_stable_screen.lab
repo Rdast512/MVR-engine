@@ -1,0 +1,25 @@
+# M8.5 (2026-11-27, user): engine settings for the most stable image under DLSS-RR. Boiling = Lit std / flicker /
+# lag1, light pops = rises / riseSize, light leaks = DI darkLeak against RTXDI's reference and GI darkLeak against the
+# 1- and 8-bounce truths. Seed-0 screen over shipped (NVIDIA Medium DI, Raw PT + NRC); finalists get 5-seed bases of
+# their own (lab rule). NVIDIA's sets stay as they are. Run with ENGINE_CHECK_FPS=30
+base    di=shipped gi=shipped frame=shipped
+seeds   3
+cases   cafe.tables cafe.dining sponza.gallery sponza.courtyard bistro.street
+views   Lit
+kinds   stability diBias giBias
+# the engine's I16 stability set (per-pixel tiles, 32 local, history 4, permutation, 2 spatial, sun exact)
+sets    di=tuned
+sets    di=tuned di.history=8
+sets    di=tuned di.spatialSamples=1
+sets    di=tuned gi.pathLocalLightSamples=8
+sets    di=tuned frame.radianceCache=sharc
+sets    di=tuned frame.dlssPreset=d
+sets    di=tuned frame.dlssPreset=e
+sets    di=tuned gi=tuned frame.indirectBounce=restirGi
+# decorrelation alone over NVIDIA's DI
+sets    di=nvidia di.permutation=on di.boilingFilter=off di.history=4
+# the pipeline presets
+sets    pipeline=targetRis
+sets    pipeline=targetTemporal
+sets    pipeline=rtxpt
+sets    pipeline=rtxdi

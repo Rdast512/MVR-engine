@@ -1139,8 +1139,8 @@ void Renderer::recordDirectLight(const vk::raii::CommandBuffer& cmd)
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
         .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageRead |
-            vk::AccessFlagBits2::eShaderStorageWrite,
+        // M8.5 P2: DI reservoirs are BDA storage only (guides already visible via rayStartBarrier)
+        .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
     };
     const vk::DependencyInfo dependency{.memoryBarrierCount = 1, .pMemoryBarriers = &resamplingBarrier};
     // RIS has candidates unless every light is directional and shaded exactly (hasRisLightCandidates in
@@ -1226,7 +1226,27 @@ const vk::raii::CommandBuffer& Renderer::recordIndirect(const vk::raii::CommandB
 #ifdef TRACY_ENABLE
         TracyVkNamedZone(gpuCtx, gpuZoneIndirectQuery, **cmd, "GPU_IndirectQuery", gpuTrace);
 #endif
-        recordIndirectPass(*cmd, shaderObjects.frameShaders.indirect, frameRoot, targets.getExtent());
+        using IndirectVariant = ShaderObjects::FrameShaders::IndirectVariant;
+        const bool isGeneralIndirect =
+            rtxdi.giReferenceBounces > 0 || isCacheView || rtxdi.isSecondaryResamplingEffective();
+        IndirectVariant variant = IndirectVariant::General;
+        if (!isGeneralIndirect) {
+            const bool isRaw = indirectBounce == IndirectBounceMode::RawPt;
+            if (isNrcRecorded) {
+                variant = isRaw ? IndirectVariant::RawPtNrc : IndirectVariant::RestirGiNrc;
+            } else if (isSharcRecorded) {
+                if (isRaw) {
+                    variant = sharc.settings.maxQueryBounces <= 1u ? IndirectVariant::RawPtSharcQ1
+                                                                   : IndirectVariant::RawPtSharcQ2;
+                } else {
+                    variant = IndirectVariant::RestirGiSharc;
+                }
+            } else {
+                variant = isRaw ? IndirectVariant::RawPtOff : IndirectVariant::RestirGiOff;
+            }
+        }
+        recordIndirectPass(*cmd, shaderObjects.frameShaders.indirectShader(variant), frameRoot, targets.getExtent(),
+                           rtxdi.isSecondaryResamplingEffective());
     }
     gpuTimer.end(*cmd, GpuTimerScope::Indirect);
     if (isNrcRecorded) {
@@ -1507,15 +1527,19 @@ void Renderer::recordGlass(const vk::raii::CommandBuffer& cmd)
 
 void Renderer::recordDebugView(const vk::raii::CommandBuffer& cmd)
 {
-    // guide, directRadiance and reservoir writes -> reads; submission order also covers the previous frame's set
-    // (Reprojection)
-    const vk::MemoryBarrier2 guideBarrier{
-        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
-        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
-        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageRead,
-    };
-    cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &guideBarrier});
+    // M8.5 P2: skip the barrier on Lit frames when no frameHook follows; presentCmd emits displayBarrier itself
+    const bool isNeeded = !isLitPresented() || frameHook != nullptr;
+    if (isNeeded) {
+        // guide, directRadiance and reservoir writes -> reads; submission order also covers the previous frame's set
+        // (Reprojection)
+        const vk::MemoryBarrier2 guideBarrier{
+            .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+            .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageRead,
+        };
+        cmd.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &guideBarrier});
+    }
     // the post target replaces it; the frame hook still finds the barrier above
     if (!isLitPresented()) {
         dispatchFullscreen(cmd, shaderObjects.frameShaders.debugView);

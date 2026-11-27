@@ -117,6 +117,29 @@ Stamped M4, the current milestone; [rtxdi_3_2_update.md](./features/done/rtxdi_3
 - **C-D3-1 · Open · raster and OMM cut-out edges differ by ~100 pixels per frame on Sponza.** After D3, `ENGINE_RT_CHECK` reads 102 id mismatches and 2,701 edge mismatches per frame (104 before D2), 0 misses, so it no longer passes 32 of 32. The raster tests every texel at the mip `SampleBias` picks; the rays read D1's micro-triangles (subdivision ≤ 5, unknown states promoted to opaque, chains at 0.19 known area, C-D1-2). Primitives `isAlphaTested` admits but D1 then skips (no glTF material or image row, a failed bake) would be cut in raster and opaque to rays; none occur in Sponza or `AlphaBlendModeTest` ([d3_alpha_raster_bin.md](./m6/d3_alpha_raster_bin.md)). 2026-11-20, D4: `ENGINE_RT_CHECK` has an `alpha-edge` class: a miss, id mismatch or empty hit next to an alpha-tested triangle where mip-0 alpha crosses the threshold within one OMM micro-triangle edge (the SDK's dynamic subdivision, recomputed), the sampling footprint and one texel. It is logged, not failed. Sponza reads ~106 per frame and passes 32 of 32; with the micromaps detached 464 mismatches stay outside the class and 0 of 32 pass, so it does not hide real failures. **Exit:** the bin choice reads D1's result (a primitive D1 skipped draws in the opaque bin).
 - **C-D3-2 · Limitation · a factor alpha below the cutoff stays opaque.** glTF makes such a Mask material invisible; `isAlphaTested` keeps it in the opaque bin and D1 bakes no OMM, so raster and rays agree but both draw it. No sample model has one. **Exit:** route it to the alpha bin with an all-transparent micromap (one special index per triangle), or accept.
 - **C-D2-2 · Deferred · ray-tracing memory has no UI row or Tracy zone.** D2's spec counts micromap storage and the CLAS growth in the `GPU/RayTracing` Tracy zone and the UI's AS memory row; neither exists, for CLAS and cluster BLAS either. The totals are in `MegaGeometry::totalBytes()` and the per-model build log line only. **Exit:** an AS memory row (CLAS, cluster BLAS, micromaps) in the UI and a Tracy memory zone, wherever engine spec §10.4's budget is implemented.
+- **C-D1-3 · Open · 4-state micromaps under a 2-state ray contract.**
+  - D1 bakes `OC1_4_State` with `ForceOpaque` (the SDK's recommendation). Every ray carries `RAY_FLAG_FORCE_OMM_2_STATE` (D4), so the unknown states resolve to opaque at trace time.
+  - The trace result is that of a 2-state bake with `ForceOpaque`, but at 2 bits per micro-triangle instead of 1. That doubles the array data, and probably the share of C-D2-1's micromap build cost that follows it.
+  - The SDK's 4-state exists for an any-hit (or ray-query candidate) alpha test on the unknown states. The engine has neither.
+  - 2026-11-27 audit: the UI Format combo (`EngineUi::drawOmmPanel`) makes the A/B a re-bake. Not measured yet.
+  - **Exit:** either measure 2-state against 4-state (array bytes, `MegaGeometry::buildModel` time, `ENGINE_RT_CHECK` alpha-edge count, ray-pass GPU time) and ship 2-state if the traces match, or build the candidate alpha test of [omm_gpu_bake.md](./features/planned/omm_gpu_bake.md) §7 and keep 4-state.
+- **C-D1-4 · Open · subdivision cap 5 against RTXPT's 6.**
+  - D1's cap of 5 predates the NVIDIA-defaults rule. RTXPT's `BuildState` ships `MaxSubdivisionLevel` 6, 4-state and `FastTrace` (dynamic subdivision on). The device allows 12.
+  - Level 6 is 4× the micro-triangles of 5 at the same scale, wherever dynamic subdivision reaches the cap. That cap is what keeps the chains at 19 % known area (C-D1-2).
+  - 2026-11-27 audit: settable in the UI and re-bakeable.
+  - **Exit:** measure known area, bake time and micromap build time at 6 on Sponza, then take RTXPT's default or record why 5 stays.
+- **C-D1-5 · Open · no OMM array budget.**
+  - D1 leaves `ommCpuBakeInputDesc::maxArrayDataSize` and `maxWorkloadSize` at unlimited. RTXPT caps the array at 100 MiB (`MaxOmmArrayDataSizeInMB`).
+  - A large alpha-tested scene at a high cap has no bound on micromap memory or bake time.
+  - **Exit:** a budget setting feeding both bakers (GPU: `maxOutOmmArraySize`), [omm_gpu_bake.md](./features/planned/omm_gpu_bake.md) §5.
+- **C-D1-6 · Deferred · no OMM debug view.**
+  - RTXPT draws micro-triangle states in world and as an overlay. Here the only per-state output is `ommDebugSaveAsImages` PNGs (a debug image directory) and the UI totals.
+  - **Exit:** an OMM state debug view (states read back from the micromap on hit), wanted for [omm_gpu_bake.md](./features/planned/omm_gpu_bake.md) §6.
+- **C-D1-7 · Limitation · the UI OMM re-bake reloads every model from disk.**
+  - 2026-11-27: `Engine::rebakeOmms` erases every entity and loads each model file once with the new `OmmBakeSettings`. It re-instances the other entities with their transforms, and entity order becomes model order.
+  - The CPU baker needs the decoded alpha and the cluster-order UVs. Both exist only during a load, so a re-bake is a full load (textures, geometry, CLAS) and not a bake alone.
+  - Fine as a debug tool. Not a runtime path.
+  - **Exit:** the GPU bake re-queues from resident data ([omm_gpu_bake.md](./features/planned/omm_gpu_bake.md) §5).
 
 ## M7 · E1 material binning
 
@@ -221,6 +244,27 @@ C-I14-2 (plane-distance guard through `RAB_Material`) did not open: Phase 3 kept
   The full `Rtxpt` path tracer uses another set (`SharcIntegration.h:46-60`): AccumulationFrameNum `10`, BounceCount `8` (`4` diffuse), training NEEFullSamples `1`, texture LOD bias `+1`, exposure-relative firefly `0.5`, cone-width TerminateThreshold `3.5`. NVIDIA tech takes the demo's defaults, so P6 against RTXPT is not like-for-like until the analog carries one of these sets. **Exit:** pick IntroSample or Rtxpt as the `rtxpt` analog's source, give `pipeline=rtxpt` those SHaRC values (the engine's own tuning stays callable), list the rest in M8.5 P6's parity column.
 - **C-M85-5 · Unverified · the cause of the `Indirect` growth since M8.3 is unproven.** Bistro `cafe tables` went `6.20 → 8.07–8.60 ms`, Sponza gallery `2.14 → 2.65–3.33 ms` (cache Off included). M8.5 §1.4 finding 2 blames the uber-shader (both cache bridges, three ray loops, `nrcQueryContext` always run). Other candidates: RawPt's glass reconnection transmittance moved into `indirect.slang` (it was in GI shade), unlocked clocks, 600- vs 6000-frame runs. A `.spv` swap cannot bisect it (`GpuFrameRoot` grew 248 → 256 B). **Exit:** build `0400dd037` (pre-M8.3) in the baseline worktree and A/B `Indirect` at locked clocks before P3 exp 1 cites a regression.
 - **C-M85-6 · Deferred · M8.5 P5 cache shootout vs the recorded 1.0 target.** P5 steps 2–3 run NRC vs SHaRC and "update shipped defaults with the winning pair". Shipped settings are NVIDIA's (DI `Medium`, NRC) and the 1.0 target cache is NRC with SHaRC as a toggle (2026-11-25). Open decision for the user: may P5 propose SHaRC as the Engine Target cache? Until then P5 changes only the Engine Target presets, never the shipped NVIDIA set.
+- **C-M85-7 · Unverified · M8.5 P0–P4 status claims more than its evidence.**
+  - 2026-11-27 review: the M8 README marks P0–P4 done, while §7's P0/P2/P3/P4 rows are still pending.
+  - P0 (locked clocks + an Nsight register/occupancy table) was not taken; every number is unlocked.
+  - "`targetRis` span 16.43 ms, under 16.6 ms" sits 1 % under the budget, inside the ±5 % unlocked noise.
+  - P3 experiments 2 (workgroup shape), 5 (glass shadow transmittance) and 6 (async overlap) were not run, and experiment 1's pre-edit Nsight capture is missing.
+  - Not yet run on the variant tree: the correctness runners (guide capture, GI check, stability) behind the variants' "bit-identical" claim, and GPU-AV.
+  - Done 2026-11-27: ctest 7/7 and 8/8, plus `spirv-val` on the changed shaders.
+  - **Exit:** the P0 table, and §7 rows filled from locked-clock ABBA runs (`tools/bench_m85.ps1` now prints spread and a beyond/within verdict), or the README status reworded to what was measured.
+- **C-M85-8 · Unverified · glass counter wave guard.**
+  - P3 added `WaveActiveAnyTrue(layers > 0)` around `glass.slang`'s 11 `waveCount` calls, but the spec had concluded "no counter gate": `waveCount` already skips its atomic when a wave counts nothing, so the guard saves 11 ballots per glass-free wave, not 11 atomics.
+  - Its gain was never measured on its own.
+  - **Exit:** an ABBA run with and without the guard on Bistro `street windows`; drop it if within spread.
+- **C-M85-9 · Open · local light candidates at path vertices are capped.**
+  - M8.5 P3 hard-coded 8 local candidates at path vertices (X2, NRC training, glass) and 4 per SHaRC update vertex. That removed the RTXDI sample's behaviour, `neeLocalLightSampling` = the primary surface's count.
+  - 2026-11-27: both caps are now settings, each in the UI and the lab:
+    - `gi.pathLocalLightSamples` (`GiSettings`, `GpuRtxdiConstants::pathLocalLightSamples`): 0 = the primary count, NVIDIA's.
+    - `sharc.updateLightSamples` (`SharcCache::Settings`): 0 = the path count.
+  - NVIDIA sets inherit the primary count. Only the Engine Target presets cap at 8, and NVIDIA Medium's 8 makes the cap a no-op on shipped. The SHaRC update default stays 4 (RTXPT's update takes its own NEE, `NEEFullSamples = 1`).
+  - Reference paths and secondary resampling ignore the path cap.
+  - RIS stays unbiased at any count; the cost is variance.
+  - **Exit:** P5 decides with café `Lit` stability and 8-bounce `giBias` at both values on `targetRis` (`gi.pathLocalLightSamples=0` vs 8) and SHaRC (`sharc.updateLightSamples=0` vs 4).
 
 ## M8 · PT present timing ([present_timing.md](./features/planned/present_timing.md))
 

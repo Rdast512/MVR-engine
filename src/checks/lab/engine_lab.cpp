@@ -802,7 +802,7 @@ EngineLab::Request EngineLab::beginFrame(Camera& camera, Renderer& renderer, std
         camera.jitterPhaseOverride.reset();
         return request;
     }
-    renderer.fixedFrameDeltaMs = kFrameDeltaMs;
+    renderer.fixedFrameDeltaMs = frameDeltaMs;
     if (frame < kStartupFrames || settleFrames > 0) {
         return request;
     }

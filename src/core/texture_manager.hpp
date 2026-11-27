@@ -75,6 +75,8 @@ public:
         vk::DeviceSize bytes = 0;
     };
     [[nodiscard]] std::optional<TextureInfo> textureInfo(uint32_t heapIndex) const;
+    // base mip dimensions of an uploaded texture, or {0, 0} when unknown
+    [[nodiscard]] glm::uvec2 textureExtent(uint32_t heapIndex) const;
 
     // Thread-safe decoders (no Vulkan); upload the result with loadTextureFromPixels
     [[nodiscard]] static DecodedImage decodeRgba8(std::span<const uint8_t> bytes);

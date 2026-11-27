@@ -1,6 +1,7 @@
 # M6 · D1: OMM bake per primitive
 
 **Status:** built 2026-11-20; the known-area gate is open on Sponza's 4 chain primitives (C-D1-2) · **Milestone:** M6
+**Update 2026-11-27:** the Decisions rows for format, promotion, subdivision and scale are now the defaults of `OmmBakeSettings` (`src/core/omm_baker.hpp`). The Engine UI's "Opacity micromaps" panel edits them and re-bakes loaded models (C-D1-7). Audit findings C-D1-3..C-D1-6; GPU bake planned in [omm_gpu_bake.md](../features/planned/omm_gpu_bake.md)
 **Implements:** engine spec §7.1 step 5, §10.5; plan D1 ([pbr_implementation_plan.md](../pbr_implementation_plan.md))
 **Depends on:** A4 (material rows, `uvMatrices`), C1 (final cluster triangles and their order)
 **Considerations:** C-D-1 (rays see alpha cards whole), C-T-2 (EXT vs KHR, closed here), new C-D1-1 (no processing cache)

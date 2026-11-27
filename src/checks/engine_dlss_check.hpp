@@ -2,6 +2,7 @@
 
 #include "checks/check_passes.hpp"
 #include "check_poses.hpp"
+#include "check_clock.hpp"
 #include "render/vk_renderer.hpp"
 #include "scene/vk_camera.hpp"
 
@@ -50,7 +51,8 @@ private:
     };
 
     static constexpr uint32_t kStartupFrames = 8;
-    static constexpr float kFrameDeltaMs = 1000.0f / 60.0f;
+    // ENGINE_CHECK_FPS, read once
+    const float frameDeltaMs = checkFrameDeltaMs();
     static constexpr float kPanYawDeltaPerFrame = 0.25f;
     static constexpr double kFlickerCv = 0.1;
     static constexpr double kLitDisplayCutoff = 1e-3;

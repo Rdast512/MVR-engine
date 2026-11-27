@@ -122,7 +122,7 @@ EngineDlssCheck::Request EngineDlssCheck::beginFrame(Camera& camera, Renderer& r
     if (isFinished) {
         return request;
     }
-    renderer.fixedFrameDeltaMs = kFrameDeltaMs;
+    renderer.fixedFrameDeltaMs = frameDeltaMs;
     if (frame < kStartupFrames) {
         return request;
     }

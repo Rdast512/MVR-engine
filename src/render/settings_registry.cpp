@@ -15,10 +15,10 @@
 // a new lighting field must become a lab switch (or be excluded in labSwitches with a reason); these break the build
 // until it does
 static_assert(sizeof(RtxdiContext::Settings) == 84, "a new RtxdiContext::Settings field needs a lab switch");
-static_assert(sizeof(RtxdiContext::GiSettings) == 92, "a new RtxdiContext::GiSettings field needs a lab switch");
+static_assert(sizeof(RtxdiContext::GiSettings) == 96, "a new RtxdiContext::GiSettings field needs a lab switch");
 static_assert(sizeof(NrcCache::Settings) == 16, "a new NrcCache::Settings field needs a lab switch");
 // SharcCache::Settings::isContinuousClearEnabled is a debug-only continuous-clear flag not registered in labSwitches
-static_assert(sizeof(SharcCache::Settings) == 48, "a new SharcCache::Settings field needs a lab switch");
+static_assert(sizeof(SharcCache::Settings) == 52, "a new SharcCache::Settings field needs a lab switch");
 static_assert(sizeof(Dlss::Settings) == 2, "a new Dlss::Settings field needs a lab switch");
 static_assert(sizeof(Dlss::Guides) == 1, "a new Dlss::Guides field needs a lab switch");
 
@@ -367,6 +367,12 @@ namespace
              getGi<&GiSettings::isSecondaryRoughnessFloorEnabled>,
              setGi<&GiSettings::isSecondaryRoughnessFloorEnabled>,
              "FullSample LightingPasses.cpp BRDF ray tracing"},
+            {"gi.pathLocalLightSamples",
+             LabSwitchType::Uint,
+             {},
+             getGi<&GiSettings::pathLocalLightSamples>,
+             setGi<&GiSettings::pathLocalLightSamples>,
+             "FullSample neeLocalLightSampling: 0, the primary surface's count"},
             {"gi.exactInfinite",
              LabSwitchType::Bool,
              {},
@@ -578,6 +584,12 @@ namespace
              getSharc<&SharcCache::Settings::maxQueryBounces>,
              setSharc<&SharcCache::Settings::maxQueryBounces>,
              "RTXPT / RTXGI SHaRC fallback continuation"},
+            {"sharc.updateLightSamples",
+             LabSwitchType::Uint,
+             {},
+             getSharc<&SharcCache::Settings::updateLocalLightSamples>,
+             setSharc<&SharcCache::Settings::updateLocalLightSamples>,
+             "Engine M8.5 P3 (0 = path vertex count; RTXPT SharcIntegration NEEFullSamples = 1)"},
             {"sharc.minRoughness",
              LabSwitchType::Float,
              {},
@@ -886,6 +898,10 @@ namespace
     }
 } // namespace
 
+// Engine Target presets: path vertices keep NVIDIA Medium's 8 local candidates when primary DI takes more (M8.5 P3:
+// Bistro cafe tables targetRis 17.98 -> 16.41 ms); NVIDIA analogs inherit the primary count
+constexpr uint32_t kTargetPathLocalLightSamples = 8;
+
 LabConfig pipelinePresetConfig(PipelinePreset preset)
 {
     LabConfig config;
@@ -899,6 +915,7 @@ LabConfig pipelinePresetConfig(PipelinePreset preset)
         config.directMode = DirectMode::StreamingRis;
         config.directResampling = DirectResamplingMode::TemporalAndSpatial;
         config.di = RtxdiContext::targetRisSettings();
+        config.gi.pathLocalLightSamples = kTargetPathLocalLightSamples;
         config.indirectBounce = IndirectBounceMode::RawPt;
         config.radianceCache = RadianceCacheMode::Nrc;
         break;
@@ -906,6 +923,7 @@ LabConfig pipelinePresetConfig(PipelinePreset preset)
         config.directMode = DirectMode::RestirDi;
         config.directResampling = DirectResamplingMode::Temporal;
         config.di = RtxdiContext::targetTemporalSettings();
+        config.gi.pathLocalLightSamples = kTargetPathLocalLightSamples;
         config.indirectBounce = IndirectBounceMode::RawPt;
         config.radianceCache = RadianceCacheMode::Nrc;
         break;

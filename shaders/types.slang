@@ -81,9 +81,10 @@ public struct GpuModel
     public uint64_t meshletPrimitives; // uint per meshlet: its row of primitives
     public uint64_t meshletVertices;
     public uint64_t meshletTriangles;
-    public uint64_t normals;
-    public uint64_t tangents;
-    public uint64_t uv1;
+    public uint64_t normals;  // uint[] packed octahedral snorm16x2 (kPackedOctZero = absent)
+    public uint64_t tangents; // uint[] packed octahedral snorm15x2 + sign bit 30 + valid bit 31 (0 = absent)
+    public uint64_t uv1;      // uint[] packed half2
+    public uint64_t uvFloat;  // float2[] compact per-primitive FP32 UV fallback
     public uint64_t indices;
     public uint64_t nodes;        // GpuNode[nodeCount]
     public uint64_t primitives;   // GpuPrimitive[], the model's slice of GpuFrameRoot.primitives
@@ -97,6 +98,8 @@ public static const uint kNodeFlagFlipWinding = 1u;
 public static const uint kModelAttributeNormals = 1u << 0;
 public static const uint kModelAttributeTangents = 1u << 1;
 public static const uint kModelAttributeUv1 = 1u << 2;
+public static const uint kModelAttributeIndices = 1u << 3;
+public static const uint kModelAttributeUvFloat = 1u << 4;
 
 // GpuFrameRoot.debugView; must match src/render/debug_view.hpp
 public static const uint kDebugViewLit = 0u;
@@ -300,6 +303,8 @@ public struct GpuPrimitive
     public uint firstGroup;       // rows of model.meshletGroups
     public uint groupCount;
     public uint flags;            // kPrimitiveFlag*
+    public uint uv0FloatOffset;   // into model.uvFloat, or kNoneIndex when GpuVertex::texCoord holds half2
+    public uint uv1FloatOffset;   // into model.uvFloat, or kNoneIndex when model.uv1 holds half2
 };
 
 // must match src/core/types.hpp GpuPrimitiveFlag
@@ -308,8 +313,8 @@ public static const uint kPrimitiveFlagDoubleSided = 1u << 0;
 public struct GpuVertex
 {
     public float3 pos;
-    public float3 color;
-    public float2 texCoord;
+    public uint color;    // unorm8x4 RGBA
+    public uint texCoord; // half2 UV0
 };
 
 public struct GpuMeshletDesc

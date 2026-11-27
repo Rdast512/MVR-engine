@@ -52,10 +52,12 @@ RAB_LightSample exactInfiniteLightSample(GpuRtxdiConstants constants, uint index
 }
 
 // one RIS-sampled light at a lit vertex, without reuse. Light candidates alone reach every light, triangles included;
-// a BRDF candidate would spend one more ray per vertex. Local lights are sampled in the primary surface's mode and
-// count (neeLocalLightSampling of the RTXDI sample), from the same presampled tiles and ReGIR cells
+// a BRDF candidate would spend one more ray per vertex. Local lights are sampled in the primary surface's mode, from
+// the same presampled tiles and ReGIR cells, with constants.pathLocalLightSamples candidates (the primary's count
+// unless gi.pathLocalLightSamples caps it, M8.5 P3). maxLocalLightSamples > 0 caps them further (SHaRC update)
 RTXDI_DIReservoir sampleLightsAt(RAB_Surface surface, GpuRtxdiConstants constants, inout RTXDI_RandomSamplerState rng,
-                                 inout RTXDI_RandomSamplerState coherentRng, out RAB_LightSample lightSample)
+                                 inout RTXDI_RandomSamplerState coherentRng, out RAB_LightSample lightSample,
+                                 uint maxLocalLightSamples = 0u)
 {
     if (!hasPathLightCandidates(constants))
     {
@@ -64,6 +66,9 @@ RTXDI_DIReservoir sampleLightsAt(RAB_Surface surface, GpuRtxdiConstants constant
     }
     RTXDI_DIInitialSamplingParameters sampling = constants.initialSampling;
     sampling.numBrdfSamples = 0;
+    sampling.numLocalLightSamples = maxLocalLightSamples > 0u
+                                        ? min(constants.pathLocalLightSamples, maxLocalLightSamples)
+                                        : constants.pathLocalLightSamples;
     // m8 I2 F18: shadeLightReservoir traces visibility from origin.spawn (safeSpawnPoint for ray hits); leaving
     // enableInitialVisibility on traces an extra ray from rasterRayOrigin (RTXDI sample LightingPasses.cpp:64)
     sampling.enableInitialVisibility = 0;
@@ -120,14 +125,15 @@ float3 throughGlass<Origin : IRayOrigin>(GpuFrameRoot root, Origin origin, RAB_L
 // glass shadowTransmittance when active so NRC training and reference paths match secondaryDirectLight)
 float3 directLightAt<Origin : IRayOrigin>(GpuFrameRoot root, RAB_Surface surface, Origin origin,
                                           GpuRtxdiConstants constants, inout RTXDI_RandomSamplerState rng,
-                                          inout RTXDI_RandomSamplerState coherentRng)
+                                          inout RTXDI_RandomSamplerState coherentRng, uint maxLocalLightSamples = 0u)
 {
     if (gRtxdiBridge.lightCount == 0 || !surface.isLit)
     {
         return float3(0.0, 0.0, 0.0);
     }
     RAB_LightSample lightSample;
-    const RTXDI_DIReservoir reservoir = sampleLightsAt(surface, constants, rng, coherentRng, lightSample);
+    const RTXDI_DIReservoir reservoir =
+        sampleLightsAt(surface, constants, rng, coherentRng, lightSample, maxLocalLightSamples);
     float3 radiance =
         throughGlass(root, origin, lightSample, shadeLightReservoir(surface, origin, reservoir, lightSample));
     for (uint i = 0; i < exactInfiniteLightCount(constants); ++i)
@@ -159,7 +165,8 @@ RTXDI_DISpatialResamplingParameters secondaryResamplingParams(GpuRtxdiConstants 
 // light is resampled against this frame's final ReSTIR DI reservoirs around X2's pixel when X2 is on screen, as the
 // RTXDI sample's ShadeSecondarySurfaces. Light through glass is attenuated here, not in the resampling (m8 I13 §3)
 float3 secondaryDirectLight(GpuFrameRoot root, RAB_Surface surface, HitOrigin origin, GpuRtxdiConstants constants,
-                            inout RTXDI_RandomSamplerState rng, inout RTXDI_RandomSamplerState coherentRng)
+                            inout RTXDI_RandomSamplerState rng, inout RTXDI_RandomSamplerState coherentRng,
+                            bool isSecondaryResamplingAllowed = true)
 {
     if (gRtxdiBridge.lightCount == 0 || !surface.isLit)
     {
@@ -169,7 +176,8 @@ float3 secondaryDirectLight(GpuFrameRoot root, RAB_Surface surface, HitOrigin or
     RTXDI_DIReservoir reservoir = sampleLightsAt(surface, constants, rng, coherentRng, lightSample);
     // without candidates the DI reservoirs it would resample are empty too (secondary resampling follows DI's
     // exact-infinite choice, RtxdiContext::arePathInfiniteLightsExact)
-    if ((constants.giFlags & kGiFlagSecondaryResampling) != 0 && hasPathLightCandidates(constants))
+    if (isSecondaryResamplingAllowed && (constants.giFlags & kGiFlagSecondaryResampling) != 0 &&
+        hasPathLightCandidates(constants))
     {
         const GpuCameraData camera = loadCamera(root);
         const float4 clip = mul(camera.viewProj, float4(surface.position, 1.0));

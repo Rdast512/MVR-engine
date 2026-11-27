@@ -102,6 +102,7 @@ namespace
             LAYOUT_FIELD(GpuModel, normals),
             LAYOUT_FIELD(GpuModel, tangents),
             LAYOUT_FIELD(GpuModel, uv1),
+            LAYOUT_FIELD(GpuModel, uvFloat),
             LAYOUT_FIELD(GpuModel, indices),
             LAYOUT_FIELD(GpuModel, nodes),
             LAYOUT_FIELD(GpuModel, primitives),
@@ -215,6 +216,8 @@ namespace
             LAYOUT_FIELD(GpuPrimitive, firstGroup),
             LAYOUT_FIELD(GpuPrimitive, groupCount),
             LAYOUT_FIELD(GpuPrimitive, flags),
+            LAYOUT_FIELD(GpuPrimitive, uv0FloatOffset),
+            LAYOUT_FIELD(GpuPrimitive, uv1FloatOffset),
         }},
         {"GpuVertex", sizeof(GpuVertex), {
             LAYOUT_FIELD(GpuVertex, pos),
@@ -662,6 +665,8 @@ namespace
         LAYOUT_FIELD(GpuRtxdiConstants, giHistoryReductionStrength),
         LAYOUT_FIELD(GpuRtxdiConstants, diFlags),
         LAYOUT_FIELD(GpuRtxdiConstants, diNeighborOffsets),
+        LAYOUT_FIELD(GpuRtxdiConstants, pathLocalLightSamples),
+        LAYOUT_FIELD(GpuRtxdiConstants, pad0),
     }};
 
     // textual mirror next to the NRC SDK's NrcConstants
@@ -710,6 +715,8 @@ namespace
         LAYOUT_FIELD(GpuSharcConstants, flags),
         LAYOUT_FIELD(GpuSharcConstants, updateLaunch),
         LAYOUT_FIELD(GpuSharcConstants, counters),
+        LAYOUT_FIELD(GpuSharcConstants, updateLocalLightSamples),
+        LAYOUT_FIELD(GpuSharcConstants, pad0),
     }};
     // clang-format on
 

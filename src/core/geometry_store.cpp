@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <format>
 #include <limits>
 
@@ -164,6 +165,51 @@ namespace
                                  cornerPositions.size(), sizeof(glm::vec3), &cornerNormals[0].x, sizeof(glm::vec3),
                                  &uvs[0].x, sizeof(glm::vec2), meshopt_TangentCompatible);
     }
+
+    uint32_t packColorUnorm8(const glm::vec4& color)
+    {
+        const uint32_t r = static_cast<uint32_t>(meshopt_quantizeUnorm(color.r, 8));
+        const uint32_t g = static_cast<uint32_t>(meshopt_quantizeUnorm(color.g, 8));
+        const uint32_t b = static_cast<uint32_t>(meshopt_quantizeUnorm(color.b, 8));
+        const uint32_t a = static_cast<uint32_t>(meshopt_quantizeUnorm(color.a, 8));
+        return r | (g << 8) | (b << 16) | (a << 24);
+    }
+
+    uint32_t packHalf2(const glm::vec2& uv)
+    {
+        const uint32_t x = static_cast<uint32_t>(meshopt_quantizeHalf(uv.x));
+        const uint32_t y = static_cast<uint32_t>(meshopt_quantizeHalf(uv.y));
+        return x | (y << 16);
+    }
+
+    bool fitsHalf2(std::span<const glm::vec2> uvs, glm::vec2 texelScale)
+    {
+        const bool isTextured = texelScale.x > 0.0f || texelScale.y > 0.0f;
+        constexpr float kMaxTexelError = 0.5f;
+        constexpr float kMaxUntexturedError = 1e-3f;
+        for (const glm::vec2& uv : uvs) {
+            const float qu = meshopt_dequantizeHalf(meshopt_quantizeHalf(uv.x));
+            const float qv = meshopt_dequantizeHalf(meshopt_quantizeHalf(uv.y));
+            if (!std::isfinite(qu) || !std::isfinite(qv)) {
+                return false;
+            }
+            const float du = std::abs(qu - uv.x);
+            const float dv = std::abs(qv - uv.y);
+            if (isTextured) {
+                if (du * texelScale.x > kMaxTexelError || dv * texelScale.y > kMaxTexelError) {
+                    return false;
+                }
+            } else if (du > kMaxUntexturedError || dv > kMaxUntexturedError) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool isFiniteVec3(const glm::vec3& v)
+    {
+        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+    }
 } // namespace
 
 uint32_t GeometryStore::generateShadingAttributes(uint32_t firstVertex, std::vector<uint32_t>& localIndices,
@@ -279,9 +325,273 @@ void GeometryStore::packVertex(uint32_t v)
 {
     GpuVertex packed{};
     packed.pos = positions[v];
-    packed.color = glm::vec3{colors[v]};
-    packed.texCoord = uv0[v];
+    packed.color = packColorUnorm8(colors[v]);
+    packed.texCoord = packHalf2(uv0[v]);
     vertices[v] = packed;
+}
+
+void GeometryStore::optimizeVertexFetch(uint32_t firstPrimitive)
+{
+    ZoneScopedN("GeometryStore::optimizeVertexFetch");
+    const size_t primitiveCount = primitiveDraws.size() - firstPrimitive;
+    if (primitiveCount == 0 || positions.empty()) {
+        return;
+    }
+
+    const uint32_t oldTotalVerts = static_cast<uint32_t>(positions.size());
+    const uint32_t baseVertex = primitiveDraws[firstPrimitive].firstVertex;
+
+    std::vector<glm::vec3> newPositions;
+    std::vector<glm::vec3> newNormals;
+    std::vector<glm::vec4> newTangents;
+    std::vector<glm::vec2> newUv0;
+    std::vector<glm::vec2> newUv1;
+    std::vector<glm::vec4> newColors;
+    std::vector<GpuVertex> newVertices;
+
+    newPositions.reserve(oldTotalVerts);
+    newNormals.reserve(oldTotalVerts);
+    newTangents.reserve(oldTotalVerts);
+    newUv0.reserve(oldTotalVerts);
+    newUv1.reserve(oldTotalVerts);
+    newColors.reserve(oldTotalVerts);
+    newVertices.reserve(oldTotalVerts);
+
+    if (baseVertex > 0) {
+        newPositions.insert(newPositions.end(), positions.begin(), positions.begin() + baseVertex);
+        newNormals.insert(newNormals.end(), normals.begin(), normals.begin() + baseVertex);
+        newTangents.insert(newTangents.end(), tangents.begin(), tangents.begin() + baseVertex);
+        newUv0.insert(newUv0.end(), uv0.begin(), uv0.begin() + baseVertex);
+        newUv1.insert(newUv1.end(), uv1.begin(), uv1.begin() + baseVertex);
+        newColors.insert(newColors.end(), colors.begin(), colors.begin() + baseVertex);
+        newVertices.insert(newVertices.end(), vertices.begin(), vertices.begin() + baseVertex);
+    }
+
+    std::vector<unsigned int> localMeshletVerts;
+    std::vector<unsigned int> remap;
+
+    const auto appendRemapped = [&](auto& dst, const auto& src, uint32_t oldFirst, uint32_t oldCount,
+                                    uint32_t newFirst, size_t uniqueCount) {
+        dst.resize(newFirst + uniqueCount);
+        if (uniqueCount > 0) {
+            meshopt_remapVertexBuffer(dst.data() + newFirst, src.data() + oldFirst, oldCount, sizeof(dst[0]),
+                                      remap.data());
+        }
+    };
+
+    for (uint32_t p = firstPrimitive; p < primitiveDraws.size(); ++p) {
+        PrimitiveDraw& draw = primitiveDraws[p];
+        const uint32_t oldFirstVertex = draw.firstVertex;
+        const uint32_t oldVertexCount = draw.vertexCount;
+        const uint32_t newFirstVertex = static_cast<uint32_t>(newPositions.size());
+
+        if (oldVertexCount == 0) {
+            draw.firstVertex = newFirstVertex;
+            continue;
+        }
+
+        if (draw.meshlets.meshletCount == 0) {
+            newPositions.insert(newPositions.end(), positions.begin() + oldFirstVertex,
+                                positions.begin() + oldFirstVertex + oldVertexCount);
+            newNormals.insert(newNormals.end(), normals.begin() + oldFirstVertex,
+                              normals.begin() + oldFirstVertex + oldVertexCount);
+            newTangents.insert(newTangents.end(), tangents.begin() + oldFirstVertex,
+                               tangents.begin() + oldFirstVertex + oldVertexCount);
+            newUv0.insert(newUv0.end(), uv0.begin() + oldFirstVertex, uv0.begin() + oldFirstVertex + oldVertexCount);
+            newUv1.insert(newUv1.end(), uv1.begin() + oldFirstVertex, uv1.begin() + oldFirstVertex + oldVertexCount);
+            newColors.insert(newColors.end(), colors.begin() + oldFirstVertex,
+                             colors.begin() + oldFirstVertex + oldVertexCount);
+            newVertices.insert(newVertices.end(), vertices.begin() + oldFirstVertex,
+                               vertices.begin() + oldFirstVertex + oldVertexCount);
+            const int64_t delta = static_cast<int64_t>(newFirstVertex) - static_cast<int64_t>(oldFirstVertex);
+            for (uint32_t i = draw.firstIndex; i < draw.firstIndex + draw.indexCount; ++i) {
+                indices[i] = static_cast<uint32_t>(static_cast<int64_t>(indices[i]) + delta);
+            }
+            draw.firstVertex = newFirstVertex;
+            continue;
+        }
+
+        // visit vertices in final partitioned meshlet order so sequential meshlets stream contiguous vertex runs
+        localMeshletVerts.clear();
+        for (uint32_t m = draw.meshlets.firstMeshlet; m < draw.meshlets.firstMeshlet + draw.meshlets.meshletCount;
+             ++m) {
+            const GpuMeshletDesc& meshlet = meshlets[m];
+            for (uint32_t vi = 0; vi < meshlet.vertexCount; ++vi) {
+                localMeshletVerts.push_back(meshletVertices[meshlet.vertexOffset + vi] - oldFirstVertex);
+            }
+        }
+
+        remap.resize(oldVertexCount);
+        const size_t uniqueCount = meshopt_optimizeVertexFetchRemap(remap.data(), localMeshletVerts.data(),
+                                                                    localMeshletVerts.size(), oldVertexCount);
+
+        appendRemapped(newPositions, positions, oldFirstVertex, oldVertexCount, newFirstVertex, uniqueCount);
+        appendRemapped(newNormals, normals, oldFirstVertex, oldVertexCount, newFirstVertex, uniqueCount);
+        appendRemapped(newTangents, tangents, oldFirstVertex, oldVertexCount, newFirstVertex, uniqueCount);
+        appendRemapped(newUv0, uv0, oldFirstVertex, oldVertexCount, newFirstVertex, uniqueCount);
+        appendRemapped(newUv1, uv1, oldFirstVertex, oldVertexCount, newFirstVertex, uniqueCount);
+        appendRemapped(newColors, colors, oldFirstVertex, oldVertexCount, newFirstVertex, uniqueCount);
+        appendRemapped(newVertices, vertices, oldFirstVertex, oldVertexCount, newFirstVertex, uniqueCount);
+
+        for (uint32_t m = draw.meshlets.firstMeshlet; m < draw.meshlets.firstMeshlet + draw.meshlets.meshletCount;
+             ++m) {
+            const GpuMeshletDesc& meshlet = meshlets[m];
+            for (uint32_t vi = 0; vi < meshlet.vertexCount; ++vi) {
+                uint32_t& v = meshletVertices[meshlet.vertexOffset + vi];
+                v = newFirstVertex + remap[v - oldFirstVertex];
+            }
+        }
+        for (uint32_t i = draw.firstIndex; i < draw.firstIndex + draw.indexCount; ++i) {
+            const uint32_t mapped = remap[indices[i] - oldFirstVertex];
+            indices[i] = mapped != ~0u ? newFirstVertex + mapped : newFirstVertex;
+        }
+
+        draw.firstVertex = newFirstVertex;
+        draw.vertexCount = static_cast<uint32_t>(uniqueCount);
+    }
+
+    const uint32_t newTotalVerts = static_cast<uint32_t>(newPositions.size());
+    positions = std::move(newPositions);
+    normals = std::move(newNormals);
+    tangents = std::move(newTangents);
+    uv0 = std::move(newUv0);
+    uv1 = std::move(newUv1);
+    colors = std::move(newColors);
+    vertices = std::move(newVertices);
+
+    logInfo(std::format("glTF vertex fetch reorder: {} -> {} verts (-{} unused) across {} primitives", oldTotalVerts,
+                        newTotalVerts, oldTotalVerts - newTotalVerts, primitiveCount),
+            "AssetLoader");
+}
+
+void GeometryStore::packAttributes(uint32_t firstPrimitive, std::span<const PrimitiveUvPrecision> uvPrecisions)
+{
+    ZoneScopedN("GeometryStore::packAttributes");
+    const size_t vertexCount = positions.size();
+    const size_t primitiveCount = primitiveDraws.size() - firstPrimitive;
+    uvFloat.clear();
+
+    uint32_t halfUv0Prims = 0;
+    uint32_t floatUv0Prims = 0;
+    uint32_t halfUv1Prims = 0;
+    uint32_t floatUv1Prims = 0;
+    const bool hasUv1 = (presentStreams & GpuModelAttribute::Uv1) != 0;
+
+    for (size_t i = 0; i < primitiveCount; ++i) {
+        PrimitiveDraw& draw = primitiveDraws[firstPrimitive + i];
+        const PrimitiveUvPrecision prec = i < uvPrecisions.size() ? uvPrecisions[i] : PrimitiveUvPrecision{};
+        draw.uv0FloatOffset = kNoneIndex;
+        draw.uv1FloatOffset = kNoneIndex;
+        if (draw.vertexCount == 0) {
+            continue;
+        }
+
+        const auto uv0Slice = std::span(uv0).subspan(draw.firstVertex, draw.vertexCount);
+        if (fitsHalf2(uv0Slice, prec.uv0TexelScale)) {
+            // overwrite CPU uv0 with the exact quantized value so OMM baking & emissive culling match GPU bit-for-bit
+            for (glm::vec2& uv : uv0Slice) {
+                uv.x = meshopt_dequantizeHalf(meshopt_quantizeHalf(uv.x));
+                uv.y = meshopt_dequantizeHalf(meshopt_quantizeHalf(uv.y));
+            }
+            ++halfUv0Prims;
+        } else {
+            draw.uv0FloatOffset = static_cast<uint32_t>(uvFloat.size());
+            uvFloat.insert(uvFloat.end(), uv0Slice.begin(), uv0Slice.end());
+            ++floatUv0Prims;
+        }
+
+        if (hasUv1) {
+            const auto uv1Slice = std::span(uv1).subspan(draw.firstVertex, draw.vertexCount);
+            if (fitsHalf2(uv1Slice, prec.uv1TexelScale)) {
+                for (glm::vec2& uv : uv1Slice) {
+                    uv.x = meshopt_dequantizeHalf(meshopt_quantizeHalf(uv.x));
+                    uv.y = meshopt_dequantizeHalf(meshopt_quantizeHalf(uv.y));
+                }
+                ++halfUv1Prims;
+            } else {
+                draw.uv1FloatOffset = static_cast<uint32_t>(uvFloat.size());
+                uvFloat.insert(uvFloat.end(), uv1Slice.begin(), uv1Slice.end());
+                ++floatUv1Prims;
+            }
+        }
+    }
+
+    if (!uvFloat.empty()) {
+        presentStreams |= GpuModelAttribute::UvFloat;
+    }
+
+    vertices.resize(vertexCount);
+    for (uint32_t v = 0; v < vertexCount; ++v) {
+        packVertex(v);
+    }
+
+    if ((presentStreams & GpuModelAttribute::Normals) != 0 && vertexCount > 0) {
+        std::vector<glm::vec4> src(vertexCount, glm::vec4{0.0f});
+        for (size_t v = 0; v < vertexCount; ++v) {
+            const glm::vec3 n = normals[v];
+            const float lenSq = glm::dot(n, n);
+            if (lenSq > 0.0f && isFiniteVec3(n)) {
+                src[v] = glm::vec4{n / std::sqrt(lenSq), 0.0f};
+            }
+        }
+        std::vector<int16_t> oct(vertexCount * 4);
+        meshopt_encodeFilterOct(oct.data(), vertexCount, sizeof(int16_t) * 4, 16, &src[0].x);
+        packedNormals.resize(vertexCount);
+        for (size_t v = 0; v < vertexCount; ++v) {
+            const glm::vec3 n = normals[v];
+            if (glm::dot(n, n) > 0.0f && isFiniteVec3(n)) {
+                const uint32_t sx = static_cast<uint16_t>(oct[v * 4 + 0]);
+                const uint32_t sy = static_cast<uint16_t>(oct[v * 4 + 1]);
+                packedNormals[v] = sx | (sy << 16);
+            } else {
+                packedNormals[v] = kPackedOctZero;
+            }
+        }
+    } else {
+        packedNormals.clear();
+    }
+
+    if ((presentStreams & GpuModelAttribute::Tangents) != 0 && vertexCount > 0) {
+        std::vector<glm::vec4> src(vertexCount, glm::vec4{0.0f});
+        for (size_t v = 0; v < vertexCount; ++v) {
+            const glm::vec4 t = tangents[v];
+            const glm::vec3 xyz{t.x, t.y, t.z};
+            const float lenSq = glm::dot(xyz, xyz);
+            if (t.w != 0.0f && lenSq > 0.0f && isFiniteVec3(xyz) && std::isfinite(t.w)) {
+                src[v] = glm::vec4{xyz / std::sqrt(lenSq), 0.0f};
+            }
+        }
+        std::vector<int16_t> oct(vertexCount * 4);
+        meshopt_encodeFilterOct(oct.data(), vertexCount, sizeof(int16_t) * 4, 15, &src[0].x);
+        packedTangents.resize(vertexCount);
+        for (size_t v = 0; v < vertexCount; ++v) {
+            const glm::vec4 t = tangents[v];
+            const glm::vec3 xyz{t.x, t.y, t.z};
+            if (t.w != 0.0f && glm::dot(xyz, xyz) > 0.0f && isFiniteVec3(xyz) && std::isfinite(t.w)) {
+                const uint32_t sx = static_cast<uint32_t>(oct[v * 4 + 0]) & 0x7FFFu;
+                const uint32_t sy = static_cast<uint32_t>(oct[v * 4 + 1]) & 0x7FFFu;
+                const uint32_t signBit = t.w < 0.0f ? 0x40000000u : 0u;
+                packedTangents[v] = 0x80000000u | signBit | (sy << 15) | sx;
+            } else {
+                packedTangents[v] = 0u;
+            }
+        }
+    } else {
+        packedTangents.clear();
+    }
+
+    if (hasUv1 && vertexCount > 0) {
+        packedUv1.resize(vertexCount);
+        for (size_t v = 0; v < vertexCount; ++v) {
+            packedUv1[v] = packHalf2(uv1[v]);
+        }
+    } else {
+        packedUv1.clear();
+    }
+
+    logInfo(std::format("glTF attribute packing: {} verts | UV0 half2={} fp32={} | UV1 half2={} fp32={} | uvFloat={} verts",
+                        vertexCount, halfUv0Prims, floatUv0Prims, halfUv1Prims, floatUv1Prims, uvFloat.size()),
+            "AssetLoader");
 }
 
 MeshletBuild GeometryStore::buildMeshlets(uint32_t firstIndex, uint32_t indexCount, uint32_t firstVertex,
@@ -451,6 +761,10 @@ void GeometryStore::clearScratch()
     drop(colors);
     drop(indices);
     drop(vertices);
+    drop(packedNormals);
+    drop(packedTangents);
+    drop(packedUv1);
+    drop(uvFloat);
     drop(meshlets);
     drop(meshletBounds);
     // meshletGroups is catalog: the cull templates read it after the upload

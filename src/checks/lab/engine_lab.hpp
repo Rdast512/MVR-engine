@@ -4,6 +4,7 @@
 #include "lab_cases.hpp"
 #include "lab_metrics.hpp"
 #include "lab_plan.hpp"
+#include "../check_clock.hpp"
 #include "render/vk_renderer.hpp"
 #include "scene/vk_camera.hpp"
 
@@ -214,7 +215,8 @@ private:
     static constexpr uint32_t kStartupFrames = 8;
     // after a model load: the load frame's uploads, then light and acceleration-structure rebuilds
     static constexpr uint32_t kModelSettleFrames = 16;
-    static constexpr float kFrameDeltaMs = 1000.0f / 60.0f;
+    // ENGINE_CHECK_FPS, read once
+    const float frameDeltaMs = checkFrameDeltaMs();
     // I1's step lengths (engine_temporal_check.hpp), the lab's own copy (spec §0)
     static constexpr uint32_t kStabilityWarmup = 300;
     static constexpr uint32_t kStabilityFrames = 480;

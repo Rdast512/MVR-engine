@@ -52,6 +52,8 @@ struct GpuRtxdiConstants
     float giHistoryReductionStrength; // ReSTIR PT's historyReductionStrength, with kGiFlagDuplicationHistoryReduction
     uint diFlags;             // kDiFlag* bits
     uint64_t diNeighborOffsets; // float2[neighborOffsetMask + 1], StratifiedLowDiscrepancy for DI (m8 I2 F16)
+    uint pathLocalLightSamples; // local light candidates at path vertices (RtxdiContext::pathLocalLightSamples)
+    uint pad0;
 };
 
 // GiFlag in src/render/vk_rtxdi.hpp

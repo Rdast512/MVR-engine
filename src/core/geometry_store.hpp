@@ -3,6 +3,8 @@
 #include "omm_baker.hpp"
 #include "types.hpp"
 
+#include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -26,6 +28,13 @@ struct ShadingAttributeRequest
     uint32_t tangentUvSet = 0;
 };
 
+// max texel error scale per UV set (max(texDim * uvMatrixLinearScale) across material textures)
+struct PrimitiveUvPrecision
+{
+    glm::vec2 uv0TexelScale{0.0f};
+    glm::vec2 uv1TexelScale{0.0f};
+};
+
 class GeometryStore
 {
 public:
@@ -37,8 +46,13 @@ public:
     std::vector<glm::vec4> colors;
     std::vector<uint32_t> indices;
 
-    // packed {pos, color.rgb, uv0} for the current mesh shader
+    // packed GPU streams built by packAttributes (engine spec §6.3)
     std::vector<GpuVertex> vertices;
+    std::vector<uint32_t> packedNormals;
+    std::vector<uint32_t> packedTangents;
+    std::vector<uint32_t> packedUv1;
+    // compact per-primitive FP32 UV fallback for primitives where half2 exceeds the texel error budget
+    std::vector<glm::vec2> uvFloat;
 
     std::vector<GpuMeshletDesc> meshlets;
     std::vector<GpuMeshletBounds> meshletBounds; // parallel to meshlets
@@ -86,8 +100,18 @@ public:
     // enclosing sphere of the node spheres [firstNode, +nodeCount); zero when empty
     [[nodiscard]] glm::vec4 nodeBoundingSphere(uint32_t firstNode, uint32_t nodeCount) const;
 
-    // pack vertices[v] from positions/colors/uv0
+    // pack vertices[v] from positions/colors/uv0 (provisional pre-meshlet pack; packAttributes writes final packed GPU streams)
     void packVertex(uint32_t v);
+
+    // Reorder each primitive's vertices in final partitioned meshlet order (meshopt_optimizeVertexFetchRemap), compacting
+    // unreferenced vertices within each primitive and remapping meshletVertices, indices, and all CPU vertex streams.
+    // Call after buildGltfMeshlets and before packAttributes / bakeGltfOmms / emissive culling.
+    void optimizeVertexFetch(uint32_t firstPrimitive);
+
+    // Pack GPU vertex streams (GpuVertex 20 B, octahedral snorm16 normals, octahedral snorm15+sign tangents, half2 UV0/UV1
+    // with compact per-primitive FP32 fallback in uvFloat). Writes quantized UVs back to CPU uv0/uv1 for half2 primitives
+    // so OMM baking and emissive culling see bit-identical UVs to raster/rays.
+    void packAttributes(uint32_t firstPrimitive, std::span<const PrimitiveUvPrecision> uvPrecisions);
 
     // generates the requested streams for the last primitive's vertices [firstVertex, end). Vertices split on seams
     // and unused ones drop, so localIndices are rewritten; returns the new vertex count. Call before packVertex

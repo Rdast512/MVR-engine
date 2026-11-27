@@ -445,7 +445,7 @@ EngineTemporalCheck::Request EngineTemporalCheck::beginFrame(Camera& camera, Ren
         camera.jitterPhaseOverride.reset();
         return request;
     }
-    renderer.fixedFrameDeltaMs = kFrameDeltaMs;
+    renderer.fixedFrameDeltaMs = frameDeltaMs;
     if (frame < kStartupFrames) {
         return request;
     }

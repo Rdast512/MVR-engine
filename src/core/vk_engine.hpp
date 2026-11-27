@@ -90,6 +90,8 @@ class Engine
     SceneActionStatus spawnInstanceField(glm::vec3 center, int side, float spacing);
     // erases every entity of the field model; nullopt: the model is not loaded
     std::optional<SceneActionStatus> clearInstanceField();
+    // reloads every model with new OMM bake settings, keeping entity transforms; one load per model file
+    SceneActionStatus rebakeOmms(const OmmBakeSettings& settings);
     // loads model at the origin, then unloads every entity that was there before it
     void replaceModels(const std::filesystem::path& model, std::string_view subsystem);
 #if ENGINE_ENABLE_CHECKS

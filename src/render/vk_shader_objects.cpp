@@ -135,7 +135,76 @@ void ShaderObjects::createFrameShaders()
     frameShaders.rtxdiInitial = createComputeShader("rtxdi_initial.spv", "rtxdiInitialMain", "RtxdiInitial");
     frameShaders.rtxdiTemporal = createComputeShader("rtxdi_temporal.spv", "rtxdiTemporalMain", "RtxdiTemporal");
     frameShaders.rtxdiShade = createComputeShader("rtxdi_shade.spv", "rtxdiShadeMain", "RtxdiShade");
-    frameShaders.indirect = createComputeShader("indirect.spv", "indirectMain", "Indirect");
+    {
+        // M8.5 P3: specialize indirect.spv by cache backend, RawPt/RestirGi, SHaRC bounce count, reference path tracer
+        // and secondary DI resampling so active variants strip dead ray loops and unused cache state
+        struct IndirectSpecData
+        {
+            vk::Bool32 debugRays = kDebugRays ? vk::True : vk::False;
+            uint32_t cacheMode = 3u;
+            uint32_t indirectMode = 2u;
+            vk::Bool32 sharcMultiBounce = vk::True;
+            vk::Bool32 reference = vk::True;
+            vk::Bool32 secondaryResampling = vk::True;
+        };
+        constexpr std::array<vk::SpecializationMapEntry, 6> kMapEntries = {{
+            {.constantID = 1, .offset = offsetof(IndirectSpecData, debugRays), .size = sizeof(vk::Bool32)},
+            {.constantID = 2, .offset = offsetof(IndirectSpecData, cacheMode), .size = sizeof(uint32_t)},
+            {.constantID = 3, .offset = offsetof(IndirectSpecData, indirectMode), .size = sizeof(uint32_t)},
+            {.constantID = 4, .offset = offsetof(IndirectSpecData, sharcMultiBounce), .size = sizeof(vk::Bool32)},
+            {.constantID = 5, .offset = offsetof(IndirectSpecData, reference), .size = sizeof(vk::Bool32)},
+            {.constantID = 6, .offset = offsetof(IndirectSpecData, secondaryResampling), .size = sizeof(vk::Bool32)},
+        }};
+        struct VariantSpec
+        {
+            FrameShaders::IndirectVariant variant;
+            const char* name;
+            uint32_t cacheMode;
+            uint32_t indirectMode;
+            bool sharcMulti;
+            bool reference;
+            bool secondaryResamp;
+        };
+        constexpr std::array<VariantSpec, FrameShaders::kIndirectVariantCount> kVariants = {{
+            {FrameShaders::IndirectVariant::RawPtOff, "Indirect_RawPtOff", 0u, 1u, false, false, false},
+            {FrameShaders::IndirectVariant::RawPtNrc, "Indirect_RawPtNrc", 1u, 1u, false, false, false},
+            {FrameShaders::IndirectVariant::RawPtSharcQ1, "Indirect_RawPtSharcQ1", 2u, 1u, false, false, false},
+            {FrameShaders::IndirectVariant::RawPtSharcQ2, "Indirect_RawPtSharcQ2", 2u, 1u, true, false, false},
+            {FrameShaders::IndirectVariant::RestirGiOff, "Indirect_RestirGiOff", 0u, 0u, false, false, false},
+            {FrameShaders::IndirectVariant::RestirGiNrc, "Indirect_RestirGiNrc", 1u, 0u, false, false, false},
+            {FrameShaders::IndirectVariant::RestirGiSharc, "Indirect_RestirGiSharc", 2u, 0u, true, false, false},
+            {FrameShaders::IndirectVariant::General, "Indirect_General", 3u, 2u, true, true, true},
+        }};
+        const std::vector<char> indirectSpirv = readPassSpirv("indirect.spv");
+        for (const VariantSpec& spec : kVariants) {
+            const IndirectSpecData data{
+                .debugRays = kDebugRays ? vk::True : vk::False,
+                .cacheMode = spec.cacheMode,
+                .indirectMode = spec.indirectMode,
+                .sharcMultiBounce = spec.sharcMulti ? vk::True : vk::False,
+                .reference = spec.reference ? vk::True : vk::False,
+                .secondaryResampling = spec.secondaryResamp ? vk::True : vk::False,
+            };
+            const vk::SpecializationInfo specialization{
+                .mapEntryCount = static_cast<uint32_t>(kMapEntries.size()),
+                .pMapEntries = kMapEntries.data(),
+                .dataSize = sizeof(data),
+                .pData = &data,
+            };
+            const vk::ShaderCreateInfoEXT createInfo{
+                .flags = vk::ShaderCreateFlagBitsEXT::eDescriptorHeap,
+                .stage = vk::ShaderStageFlagBits::eCompute,
+                .codeType = vk::ShaderCodeTypeEXT::eSpirv,
+                .codeSize = indirectSpirv.size(),
+                .pCode = indirectSpirv.data(),
+                .pName = "indirectMain",
+                .pSpecializationInfo = &specialization,
+            };
+            vk::raii::ShaderEXT shader = device.createShaderEXT(createInfo);
+            setDebugName(device, shader, std::format("ShaderObject_{}_Compute", spec.name));
+            frameShaders.indirectVariants[std::to_underlying(spec.variant)] = std::move(shader);
+        }
+    }
     frameShaders.nrcUpdate = createComputeShader("nrc_update.spv", "nrcUpdateMain", "NrcUpdate");
     frameShaders.nrcResolve = createComputeShader("nrc_resolve.spv", "nrcResolveMain", "NrcResolve");
     frameShaders.sharcUpdate = createComputeShader("sharc_update.spv", "sharcUpdateMain", "SharcUpdate");

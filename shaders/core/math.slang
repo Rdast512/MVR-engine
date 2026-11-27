@@ -75,11 +75,41 @@ public uint packOct16(float3 n)
     return (uint(s.x) & 0xffffu) | ((uint(s.y) & 0xffffu) << 16);
 }
 
+public static const uint kPackedOctZero = 0x80008000u;
+
 public float3 unpackOct16(uint packed)
 {
     const int sx = int(packed << 16) >> 16;
     const int sy = int(packed) >> 16;
     return octDecode(float2(sx, sy) * (1.0 / 32767.0));
+}
+
+public float3 unpackOct16OrZero(uint packed)
+{
+    return packed == kPackedOctZero ? float3(0.0, 0.0, 0.0) : unpackOct16(packed);
+}
+
+// octahedral snorm15x2 in bits [0..14] / [15..29], bit 30 = negative handedness, bit 31 = valid (0 = absent)
+public float4 unpackTangent32(uint packed)
+{
+    if ((packed & 0x80000000u) == 0u)
+    {
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
+    const int sx = int(packed << 17) >> 17;
+    const int sy = int(packed << 2) >> 17;
+    const float sign = (packed & 0x40000000u) != 0u ? -1.0 : 1.0;
+    return float4(octDecode(float2(sx, sy) * (1.0 / 16383.0)), sign);
+}
+
+public float2 unpackHalf2x16(uint packed)
+{
+    return float2(f16tof32(packed & 0xffffu), f16tof32(packed >> 16));
+}
+
+public float3 unpackColorUnorm8(uint packed)
+{
+    return float3(packed & 0xffu, (packed >> 8) & 0xffu, (packed >> 16) & 0xffu) * (1.0 / 255.0);
 }
 
 // f0.rgb as unorm8x3; top 8 bits: 0 = unlit, 1..255 = lit with roughness (a - 1) / 254 (m8 O4)

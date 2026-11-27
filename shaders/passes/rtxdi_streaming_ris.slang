@@ -24,22 +24,23 @@ void rtxdiStreamingRisMain(uint3 id : SV_DispatchThreadID)
 {
     const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
     rtxdiBridgeInit(root);
+    const uint2 pixel = id.xy;
     // RenderTargets::kDirectRadianceFormat
     const uint output = bdaPtr<GpuTargets>(root.targets)[0].directRadianceStorage;
     if (gRtxdiBridge.lightCount == 0)
     {
-        if (all(id.xy < gRtxdiBridge.renderSize))
+        if (all(pixel < gRtxdiBridge.renderSize))
         {
-            storageTex2D<float4, kImageFormatRgba16f>(output)[id.xy] = float4(0.0, 0.0, 0.0, 1.0);
+            storageTex2D<float4, kImageFormatRgba16f>(output)[pixel] = float4(0.0, 0.0, 0.0, 1.0);
         }
         return;
     }
-    if (any(id.xy >= gRtxdiBridge.renderSize))
+    if (any(pixel >= gRtxdiBridge.renderSize))
     {
         return;
     }
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
-    const RAB_Surface surface = RAB_GetGBufferSurface(int2(id.xy), false);
+    const RAB_Surface surface = RAB_GetGBufferSurface(int2(pixel), false);
     const bool isInfiniteExact = (constants.diFlags & kDiFlagExactInfiniteLights) != 0;
 
     float3 radiance = float3(0.0, 0.0, 0.0);
@@ -49,9 +50,9 @@ void rtxdiStreamingRisMain(uint3 id : SV_DispatchThreadID)
         {
             const uint frameIndex = constants.runtime.frameIndex;
             RTXDI_RandomSamplerState rng =
-                RTXDI_InitRandomSampler(id.xy, frameIndex, RTXDI_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
+                RTXDI_InitRandomSampler(pixel, frameIndex, RTXDI_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
             RTXDI_RandomSamplerState coherentRng =
-                initCoherentRandomSampler(constants, id.xy, frameIndex, RTXDI_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
+                initCoherentRandomSampler(constants, pixel, frameIndex, RTXDI_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
             RTXDI_DIInitialSamplingParameters sampling = constants.initialSampling;
             // Streaming RIS traces its single final visibility ray below instead of an initial candidate shadow ray
             sampling.enableInitialVisibility = 0;
@@ -91,5 +92,5 @@ void rtxdiStreamingRisMain(uint3 id : SV_DispatchThreadID)
             radiance += shadeInfiniteLightsExactly(root, surface, constants.lightBuffer.infiniteLightBufferRegion);
         }
     }
-    storageTex2D<float4, kImageFormatRgba16f>(output)[id.xy] = float4(radiance, 1.0);
+    storageTex2D<float4, kImageFormatRgba16f>(output)[pixel] = float4(radiance, 1.0);
 }

@@ -12,18 +12,23 @@ import raytracing.trace;
 #include "lighting/path_shading.slang"
 #include "Rtxdi/GI/Reservoir.hlsli"
 #include "Rtxdi/Utils/RandomSamplerPerPassSeeds.hlsli"
-// NRC_QUERY=1, SHARC_QUERY=1 (CMakeLists.txt); mutually exclusive at runtime
+// NRC_QUERY=1 (CMakeLists.txt); mutually exclusive with SHaRC at runtime and via specialization constants
 #include "gi/nrc_bridge.slang"
 #include "gi/sharc_bridge.slang"
 
 // indirect pass (spec/m4/g2_indirect_pass.md): one BRDF-sampled ray query per pixel from the primary guide surface,
-// shaded at its hit X2 with emission and one RIS-sampled light, stored as the pixel's initial ReSTIR GI reservoir. It
-// is also NRC's query pass (spec/m4/g3_nrc.md): X2 is the path's first cache vertex, and passes/nrc_resolve.slang adds
-// the cache's bounces 2..inf to the reservoir. With SHaRC active (M8.4), eligible X2 hits query cached total outgoing
-// radiance inline and skip secondaryDirectLight + its shadow ray. With giReferenceBounces the pass traces those bounces
-// itself instead and both caches are paused (engine spec §14 ground truth).
+// shaded at its hit X2 with emission and one RIS-sampled light, written directly to indirectRadiance (RawPt) or packed
+// into the initial ReSTIR GI reservoir. M8.5 P3: specialized by cache mode, RawPt/RestirGi, SHaRC bounce count,
+// reference path tracer, and secondary DI resampling so active variants strip dead ray loops and unused cache state.
 
 static const uint kIndirectTile = 8; // matches src/render/vk_renderer.cpp kFullscreenTile
+
+// Specialization constants (src/render/vk_shader_objects.cpp); defaults select the dynamic general variant
+[vk::constant_id(2)] const uint kIndirectCacheSpec = 3u;           // 0 = Off, 1 = Nrc, 2 = Sharc, 3 = Dynamic
+[vk::constant_id(3)] const uint kIndirectModeSpec = 2u;            // 0 = RestirGi, 1 = RawPt, 2 = Dynamic
+[vk::constant_id(4)] const bool kIndirectSharcMultiBounceSpec = true;
+[vk::constant_id(5)] const bool kIndirectReferenceSpec = true;
+[vk::constant_id(6)] const bool kIndirectSecondaryResamplingSpec = true;
 
 [[vk::push_constant]] ConstantBuffer<FramePushData> push;
 
@@ -110,24 +115,32 @@ NrcContext nrcQueryContext(GpuFrameRoot root, uint2 pixel)
 [numthreads(kIndirectTile, kIndirectTile, 1)]
 void indirectMain(uint3 id : SV_DispatchThreadID)
 {
-    const uint2 pixel = id.xy;
     const GpuFrameRoot root = bdaPtr<GpuFrameRoot>(push.frameRoot)[0];
     rtxdiBridgeInit(root);
+    const uint2 pixel = id.xy;
     if (any(pixel >= gRtxdiBridge.renderSize))
     {
         return;
     }
     const GpuTargets targets = loadTargets(root);
     const GpuRtxdiConstants constants = loadRtxdiConstants(root);
-    const bool isRawIndirect = (root.frameFlags & kFrameFlagRawIndirect) != 0;
-    const NrcContext nrc = nrcQueryContext(root, pixel);
-    const bool isCacheView = (loadNrcConstants(root).flags & kNrcFlagCacheView) != 0;
-    NrcPathState nrcPath = NrcCreatePathState(nrc.constants, 0.0);
+    const bool isRawIndirect =
+        kIndirectModeSpec == 2u ? ((root.frameFlags & kFrameFlagRawIndirect) != 0) : (kIndirectModeSpec == 1u);
+    const bool isNrcPathCompiled = (kIndirectCacheSpec == 1u) || (kIndirectCacheSpec == 3u);
+    const bool isSharcPathCompiled = (kIndirectCacheSpec == 2u) || (kIndirectCacheSpec == 3u);
+
+    NrcContext nrc = {};
+    NrcPathState nrcPath = {};
     float3 nrcThroughput = float3(1.0, 1.0, 1.0);
     float3 nrcRadiance = float3(0.0, 0.0, 0.0);
+    if (isNrcPathCompiled)
+    {
+        nrc = nrcQueryContext(root, pixel);
+        nrcPath = NrcCreatePathState(nrc.constants, 0.0);
+    }
 
     // M8.1 BUG-E3 / PERF-E2: cache view queries vertex 0 directly without tracing bounce-1 rays
-    if (isCacheView)
+    if (kIndirectReferenceSpec && isNrcPathCompiled && (loadNrcConstants(root).flags & kNrcFlagCacheView) != 0)
     {
         const RAB_Surface primary = RAB_GetGBufferSurface(int2(pixel), false);
         if (RAB_IsSurfaceValid(primary) && primary.isLit && gNrcBridge.isActive)
@@ -179,8 +192,8 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
     if (isHit)
     {
         const PathHit secondary = shadeRayHit(root, hit, ray, length(ray.Origin - gRtxdiBridge.cameraPos));
-        RTXDI_RandomSamplerState rng =
-            RTXDI_InitRandomSampler(pixel, constants.runtime.frameIndex, RTXDI_SECONDARY_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
+        RTXDI_RandomSamplerState rng = RTXDI_InitRandomSampler(
+            pixel, constants.runtime.frameIndex, RTXDI_SECONDARY_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
         RTXDI_RandomSamplerState coherentRng = initCoherentRandomSampler(
             constants, pixel, constants.runtime.frameIndex, RTXDI_SECONDARY_DI_GENERATE_INITIAL_SAMPLES_RANDOM_SEED);
         HitOrigin origin;
@@ -190,12 +203,14 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
         // caustic outlier that reuse spreads (Doc/RestirGI.md). X2's own shading only: the NRC query keeps the
         // roughness the cache trains on
         RAB_Surface shadedSecondary = secondary.surface;
-        if ((constants.giFlags & kGiFlagSecondaryRoughnessFloor) != 0)
+        if (!isRawIndirect && (constants.giFlags & kGiFlagSecondaryRoughnessFloor) != 0)
         {
             shadedSecondary.roughness = max(shadedSecondary.roughness, kMinSecondaryRoughness);
         }
         float3 radiance = float3(0.0, 0.0, 0.0);
-        const bool isSharcActive = root.sharcConstants != 0 && constants.giReferenceBounces == 0;
+        const bool isSharcActive =
+            isSharcPathCompiled &&
+            (kIndirectCacheSpec == 2u || (root.sharcConstants != 0 && constants.giReferenceBounces == 0));
         if (isSharcActive)
         {
             const GpuSharcConstants sharc = loadSharcConstants(root);
@@ -221,8 +236,9 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
             if (!isSharcCacheHit)
             {
                 radiance = secondary.emissive +
-                           secondaryDirectLight(root, shadedSecondary, origin, constants, rng, coherentRng);
-                if (secondary.surface.isLit && sharc.maxQueryBounces > 1u)
+                           secondaryDirectLight(root, shadedSecondary, origin, constants, rng, coherentRng,
+                                                kIndirectSecondaryResamplingSpec);
+                if (kIndirectSharcMultiBounceSpec && secondary.surface.isLit && sharc.maxQueryBounces > 1u)
                 {
                     RTXDI_RandomSamplerState pathRng =
                         RTXDI_InitRandomSampler(pixel, constants.runtime.frameIndex, kSharcQueryPathSeed);
@@ -288,9 +304,10 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
         }
         else
         {
-            radiance =
-                secondary.emissive + secondaryDirectLight(root, shadedSecondary, origin, constants, rng, coherentRng);
-            if (constants.giReferenceBounces > 0)
+            radiance = secondary.emissive +
+                       secondaryDirectLight(root, shadedSecondary, origin, constants, rng, coherentRng,
+                                            kIndirectSecondaryResamplingSpec);
+            if (kIndirectReferenceSpec && constants.giReferenceBounces > 0)
             {
                 RTXDI_RandomSamplerState pathRng =
                     RTXDI_InitRandomSampler(pixel, constants.runtime.frameIndex, kReferencePathSeed);
@@ -309,7 +326,7 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
             }
         }
         // an unlit X2 reflects no light, so the cache has nothing to add
-        const bool hasNrcQuery = secondary.surface.isLit && gNrcBridge.isActive;
+        const bool hasNrcQuery = isNrcPathCompiled && secondary.surface.isLit && gNrcBridge.isActive;
         if (isRawIndirect)
         {
             // M8.3 PERF-D1: write indirectRadiance directly without GI reservoir LogLuv round-trip; AO applies to the
@@ -355,7 +372,7 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
             reservoir = RTXDI_MakeGIReservoir(ray.Origin + ray.Direction * kMissDistance, -ray.Direction,
                                               float3(0.0, 0.0, 0.0), pdf);
         }
-        if (isActive)
+        if (isNrcPathCompiled && isActive)
         {
             NrcUpdateOnMiss(nrcPath);
         }
@@ -363,7 +380,7 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
     if (isRawIndirect)
     {
         storageTex2D<float4, kImageFormatRgba16f>(targets.indirectRadianceStorage)[pixel] = float4(rawRadiance, 1.0);
-        if (targets.rawIndirectWeightStorage != kNoneIndex)
+        if (isNrcPathCompiled && targets.rawIndirectWeightStorage != kNoneIndex)
         {
             storageTex2D<float4, kImageFormatRgba16f>(targets.rawIndirectWeightStorage)[pixel] = rawWeightAndLum;
         }
@@ -376,7 +393,10 @@ void indirectMain(uint3 id : SV_DispatchThreadID)
                                RTXDI_PixelPosToReservoirPos(pixel, constants.runtime.activeCheckerboardField),
                                kGiInitialReservoirArray);
     }
-    NrcWriteFinalPathInfo(nrc, nrcPath, nrcThroughput, nrcRadiance);
+    if (isNrcPathCompiled)
+    {
+        NrcWriteFinalPathInfo(nrc, nrcPath, nrcThroughput, nrcRadiance);
+    }
     // DLSS-RR's initial specular hit distance (m8 I16 phase 3): clamped to R16F max so hits in (65504, kMissDistance]
     // never overflow to +Inf; rtxdi_gi_shade and glass refine it when reuse or glass reflections take over
     if (gRtxdiBridge.specularHitDistanceStorage != kNoneIndex)

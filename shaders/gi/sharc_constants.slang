@@ -41,6 +41,8 @@ struct GpuSharcConstants
     uint flags;
     uint updateLaunch;
     uint64_t counters; // GpuSharcCounters* (device-local, CounterReadback)
+    uint updateLocalLightSamples; // 0: GpuRtxdiConstants::pathLocalLightSamples
+    uint pad0;
 };
 
 #endif

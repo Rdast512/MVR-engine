@@ -4,6 +4,7 @@
 #include "check_poses.hpp"
 #include "gi_settings_sets.hpp"
 #include "render/debug_view.hpp"
+#include "check_clock.hpp"
 #include "render/vk_renderer.hpp"
 #include "scene/vk_camera.hpp"
 
@@ -178,7 +179,8 @@ private:
 
     static constexpr uint32_t kNoChange = UINT32_MAX;
     static constexpr uint32_t kStartupFrames = 8;
-    static constexpr float kFrameDeltaMs = 1000.0f / 60.0f;
+    // ENGINE_CHECK_FPS, read once
+    const float frameDeltaMs = checkFrameDeltaMs();
     // longer than any step
     static constexpr uint32_t kStepSeedStride = 16384;
     // settling is judged on non-overlapping blocks of this many frames, within max(kSettledError, kNoiseSigmas times

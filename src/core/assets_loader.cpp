@@ -1846,6 +1846,49 @@ namespace
                  "AssetLoader");
     }
 
+    static PrimitiveUvPrecision computePrimitiveUvPrecision(const MaterialStore::MaterialInfo& info,
+                                                            const TextureManager& textures)
+    {
+        PrimitiveUvPrecision prec{};
+        const auto addSlot = [&](uint32_t tex, uint32_t uvSet, const MaterialUvTransform& xform) {
+            if (tex == kNoneIndex) {
+                return;
+            }
+            const glm::uvec2 extent = textures.textureExtent(tex);
+            if (extent.x == 0 || extent.y == 0) {
+                return;
+            }
+            const GpuUvMatrix matrix = packUvMatrix(xform);
+            const float w = static_cast<float>(extent.x);
+            const float h = static_cast<float>(extent.y);
+            // conservative Jacobian bound: |du'|*W + |dv'|*H <= |du|*scale.x + |dv|*scale.y
+            const glm::vec2 scale{std::abs(matrix.row0.x) * w + std::abs(matrix.row1.x) * h,
+                                  std::abs(matrix.row0.y) * w + std::abs(matrix.row1.y) * h};
+            glm::vec2& target = uvSet == 0 ? prec.uv0TexelScale : prec.uv1TexelScale;
+            target = glm::max(target, scale);
+        };
+
+        const GpuMaterial& mat = info.material;
+        const MaterialPbrExtension& ext = info.extension;
+        addSlot(mat.baseColorTex, mat.baseColorUv, ext.baseColorUv);
+        addSlot(mat.metalRoughTex, mat.metalRoughUv, ext.metalRoughUv);
+        addSlot(mat.normalTex, mat.normalUv, ext.normalUv);
+        addSlot(mat.occlusionTex, mat.occlusionUv, ext.occlusionUv);
+        addSlot(mat.emissiveTex, mat.emissiveUv, ext.emissiveUv);
+
+        const std::array<const MaterialTextureRef*, 14> extRefs = {
+            &ext.specular,       &ext.specularColor,     &ext.clearcoat,
+            &ext.clearcoatRoughness, &ext.clearcoatNormal, &ext.sheenColor,
+            &ext.sheenRoughness, &ext.transmission,      &ext.thickness,
+            &ext.iridescence,    &ext.iridescenceThickness, &ext.anisotropy,
+            &ext.diffuseTransmission, &ext.diffuseTransmissionColor,
+        };
+        for (const MaterialTextureRef* ref : extRefs) {
+            addSlot(ref->tex, ref->uv, ref->uvXform);
+        }
+        return prec;
+    }
+
     static uint32_t appendGltfGeometry(GltfLoadCtx& ctx, const tg3_model& model)
     {
         logDebug(std::format("glTF meshes: {}", model.meshes_count), "AssetLoader");
@@ -1889,6 +1932,16 @@ namespace
                              ctx.generatedNormalPrimitives, ctx.generatedTangentPrimitives, storedPrimitives),
                  "AssetLoader");
         buildGltfMeshlets(geometry, firstPrimitive);
+        geometry.optimizeVertexFetch(firstPrimitive);
+
+        std::vector<PrimitiveUvPrecision> uvPrecisions(storedPrimitives);
+        for (uint32_t p = 0; p < storedPrimitives; ++p) {
+            const uint32_t materialId = geometry.primitiveDraws[firstPrimitive + p].materialId;
+            if (materialId != kNoneIndex && materialId < ctx.materials.infos.size()) {
+                uvPrecisions[p] = computePrimitiveUvPrecision(ctx.materials.infos[materialId], ctx.textures);
+            }
+        }
+        geometry.packAttributes(firstPrimitive, uvPrecisions);
 
         // a mesh's primitives append their vertices back to back
         for (const uint32_t mi : uniqueMeshes) {
@@ -1925,10 +1978,6 @@ namespace
     }
 
     // ── OMM bake (spec/m6/d1_omm_bake.md) ───────────────────────
-
-    // plan §settings: subdivision cap and texels per micro-triangle edge (SDK default)
-    constexpr uint32_t kOmmMaxSubdivisionLevel = 5;
-    constexpr float kOmmTexelsPerMicroTriangleEdge = 2.0f;
 
     struct OmmBakeJob
     {
@@ -2045,6 +2094,9 @@ namespace
         case vk::Format::eBc7UnormBlock:
         case vk::Format::eBc7SrgbBlock:
             return decodeBc7Alpha(level.bytes, level.width, level.height);
+        case vk::Format::eBc3UnormBlock:
+        case vk::Format::eBc3SrgbBlock:
+            return decodeBc3Alpha(level.bytes, level.width, level.height);
         case vk::Format::eR8G8B8A8Unorm:
         case vk::Format::eR8G8B8A8Srgb:
             return extractAlpha(level.bytes, level.width, level.height);
@@ -2056,7 +2108,7 @@ namespace
     // the primitive's final cluster triangles, exactly as C1 hands them to the CLAS build
     static OmmBake bakeOmmPrimitive(const GeometryStore& geometry, const PrimitiveDraw& draw, const OmmBakeJob& job,
                                     const OmmAlphaTexture& alpha, const OmmBaker& baker, std::string_view name,
-                                    uint8_t maxSubdivisionLevel)
+                                    const OmmBakeSettings& settings)
     {
         const std::vector<glm::vec2>& sourceUvs = job.uvSet == 0 ? geometry.uv0 : geometry.uv1;
         std::vector<glm::vec2> uvs(draw.vertexCount);
@@ -2088,8 +2140,7 @@ namespace
             .alphaCutoff = job.alphaCutoff,
             .uvs = uvs,
             .indices = indices,
-            .maxSubdivisionLevel = maxSubdivisionLevel,
-            .dynamicSubdivisionScale = kOmmTexelsPerMicroTriangleEdge,
+            .settings = settings,
         });
     }
 
@@ -2132,13 +2183,17 @@ namespace
     // One OMM SDK bake per alpha-tested primitive of this load into GeometryStore::ommBakes. A primitive whose alpha
     // or bake fails is logged and stays opaque to rays.
     static void bakeGltfOmms(GltfLoadCtx& ctx, const tg3_model& model, const std::filesystem::path& modelPath,
-                             uint32_t maxOpacity4StateSubdivisionLevel)
+                             const OmmBakeSettings& requested,
+                             const vk::PhysicalDeviceOpacityMicromapPropertiesEXT& limits)
     {
         ZoneScopedN("AssetLoader::bakeGltfOmms");
         GeometryStore& geometry = ctx.geometry;
         const auto primitiveCount = static_cast<uint32_t>(ctx.primitiveMaterials.size());
         const uint32_t firstPrimitive = static_cast<uint32_t>(geometry.primitiveDraws.size()) - primitiveCount;
         geometry.ommBakes.assign(primitiveCount, {});
+        if (!requested.isEnabled) {
+            return;
+        }
 
         std::vector<OmmBakeJob> jobs;
         for (uint32_t primitive = 0; primitive < primitiveCount; ++primitive) {
@@ -2180,8 +2235,10 @@ namespace
             }
         }
 
-        const uint8_t maxSubdivisionLevel =
-            static_cast<uint8_t>(std::min(kOmmMaxSubdivisionLevel, maxOpacity4StateSubdivisionLevel));
+        OmmBakeSettings settings = requested;
+        settings.maxSubdivisionLevel =
+            std::clamp(settings.maxSubdivisionLevel, 0u, maxOmmSubdivisionLevel(limits, settings.format));
+        const uint32_t maxSubdivisionLevel = settings.maxSubdivisionLevel;
         const std::string modelName = modelPath.stem().string();
         std::vector<std::atomic<uint32_t>> pendingReaders(ctx.images.size());
         for (size_t i = 0; i < readers.size(); ++i) {
@@ -2197,7 +2254,7 @@ namespace
                     geometry.ommBakes[job.primitive] =
                         bakeOmmPrimitive(geometry, geometry.primitiveDraws[firstPrimitive + job.primitive], job,
                                          image.alpha, baker, std::format("{}_prim{}", modelName, job.primitive),
-                                         maxSubdivisionLevel);
+                                         settings);
                 } catch (const std::exception& error) {
                     bakeErrors[j] = error.what();
                 }
@@ -2209,6 +2266,7 @@ namespace
         });
 
         OmmBakeSummary summary{.minKnownAreaMetric = 1.0f};
+        bool hasKnownArea = false;
         uint64_t hash = kFnvOffsetBasis;
         for (size_t j = 0; j < jobs.size(); ++j) {
             const OmmBakeJob& job = jobs[j];
@@ -2228,7 +2286,10 @@ namespace
             summary.opaque += bake.stats.opaque;
             summary.transparent += bake.stats.transparent;
             summary.unknown += bake.stats.unknown;
-            summary.minKnownAreaMetric = std::min(summary.minKnownAreaMetric, bake.stats.knownAreaMetric);
+            if (bake.stats.knownAreaMetric >= 0.0f) {
+                summary.minKnownAreaMetric = std::min(summary.minKnownAreaMetric, bake.stats.knownAreaMetric);
+                hasKnownArea = true;
+            }
             summary.arrayBytes += bake.arrayData.size();
             summary.indexBytes += bake.indices.size();
             hash = hashOmmBake(hash, bake);
@@ -2252,14 +2313,16 @@ namespace
         }
         if (summary.primitiveCount == 0) {
             summary.minKnownAreaMetric = 0.0f;
+        } else if (!hasKnownArea) {
+            summary.minKnownAreaMetric = -1.0f;
         }
         summary.bakeMilliseconds =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         geometry.ommSummary = summary;
-        logInfo(std::format("OMM baked {} of {} alpha primitives in {:.1f} ms on {} threads (subdivision <= {}): "
+        logInfo(std::format("OMM baked {} of {} alpha primitives in {:.1f} ms on {} threads ({}-state, subdivision <= {}): "
                             "array {} B, index {} B, min known area {:.3f}, hash {:016x}",
                             summary.primitiveCount, jobs.size(), summary.bakeMilliseconds, threads,
-                            maxSubdivisionLevel, summary.arrayBytes, summary.indexBytes, summary.minKnownAreaMetric,
+                            settings.format == ommFormat_OC1_2_State ? 2 : 4, maxSubdivisionLevel, summary.arrayBytes, summary.indexBytes, summary.minKnownAreaMetric,
                             hash),
                 "AssetLoader");
     }
@@ -2775,8 +2838,8 @@ std::optional<EntityId> AssetsLoader::loadGltfModel(const std::string& modelPath
     }
     parseGltfLights(ctx, model);
     appendGltfGeometry(ctx, model);
-    bakeGltfOmms(ctx, model, std::filesystem::path(modelPath),
-                 textureManager.deviceWrapper.capabilities.opacityMicromap.maxOpacity4StateSubdivisionLevel);
+    bakeGltfOmms(ctx, model, std::filesystem::path(modelPath), ommSettings,
+                 textureManager.deviceWrapper.capabilities.opacityMicromap);
     cullGltfEmissiveTriangles(ctx, model);
     const uint32_t primitiveCount = static_cast<uint32_t>(geometryStore.primitiveDraws.size()) - firstPrimitive;
 

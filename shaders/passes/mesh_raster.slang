@@ -80,7 +80,7 @@ extension MeshAlphaVertexOut : IRasterVertex
         }
         MeshAlphaVertexOut result;
         result.pos = clip;
-        result.uv = baseColorUv(shared.material, vertex.texCoord, uv1);
+        result.uv = baseColorUv(shared.material, loadVertexUv0(draw, vertexIndex, vertex.texCoord), uv1);
         result.baseColor = shared.baseColor;
         result.alphaTest = shared.alphaTest;
         return result;

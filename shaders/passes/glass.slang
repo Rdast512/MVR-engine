@@ -175,14 +175,18 @@ void glassMain(uint3 id : SV_DispatchThreadID)
         advancePastGlass(ray, hit);
     }
 
-    GpuGlassCounters* counters = bdaPtr<GpuGlassCounters>(root.glassCounters);
-    waveCount(counters.pixels, layers > 0);
-    waveCount(counters.earlyStops, isEarlyStop);
-    // the cap was reached with throughput left; glass may or may not follow
-    waveCount(counters.capped, layers == root.glassMaxLayers && !isEarlyStop);
-    for (uint n = 0; n < kGlassMaxLayersLimit; ++n)
+    // M8.5 P3: skip all 11 waveCount atomics for waves with zero glass pixels
+    if (WaveActiveAnyTrue(layers > 0))
     {
-        waveCount(counters.layerPixels[n], layers == n + 1);
+        GpuGlassCounters* counters = bdaPtr<GpuGlassCounters>(root.glassCounters);
+        waveCount(counters.pixels, layers > 0);
+        waveCount(counters.earlyStops, isEarlyStop);
+        // the cap was reached with throughput left; glass may or may not follow
+        waveCount(counters.capped, layers == root.glassMaxLayers && !isEarlyStop);
+        for (uint n = 0; n < kGlassMaxLayersLimit; ++n)
+        {
+            waveCount(counters.layerPixels[n], layers == n + 1);
+        }
     }
 
     // every pixel: DLSS-RR reads these images in place of the albedo guides (RenderTargets::glassAlbedo)

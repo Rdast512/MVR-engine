@@ -1002,8 +1002,18 @@ void RtxdiContext::prepareFrame(uint32_t frameSlot, uint32_t frameIndex, bool is
         .diFlags = (areDiInfiniteLightsExact() ? DiFlag::ExactInfiniteLights : 0u) |
             (settings.areLightTilesPerPixel ? DiFlag::PerPixelLightTiles : 0u),
         .diNeighborOffsets = diNeighborOffsets.address,
+        .pathLocalLightSamples = pathLocalLightSamples(),
+        .pad0 = 0,
     };
     std::memcpy(constants[frameSlot].mapped, &data, sizeof(data));
+}
+
+uint32_t RtxdiContext::pathLocalLightSamples() const
+{
+    const uint32_t primary = restirDi().GetInitialSamplingParameters().numLocalLightSamples;
+    const bool isCapped =
+        giReferenceBounces == 0 && !isSecondaryResamplingEffective() && giSettings.pathLocalLightSamples > 0;
+    return isCapped ? std::min(primary, giSettings.pathLocalLightSamples) : primary;
 }
 
 void RtxdiContext::recordLightPreparation(const vk::raii::CommandBuffer& cmd, uint32_t frameSlot,

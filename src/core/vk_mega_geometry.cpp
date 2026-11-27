@@ -250,6 +250,7 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
         std::span<const uint8_t> data;
         std::span<const VkMicromapTriangleEXT> triangles;
         std::span<const VkMicromapUsageEXT> usages;
+        vk::BuildMicromapFlagsEXT flags = vk::BuildMicromapFlagBitsEXT::ePreferFastTrace;
         vk::MicromapBuildSizesInfoEXT sizes;
         vk::DeviceSize storageOffset = 0;
         vk::DeviceSize scratchOffset = 0;
@@ -260,7 +261,7 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
     const auto micromapBuildInfo = [](const MicromapPlan& plan) {
         return vk::MicromapBuildInfoEXT{
             .type = vk::MicromapTypeEXT::eOpacityMicromap,
-            .flags = vk::BuildMicromapFlagBitsEXT::ePreferFastTrace,
+            .flags = plan.flags,
             .mode = vk::BuildMicromapModeEXT::eBuild,
             .usageCountsCount = static_cast<uint32_t>(plan.usages.size()),
             // VkMicromapUsageEXT and vk::MicromapUsageEXT share one layout
@@ -295,6 +296,7 @@ void MegaGeometry::buildModel(const ModelGeometry& geometry)
             .triangles = isUnreferenced ? std::span<const VkMicromapTriangleEXT>(kUnreferencedMicromapTriangle)
                                         : bake.triangles,
             .usages = isUnreferenced ? std::span<const VkMicromapUsageEXT>(kUnreferencedMicromapUsage) : bake.usages,
+            .flags = static_cast<vk::BuildMicromapFlagsEXT>(bake.buildFlags),
             .sizes = {},
         };
         plan.sizes = device.getMicromapBuildSizesEXT(vk::AccelerationStructureBuildTypeKHR::eDevice,

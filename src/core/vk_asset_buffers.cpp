@@ -58,9 +58,10 @@ namespace
          "Vulkan/MeshletVertexCapacityBytes", sizeof(uint32_t)},
         {"MeshletTriangleBuffer", "GPU/MeshletTriangles", "Vulkan/MeshletTriangleBytes",
          "Vulkan/MeshletTriangleCapacityBytes", sizeof(uint8_t)},
-        {"NormalBuffer", "GPU/Normals", "Vulkan/NormalBytes", "Vulkan/NormalCapacityBytes", sizeof(glm::vec3)},
-        {"TangentBuffer", "GPU/Tangents", "Vulkan/TangentBytes", "Vulkan/TangentCapacityBytes", sizeof(glm::vec4)},
-        {"Uv1Buffer", "GPU/Uv1", "Vulkan/Uv1Bytes", "Vulkan/Uv1CapacityBytes", sizeof(glm::vec2)},
+        {"NormalBuffer", "GPU/Normals", "Vulkan/NormalBytes", "Vulkan/NormalCapacityBytes", sizeof(uint32_t)},
+        {"TangentBuffer", "GPU/Tangents", "Vulkan/TangentBytes", "Vulkan/TangentCapacityBytes", sizeof(uint32_t)},
+        {"Uv1Buffer", "GPU/Uv1", "Vulkan/Uv1Bytes", "Vulkan/Uv1CapacityBytes", sizeof(uint32_t)},
+        {"UvFloatBuffer", "GPU/UvFloat", "Vulkan/UvFloatBytes", "Vulkan/UvFloatCapacityBytes", sizeof(glm::vec2)},
         {"IndexBuffer", "GPU/Indices", "Vulkan/IndexBytes", "Vulkan/IndexCapacityBytes", sizeof(uint32_t)},
         {"MaterialBuffer", "GPU/Materials", "Vulkan/MaterialBytes", "Vulkan/MaterialCapacityBytes",
          sizeof(GpuMaterial)},
@@ -245,16 +246,18 @@ void AssetBuffers::rebuildModelTable()
             .normals = slice(AssetBuffer::Normals),
             .tangents = slice(AssetBuffer::Tangents),
             .uv1 = slice(AssetBuffer::Uv1),
+            .uvFloat = slice(AssetBuffer::UvFloat),
             .indices = slice(AssetBuffer::Indices),
             .nodes = slice(AssetBuffer::Nodes),
             .primitives = slice(AssetBuffer::Primitives),
             .nodeCount = modelAllocations[id].nodes.count,
         };
-        const std::array<std::pair<vk::DeviceAddress, uint32_t>, 4> streams{{
+        const std::array<std::pair<vk::DeviceAddress, uint32_t>, 5> streams{{
             {model.normals, GpuModelAttribute::Normals},
             {model.tangents, GpuModelAttribute::Tangents},
             {model.uv1, GpuModelAttribute::Uv1},
             {model.indices, GpuModelAttribute::Indices},
+            {model.uvFloat, GpuModelAttribute::UvFloat},
         }};
         for (const auto& [address, bit] : streams) {
             if (address != 0) {
@@ -519,9 +522,10 @@ std::span<const std::byte> AssetBuffers::scratchBytes(AssetBuffer id, const Pack
         return std::as_bytes(std::span(geometryStore.meshletGroups).subspan(geometryStore.flushedGroupCount));
     case AssetBuffer::MeshletVertices:  return std::as_bytes(std::span(geometryStore.meshletVertices));
     case AssetBuffer::MeshletTriangles: return std::as_bytes(std::span(geometryStore.meshletTriangles));
-    case AssetBuffer::Normals:          return optionalStream(geometryStore.normals, GpuModelAttribute::Normals);
-    case AssetBuffer::Tangents:         return optionalStream(geometryStore.tangents, GpuModelAttribute::Tangents);
-    case AssetBuffer::Uv1:              return optionalStream(geometryStore.uv1, GpuModelAttribute::Uv1);
+    case AssetBuffer::Normals:          return optionalStream(geometryStore.packedNormals, GpuModelAttribute::Normals);
+    case AssetBuffer::Tangents:         return optionalStream(geometryStore.packedTangents, GpuModelAttribute::Tangents);
+    case AssetBuffer::Uv1:              return optionalStream(geometryStore.packedUv1, GpuModelAttribute::Uv1);
+    case AssetBuffer::UvFloat:          return std::as_bytes(std::span(geometryStore.uvFloat));
     case AssetBuffer::Indices:          return std::as_bytes(std::span(geometryStore.indices));
     // not model-sliced: appendMaterialUploads and uploadLights write them
     case AssetBuffer::Materials:
@@ -585,6 +589,8 @@ std::vector<GpuPrimitive> AssetBuffers::packScratchPrimitives() const
             .firstGroup = draw.firstGroup - geometryStore.flushedGroupCount,
             .groupCount = draw.groupCount,
             .flags = isDoubleSided ? GpuPrimitiveFlag::DoubleSided : 0u,
+            .uv0FloatOffset = draw.uv0FloatOffset,
+            .uv1FloatOffset = draw.uv1FloatOffset,
         });
     }
     return packed;

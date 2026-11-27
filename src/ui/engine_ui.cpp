@@ -418,6 +418,7 @@ void EngineUi::buildFrame(const FrameStats& stats)
             drawDebugViewPanel();
             drawCullingPanel();
             drawInstanceFieldPanel();
+            drawOmmPanel();
         }
         ImGui::End();
         settingsWindow.draw();
@@ -984,6 +985,104 @@ void EngineUi::drawInstanceFieldPanel()
     }
     ImGui::SameLine();
     ImGui::Text("%d instances", instanceFieldSide * instanceFieldSide);
+}
+
+// RTXPT OpacityMicroMapUIData::BuildState controls for the CPU baker; edits apply on re-bake
+void EngineUi::drawOmmPanel()
+{
+    if (!ImGui::CollapsingHeader("Opacity micromaps")) {
+        return;
+    }
+    OmmBakeSettings& settings = ommSettings;
+    ImGui::Checkbox("Enabled", &settings.isEnabled);
+    ImGui::SetItemTooltip("off: no micromaps; alpha-tested geometry is opaque to rays");
+    ImGui::BeginDisabled(!settings.isEnabled);
+
+    constexpr std::array<const char*, 2> kFormatNames{"2-state", "4-state"};
+    int format = settings.format == ommFormat_OC1_2_State ? 0 : 1;
+    if (ImGui::Combo("Format", &format, kFormatNames.data(), static_cast<int>(kFormatNames.size()))) {
+        settings.format = format == 0 ? ommFormat_OC1_2_State : ommFormat_OC1_4_State;
+    }
+    ImGui::SetItemTooltip("rays force 2-state; 4-state unknowns resolve by Promotion, at twice the array size");
+
+    constexpr std::array<const char*, 3> kPromotionNames{"Nearest", "Force opaque", "Force transparent"};
+    static_assert(ommUnknownStatePromotion_Nearest == 0 && ommUnknownStatePromotion_ForceTransparent == 2);
+    int promotion = static_cast<int>(settings.unknownStatePromotion);
+    if (ImGui::Combo("Promotion", &promotion, kPromotionNames.data(), static_cast<int>(kPromotionNames.size()))) {
+        settings.unknownStatePromotion = static_cast<ommUnknownStatePromotion>(promotion);
+    }
+    ImGui::SetItemTooltip("state of micro-triangles that are partly opaque");
+
+    const auto deviceMax = static_cast<int>(
+        maxOmmSubdivisionLevel(context.device.capabilities.opacityMicromap, settings.format));
+    settings.maxSubdivisionLevel = std::min(settings.maxSubdivisionLevel, static_cast<uint32_t>(deviceMax));
+    int level = static_cast<int>(settings.maxSubdivisionLevel);
+    if (ImGui::SliderInt("Max subdivision", &level, 0, deviceMax)) {
+        settings.maxSubdivisionLevel = static_cast<uint32_t>(level);
+    }
+    ImGui::SetItemTooltip("4^level micro-triangles per triangle; device max %d. RTXPT default 6", deviceMax);
+    ImGui::Checkbox("Dynamic subdivision", &settings.isDynamicSubdivisionEnabled);
+    ImGui::SetItemTooltip("level per triangle from its texel area; off: every triangle at Max subdivision");
+    ImGui::BeginDisabled(!settings.isDynamicSubdivisionEnabled);
+    ImGui::SliderFloat("Scale", &settings.dynamicSubdivisionScale, 0.01f, 20.0f, "%.2f texels",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("micro-triangle edge in texels; smaller is finer");
+    ImGui::EndDisabled();
+    ImGui::Checkbox("Special indices", &settings.isSpecialIndicesEnabled);
+    ImGui::SetItemTooltip("uniform triangles store a special index instead of a micromap");
+    ImGui::Checkbox("Near-duplicate detection", &settings.isNearDuplicateDetectionEnabled);
+    ImGui::SetItemTooltip("merges similar micromaps; smaller array, less known area");
+    ImGui::Checkbox("Prefer fast build", &settings.isFastBuildPreferred);
+    ImGui::SetItemTooltip("micromap build flag; off: prefer fast trace");
+    ImGui::EndDisabled();
+
+    const bool isChanged = settings != appliedOmmSettings;
+    ImGui::BeginDisabled(!isChanged);
+    if (ImGui::Button("Re-bake loaded models")) {
+        requests.rebakeOmms = settings;
+    }
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("reloads every model from disk with these settings; later loads use them too");
+    ImGui::SameLine();
+    if (ImGui::Button("Defaults")) {
+        settings = {};
+    }
+
+    OmmBakeSummary total;
+    double bakeMilliseconds = 0.0;
+    float minKnownArea = 1.0f;
+    bool hasKnownArea = false;
+    for (const ModelAllocation& model : context.assets.models()) {
+        const OmmBakeSummary& omm = model.omm;
+        if (omm.primitiveCount == 0) {
+            continue;
+        }
+        total.primitiveCount += omm.primitiveCount;
+        total.opaque += omm.opaque;
+        total.transparent += omm.transparent;
+        total.unknown += omm.unknown;
+        total.arrayBytes += omm.arrayBytes;
+        total.indexBytes += omm.indexBytes;
+        bakeMilliseconds += omm.bakeMilliseconds;
+        if (omm.minKnownAreaMetric >= 0.0f) {
+            minKnownArea = std::min(minKnownArea, omm.minKnownAreaMetric);
+            hasKnownArea = true;
+        }
+    }
+    if (total.primitiveCount == 0) {
+        ImGui::TextDisabled("No baked primitives");
+        return;
+    }
+    if (hasKnownArea) {
+        ImGui::Text("%u prims, bake %.1f ms, min known area %.3f", total.primitiveCount, bakeMilliseconds, minKnownArea);
+    } else {
+        ImGui::Text("%u prims, bake %.1f ms, min known area n/a", total.primitiveCount, bakeMilliseconds);
+    }
+    ImGui::Text("array %.1f KiB, index %.1f KiB", static_cast<double>(total.arrayBytes) / 1024.0,
+                static_cast<double>(total.indexBytes) / 1024.0);
+    ImGui::Text("micro-triangles: opaque %llu, transparent %llu, unknown %llu",
+                static_cast<unsigned long long>(total.opaque), static_cast<unsigned long long>(total.transparent),
+                static_cast<unsigned long long>(total.unknown));
 }
 
 void EngineUi::drawAssetsPanel() const

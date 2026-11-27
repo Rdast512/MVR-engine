@@ -119,8 +119,26 @@ public:
         vk::raii::ShaderEXT rtxdiInitial = nullptr;
         vk::raii::ShaderEXT rtxdiTemporal = nullptr;
         vk::raii::ShaderEXT rtxdiShade = nullptr;
-        // passes/indirect.slang: the bounce ray query, NRC's query paths
-        vk::raii::ShaderEXT indirect = nullptr;
+        // passes/indirect.slang: specialized variants (M8.5 P3) stripping dead cache backends and ray loops
+        enum class IndirectVariant : uint8_t
+        {
+            RawPtOff = 0,
+            RawPtNrc,
+            RawPtSharcQ1,
+            RawPtSharcQ2,
+            RestirGiOff,
+            RestirGiNrc,
+            RestirGiSharc,
+            General,
+            Count,
+        };
+        static constexpr size_t kIndirectVariantCount = std::to_underlying(IndirectVariant::Count);
+        std::array<vk::raii::ShaderEXT, kIndirectVariantCount> indirectVariants = {
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+        [[nodiscard]] const vk::raii::ShaderEXT& indirectShader(IndirectVariant variant) const noexcept
+        {
+            return indirectVariants[std::to_underlying(variant)];
+        }
         // passes/nrc_update.slang: NRC's training paths
         vk::raii::ShaderEXT nrcUpdate = nullptr;
         // passes/nrc_resolve.slang: NRC's cache term into the GI reservoirs

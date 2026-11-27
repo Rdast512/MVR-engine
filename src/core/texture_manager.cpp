@@ -295,6 +295,19 @@ std::optional<TextureManager::TextureInfo> TextureManager::textureInfo(uint32_t 
     return TextureInfo{.name = std::filesystem::path(path).filename().string(), .bytes = allocationInfo.size};
 }
 
+glm::uvec2 TextureManager::textureExtent(uint32_t heapIndex) const
+{
+    const auto entry = heapEntries.find(heapIndex);
+    if (entry == heapEntries.end()) {
+        return {0u, 0u};
+    }
+    const auto asset = loadedTextures.find(entry->second.cacheKey);
+    if (asset == loadedTextures.end()) {
+        return {0u, 0u};
+    }
+    return {asset->second.width, asset->second.height};
+}
+
 bool TextureManager::isCached(std::string cacheKey, TextureColorSpace colorSpace) const
 {
     cacheKey += colorSpaceSuffix(colorSpace);
@@ -470,6 +483,8 @@ uint32_t TextureManager::uploadKtx(const std::string& path)
     const uint32_t height = kTexture->baseHeight;
     const uint32_t mipLevels = kTexture->numLevels;
     TextureAsset asset{};
+    asset.width = width;
+    asset.height = height;
     allocator.createImage2D(width, height, mipLevels, vk::SampleCountFlagBits::e1, format,
                             vk::ImageUsageFlagBits::eHostTransfer | vk::ImageUsageFlagBits::eSampled,
                             asset.textureImage, asset.textureImageMemory, "KtxTextureImageMemory");
@@ -604,6 +619,8 @@ uint32_t TextureManager::uploadRgba8(const std::string& cacheKey, const void* pi
         .format = format,
         .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, mipLevels, 0, 1}};
     asset.textureImageView = vk::raii::ImageView(device, viewInfo);
+    asset.width = static_cast<uint32_t>(texWidth);
+    asset.height = static_cast<uint32_t>(texHeight);
 
     descriptorManager.writeImageDescriptor(asset, viewInfo);
 

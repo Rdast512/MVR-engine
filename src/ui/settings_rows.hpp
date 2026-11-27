@@ -53,11 +53,11 @@ namespace settingsRows
     inline constexpr std::array<SettingsRow, 4> kDirectEngine{
         {{"di.exactInfinite"}, {"di.boostHistory"}, {"di.materialTest"}, {"di.perPixelLightTiles"}}};
     // Indirect Lighting
-    inline constexpr std::array<SettingsRow, 3> kIndirect{
-        {{"gi.roughnessFloor"}, {"gi.finalVisibility"}, {"gi.finalMis"}}};
+    inline constexpr std::array<SettingsRow, 4> kIndirect{
+        {{"gi.roughnessFloor"}, {"gi.finalVisibility"}, {"gi.finalMis"}, {"gi.pathLocalLightSamples"}}};
     inline constexpr std::array<SettingsRow, 1> kIndirectReuse{{{"gi.secondaryResampling"}}};
     inline constexpr std::array<SettingsRow, 2> kIndirectNrc{{{"nrc.training"}, {"nrc.resolveMode"}}};
-    inline constexpr std::array<SettingsRow, 14> kIndirectSharc{{{"sharc.update"},
+    inline constexpr std::array<SettingsRow, 15> kIndirectSharc{{{"sharc.update"},
                                                                  {"sharc.resolve"},
                                                                  {"sharc.updateCamera"},
                                                                  {"sharc.downscale"},
@@ -67,6 +67,7 @@ namespace settingsRows
                                                                  {"sharc.staleFrames"},
                                                                  {"sharc.updateBounces"},
                                                                  {"sharc.queryBounces"},
+                                                                 {"sharc.updateLightSamples"},
                                                                  {"sharc.minRoughness"},
                                                                  {"sharc.fireflyClamp"},
                                                                  {"sharc.materialDemodulation"},

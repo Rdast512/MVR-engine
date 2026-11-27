@@ -11,25 +11,30 @@ struct TextureAsset
     vk::raii::ImageView textureImageView = nullptr;
     VmaAllocation textureImageMemory = nullptr;
     uint32_t descriptorHeapIndex = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
 };
 
 
-// Tight packing: pos@0, color@12, texCoord@24, sizeof==32 (glm). Mesh BDA path requires
-// device scalarBlockLayout + slangc -fvk-use-scalar-layout so SPIR-V matches this layout.
+// Packed vertex: FP32 pos@0 (exact match with CLAS), unorm8x4 color@12, half2 uv0@16, sizeof==20 (engine spec §6.3).
+// Primitives needing FP32 UVs read compact GpuModel::uvFloat via GpuPrimitive::uv0FloatOffset.
 struct GpuVertex
 {
     glm::vec3 pos;
-    glm::vec3 color;
-    glm::vec2 texCoord;
+    uint32_t color;
+    uint32_t texCoord;
 
     bool operator==(const GpuVertex& other) const
     {
         return pos == other.pos && color == other.color && texCoord == other.texCoord;
     }
 };
-static_assert(sizeof(GpuVertex) == 32, "GpuVertex must stay 32 B for mesh BDA / scalar layout");
+static_assert(sizeof(GpuVertex) == 20, "GpuVertex must stay 20 B for mesh BDA / scalar layout");
 static_assert(offsetof(GpuVertex, color) == 12);
-static_assert(offsetof(GpuVertex, texCoord) == 24);
+static_assert(offsetof(GpuVertex, texCoord) == 16);
+
+// Packed normal sentinel: int16(-32768) is never emitted by meshopt_quantizeSnorm(x, 16) in [-32767, 32767]
+inline constexpr uint32_t kPackedOctZero = 0x80008000u;
 
 
 // GPU-friendly meshlet header (CPU layout matches mesh.slang GpuMeshletDesc / SSBO).
@@ -124,6 +129,9 @@ struct PrimitiveDraw
     uint32_t firstEmissiveTriangle = 0;
     uint32_t emissiveTriangleCount = 0;
     bool hasEmissiveFilter = false;
+    // model-relative offsets into AssetBuffer::UvFloat when half2 precision is insufficient; kNoneIndex = half2
+    uint32_t uv0FloatOffset = kNoneIndex;
+    uint32_t uv1FloatOffset = kNoneIndex;
 };
 
 namespace NodeFlag
@@ -270,10 +278,15 @@ struct GpuPrimitive
     uint32_t groupCount = 0;
     // GpuPrimitiveFlag bits
     uint32_t flags = 0;
+    // into GpuModel::uvFloat when half2 precision is insufficient; kNoneIndex = half2
+    uint32_t uv0FloatOffset = kNoneIndex;
+    uint32_t uv1FloatOffset = kNoneIndex;
 };
-static_assert(sizeof(GpuPrimitive) == 40);
+static_assert(sizeof(GpuPrimitive) == 48);
 static_assert(offsetof(GpuPrimitive, firstGroup) == 28);
 static_assert(offsetof(GpuPrimitive, flags) == 36);
+static_assert(offsetof(GpuPrimitive, uv0FloatOffset) == 40);
+static_assert(offsetof(GpuPrimitive, uv1FloatOffset) == 44);
 
 // material bits copied at load, so raster and the draw context skip the material row (materials are immutable)
 namespace GpuPrimitiveFlag
@@ -878,6 +891,7 @@ namespace GpuModelAttribute
     inline constexpr uint32_t Tangents = 1u << 1;
     inline constexpr uint32_t Uv1 = 1u << 2;
     inline constexpr uint32_t Indices = 1u << 3;
+    inline constexpr uint32_t UvFloat = 1u << 4;
 } // namespace GpuModelAttribute
 
 // slice addresses of one loaded model; data inside a slice is model-relative. 0 = stream absent
@@ -890,21 +904,23 @@ struct GpuModel
     vk::DeviceAddress meshletPrimitives = 0; // uint per meshlet: its row of the primitives slice
     vk::DeviceAddress meshletVertices = 0;
     vk::DeviceAddress meshletTriangles = 0;
-    vk::DeviceAddress normals = 0;
-    vk::DeviceAddress tangents = 0;
-    vk::DeviceAddress uv1 = 0;
+    vk::DeviceAddress normals = 0;  // uint32_t[] packed octahedral snorm16x2
+    vk::DeviceAddress tangents = 0; // uint32_t[] packed octahedral snorm15x2 + sign + valid
+    vk::DeviceAddress uv1 = 0;      // uint32_t[] packed half2
+    vk::DeviceAddress uvFloat = 0;  // glm::vec2[] compact per-primitive FP32 UV fallback
     vk::DeviceAddress indices = 0;
     vk::DeviceAddress nodes = 0;
     vk::DeviceAddress primitives = 0; // GpuPrimitive[], the model's slice of GpuFrameRoot::primitives
     uint32_t attributeMask = 0;
     uint32_t nodeCount = 0;
 };
-static_assert(sizeof(GpuModel) == 112);
+static_assert(sizeof(GpuModel) == 120);
 static_assert(offsetof(GpuModel, meshletBounds) == 16);
 static_assert(offsetof(GpuModel, meshletGroups) == 24);
 static_assert(offsetof(GpuModel, meshletPrimitives) == 32);
-static_assert(offsetof(GpuModel, primitives) == 96);
-static_assert(offsetof(GpuModel, attributeMask) == 104);
+static_assert(offsetof(GpuModel, uvFloat) == 80);
+static_assert(offsetof(GpuModel, primitives) == 104);
+static_assert(offsetof(GpuModel, attributeMask) == 112);
 
 // vis-buffer payload: (visible row << kVisTriangleBits) | meshlet-local triangle (shaders/geometry/visbuffer.slang)
 inline constexpr uint32_t kVisTriangleBits = 7;

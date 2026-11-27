@@ -86,8 +86,11 @@ struct GpuSharcConstants
     // width | (height << 16) of the sparse sharc_update dispatch
     uint32_t updateLaunch = 0;
     vk::DeviceAddress counters = 0;
+    // Settings::updateLocalLightSamples; 0: the path vertex count (GpuRtxdiConstants::pathLocalLightSamples)
+    uint32_t updateLocalLightSamples = 0;
+    uint32_t pad0 = 0;
 };
-static_assert(sizeof(GpuSharcConstants) == 104);
+static_assert(sizeof(GpuSharcConstants) == 112);
 static_assert(offsetof(GpuSharcConstants, hashEntries) == 0);
 static_assert(offsetof(GpuSharcConstants, accumulation) == 8);
 static_assert(offsetof(GpuSharcConstants, resolved) == 16);
@@ -99,6 +102,7 @@ static_assert(offsetof(GpuSharcConstants, capacity) == 56);
 static_assert(offsetof(GpuSharcConstants, flags) == 88);
 static_assert(offsetof(GpuSharcConstants, updateLaunch) == 92);
 static_assert(offsetof(GpuSharcConstants, counters) == 96);
+static_assert(offsetof(GpuSharcConstants, updateLocalLightSamples) == 104);
 
 // Pure Vulkan 1.4 BDA Spatial Hash Radiance Cache (NVIDIA SHaRC v1.8.3, spec/m8/m8_4_sharc_cache.md).
 // Lazily allocates 3 device-local buffers (40 B/voxel) on first active frame and retires them after
@@ -142,6 +146,10 @@ public:
         // Optional scene-unit luminance clamp per update vertex (0 = off, matching gi.fireflyClamp; unlike RTXPT's
         // exposure-scaled FireflyFilterThreshold in Sample.cpp:2202)
         float fireflyClamp = 0.0f;
+        // local light candidates per update vertex, capped by the path vertex count; 0: the path vertex count. The
+        // cache averages ~accumulationFrameNum frames per voxel, so fewer candidates cost little variance (M8.5 P3:
+        // Bistro sharc_update nearly halved). RTXPT's update takes its own NEE (SharcIntegration NEEFullSamples = 1)
+        uint32_t updateLocalLightSamples = 4;
         SharcDebugMode debugMode = SharcDebugMode::CachedRadiance;
 
         bool operator==(const Settings&) const = default;

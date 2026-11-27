@@ -30,6 +30,8 @@ public:
     GeometryStore& geometryStore;
     MaterialStore& materialStore;
     LightStore& lightStore;
+    // next loads bake with these; clamped to the device per load
+    OmmBakeSettings ommSettings;
 
 private:
     [[nodiscard]] std::optional<EntityId> loadGltfModel(const std::string& modelPath, glm::vec3 xyz);

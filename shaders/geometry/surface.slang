@@ -24,6 +24,17 @@ public struct TriangleCorners
     public bool isFrontFacing;
 };
 
+// per-primitive FP32 UV0 fallback when half2 precision is insufficient; otherwise unpack GpuVertex::texCoord
+public float2 loadVertexUv0(DrawContext draw, uint vertexIndex, uint packedHalf)
+{
+    if (draw.primitive.uv0FloatOffset != kNoneIndex)
+    {
+        return bdaPtr<float2>(draw.model.uvFloat)[draw.primitive.uv0FloatOffset +
+                                                  (vertexIndex - draw.primitive.firstVertex)];
+    }
+    return unpackHalf2x16(packedHalf);
+}
+
 // ids, positions and the attributes loaded with them; projection and facing are the caller's
 public TriangleCorners loadCornerVertices(DrawContext draw, uint triangle)
 {
@@ -37,8 +48,8 @@ public TriangleCorners loadCornerVertices(DrawContext draw, uint triangle)
         corners.vertexIndex[i] = vertexIndex;
         const GpuVertex vertex = loadVertex(draw, vertexIndex);
         corners.objectPos[i] = vertex.pos;
-        corners.color[i] = vertex.color;
-        corners.texCoord[i] = vertex.texCoord;
+        corners.color[i] = unpackColorUnorm8(vertex.color);
+        corners.texCoord[i] = loadVertexUv0(draw, vertexIndex, vertex.texCoord);
         corners.clip[i] = float4(0.0, 0.0, 0.0, 0.0);
     }
     corners.isFrontFacing = true;
@@ -58,8 +69,8 @@ public TriangleCorners loadRayCornerVertices(DrawContext draw, uint triangle, fl
         const uint vertexIndex = loadMeshletVertexIndex(draw, meshlet, local[i]);
         corners.vertexIndex[i] = vertexIndex;
         corners.objectPos[i] = objectPos[i];
-        corners.color[i] = vertices[vertexIndex].color;
-        corners.texCoord[i] = vertices[vertexIndex].texCoord;
+        corners.color[i] = unpackColorUnorm8(vertices[vertexIndex].color);
+        corners.texCoord[i] = loadVertexUv0(draw, vertexIndex, vertices[vertexIndex].texCoord);
         corners.clip[i] = float4(0.0, 0.0, 0.0, 0.0);
     }
     corners.isFrontFacing = true;
@@ -95,25 +106,30 @@ public struct Surface
     public bool isFrontFacing;
 };
 
-// a zero row in an optional stream means the primitive has no such attribute
+// a sentinel row in an optional stream means the primitive has no such attribute
 float3 loadVertexNormal(DrawContext draw, uint vertexIndex)
 {
     return (draw.model.attributeMask & kModelAttributeNormals) != 0
-        ? bdaPtr<float3>(draw.model.normals)[vertexIndex]
+        ? unpackOct16OrZero(bdaPtr<uint>(draw.model.normals)[vertexIndex])
         : float3(0.0, 0.0, 0.0);
 }
 
 float4 loadVertexTangent(DrawContext draw, uint vertexIndex)
 {
     return (draw.model.attributeMask & kModelAttributeTangents) != 0
-        ? bdaPtr<float4>(draw.model.tangents)[vertexIndex]
+        ? unpackTangent32(bdaPtr<uint>(draw.model.tangents)[vertexIndex])
         : float4(0.0, 0.0, 0.0, 0.0);
 }
 
 public float2 loadVertexUv1(DrawContext draw, uint vertexIndex)
 {
+    if (draw.primitive.uv1FloatOffset != kNoneIndex)
+    {
+        return bdaPtr<float2>(draw.model.uvFloat)[draw.primitive.uv1FloatOffset +
+                                                  (vertexIndex - draw.primitive.firstVertex)];
+    }
     return (draw.model.attributeMask & kModelAttributeUv1) != 0
-        ? bdaPtr<float2>(draw.model.uv1)[vertexIndex]
+        ? unpackHalf2x16(bdaPtr<uint>(draw.model.uv1)[vertexIndex])
         : float2(0.0, 0.0);
 }
 
